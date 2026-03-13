@@ -1,0 +1,32 @@
+[project]
+name = "Blackdog"
+profile_version = 1
+
+[paths]
+backlog_dir = ".blackdog"
+backlog_file = ".blackdog/backlog.md"
+state_file = ".blackdog/backlog-state.json"
+events_file = ".blackdog/events.jsonl"
+results_dir = ".blackdog/task-results"
+inbox_file = ".blackdog/inbox.jsonl"
+html_file = ".blackdog/backlog-index.html"
+skill_dir = ".codex/skills/blackdog-backlog"
+
+[ids]
+prefix = "BLACK"
+digest_length = 10
+
+[rules]
+default_claim_lease_hours = 4
+require_claim_for_completion = true
+auto_render_html = true
+
+[taxonomy]
+buckets = ["core", "cli", "html", "skills", "docs", "testing", "integration"]
+domains = ["cli", "docs", "html", "state", "events", "inbox", "results", "skills"]
+validation_commands = ["PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'"]
+doc_routing_defaults = ["AGENTS.md", "docs/INDEX.md", "docs/ARCHITECTURE.md", "docs/CLI.md", "docs/FILE_FORMATS.md"]
+
+[pm_heuristics]
+summary_focus = "Lead with direct status, then backlog state, then test focus."
+skill_usage = "Prefer the repo-versioned blackdog CLI over hand-edited state transitions."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blackdog Backlog"
+  short_description: "Repo-versioned backlog control via Blackdog"
+  default_prompt: "Use the local Blackdog backlog for Blackdog to review, claim, complete, and report work through the repo-versioned CLI."
