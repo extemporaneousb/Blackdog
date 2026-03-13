@@ -2,9 +2,9 @@
 
 Project: `Blackdog`
 Repo root: `/Users/bullard/Work/Blackdog`
-Generated: `2026-03-13T00:15:13-07:00`
+Generated: `2026-03-13T00:15:42-07:00`
 Target branch: `main`
-Target commit: `uncommitted`
+Target commit: `9b6427346dffc277f18f273b921a75d1f745f934`
 Profile: `/Users/bullard/Work/Blackdog/blackdog.toml`
 State file: `/Users/bullard/Work/Blackdog/.blackdog/backlog-state.json`
 Events file: `/Users/bullard/Work/Blackdog/.blackdog/events.jsonl`
