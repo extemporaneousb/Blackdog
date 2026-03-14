@@ -112,6 +112,10 @@ def bootstrap_project(
     return profile, skill_file
 
 
+def refresh_project_skill(profile: Profile) -> Path:
+    return generate_project_skill(profile, force=True)
+
+
 def render_project_html(profile: Profile) -> Path:
     refresh_backlog_headers(profile)
     snapshot = load_backlog(profile.paths, profile)
@@ -144,7 +148,7 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     validation_lines = "\n".join(f"  - `{command}`" for command in profile.validation_commands)
     skill_text = f"""---
 name: {skill_name}
-description: "Use the repo-versioned Blackdog backlog for {profile.project_name}. Trigger this skill when preparing, reviewing, claiming, completing, or reporting backlog work in this project, or when checking inbox messages and structured task results."
+description: "Use the project-local Blackdog backlog contract for {profile.project_name}. Trigger this skill when reviewing, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
 ---
 
 # {display_name}
@@ -154,6 +158,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 ## Core Paths
 
 - Profile: `{profile.paths.profile_file}`
+- Control root: `{profile.paths.control_dir}`
 - Backlog: `{profile.paths.backlog_file}`
 - State: `{profile.paths.state_file}`
 - Events: `{profile.paths.events_file}`
@@ -166,18 +171,23 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 1. Run `blackdog validate`.
 2. Run `blackdog summary`.
 3. Inspect runnable work with `blackdog next`.
-4. Claim one task with `blackdog claim --agent <agent-name>`.
-5. Record structured output with `blackdog result record ...`.
-6. Complete or release the task through the CLI.
-7. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-8. Use `blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
+4. For direct implementation work, run `blackdog worktree preflight` and `blackdog worktree start --id TASK` before editing repo files.
+5. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
+6. Complete or release the task through the CLI for direct work.
+7. Use `blackdog supervise run` or `blackdog supervise loop` when you want Blackdog to launch child agents instead of editing directly.
+8. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 
-## Interaction Model
+## Supervisor Model
 
-- Use `blackdog inbox send` for user, supervisor, or child-agent instructions/questions.
-- Use `blackdog comment` for task-scoped narrative notes that belong in the event log.
-- Use `blackdog result record` for structured `what_changed`, `validation`, `residual`, `needs_user_input`, and `followup_candidates`.
-- Use `blackdog render` whenever you need a refreshed HTML control page.
+- The coordinating agent stays in the primary worktree.
+- Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
+- `pause` and `stop` messages are checked between loop cycles. They do not interrupt an already-running child claim.
+
+## Repo Contract
+
+- Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
+- Do not check in mutable runtime files from `{profile.paths.control_dir}`.
+- Regenerate this skill after profile changes with `blackdog-skill refresh backlog --project-root {profile.paths.project_root}`.
 
 ## Repo Defaults
 
@@ -189,8 +199,8 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 """
     agent_text = f"""interface:
   display_name: "{display_name}"
-  short_description: "Repo-versioned backlog control via Blackdog"
-  default_prompt: "Use the local Blackdog backlog for {profile.project_name} to review, claim, complete, and report work through the repo-versioned CLI."
+  short_description: "Project-local backlog control via Blackdog"
+  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to review, claim, supervise, and report backlog work through the repo CLI."
 """
     skill_file.write_text(skill_text, encoding="utf-8")
     agent_file.write_text(agent_text, encoding="utf-8")

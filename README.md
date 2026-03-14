@@ -1,8 +1,8 @@
 # Blackdog
 
-Blackdog is a repo-versioned backlog runtime for AI-assisted software work and a foundation for local multi-agent development supervision.
+Blackdog is a repo-scoped backlog runtime for AI-assisted software work and a foundation for local multi-agent development supervision.
 
-It keeps backlog semantics, state transitions, event history, structured task results, inbox messages, and status views inside the project repo instead of hiding them inside global skills or ad hoc scripts.
+It keeps backlog semantics, state transitions, event history, structured task results, inbox messages, and status views in repo-local code plus a shared local control root instead of hiding them inside global skills or ad hoc scripts.
 
 ## Current status
 
@@ -10,11 +10,11 @@ Implemented today:
 
 - Repo-local backlog parsing, validation, claims, approvals, inbox messaging, task results, and HTML rendering
 - Plan structure with epics, lanes, and waves encoded in the backlog file
-- A one-command repo bootstrap that creates the local profile, artifact set, and project skill
+- A one-command repo bootstrap that creates the local profile, control-root runtime scaffold, and project skill
 - Project-local skill scaffolding for host repositories
 - A WTAM-style branch-backed worktree lifecycle for implementation tasks
-- An initial supervisor runner that launches child commands against runnable tasks
-- An initial persistent supervisor loop that can keep cycling, refresh repo-local status views, and honor inbox `pause` or `stop` control messages
+- An initial supervisor runner that launches child agents into branch-backed task worktrees and lands their commits through the primary worktree
+- An initial persistent supervisor loop that can keep cycling, refresh repo-local status views, honor inbox `pause` or `stop` control messages, and reread backlog state between cycles
 - A served readonly live UI with a canonical snapshot contract and SSE updates driven by Blackdog state changes
 
 Planned but not implemented yet:
@@ -30,6 +30,7 @@ Planned but not implemented yet:
 - `blackdog.toml`: repo-local profile for id prefixes, bucket/domain taxonomy, defaults, and heuristics
 - shared runtime state under the git control root, which defaults to `@git-common/blackdog`
 - `blackdog worktree ...`: explicit branch-backed worktree start/land/cleanup entrypoints for implementation work
+- `.codex/skills/blackdog-backlog/`: project-local skill scaffold that teaches agents how to use Blackdog in that repo
 
 ## Quick start
 
@@ -64,12 +65,12 @@ For direct slices:
 
 For delegated slices:
 
-1. Launch `blackdog supervise run --id TASK`.
-2. Launch `blackdog ui serve --open-browser` for the live readonly monitor.
-3. Inspect the resolved control-root artifacts from `blackdog.toml` as the run proceeds.
-4. Treat blocked child runs as product evidence and convert the gap into backlog follow-up work instead of deleting the failed artifacts.
-
-Blackdog now treats branch-backed worktrees as the implementation default, but the supervisor still has its own child-workspace path today. Moving delegated child runs onto the same `blackdog worktree` lifecycle is tracked as follow-up work rather than implied by the current runtime.
+1. Launch `blackdog ui serve --open-browser` for the live readonly monitor.
+2. Launch `blackdog supervise run --id TASK` for a one-shot pass or `blackdog supervise loop` for ongoing processing.
+3. Keep the coordinating agent in the primary worktree. Blackdog gives each child task agent its own branch-backed task worktree and lands successful commits through the primary worktree.
+4. Use inbox `pause` or `stop` messages as boundary controls between loop cycles. They do not interrupt a child task that is already running.
+5. Inspect the resolved control-root artifacts from `blackdog.toml` as the run proceeds.
+6. Treat blocked child runs as product evidence and convert the gap into backlog follow-up work instead of deleting the failed artifacts.
 
 Mutable runtime state now lives under one shared local control root across worktrees rather than as checked-in repo artifacts. In this repo, the default resolved location is `.git/blackdog/`.
 
@@ -77,7 +78,7 @@ Current dogfood evidence lives under the resolved control root in `supervisor-ru
 
 ## Design goals
 
-- Keep the backlog runtime versioned with the repo that depends on it.
+- Keep the Blackdog contract repo-local and versioned with the project, but keep mutable runtime state in the shared control root.
 - Make skills thin adapters around a real CLI and real file formats.
 - Preserve human-readable backlog markdown while moving execution semantics into structured state and event files.
 - Support AI agents with explicit claims, messages, structured results, and predictable file layouts.

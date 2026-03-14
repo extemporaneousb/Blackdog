@@ -4,8 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
-from .config import ConfigError
-from .scaffold import ScaffoldError, bootstrap_project
+from .config import ConfigError, load_profile
+from .scaffold import ScaffoldError, bootstrap_project, refresh_project_skill
 
 
 def cmd_new_backlog(args: argparse.Namespace) -> int:
@@ -15,6 +15,23 @@ def cmd_new_backlog(args: argparse.Namespace) -> int:
         project_name=args.project_name or root.name,
         force=args.force,
     )
+    print(
+        json.dumps(
+            {
+                "project_root": str(root),
+                "profile": str(profile.paths.profile_file),
+                "skill_file": str(skill_file),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_refresh_backlog(args: argparse.Namespace) -> int:
+    root = Path(args.project_root).resolve()
+    profile = load_profile(root)
+    skill_file = refresh_project_skill(profile)
     print(
         json.dumps(
             {
@@ -40,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_new_backlog.add_argument("--project-name", default=None)
     p_new_backlog.add_argument("--force", action="store_true")
     p_new_backlog.set_defaults(func=cmd_new_backlog)
+
+    p_refresh = subparsers.add_parser("refresh", help="Refresh an existing project-local Blackdog skill scaffold")
+    refresh_subparsers = p_refresh.add_subparsers(dest="refresh_command", required=True)
+
+    p_refresh_backlog = refresh_subparsers.add_parser("backlog", help="Regenerate the current project-local Blackdog backlog skill")
+    p_refresh_backlog.add_argument("--project-root", default=".")
+    p_refresh_backlog.set_defaults(func=cmd_refresh_backlog)
 
     return parser
 

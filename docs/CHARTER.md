@@ -49,7 +49,7 @@ Partially encoded today:
 
 - multi-agent coordination primitives exist, but only as building blocks
 - the worktree model is now explicit, mutable runtime state is shared from one control root, and delegated child runs land through the same WTAM-style lifecycle as direct work
-- a persistent supervisor loop can cycle work, refresh repo-local status views, and honor simple inbox control messages
+- a persistent supervisor loop can cycle work, reread backlog state between cycles, refresh repo-local status views, and honor simple inbox control messages
 - child-agent launch, monitoring, and worktree lifecycle exist, but still require better active-run steering and cleanup ergonomics
 - backlog planning exists in the file format, but management UX is still task-by-task
 - host-repo installation works, but it is not yet a one-command experience
@@ -58,6 +58,7 @@ Not yet encoded in runtime behavior:
 
 - interactive drift assessment and redirection workflows
 - a rollout playbook based on real host-repo adoption
+- richer supervisor steering than boundary pause/stop controls plus next-cycle backlog rereads
 
 ## Success criteria
 

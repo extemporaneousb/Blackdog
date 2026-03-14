@@ -48,6 +48,33 @@ def wait_for_file(path: Path, *, timeout: float = 5.0) -> Path:
     raise AssertionError(f"Timed out waiting for {path}")
 
 
+def wait_for_glob(root: Path, pattern: str, *, timeout: float = 5.0) -> Path:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        matches = sorted(root.glob(pattern))
+        if matches:
+            return matches[0]
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for {pattern} under {root}")
+
+
+def wait_for_json(path: Path, predicate, *, timeout: float = 5.0) -> dict[str, object]:
+    deadline = time.time() + timeout
+    last_payload: dict[str, object] | None = None
+    while time.time() < deadline:
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
+            last_payload = payload
+            if predicate(payload):
+                return payload
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for JSON predicate on {path}; last payload={last_payload}")
+
+
 def read_sse_event(stream) -> dict[str, object]:
     event_name = ""
     event_id = ""
@@ -385,6 +412,42 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(len(resolved), 1)
         self.assertTrue((self.root / ".codex/skills/blackdog-backlog/SKILL.md").exists())
+
+    def test_skill_refresh_regenerates_existing_project_skill(self) -> None:
+        run_skill_cli("new", "backlog", "--project-root", str(self.root), "--project-name", "Inbox Demo")
+        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
+            '"PYTHONPATH=src python3 -m unittest discover -s tests -p \'test_*.py\'"',
+            '"make test"',
+        )
+        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+        skill_file = self.root / ".codex/skills/blackdog-backlog/SKILL.md"
+        skill_file.write_text("stale skill text\n", encoding="utf-8")
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.skill_cli",
+                    "refresh",
+                    "backlog",
+                    "--project-root",
+                    str(self.root),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(Path(payload["skill_file"]).resolve(), skill_file.resolve())
+        refreshed_text = skill_file.read_text(encoding="utf-8")
+        self.assertIn("Use the project-local Blackdog backlog contract", refreshed_text)
+        self.assertIn("Control root:", refreshed_text)
+        self.assertIn("`make test`", refreshed_text)
+        self.assertIn("blackdog-skill refresh backlog", refreshed_text)
 
     def test_plan_summary_reports_epics_lanes_and_waves(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1363,3 +1426,318 @@ if __name__ == "__main__":
             ).stdout
         )
         self.assertEqual(len(ready_rows), 1)
+
+    def test_supervise_loop_stops_at_cycle_boundary_on_inbox_message(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        launcher_script = self.root / "codex"
+        launcher_script.write_text(
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    file_name = f"boundary-{task_id}.txt"
+    Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", file_name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} from boundary child"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"boundary child completed {task_id}",
+            "--validation",
+            "fake-boundary-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        launcher_script.chmod(0o755)
+        for title in ("Boundary task one", "Boundary task two"):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                "Need to test boundary stop semantics.",
+                "--evidence",
+                "The supervisor loop should stop before starting another cycle.",
+                "--safe-first-slice",
+                "Run one child, then stop before the next claim.",
+                "--path",
+                "README.md",
+                "--epic-title",
+                "Supervisor",
+                "--lane-title",
+                "Boundary lane",
+                "--wave",
+                "0",
+            )
+        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
+            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
+            f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
+        )
+        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint boundary launcher for supervisor stop test"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "loop",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--count",
+                "1",
+                "--poll-interval-seconds",
+                "0.2",
+                "--max-cycles",
+                "3",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            status_file = wait_for_glob(self.runtime_paths().supervisor_runs_dir, "*-loop-*/status.json")
+            wait_for_json(
+                status_file,
+                lambda payload: len(payload.get("cycles", [])) >= 1 and payload["cycles"][0]["status"] == "ran",
+                timeout=10.0,
+            )
+            run_cli(
+                "inbox",
+                "send",
+                "--project-root",
+                str(self.root),
+                "--sender",
+                "user",
+                "--recipient",
+                "supervisor",
+                "--kind",
+                "instruction",
+                "--tag",
+                "stop",
+                "--body",
+                "stop after this cycle",
+            )
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+        payload = json.loads(stdout)
+        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "stopped"])
+        self.assertIn("stopped_by_message_id", payload)
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
+        self.assertEqual(done_count, 1)
+        ready_rows = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(len(ready_rows), 1)
+
+    def test_supervise_loop_picks_up_task_added_between_cycles(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        launcher_script = self.root / "codex"
+        launcher_script.write_text(
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    file_name = f"picked-up-{task_id}.txt"
+    Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", file_name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after backlog pickup"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"picked up task {task_id} after loop restart",
+            "--validation",
+            "fake-pickup-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        launcher_script.chmod(0o755)
+        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
+            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
+            f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
+        )
+        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint pickup launcher for supervisor loop test"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "loop",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--count",
+                "1",
+                "--poll-interval-seconds",
+                "0.5",
+                "--max-cycles",
+                "2",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            status_file = wait_for_glob(self.runtime_paths().supervisor_runs_dir, "*-loop-*/status.json")
+            wait_for_json(
+                status_file,
+                lambda payload: len(payload.get("cycles", [])) >= 1 and payload["cycles"][0]["status"] == "idle",
+                timeout=10.0,
+            )
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                "Task added during loop",
+                "--bucket",
+                "core",
+                "--why",
+                "Need to prove the loop rereads backlog state between cycles.",
+                "--evidence",
+                "A task added after an idle cycle should be claimed on the next pass.",
+                "--safe-first-slice",
+                "Add one task while the loop is sleeping between cycles.",
+                "--path",
+                "README.md",
+                "--epic-title",
+                "Supervisor",
+                "--lane-title",
+                "Boundary lane",
+                "--wave",
+                "0",
+            )
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+        payload = json.loads(stdout)
+        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["idle", "ran"])
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
+        self.assertEqual(done_count, 1)
