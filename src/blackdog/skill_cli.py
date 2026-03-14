@@ -4,21 +4,27 @@ import argparse
 import json
 from pathlib import Path
 
-from .config import ConfigError, load_profile
-from .scaffold import ScaffoldError, generate_project_skill, scaffold_project
+from .config import ConfigError
+from .scaffold import ScaffoldError, bootstrap_project
 
 
 def cmd_new_backlog(args: argparse.Namespace) -> int:
     root = Path(args.project_root).resolve()
-    if not (root / "blackdog.toml").exists():
-        scaffold_project(
-            root,
-            project_name=args.project_name or root.name,
-            force=args.force,
+    profile, skill_file = bootstrap_project(
+        root,
+        project_name=args.project_name or root.name,
+        force=args.force,
+    )
+    print(
+        json.dumps(
+            {
+                "project_root": str(root),
+                "profile": str(profile.paths.profile_file),
+                "skill_file": str(skill_file),
+            },
+            indent=2,
         )
-    profile = load_profile(root)
-    skill_file = generate_project_skill(profile, force=args.force)
-    print(json.dumps({"project_root": str(root), "skill_file": str(skill_file)}, indent=2))
+    )
     return 0
 
 
@@ -29,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_new = subparsers.add_parser("new", help="Create a new project-local Blackdog skill scaffold")
     new_subparsers = p_new.add_subparsers(dest="new_command", required=True)
 
-    p_new_backlog = new_subparsers.add_parser("backlog", help="Initialize backlog files and generate a project-specific skill")
+    p_new_backlog = new_subparsers.add_parser("backlog", help="Compatibility wrapper around `blackdog bootstrap`")
     p_new_backlog.add_argument("--project-root", default=".")
     p_new_backlog.add_argument("--project-name", default=None)
     p_new_backlog.add_argument("--force", action="store_true")

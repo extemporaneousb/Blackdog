@@ -3,10 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shlex
+import shutil
+import subprocess
 import tomllib
 
 
 PROFILE_FILE_NAME = "blackdog.toml"
+GIT_COMMON_TOKEN = "@git-common"
 
 DEFAULT_BUCKETS = (
     "core",
@@ -29,6 +33,13 @@ DEFAULT_DOMAINS = (
 )
 DEFAULT_VALIDATION_COMMANDS = (
     "PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'",
+)
+DEFAULT_CONTROL_DIR = f"{GIT_COMMON_TOKEN}/blackdog"
+DEFAULT_WORKTREES_DIR = "../.worktrees"
+DEFAULT_SUPERVISOR_COMMAND = (
+    "codex",
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
 )
 DEFAULT_DOC_ROUTING = (
     "AGENTS.md",
@@ -59,6 +70,7 @@ def default_id_prefix(project_name: str) -> str:
 class ProjectPaths:
     project_root: Path
     profile_file: Path
+    control_dir: Path
     backlog_dir: Path
     backlog_file: Path
     state_file: Path
@@ -67,6 +79,8 @@ class ProjectPaths:
     inbox_file: Path
     html_file: Path
     skill_dir: Path
+    worktrees_dir: Path
+    supervisor_runs_dir: Path
 
 
 @dataclass(frozen=True)
@@ -82,6 +96,10 @@ class Profile:
     domains: tuple[str, ...]
     validation_commands: tuple[str, ...]
     doc_routing_defaults: tuple[str, ...]
+    supervisor_launch_command: tuple[str, ...]
+    supervisor_max_parallel: int
+    supervisor_task_timeout_seconds: int
+    supervisor_workspace_mode: str
     pm_heuristics: dict[str, str]
     paths: ProjectPaths
 
@@ -99,18 +117,134 @@ def _resolve_rel(root: Path, value: str) -> Path:
     return path if path.is_absolute() else (root / path).resolve()
 
 
+def _run_git(project_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(project_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise ConfigError(f"git {' '.join(args)} failed: {detail}")
+    return completed.stdout.strip()
+
+
+def _git_common_dir(project_root: Path) -> Path:
+    raw = _run_git(project_root, "rev-parse", "--git-common-dir")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (project_root / candidate).resolve()
+
+
+def _resolve_path_value(project_root: Path, value: str) -> Path:
+    if value == GIT_COMMON_TOKEN:
+        return _git_common_dir(project_root)
+    if value.startswith(f"{GIT_COMMON_TOKEN}/"):
+        return (_git_common_dir(project_root) / value[len(GIT_COMMON_TOKEN) + 1 :]).resolve()
+    return _resolve_rel(project_root, value)
+
+
+def _default_control_paths(control_dir: Path) -> dict[str, Path]:
+    return {
+        "backlog_dir": control_dir,
+        "backlog_file": control_dir / "backlog.md",
+        "state_file": control_dir / "backlog-state.json",
+        "events_file": control_dir / "events.jsonl",
+        "results_dir": control_dir / "task-results",
+        "inbox_file": control_dir / "inbox.jsonl",
+        "html_file": control_dir / "backlog-index.html",
+        "supervisor_runs_dir": control_dir / "supervisor-runs",
+    }
+
+
+def _legacy_runtime_paths(project_root: Path) -> dict[str, Path]:
+    legacy_root = (project_root / ".blackdog").resolve()
+    return {
+        "control_dir": legacy_root,
+        "backlog_dir": legacy_root,
+        "backlog_file": legacy_root / "backlog.md",
+        "state_file": legacy_root / "backlog-state.json",
+        "events_file": legacy_root / "events.jsonl",
+        "results_dir": legacy_root / "task-results",
+        "inbox_file": legacy_root / "inbox.jsonl",
+        "html_file": legacy_root / "backlog-index.html",
+        "supervisor_runs_dir": legacy_root / "supervisor-runs",
+    }
+
+
+def _merge_legacy_path(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True)
+        return
+    if destination.exists():
+        return
+    shutil.copy2(source, destination, follow_symlinks=False)
+
+
+def _prune_stale_git_worktrees(project_root: Path) -> None:
+    _run_git(project_root, "worktree", "prune")
+
+
+def _ensure_control_root_layout(paths: ProjectPaths) -> None:
+    paths.control_dir.mkdir(parents=True, exist_ok=True)
+    paths.results_dir.mkdir(parents=True, exist_ok=True)
+    paths.supervisor_runs_dir.mkdir(parents=True, exist_ok=True)
+    legacy = _legacy_runtime_paths(paths.project_root)
+    if paths.control_dir == legacy["control_dir"]:
+        return
+    for key in (
+        "backlog_file",
+        "state_file",
+        "events_file",
+        "inbox_file",
+        "html_file",
+        "results_dir",
+        "supervisor_runs_dir",
+    ):
+        _merge_legacy_path(legacy[key], getattr(paths, key))
+    if legacy["control_dir"].exists():
+        shutil.rmtree(legacy["control_dir"])
+    _prune_stale_git_worktrees(paths.project_root)
+
+
 def _paths_from_raw(project_root: Path, raw_paths: dict[str, str]) -> ProjectPaths:
+    control_dir = (
+        _resolve_path_value(project_root, str(raw_paths["control_dir"]))
+        if "control_dir" in raw_paths
+        else None
+    )
+    control_defaults = _default_control_paths(control_dir) if control_dir is not None else {}
+
+    def resolve_runtime_path(key: str) -> Path:
+        if key in raw_paths:
+            return _resolve_path_value(project_root, str(raw_paths[key]))
+        if key in control_defaults:
+            return control_defaults[key]
+        raise ConfigError(f"Profile is missing path key: {key}")
+
     return ProjectPaths(
         project_root=project_root,
         profile_file=(project_root / PROFILE_FILE_NAME).resolve(),
-        backlog_dir=_resolve_rel(project_root, raw_paths["backlog_dir"]),
-        backlog_file=_resolve_rel(project_root, raw_paths["backlog_file"]),
-        state_file=_resolve_rel(project_root, raw_paths["state_file"]),
-        events_file=_resolve_rel(project_root, raw_paths["events_file"]),
-        results_dir=_resolve_rel(project_root, raw_paths["results_dir"]),
-        inbox_file=_resolve_rel(project_root, raw_paths["inbox_file"]),
-        html_file=_resolve_rel(project_root, raw_paths["html_file"]),
-        skill_dir=_resolve_rel(project_root, raw_paths["skill_dir"]),
+        control_dir=control_dir or resolve_runtime_path("backlog_dir"),
+        backlog_dir=resolve_runtime_path("backlog_dir"),
+        backlog_file=resolve_runtime_path("backlog_file"),
+        state_file=resolve_runtime_path("state_file"),
+        events_file=resolve_runtime_path("events_file"),
+        results_dir=resolve_runtime_path("results_dir"),
+        inbox_file=resolve_runtime_path("inbox_file"),
+        html_file=resolve_runtime_path("html_file"),
+        skill_dir=_resolve_path_value(project_root, str(raw_paths["skill_dir"])),
+        worktrees_dir=_resolve_path_value(project_root, str(raw_paths.get("worktrees_dir", DEFAULT_WORKTREES_DIR))),
+        supervisor_runs_dir=(
+            _resolve_path_value(project_root, str(raw_paths["supervisor_runs_dir"]))
+            if "supervisor_runs_dir" in raw_paths
+            else control_defaults.get("supervisor_runs_dir", _resolve_path_value(project_root, ".blackdog/supervisor-runs"))
+        ),
     )
 
 
@@ -124,10 +258,15 @@ def load_profile(project_root: Path | None = None) -> Profile:
     ids = payload.get("ids") or {}
     rules = payload.get("rules") or {}
     taxonomy = payload.get("taxonomy") or {}
+    supervisor = payload.get("supervisor") or {}
     heuristics = payload.get("pm_heuristics") or {}
     raw_paths = payload.get("paths") or {}
 
-    required_path_keys = {
+    required_path_keys = {"skill_dir"}
+    missing = sorted(required_path_keys - set(raw_paths))
+    if missing:
+        raise ConfigError(f"Profile is missing path keys: {missing}")
+    runtime_keys = {
         "backlog_dir",
         "backlog_file",
         "state_file",
@@ -135,13 +274,33 @@ def load_profile(project_root: Path | None = None) -> Profile:
         "results_dir",
         "inbox_file",
         "html_file",
-        "skill_dir",
     }
-    missing = sorted(required_path_keys - set(raw_paths))
-    if missing:
-        raise ConfigError(f"Profile is missing path keys: {missing}")
+    if "control_dir" not in raw_paths:
+        missing_runtime = sorted(runtime_keys - set(raw_paths))
+        if missing_runtime:
+            raise ConfigError(
+                "Profile must define either paths.control_dir or explicit runtime path keys: "
+                + ", ".join(missing_runtime)
+            )
 
     paths = _paths_from_raw(root, raw_paths)
+    _ensure_control_root_layout(paths)
+    raw_launch_command = supervisor.get("launch_command") or list(DEFAULT_SUPERVISOR_COMMAND)
+    if isinstance(raw_launch_command, str):
+        launch_command = tuple(shlex.split(raw_launch_command))
+    else:
+        launch_command = tuple(str(item) for item in raw_launch_command)
+    if not launch_command:
+        raise ConfigError("supervisor.launch_command must contain at least one argv token")
+    workspace_mode = str(supervisor.get("workspace_mode") or "git-worktree").strip()
+    if workspace_mode not in {"git-worktree", "current"}:
+        raise ConfigError("supervisor.workspace_mode must be 'git-worktree' or 'current'")
+    max_parallel = int(supervisor.get("max_parallel") or 2)
+    if max_parallel < 1:
+        raise ConfigError("supervisor.max_parallel must be at least 1")
+    timeout_seconds = int(supervisor.get("task_timeout_seconds") or 1200)
+    if timeout_seconds < 1:
+        raise ConfigError("supervisor.task_timeout_seconds must be at least 1")
     return Profile(
         project_name=str(project.get("name") or root.name),
         profile_version=int(project.get("profile_version") or 1),
@@ -158,6 +317,10 @@ def load_profile(project_root: Path | None = None) -> Profile:
         doc_routing_defaults=tuple(
             str(item) for item in taxonomy.get("doc_routing_defaults") or DEFAULT_DOC_ROUTING
         ),
+        supervisor_launch_command=launch_command,
+        supervisor_max_parallel=max_parallel,
+        supervisor_task_timeout_seconds=timeout_seconds,
+        supervisor_workspace_mode=workspace_mode,
         pm_heuristics={str(key): str(value) for key, value in heuristics.items()},
         paths=paths,
     )
@@ -174,14 +337,10 @@ def render_default_profile(project_name: str) -> str:
         f'name = "{project_name}"\n'
         f"profile_version = 1\n\n"
         f'[paths]\n'
-        f'backlog_dir = ".blackdog"\n'
-        f'backlog_file = ".blackdog/backlog.md"\n'
-        f'state_file = ".blackdog/backlog-state.json"\n'
-        f'events_file = ".blackdog/events.jsonl"\n'
-        f'results_dir = ".blackdog/task-results"\n'
-        f'inbox_file = ".blackdog/inbox.jsonl"\n'
-        f'html_file = ".blackdog/backlog-index.html"\n'
+        f'control_dir = "{DEFAULT_CONTROL_DIR}"\n'
         f'skill_dir = ".codex/skills/blackdog-backlog"\n\n'
+        f'worktrees_dir = "{DEFAULT_WORKTREES_DIR}"\n'
+        f"\n"
         f'[ids]\n'
         f'prefix = "{prefix}"\n'
         f"digest_length = 10\n\n"
@@ -189,6 +348,11 @@ def render_default_profile(project_name: str) -> str:
         f"default_claim_lease_hours = 4\n"
         f"require_claim_for_completion = true\n"
         f"auto_render_html = true\n\n"
+        f'[supervisor]\n'
+        f'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]\n'
+        f"max_parallel = 2\n"
+        f"task_timeout_seconds = 1200\n"
+        f'workspace_mode = "git-worktree"\n\n'
         f'[taxonomy]\n'
         f"buckets = [{buckets}]\n"
         f"domains = [{domains}]\n"
@@ -208,4 +372,3 @@ def write_default_profile(project_root: Path, project_name: str, *, force: bool 
         raise ConfigError(f"Refusing to overwrite {profile_file}; pass force=True to replace it")
     profile_file.write_text(render_default_profile(project_name), encoding="utf-8")
     return profile_file
-

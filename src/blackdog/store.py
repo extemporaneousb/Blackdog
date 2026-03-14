@@ -136,6 +136,12 @@ def append_event(
         "payload": payload or {},
     }
     append_jsonl(paths.events_file, event)
+    try:
+        from .ui import notify_ui_server
+
+        notify_ui_server(paths)
+    except ImportError:
+        pass
     return event
 
 
@@ -350,4 +356,3 @@ def claim_task_entry(entry: dict[str, Any], *, agent: str, lease_hours: int, tit
             **summary,
         }
     )
-

@@ -8,15 +8,17 @@ from typing import Any
 from .backlog import (
     BacklogError,
     add_task,
+    build_plan_view,
     build_view_model,
     classify_task_status,
     load_backlog,
     next_runnable_tasks,
+    render_plan_text,
     render_summary_text,
     sync_state_for_backlog,
 )
 from .config import ConfigError, load_profile
-from .scaffold import ScaffoldError, render_project_html, scaffold_project
+from .scaffold import ScaffoldError, bootstrap_project, render_project_html, scaffold_project
 from .store import (
     StoreError,
     append_event,
@@ -33,6 +35,19 @@ from .store import (
     resolve_message,
     save_state,
     send_message,
+)
+from .supervisor import SupervisorError, render_supervisor_loop_output, render_supervisor_output, run_supervisor, run_supervisor_loop
+from .ui import UIError, build_ui_snapshot, serve_ui
+from .worktree import (
+    WorktreeError,
+    cleanup_task_worktree,
+    land_branch,
+    render_cleanup_text,
+    render_land_text,
+    render_preflight_text,
+    render_start_text,
+    start_task_worktree,
+    worktree_preflight,
 )
 
 
@@ -62,6 +77,30 @@ def cmd_init(args: argparse.Namespace) -> int:
         release_gates=args.release_gate,
     )
     print(json.dumps({"project_root": str(profile.paths.project_root), "profile": str(profile.paths.profile_file)}, indent=2))
+    return 0
+
+
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    profile, skill_file = bootstrap_project(
+        Path(args.project_root or "."),
+        project_name=args.project_name or Path(args.project_root or ".").resolve().name,
+        force=args.force,
+        objectives=args.objective,
+        push_objective=args.push_objective,
+        non_negotiables=args.non_negotiable,
+        evidence_requirements=args.evidence_requirement,
+        release_gates=args.release_gate,
+    )
+    print(
+        json.dumps(
+            {
+                "project_root": str(profile.paths.project_root),
+                "profile": str(profile.paths.profile_file),
+                "skill_file": str(skill_file),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -143,6 +182,54 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan(args: argparse.Namespace) -> int:
+    profile, snapshot, state = _load_runtime(Path(args.project_root) if args.project_root else None)
+    view = build_plan_view(profile, snapshot, state, allow_high_risk=args.allow_high_risk)
+    if args.format == "json":
+        print(json.dumps(view, indent=2))
+    else:
+        print(render_plan_text(view), end="")
+    return 0
+
+
+def cmd_supervise_run(args: argparse.Namespace) -> int:
+    profile, snapshot, state = _load_runtime(Path(args.project_root) if args.project_root else None)
+    payload = run_supervisor(
+        profile,
+        snapshot,
+        state,
+        actor=args.actor,
+        task_ids=args.id,
+        count=args.count,
+        allow_high_risk=args.allow_high_risk,
+        force=args.force,
+        workspace_mode=args.workspace_mode,
+        timeout_seconds=args.timeout_seconds,
+    )
+    _emit_render(profile)
+    print(render_supervisor_output(payload, as_json=args.format == "json"), end="")
+    return 0
+
+
+def cmd_supervise_loop(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = run_supervisor_loop(
+        profile,
+        actor=args.actor,
+        count=args.count,
+        allow_high_risk=args.allow_high_risk,
+        force=args.force,
+        workspace_mode=args.workspace_mode,
+        timeout_seconds=args.timeout_seconds or None,
+        poll_interval_seconds=args.poll_interval_seconds,
+        max_cycles=args.max_cycles or None,
+        stop_when_idle=args.stop_when_idle,
+        after_cycle=lambda: _emit_render(profile),
+    )
+    print(render_supervisor_loop_output(payload, as_json=args.format == "json"), end="")
+    return 0
+
+
 def cmd_next(args: argparse.Namespace) -> int:
     profile, snapshot, state = _load_runtime(Path(args.project_root) if args.project_root else None)
     rows = [
@@ -160,6 +247,101 @@ def cmd_next(args: argparse.Namespace) -> int:
     else:
         for row in rows:
             print(f"{row['id']} [{row['risk']}] {row['title']}")
+    return 0
+
+
+def cmd_ui_snapshot(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    print(json.dumps(build_ui_snapshot(profile), indent=2))
+    return 0
+
+
+def cmd_ui_serve(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    serve_ui(
+        profile,
+        host=args.host,
+        port=args.port,
+        open_browser=args.open_browser,
+        announce=lambda payload: print(json.dumps(payload, indent=2), flush=True),
+    )
+    return 0
+
+
+def cmd_worktree_preflight(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = worktree_preflight(profile)
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        print(render_preflight_text(payload), end="")
+    return 0
+
+
+def cmd_worktree_start(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    spec = start_task_worktree(
+        profile,
+        task_id=args.id,
+        branch=args.branch,
+        from_ref=args.from_ref,
+        path=args.path,
+    )
+    append_event(
+        profile.paths,
+        event_type="worktree_start",
+        actor=args.actor,
+        task_id=spec.task_id,
+        payload=spec.to_dict(),
+    )
+    if args.format == "json":
+        print(json.dumps(spec.to_dict(), indent=2))
+    else:
+        print(render_start_text(spec), end="")
+    return 0
+
+
+def cmd_worktree_land(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = land_branch(
+        profile,
+        branch=args.branch,
+        target_branch=args.target_branch,
+        pull=not args.no_pull,
+        cleanup=args.cleanup,
+    )
+    append_event(
+        profile.paths,
+        event_type="worktree_land",
+        actor=args.actor,
+        payload=payload,
+    )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        print(render_land_text(payload), end="")
+    return 0
+
+
+def cmd_worktree_cleanup(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = cleanup_task_worktree(
+        profile,
+        task_id=args.id,
+        path=args.path,
+        branch=args.branch,
+    )
+    append_event(
+        profile.paths,
+        event_type="worktree_cleanup",
+        actor=args.actor,
+        task_id=args.id,
+        payload=payload,
+    )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        print(render_cleanup_text(payload), end="")
     return 0
 
 
@@ -348,7 +530,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Blackdog backlog CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    p_init = subparsers.add_parser("init", help="Initialize a project-local Blackdog backlog")
+    p_bootstrap = subparsers.add_parser("bootstrap", help="Initialize backlog artifacts and generate the project-local Blackdog skill")
+    p_bootstrap.add_argument("--project-root", default=".")
+    p_bootstrap.add_argument("--project-name", default=None)
+    p_bootstrap.add_argument("--force", action="store_true")
+    p_bootstrap.add_argument("--objective", action="append", default=[])
+    p_bootstrap.add_argument("--push-objective", action="append", default=[])
+    p_bootstrap.add_argument("--non-negotiable", action="append", default=[])
+    p_bootstrap.add_argument("--evidence-requirement", action="append", default=[])
+    p_bootstrap.add_argument("--release-gate", action="append", default=[])
+    p_bootstrap.set_defaults(func=cmd_bootstrap)
+
+    p_init = subparsers.add_parser("init", help="Initialize repo-local Blackdog files without generating a project skill")
     p_init.add_argument("--project-root", default=".")
     p_init.add_argument("--project-name", default=None)
     p_init.add_argument("--force", action="store_true")
@@ -395,12 +588,90 @@ def build_parser() -> argparse.ArgumentParser:
     p_summary.add_argument("--format", choices=("text", "json"), default="text")
     p_summary.set_defaults(func=cmd_summary)
 
+    p_plan = subparsers.add_parser("plan", help="Show epics, lanes, and waves from the backlog plan")
+    p_plan.add_argument("--project-root", default=None)
+    p_plan.add_argument("--allow-high-risk", action="store_true")
+    p_plan.add_argument("--format", choices=("text", "json"), default="text")
+    p_plan.set_defaults(func=cmd_plan)
+
     p_next = subparsers.add_parser("next", help="Show next runnable tasks")
     p_next.add_argument("--project-root", default=None)
     p_next.add_argument("--count", type=int, default=4)
     p_next.add_argument("--allow-high-risk", action="store_true")
     p_next.add_argument("--format", choices=("text", "json"), default="text")
     p_next.set_defaults(func=cmd_next)
+
+    p_ui = subparsers.add_parser("ui", help="Live readonly UI for backlog and supervisor monitoring")
+    ui_subparsers = p_ui.add_subparsers(dest="ui_command", required=True)
+    p_ui_snapshot = ui_subparsers.add_parser("snapshot", help="Print the canonical live-UI snapshot contract")
+    p_ui_snapshot.add_argument("--project-root", default=None)
+    p_ui_snapshot.set_defaults(func=cmd_ui_snapshot)
+    p_ui_serve = ui_subparsers.add_parser("serve", help="Serve the live readonly UI with SSE updates")
+    p_ui_serve.add_argument("--project-root", default=None)
+    p_ui_serve.add_argument("--host", default="127.0.0.1")
+    p_ui_serve.add_argument("--port", type=int, default=0)
+    p_ui_serve.add_argument("--open-browser", action="store_true")
+    p_ui_serve.set_defaults(func=cmd_ui_serve)
+
+    p_worktree = subparsers.add_parser("worktree", help="Branch-backed worktree lifecycle for implementation tasks")
+    worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
+    p_worktree_preflight = worktree_subparsers.add_parser("preflight", help="Show current worktree/branch/backing model details")
+    p_worktree_preflight.add_argument("--project-root", default=None)
+    p_worktree_preflight.add_argument("--format", choices=("text", "json"), default="text")
+    p_worktree_preflight.set_defaults(func=cmd_worktree_preflight)
+    p_worktree_start = worktree_subparsers.add_parser("start", help="Create a branch-backed task worktree from the primary worktree")
+    p_worktree_start.add_argument("--project-root", default=None)
+    p_worktree_start.add_argument("--actor", default="blackdog")
+    p_worktree_start.add_argument("--id", required=True)
+    p_worktree_start.add_argument("--branch", default=None)
+    p_worktree_start.add_argument("--from", dest="from_ref", default=None)
+    p_worktree_start.add_argument("--path", default=None)
+    p_worktree_start.add_argument("--format", choices=("text", "json"), default="text")
+    p_worktree_start.set_defaults(func=cmd_worktree_start)
+    p_worktree_land = worktree_subparsers.add_parser("land", help="Fast-forward a task branch into the target branch")
+    p_worktree_land.add_argument("--project-root", default=None)
+    p_worktree_land.add_argument("--actor", default="blackdog")
+    p_worktree_land.add_argument("--branch", default=None)
+    p_worktree_land.add_argument("--into", dest="target_branch", default=None)
+    p_worktree_land.add_argument("--no-pull", action="store_true")
+    p_worktree_land.add_argument("--cleanup", action="store_true")
+    p_worktree_land.add_argument("--format", choices=("text", "json"), default="text")
+    p_worktree_land.set_defaults(func=cmd_worktree_land)
+    p_worktree_cleanup = worktree_subparsers.add_parser("cleanup", help="Remove a landed task worktree and optionally delete its branch")
+    p_worktree_cleanup.add_argument("--project-root", default=None)
+    p_worktree_cleanup.add_argument("--actor", default="blackdog")
+    p_worktree_cleanup.add_argument("--id", default=None)
+    p_worktree_cleanup.add_argument("--path", default=None)
+    p_worktree_cleanup.add_argument("--branch", default=None)
+    p_worktree_cleanup.add_argument("--format", choices=("text", "json"), default="text")
+    p_worktree_cleanup.set_defaults(func=cmd_worktree_cleanup)
+
+    p_supervise = subparsers.add_parser("supervise", help="Launch child agents against runnable backlog tasks")
+    supervise_subparsers = p_supervise.add_subparsers(dest="supervise_command", required=True)
+    p_supervise_run = supervise_subparsers.add_parser("run", help="Run one supervisor pass and wait for child runs")
+    p_supervise_run.add_argument("--project-root", default=None)
+    p_supervise_run.add_argument("--actor", default="supervisor")
+    p_supervise_run.add_argument("--id", action="append", default=[])
+    p_supervise_run.add_argument("--count", type=int, default=0)
+    p_supervise_run.add_argument("--allow-high-risk", action="store_true")
+    p_supervise_run.add_argument("--force", action="store_true")
+    p_supervise_run.add_argument("--workspace-mode", choices=("git-worktree", "current"), default=None)
+    p_supervise_run.add_argument("--timeout-seconds", type=int, default=0)
+    p_supervise_run.add_argument("--format", choices=("text", "json"), default="text")
+    p_supervise_run.set_defaults(func=cmd_supervise_run)
+    p_supervise_loop = supervise_subparsers.add_parser("loop", help="Keep a supervisor session alive across multiple cycles")
+    p_supervise_loop.add_argument("--project-root", default=None)
+    p_supervise_loop.add_argument("--actor", default="supervisor")
+    p_supervise_loop.add_argument("--count", type=int, default=0)
+    p_supervise_loop.add_argument("--allow-high-risk", action="store_true")
+    p_supervise_loop.add_argument("--force", action="store_true")
+    p_supervise_loop.add_argument("--workspace-mode", choices=("git-worktree", "current"), default=None)
+    p_supervise_loop.add_argument("--timeout-seconds", type=int, default=0)
+    p_supervise_loop.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    p_supervise_loop.add_argument("--max-cycles", type=int, default=0)
+    p_supervise_loop.add_argument("--stop-when-idle", action="store_true")
+    p_supervise_loop.add_argument("--format", choices=("text", "json"), default="text")
+    p_supervise_loop.set_defaults(func=cmd_supervise_loop)
 
     p_claim = subparsers.add_parser("claim", help="Claim tasks for an agent")
     p_claim.add_argument("--project-root", default=None)
@@ -505,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (BacklogError, ConfigError, ScaffoldError, StoreError) as exc:
+    except (BacklogError, ConfigError, ScaffoldError, StoreError, SupervisorError, UIError, WorktreeError) as exc:
         parser.error(str(exc))
     return 2
 

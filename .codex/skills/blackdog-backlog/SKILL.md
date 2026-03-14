@@ -10,12 +10,13 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 ## Core Paths
 
 - Profile: `/Users/bullard/Work/Blackdog/blackdog.toml`
-- Backlog: `/Users/bullard/Work/Blackdog/.blackdog/backlog.md`
-- State: `/Users/bullard/Work/Blackdog/.blackdog/backlog-state.json`
-- Events: `/Users/bullard/Work/Blackdog/.blackdog/events.jsonl`
-- Inbox: `/Users/bullard/Work/Blackdog/.blackdog/inbox.jsonl`
-- Results: `/Users/bullard/Work/Blackdog/.blackdog/task-results`
-- HTML view: `/Users/bullard/Work/Blackdog/.blackdog/backlog-index.html`
+- Control root: `/Users/bullard/Work/Blackdog/.git/blackdog`
+- Backlog: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog.md`
+- State: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-state.json`
+- Events: `/Users/bullard/Work/Blackdog/.git/blackdog/events.jsonl`
+- Inbox: `/Users/bullard/Work/Blackdog/.git/blackdog/inbox.jsonl`
+- Results: `/Users/bullard/Work/Blackdog/.git/blackdog/task-results`
+- HTML view: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html`
 
 ## Standard Flow
 

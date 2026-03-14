@@ -3,14 +3,9 @@ name = "Blackdog"
 profile_version = 1
 
 [paths]
-backlog_dir = ".blackdog"
-backlog_file = ".blackdog/backlog.md"
-state_file = ".blackdog/backlog-state.json"
-events_file = ".blackdog/events.jsonl"
-results_dir = ".blackdog/task-results"
-inbox_file = ".blackdog/inbox.jsonl"
-html_file = ".blackdog/backlog-index.html"
+control_dir = "@git-common/blackdog"
 skill_dir = ".codex/skills/blackdog-backlog"
+worktrees_dir = "../.worktrees"
 
 [ids]
 prefix = "BLACK"
@@ -20,6 +15,12 @@ digest_length = 10
 default_claim_lease_hours = 4
 require_claim_for_completion = true
 auto_render_html = true
+
+[supervisor]
+launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
+max_parallel = 2
+task_timeout_seconds = 1200
+workspace_mode = "git-worktree"
 
 [taxonomy]
 buckets = ["core", "cli", "html", "skills", "docs", "testing", "integration"]

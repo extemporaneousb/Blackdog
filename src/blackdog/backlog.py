@@ -552,6 +552,135 @@ def build_view_model(
     }
 
 
+def build_plan_view(
+    profile: Profile,
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    *,
+    allow_high_risk: bool = False,
+) -> dict[str, Any]:
+    task_status: dict[str, tuple[str, str]] = {
+        task.id: classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
+        for task in snapshot.tasks.values()
+    }
+    lanes: list[dict[str, Any]] = []
+    waves: dict[int, dict[str, Any]] = {}
+    for lane in snapshot.plan.get("lanes", []):
+        lane_id = str(lane.get("id") or "")
+        lane_title = str(lane.get("title") or "")
+        wave = int(lane.get("wave", 0))
+        lane_tasks: list[dict[str, Any]] = []
+        status_counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
+        for task_id in [str(item) for item in lane.get("task_ids", [])]:
+            task = snapshot.tasks[task_id]
+            status, detail = task_status[task_id]
+            status_counts[status] += 1
+            lane_tasks.append(
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": status,
+                    "detail": detail,
+                    "epic_title": task.epic_title or "Unplanned",
+                    "priority": task.payload["priority"],
+                    "risk": task.payload["risk"],
+                }
+            )
+        lanes.append(
+            {
+                "id": lane_id,
+                "title": lane_title,
+                "wave": wave,
+                "task_count": len(lane_tasks),
+                "status_counts": status_counts,
+                "tasks": lane_tasks,
+            }
+        )
+        wave_entry = waves.setdefault(
+            wave,
+            {"wave": wave, "lane_count": 0, "task_count": 0, "lane_ids": [], "task_ids": []},
+        )
+        wave_entry["lane_count"] += 1
+        wave_entry["task_count"] += len(lane_tasks)
+        wave_entry["lane_ids"].append(lane_id)
+        wave_entry["task_ids"].extend(task["id"] for task in lane_tasks)
+
+    epics: list[dict[str, Any]] = []
+    for epic in snapshot.plan.get("epics", []):
+        epic_id = str(epic.get("id") or "")
+        epic_title = str(epic.get("title") or "")
+        task_ids = [str(item) for item in epic.get("task_ids", [])]
+        lane_ids = sorted({str(snapshot.tasks[task_id].lane_id or "unplanned") for task_id in task_ids})
+        wave_values = sorted({int(snapshot.tasks[task_id].wave or 0) for task_id in task_ids})
+        status_counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
+        for task_id in task_ids:
+            status, _ = task_status[task_id]
+            status_counts[status] += 1
+        epics.append(
+            {
+                "id": epic_id,
+                "title": epic_title,
+                "task_count": len(task_ids),
+                "lane_count": len(lane_ids),
+                "waves": wave_values,
+                "task_ids": task_ids,
+                "lane_ids": lane_ids,
+                "status_counts": status_counts,
+            }
+        )
+
+    ordered_lanes = sorted(lanes, key=lambda row: (int(row["wave"]), row["title"], row["id"]))
+    ordered_waves = sorted(waves.values(), key=lambda row: int(row["wave"]))
+    return {
+        "project_name": profile.project_name,
+        "counts": {
+            "tasks": len(snapshot.tasks),
+            "epics": len(epics),
+            "lanes": len(ordered_lanes),
+            "waves": len(ordered_waves),
+        },
+        "epics": epics,
+        "lanes": ordered_lanes,
+        "waves": ordered_waves,
+    }
+
+
+def render_plan_text(view: dict[str, Any]) -> str:
+    lines = [
+        f"Project: {view['project_name']}",
+        f"Plan: {view['counts']['epics']} epics | {view['counts']['lanes']} lanes | {view['counts']['waves']} waves | {view['counts']['tasks']} tasks",
+        "",
+        "Waves:",
+    ]
+    if view["waves"]:
+        for wave in view["waves"]:
+            lines.append(
+                f"- Wave {wave['wave']}: {wave['lane_count']} lane(s) | {wave['task_count']} task(s)"
+            )
+    else:
+        lines.append("- No waves defined.")
+
+    lines.extend(["", "Epics:"])
+    if view["epics"]:
+        for epic in view["epics"]:
+            wave_text = ", ".join(str(item) for item in epic["waves"]) or "unplanned"
+            lines.append(
+                f"- {epic['title']} ({epic['id']}): {epic['task_count']} task(s) | {epic['lane_count']} lane(s) | wave(s) {wave_text}"
+            )
+    else:
+        lines.append("- No epics defined.")
+
+    lines.extend(["", "Lanes:"])
+    if view["lanes"]:
+        for lane in view["lanes"]:
+            lines.append(f"- Wave {lane['wave']} | {lane['title']} ({lane['id']}): {lane['task_count']} task(s)")
+            for task in lane["tasks"]:
+                lines.append(f"  - {task['id']} [{task['status']}] {task['title']}")
+    else:
+        lines.append("- No lanes defined.")
+    return "\n".join(lines) + "\n"
+
+
 def render_summary_text(view: dict[str, Any]) -> str:
     lines = [
         f"Project: {view['project_name']}",
@@ -795,14 +924,31 @@ def _replace_header(text: str, key: str, value: str) -> str:
     return replacement + "\n" + text
 
 
+def _apply_runtime_headers(text: str, profile: Profile) -> str:
+    header_values = {
+        "Project": profile.project_name,
+        "Repo root": str(profile.paths.project_root),
+        "Generated": now_iso(),
+        "Target branch": current_branch(profile.paths.project_root),
+        "Target commit": current_commit(profile.paths.project_root),
+        "Profile": str(profile.paths.profile_file),
+        "State file": str(profile.paths.state_file),
+        "Events file": str(profile.paths.events_file),
+        "Inbox file": str(profile.paths.inbox_file),
+        "Results dir": str(profile.paths.results_dir),
+        "HTML file": str(profile.paths.html_file),
+    }
+    updated = text
+    for key, value in header_values.items():
+        updated = _replace_header(updated, key, value)
+    return updated
+
+
 def refresh_backlog_headers(profile: Profile) -> None:
     if not profile.paths.backlog_file.exists():
         return
     text = profile.paths.backlog_file.read_text(encoding="utf-8")
-    updated = text
-    updated = _replace_header(updated, "Generated", now_iso())
-    updated = _replace_header(updated, "Target branch", current_branch(profile.paths.project_root))
-    updated = _replace_header(updated, "Target commit", current_commit(profile.paths.project_root))
+    updated = _apply_runtime_headers(text, profile)
     if updated != text:
         profile.paths.backlog_file.write_text(updated, encoding="utf-8")
 
@@ -910,10 +1056,7 @@ def add_task(
     lane_entry["task_ids"].append(task_id)
     validate_plan_payload(plan, task_ids={*snapshot.tasks.keys(), task_id})
 
-    updated = snapshot.raw_text
-    updated = _replace_header(updated, "Generated", now_iso())
-    updated = _replace_header(updated, "Target branch", current_branch(profile.paths.project_root))
-    updated = _replace_header(updated, "Target commit", current_commit(profile.paths.project_root))
+    updated = _apply_runtime_headers(snapshot.raw_text, profile)
     updated = _replace_plan_block(updated, plan)
     updated = updated.rstrip() + "\n\n" + render_task_section(
         payload,
@@ -998,7 +1141,7 @@ def render_initial_backlog(
         "",
         "## Inventory Map",
         "",
-        "- Use `blackdog` for durable state transitions, `blackdog-skill` for project scaffold and skill generation, and `.blackdog/` for the local backlog artifact set.",
+        "- Use `blackdog bootstrap` to stand up a repo, `blackdog` for durable state transitions, and the configured control root for the local backlog artifact set.",
         "",
         "## Epic Map",
         "",

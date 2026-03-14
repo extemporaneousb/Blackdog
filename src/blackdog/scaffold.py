@@ -18,6 +18,12 @@ class ScaffoldError(RuntimeError):
     pass
 
 
+def _ensure_runtime_dirs(profile: Profile) -> None:
+    profile.paths.backlog_dir.mkdir(parents=True, exist_ok=True)
+    profile.paths.results_dir.mkdir(parents=True, exist_ok=True)
+    profile.paths.supervisor_runs_dir.mkdir(parents=True, exist_ok=True)
+
+
 def scaffold_project(
     project_root: Path,
     *,
@@ -33,8 +39,7 @@ def scaffold_project(
     root.mkdir(parents=True, exist_ok=True)
     write_default_profile(root, project_name, force=force)
     profile = load_profile(root)
-    profile.paths.backlog_dir.mkdir(parents=True, exist_ok=True)
-    profile.paths.results_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_runtime_dirs(profile)
     if profile.paths.backlog_file.exists() and not force:
         raise ScaffoldError(f"Refusing to overwrite {profile.paths.backlog_file}; pass --force to replace it")
     profile.paths.backlog_file.write_text(
@@ -54,6 +59,57 @@ def scaffold_project(
     append_event(profile.paths, event_type="init", actor="blackdog", payload={"project_name": project_name})
     render_project_html(profile)
     return profile
+
+
+def bootstrap_project(
+    project_root: Path,
+    *,
+    project_name: str,
+    force: bool = False,
+    objectives: list[str] | None = None,
+    push_objective: list[str] | None = None,
+    non_negotiables: list[str] | None = None,
+    evidence_requirements: list[str] | None = None,
+    release_gates: list[str] | None = None,
+) -> tuple[Profile, Path]:
+    root = project_root.resolve()
+    profile_file = root / "blackdog.toml"
+    if force or not profile_file.exists():
+        profile = scaffold_project(
+            root,
+            project_name=project_name,
+            force=force,
+            objectives=objectives,
+            push_objective=push_objective,
+            non_negotiables=non_negotiables,
+            evidence_requirements=evidence_requirements,
+            release_gates=release_gates,
+        )
+    else:
+        profile = load_profile(root)
+        _ensure_runtime_dirs(profile)
+        missing = [
+            str(path)
+            for path in (
+                profile.paths.backlog_file,
+                profile.paths.state_file,
+                profile.paths.events_file,
+                profile.paths.inbox_file,
+            )
+            if not path.exists()
+        ]
+        if missing:
+            raise ScaffoldError(
+                "Existing Blackdog profile is missing required backlog artifacts: "
+                + ", ".join(missing)
+                + ". Use --force to rebuild the scaffold."
+            )
+
+    skill_file = profile.paths.skill_dir / "SKILL.md"
+    if force or not skill_file.exists():
+        skill_file = generate_project_skill(profile, force=force)
+    render_project_html(profile)
+    return profile, skill_file
 
 
 def render_project_html(profile: Profile) -> Path:
@@ -114,6 +170,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 5. Record structured output with `blackdog result record ...`.
 6. Complete or release the task through the CLI.
 7. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+8. Use `blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
 
 ## Interaction Model
 
