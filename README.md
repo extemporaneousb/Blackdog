@@ -55,18 +55,20 @@ blackdog ui serve --open-browser
 
 Blackdog should use its own runtime as the default coordination contract in this repository.
 
+In this repo, invoke Blackdog through `./.VE/bin/blackdog` and `./.VE/bin/blackdog-skill` unless the current shell has already activated `.VE`.
+
 For direct slices:
 
-1. Run `blackdog validate`, `blackdog summary`, and `blackdog next`.
-2. If the task will edit repo files, run `blackdog worktree preflight` and then `blackdog worktree start --id TASK`.
-3. Claim the task with `blackdog claim --agent codex --id TASK`.
-4. Make the change inside the task worktree, then record `blackdog result record --id TASK --actor codex ...`.
-5. Finish with `blackdog complete` or `blackdog release`, then land with `blackdog worktree land --branch agent/... --cleanup`.
+1. Run `./.VE/bin/blackdog validate`, `./.VE/bin/blackdog summary`, and `./.VE/bin/blackdog next`.
+2. If the task will edit repo files, run `./.VE/bin/blackdog worktree preflight` and then `./.VE/bin/blackdog worktree start --id TASK`.
+3. Claim the task with `./.VE/bin/blackdog claim --agent codex --id TASK`.
+4. Make the change inside the task worktree, then record `./.VE/bin/blackdog result record --id TASK --actor codex ...`.
+5. Finish with `./.VE/bin/blackdog complete` or `./.VE/bin/blackdog release`, then land with `./.VE/bin/blackdog worktree land --branch agent/... --cleanup`.
 
 For delegated slices:
 
-1. Launch `blackdog ui serve --open-browser` for the live readonly monitor.
-2. Launch `blackdog supervise run --id TASK` for a one-shot pass or `blackdog supervise loop` for ongoing processing.
+1. Launch `./.VE/bin/blackdog ui serve --open-browser` for the live readonly monitor.
+2. Launch `./.VE/bin/blackdog supervise run --id TASK` for a one-shot pass or `./.VE/bin/blackdog supervise loop` for ongoing processing.
 3. Keep the coordinating agent in the primary worktree. Blackdog gives each child task agent its own branch-backed task worktree and lands successful commits through the primary worktree.
 4. Use inbox `pause` or `stop` messages as boundary controls between loop cycles. They do not interrupt a child task that is already running.
 5. Inspect the resolved control-root artifacts from `blackdog.toml` as the run proceeds.
@@ -76,7 +78,7 @@ Mutable runtime state now lives under one shared local control root across workt
 
 Current dogfood evidence lives under the resolved control root in `supervisor-runs/` and `task-results/`.
 
-This repo uses a top-level `.VE/` virtual environment for local Blackdog development. Recreate it with `python3 -m venv .VE` and install Blackdog into it with `./.VE/bin/python -m pip install -e .`.
+This repo uses a top-level `.VE/` virtual environment for local Blackdog development. Recreate it with `python3 -m venv .VE` and install Blackdog into it with `./.VE/bin/python -m pip install -e .`. Treat `./.VE/bin/blackdog` as the canonical CLI entrypoint in this repo even if another `blackdog` is on `PATH`.
 
 ## Design goals
 

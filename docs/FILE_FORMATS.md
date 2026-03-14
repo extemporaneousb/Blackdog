@@ -63,7 +63,7 @@ Current supervisor launcher contract:
 - `control_dir` accepts the special prefix `@git-common`, which resolves against `git rev-parse --git-common-dir`.
 - The default `worktrees_dir` value is `../.worktrees`, which places branch-backed task worktrees beside the primary checkout by default.
 - With `workspace_mode = "git-worktree"`, child workspaces are branch-backed task worktrees created from the primary worktree branch.
-- Blackdog refuses to launch branch-backed child runs when the primary worktree has uncommitted implementation changes.
+- Blackdog may auto-stash uncommitted primary-worktree changes when branch landing remains blocked after retry/warning handling so the supervisor loop can keep moving.
 - Successful branch-backed child runs are landed through the primary worktree with fast-forward semantics, and the supervisor completes the task after a successful land.
 
 ## `<control_dir>/backlog.md`
@@ -173,6 +173,35 @@ Current keys:
 - `cycles`
 - `completed_at`
 - `final_status`
+
+## `<control_dir>/supervisor-runs/ui-server.json`
+
+State snapshot written by `blackdog ui serve`.
+
+Current keys:
+
+- `url`
+- `host`
+- `port`
+- `snapshot_url`
+- `stream_url`
+- `project_name`
+- `project_root`
+- `control_dir`
+- `state_file`
+- `started_at`
+- `pid`
+
+## `blackdog ui snapshot`
+
+Canonical readonly UI payload.
+
+Current top-level identity keys:
+
+- `project_name`
+- `project_root`
+- `control_dir`
+- `profile_file`
 
 ## `blackdog worktree start --format json`
 

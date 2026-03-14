@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import tomllib
 
@@ -159,33 +158,6 @@ def _default_control_paths(control_dir: Path) -> dict[str, Path]:
     }
 
 
-def _legacy_runtime_paths(project_root: Path) -> dict[str, Path]:
-    legacy_root = (project_root / ".blackdog").resolve()
-    return {
-        "control_dir": legacy_root,
-        "backlog_dir": legacy_root,
-        "backlog_file": legacy_root / "backlog.md",
-        "state_file": legacy_root / "backlog-state.json",
-        "events_file": legacy_root / "events.jsonl",
-        "results_dir": legacy_root / "task-results",
-        "inbox_file": legacy_root / "inbox.jsonl",
-        "html_file": legacy_root / "backlog-index.html",
-        "supervisor_runs_dir": legacy_root / "supervisor-runs",
-    }
-
-
-def _merge_legacy_path(source: Path, destination: Path) -> None:
-    if not source.exists():
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.is_dir():
-        shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True)
-        return
-    if destination.exists():
-        return
-    shutil.copy2(source, destination, follow_symlinks=False)
-
-
 def _prune_stale_git_worktrees(project_root: Path) -> None:
     _run_git(project_root, "worktree", "prune")
 
@@ -194,21 +166,6 @@ def _ensure_control_root_layout(paths: ProjectPaths) -> None:
     paths.control_dir.mkdir(parents=True, exist_ok=True)
     paths.results_dir.mkdir(parents=True, exist_ok=True)
     paths.supervisor_runs_dir.mkdir(parents=True, exist_ok=True)
-    legacy = _legacy_runtime_paths(paths.project_root)
-    if paths.control_dir == legacy["control_dir"]:
-        return
-    for key in (
-        "backlog_file",
-        "state_file",
-        "events_file",
-        "inbox_file",
-        "html_file",
-        "results_dir",
-        "supervisor_runs_dir",
-    ):
-        _merge_legacy_path(legacy[key], getattr(paths, key))
-    if legacy["control_dir"].exists():
-        shutil.rmtree(legacy["control_dir"])
     _prune_stale_git_worktrees(paths.project_root)
 
 
@@ -243,7 +200,8 @@ def _paths_from_raw(project_root: Path, raw_paths: dict[str, str]) -> ProjectPat
         supervisor_runs_dir=(
             _resolve_path_value(project_root, str(raw_paths["supervisor_runs_dir"]))
             if "supervisor_runs_dir" in raw_paths
-            else control_defaults.get("supervisor_runs_dir", _resolve_path_value(project_root, ".blackdog/supervisor-runs"))
+            else control_defaults.get("supervisor_runs_dir")
+            or (_resolve_path_value(project_root, str(raw_paths["backlog_dir"])) / "supervisor-runs")
         ),
     )
 

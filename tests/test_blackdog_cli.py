@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
 import signal
 import subprocess
 import sys
@@ -18,10 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
+from blackdog.backlog import load_backlog
 from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
-from blackdog.supervisor import _resolved_launch_command
+from blackdog.supervisor import _build_child_prompt, _resolved_launch_command
 
 
 def cli_env() -> dict[str, str]:
@@ -100,6 +101,49 @@ def read_sse_event(stream) -> dict[str, object]:
             data_lines.append(line[6:])
 
 
+def task_ids_by_title(root: Path) -> dict[str, str]:
+    profile = load_profile(root)
+    snapshot = load_backlog(profile.paths, profile)
+    return {task.title: task.id for task in snapshot.tasks.values()}
+
+
+def install_exec_launcher(root: Path, script_body: str, *, commit_message: str) -> Path:
+    launcher_script = root / "codex"
+    launcher_script.write_text(script_body.strip() + "\n", encoding="utf-8")
+    launcher_script.chmod(0o755)
+    profile_text = (root / "blackdog.toml").read_text(encoding="utf-8").replace(
+        'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
+        f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
+    )
+    (root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", commit_message],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return launcher_script
+
+
+def remove_task_from_backlog(root: Path, task_id: str) -> None:
+    profile = load_profile(root)
+    snapshot = load_backlog(profile.paths, profile)
+    plan = json.loads(json.dumps(snapshot.plan))
+    for collection_name in ("epics", "lanes"):
+        for entry in plan.get(collection_name, []):
+            entry["task_ids"] = [str(value) for value in entry.get("task_ids", []) if str(value) != task_id]
+
+    plan_block = "```json backlog-plan\n" + json.dumps(plan, indent=2, sort_keys=False) + "\n```"
+    updated = re.sub(r"```json backlog-plan\n.*?\n```", plan_block.rstrip(), snapshot.raw_text, count=1, flags=re.S)
+    task_section_re = re.compile(
+        rf"^###\s+{re.escape(task_id)}\s+-\s+.+?(?=^###\s+[A-Z0-9]+-[0-9a-f]+\s+-|\Z)",
+        re.S | re.M,
+    )
+    updated = task_section_re.sub("", updated, count=1).rstrip() + "\n"
+    profile.paths.backlog_file.write_text(updated, encoding="utf-8")
+
+
 class BlackdogCliTests(unittest.TestCase):
     def runtime_paths(self):
         return load_profile(self.root).paths
@@ -110,7 +154,7 @@ class BlackdogCliTests(unittest.TestCase):
         subprocess.run(["git", "init", "-b", "main", str(self.root)], check=True, capture_output=True, text=True)
         subprocess.run(["git", "-C", str(self.root), "config", "user.email", "blackdog@example.com"], check=True, capture_output=True, text=True)
         subprocess.run(["git", "-C", str(self.root), "config", "user.name", "Blackdog Test"], check=True, capture_output=True, text=True)
-        (self.root / ".gitignore").write_text(".blackdog/worktrees/\n.blackdog/supervisor-runs/\n", encoding="utf-8")
+        (self.root / ".gitignore").write_text("", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.root), "add", ".gitignore"], check=True, capture_output=True, text=True)
         subprocess.run(
             ["git", "-C", str(self.root), "commit", "-m", "Initial test commit"],
@@ -224,49 +268,20 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(command[0], str(desktop_launcher))
         self.assertEqual(command[1:], ["exec", "--dangerously-bypass-approvals-and-sandbox"])
 
-    def test_load_profile_migrates_legacy_runtime_into_git_control_root(self) -> None:
-        legacy_dir = self.root / ".blackdog"
-        (legacy_dir / "task-results" / "TASK-1").mkdir(parents=True)
-        (legacy_dir / "supervisor-runs" / "run-1").mkdir(parents=True)
-        (legacy_dir / "backlog.md").write_text("# Legacy backlog\n", encoding="utf-8")
-        (legacy_dir / "backlog-state.json").write_text('{"schema_version": 1, "approval_tasks": {}, "task_claims": {}}\n', encoding="utf-8")
-        (legacy_dir / "events.jsonl").write_text('{"event_id":"e1","type":"init"}\n', encoding="utf-8")
-        (legacy_dir / "inbox.jsonl").write_text("", encoding="utf-8")
-        (legacy_dir / "backlog-index.html").write_text("<html></html>\n", encoding="utf-8")
-        (legacy_dir / "task-results" / "TASK-1" / "result.json").write_text('{"task_id":"TASK-1"}\n', encoding="utf-8")
-        (legacy_dir / "supervisor-runs" / "run-1" / "status.json").write_text('{"loop_id":"run-1"}\n', encoding="utf-8")
-        legacy_worktree = legacy_dir / "worktrees" / "legacy-run"
-        legacy_worktree.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "worktree", "add", "--detach", str(legacy_worktree)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        shutil.rmtree(legacy_worktree)
+    def test_load_profile_uses_git_control_root(self) -> None:
         (self.root / "blackdog.toml").write_text(render_default_profile("Demo"), encoding="utf-8")
 
         paths = load_profile(self.root).paths
-        worktree_list = subprocess.run(
-            ["git", "-C", str(self.root), "worktree", "list", "--porcelain"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
 
         self.assertEqual(paths.control_dir, (self.root / ".git/blackdog").resolve())
-        self.assertEqual(paths.backlog_file.read_text(encoding="utf-8"), "# Legacy backlog\n")
-        self.assertTrue((paths.results_dir / "TASK-1" / "result.json").exists())
-        self.assertTrue((paths.supervisor_runs_dir / "run-1" / "status.json").exists())
-        self.assertFalse(legacy_dir.exists())
-        self.assertNotIn(str(legacy_worktree), worktree_list)
+        self.assertEqual(paths.supervisor_runs_dir, (self.root / ".git/blackdog/supervisor-runs").resolve())
 
     def test_render_refreshes_backlog_headers_to_control_root_paths(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
         backlog_text = paths.backlog_file.read_text(encoding="utf-8").replace(
             str(paths.state_file),
-            str(self.root / ".blackdog/backlog-state.json"),
+            "/tmp/stale/backlog-state.json",
         )
         paths.backlog_file.write_text(backlog_text, encoding="utf-8")
 
@@ -420,6 +435,12 @@ class BlackdogCliTests(unittest.TestCase):
             '"make test"',
         )
         (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+        ve_bin = self.root / ".VE" / "bin"
+        ve_bin.mkdir(parents=True)
+        for name in ("blackdog", "blackdog-skill"):
+            script = ve_bin / name
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o755)
         skill_file = self.root / ".codex/skills/blackdog/SKILL.md"
         skill_file.write_text("stale skill text\n", encoding="utf-8")
 
@@ -445,9 +466,11 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(Path(payload["skill_file"]).resolve(), skill_file.resolve())
         refreshed_text = skill_file.read_text(encoding="utf-8")
         self.assertIn("Use the project-local Blackdog backlog contract", refreshed_text)
+        self.assertIn(str((ve_bin / "blackdog").resolve()), refreshed_text)
+        self.assertIn(str((ve_bin / "blackdog-skill").resolve()), refreshed_text)
         self.assertIn("Control root:", refreshed_text)
         self.assertIn("`make test`", refreshed_text)
-        self.assertIn("blackdog-skill refresh backlog", refreshed_text)
+        self.assertIn("refresh backlog", refreshed_text)
 
     def test_plan_summary_reports_epics_lanes_and_waves(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -844,6 +867,8 @@ class BlackdogCliTests(unittest.TestCase):
 
         task_ids = {task["title"]: task["id"] for task in snapshot["graph"]["tasks"]}
         self.assertEqual(snapshot["schema_version"], 1)
+        self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
+        self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
         self.assertEqual(snapshot["graph"]["edges"], [{"from": task_ids["UI slice one"], "to": task_ids["UI slice two"]}])
         self.assertEqual(snapshot["supervisor"]["loops"][0]["loop_id"], "abcd1234")
         self.assertEqual(snapshot["links"]["backlog"], "/artifacts/backlog.md")
@@ -871,6 +896,8 @@ class BlackdogCliTests(unittest.TestCase):
         try:
             state_file = wait_for_file(self.runtime_paths().supervisor_runs_dir / "ui-server.json")
             server_state = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertEqual(Path(server_state["project_root"]).resolve(), self.root.resolve())
+            self.assertEqual(Path(server_state["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
             stream = urllib.request.urlopen(server_state["stream_url"], timeout=10)
             try:
                 initial_event = read_sse_event(stream)
@@ -916,10 +943,55 @@ class BlackdogCliTests(unittest.TestCase):
                 process.stderr.close()
             self.assertFalse((self.runtime_paths().supervisor_runs_dir / "ui-server.json").exists())
 
+    def test_build_child_prompt_prefers_repo_local_ve_blackdog(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Prompt slice",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need one task to inspect the child prompt.",
+            "--evidence",
+            "The prompt should use the repo-local CLI when .VE exists.",
+            "--safe-first-slice",
+            "Generate a prompt for one runnable task.",
+            "--path",
+            "src/blackdog/supervisor.py",
+            "--epic-title",
+            "Prompting",
+            "--lane-title",
+            "CLI path",
+            "--wave",
+            "0",
+        )
+        ve_bin = self.root / ".VE" / "bin"
+        ve_bin.mkdir(parents=True)
+        blackdog_script = ve_bin / "blackdog"
+        blackdog_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        blackdog_script.chmod(0o755)
+
+        profile = load_profile(self.root)
+        snapshot = load_backlog(profile.paths, profile)
+        task = next(iter(snapshot.tasks.values()))
+        prompt = _build_child_prompt(
+            profile,
+            task,
+            child_agent="supervisor/child-01",
+            workspace_mode="current",
+            workspace=self.root,
+        )
+
+        self.assertIn(str(blackdog_script.resolve()), prompt)
+        self.assertNotIn("PYTHONPATH=src python3 -m blackdog.cli", prompt)
+
     def test_supervise_run_launches_child_command_in_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        launcher_script = self.root / "codex"
-        launcher_script.write_text(
+        launcher_script = install_exec_launcher(
+            self.root,
             """
 #!/usr/bin/env python3
 from __future__ import annotations
@@ -976,11 +1048,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-""".strip()
-            + "\n",
-            encoding="utf-8",
+""",
+            commit_message="Checkpoint launcher for supervisor worktree test",
         )
-        launcher_script.chmod(0o755)
         run_cli(
             "add",
             "--project-root",
@@ -1003,19 +1073,6 @@ if __name__ == "__main__":
             "Launch lane",
             "--wave",
             "0",
-        )
-        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8")
-        profile_text = profile_text.replace(
-            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-            f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-        )
-        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint supervisor launcher for landing test"],
-            check=True,
-            capture_output=True,
-            text=True,
         )
 
         task_id = json.loads(
@@ -1103,16 +1160,18 @@ if __name__ == "__main__":
         )
         self.assertEqual(len(resolved_messages), 1)
 
-    def test_supervise_run_rejects_dirty_primary_worktree_for_branch_backed_runs(self) -> None:
+    def test_supervise_run_lands_through_dirty_primary_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        launcher_script = self.root / "codex"
-        launcher_script.write_text(
+        install_exec_launcher(
+            self.root,
             """
 #!/usr/bin/env python3
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 
 def main() -> int:
@@ -1123,17 +1182,43 @@ def main() -> int:
     if not args or args[0] != "exec":
         print("expected exec launcher", file=sys.stderr)
         return 2
-    print("child should not run when primary worktree is dirty", file=sys.stderr)
-    return 9
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    Path("dirty-landed.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "dirty-landed.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Land {task_id} from dirty primary child"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"child completed {task_id}",
+            "--validation",
+            "fake-dirty-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-""".strip()
-            + "\n",
-            encoding="utf-8",
+""",
+            commit_message="Checkpoint dirty primary launcher for supervisor autostash test",
         )
-        launcher_script.chmod(0o755)
 
         run_cli(
             "add",
@@ -1162,12 +1247,6 @@ if __name__ == "__main__":
             "--wave",
             "0",
         )
-        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8")
-        profile_text = profile_text.replace(
-            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-            f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-        )
-        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
         (self.root / "dirty.txt").write_text("dirty primary worktree\n", encoding="utf-8")
 
         task_id = json.loads(
@@ -1203,9 +1282,41 @@ if __name__ == "__main__":
             ).stdout
         )
 
-        self.assertIsNone(payload["children"][0]["exit_code"])
-        self.assertIn("Primary worktree has uncommitted implementation changes", payload["children"][0]["launch_error"])
-        self.assertIsNone(payload["children"][0]["land_result"])
+        self.assertEqual(payload["children"][0]["exit_code"], 0)
+        self.assertIsNone(payload["children"][0]["launch_error"])
+        self.assertIsNotNone(payload["children"][0]["land_result"])
+        self.assertIsNotNone(payload["children"][0]["land_result"]["auto_stash"])
+        self.assertTrue(payload["children"][0]["land_result"]["auto_stash"]["stash_ref"])
+        self.assertFalse((self.root / "dirty.txt").exists())
+        self.assertEqual((self.root / "dirty-landed.txt").read_text(encoding="utf-8"), task_id + "\n")
+        stash_list = subprocess.run(
+            ["git", "-C", str(self.root), "stash", "list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("blackdog-supervisor-land-", stash_list)
+        open_messages = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "inbox",
+                    "list",
+                    "--project-root",
+                    str(self.root),
+                    "--recipient",
+                    "supervisor",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertTrue(any("Please clean up or land your work; Blackdog will retry before stashing." in row["body"] for row in open_messages))
 
     def test_supervise_loop_runs_multiple_cycles(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1741,3 +1852,320 @@ if __name__ == "__main__":
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
         self.assertEqual(done_count, 1)
+
+    def test_supervise_loop_picks_up_task_added_while_current_task_runs(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Current running task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove the loop rereads backlog state after a running task finishes.",
+            "--evidence",
+            "A downstream task added during the active child run should be claimed on the next cycle.",
+            "--safe-first-slice",
+            "Hold one child run open, add a downstream task, then release the child.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Dynamic lane",
+            "--wave",
+            "0",
+        )
+        current_task_id = task_ids_by_title(self.root)["Current running task"]
+        (self.root / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    started_file = project_root / f"started-{task_id}.txt"
+    gate_file = project_root / f"gate-{task_id}.txt"
+    release_file = project_root / f"release-{task_id}.txt"
+    started_file.write_text("started\\n", encoding="utf-8")
+    if gate_file.exists():
+        deadline = time.time() + 10
+        while time.time() < deadline and not release_file.exists():
+            time.sleep(0.05)
+        if not release_file.exists():
+            print(f"timed out waiting for release of {task_id}", file=sys.stderr)
+            return 3
+    file_name = f"dynamic-{task_id}.txt"
+    Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", file_name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after dynamic backlog update"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"completed {task_id} after dynamic backlog update",
+            "--validation",
+            "fake-dynamic-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint gated launcher for dynamic add test",
+        )
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "loop",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--count",
+                "1",
+                "--poll-interval-seconds",
+                "0",
+                "--max-cycles",
+                "2",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            wait_for_file(self.root / f"started-{current_task_id}.txt", timeout=10)
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                "Task added during active run",
+                "--bucket",
+                "core",
+                "--why",
+                "Need to prove the loop does not stop after the current child finishes.",
+                "--evidence",
+                "A downstream task added during execution should be launched on the next cycle.",
+                "--safe-first-slice",
+                "Append one task to the current lane while the first child is still running.",
+                "--path",
+                "README.md",
+                "--epic-title",
+                "Supervisor",
+                "--lane-title",
+                "Dynamic lane",
+                "--wave",
+                "0",
+            )
+            downstream_task_id = task_ids_by_title(self.root)["Task added during active run"]
+            (self.root / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+
+        payload = json.loads(stdout)
+        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "ran"])
+        self.assertEqual(payload["cycles"][0]["task_ids"], [current_task_id])
+        self.assertEqual(payload["cycles"][1]["task_ids"], [downstream_task_id])
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][current_task_id]["status"], "done")
+        self.assertEqual(state["task_claims"][downstream_task_id]["status"], "done")
+
+    def test_supervise_loop_skips_removed_downstream_task_and_runs_next_available(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        for title in ("Current running task", "Removed downstream task", "Remaining downstream task"):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                "Need to prove the loop rereads backlog state after downstream removal.",
+                "--evidence",
+                "A removed task should disappear from the next runnable selection.",
+                "--safe-first-slice",
+                "Hold one child run open, remove a downstream task, then release the child.",
+                "--path",
+                "README.md",
+                "--epic-title",
+                "Supervisor",
+                "--lane-title",
+                "Dynamic lane",
+                "--wave",
+                "0",
+            )
+        ids = task_ids_by_title(self.root)
+        current_task_id = ids["Current running task"]
+        removed_task_id = ids["Removed downstream task"]
+        remaining_task_id = ids["Remaining downstream task"]
+        (self.root / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    started_file = project_root / f"started-{task_id}.txt"
+    gate_file = project_root / f"gate-{task_id}.txt"
+    release_file = project_root / f"release-{task_id}.txt"
+    started_file.write_text("started\\n", encoding="utf-8")
+    if gate_file.exists():
+        deadline = time.time() + 10
+        while time.time() < deadline and not release_file.exists():
+            time.sleep(0.05)
+        if not release_file.exists():
+            print(f"timed out waiting for release of {task_id}", file=sys.stderr)
+            return 3
+    file_name = f"dynamic-{task_id}.txt"
+    Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", file_name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after dynamic backlog update"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"completed {task_id} after dynamic backlog update",
+            "--validation",
+            "fake-dynamic-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint gated launcher for dynamic remove test",
+        )
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "loop",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--count",
+                "1",
+                "--poll-interval-seconds",
+                "0",
+                "--max-cycles",
+                "2",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            wait_for_file(self.root / f"started-{current_task_id}.txt", timeout=10)
+            remove_task_from_backlog(self.root, removed_task_id)
+            self.assertNotIn("Removed downstream task", task_ids_by_title(self.root))
+            (self.root / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+
+        payload = json.loads(stdout)
+        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "ran"])
+        self.assertEqual(payload["cycles"][0]["task_ids"], [current_task_id])
+        self.assertEqual(payload["cycles"][1]["task_ids"], [remaining_task_id])
+        executed_task_ids = [task_id for cycle in payload["cycles"] for task_id in cycle.get("task_ids", [])]
+        self.assertNotIn(removed_task_id, executed_task_ids)
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][current_task_id]["status"], "done")
+        self.assertEqual(state["task_claims"][remaining_task_id]["status"], "done")
+        self.assertNotIn(removed_task_id, state["task_claims"])

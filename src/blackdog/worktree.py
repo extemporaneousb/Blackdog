@@ -14,21 +14,6 @@ class WorktreeError(RuntimeError):
     pass
 
 
-IGNORED_RUNTIME_PATHS = frozenset(
-    {
-        ".blackdog/backlog-state.json",
-        ".blackdog/events.jsonl",
-        ".blackdog/inbox.jsonl",
-        ".blackdog/backlog-index.html",
-    }
-)
-IGNORED_RUNTIME_PREFIXES = (
-    ".blackdog/task-results/",
-    ".blackdog/supervisor-runs/",
-    ".blackdog/worktrees/",
-)
-
-
 @dataclass(frozen=True)
 class WorktreeSpec:
     task_id: str
@@ -119,30 +104,58 @@ def _find_worktree_for_branch(project_root: Path, branch_ref: str) -> Path | Non
     return None
 
 
-def _status_dirty(repo_root: Path, *, ignore_runtime: bool = False) -> bool:
+def _status_entries(repo_root: Path) -> list[list[str]]:
     completed = _run_git_no_check(repo_root, "status", "--porcelain")
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
         raise WorktreeError(f"git status --porcelain failed: {detail}")
-    raw = completed.stdout
-    if not raw:
-        return False
-    if not ignore_runtime:
-        return True
-    for line in raw.splitlines():
+    rows: list[list[str]] = []
+    for line in (completed.stdout or "").splitlines():
         path_text = line[3:].strip()
-        candidates = [item.strip() for item in path_text.split(" -> ")]
-        runtime_only = True
+        rows.append([item.strip() for item in path_text.split(" -> ") if item.strip()])
+    return rows
+
+
+def _runtime_ignore_prefixes(profile: Profile) -> tuple[str, ...]:
+    repo_root = _repo_root(profile.paths.project_root)
+    control_dir = profile.paths.control_dir.resolve()
+    if not _is_within(repo_root, control_dir):
+        return ()
+    relative = control_dir.relative_to(repo_root).as_posix().rstrip("/")
+    return (f"{relative}/",)
+
+
+def dirty_paths(
+    repo_root: Path,
+    *,
+    ignore_paths: frozenset[str] = frozenset(),
+    ignore_prefixes: tuple[str, ...] = (),
+) -> list[str]:
+    rows = _status_entries(repo_root)
+    if not rows:
+        return []
+    dirty: list[str] = []
+    for candidates in rows:
+        matched = False
         for candidate in candidates:
-            if candidate in IGNORED_RUNTIME_PATHS:
+            if candidate in ignore_paths:
                 continue
-            if any(candidate.startswith(prefix) for prefix in IGNORED_RUNTIME_PREFIXES):
+            if any(candidate.startswith(prefix) for prefix in ignore_prefixes):
                 continue
-            runtime_only = False
-            break
-        if not runtime_only:
-            return True
-    return False
+            dirty.append(candidate)
+            matched = True
+        if matched:
+            continue
+    return sorted(dict.fromkeys(dirty))
+
+
+def _status_dirty(
+    repo_root: Path,
+    *,
+    ignore_paths: frozenset[str] = frozenset(),
+    ignore_prefixes: tuple[str, ...] = (),
+) -> bool:
+    return bool(dirty_paths(repo_root, ignore_paths=ignore_paths, ignore_prefixes=ignore_prefixes))
 
 
 def _current_branch(repo_root: Path) -> str:
@@ -194,6 +207,7 @@ def _resolve_from_ref(primary_root: Path, from_ref: str | None, *, default_branc
 def worktree_preflight(profile: Profile) -> dict[str, Any]:
     current_root = _repo_root(profile.paths.project_root)
     primary_root = find_primary_worktree(profile.paths.project_root)
+    runtime_ignore_prefixes = _runtime_ignore_prefixes(profile)
     current_branch = _run_git(current_root, "rev-parse", "--abbrev-ref", "HEAD")
     primary_branch = _run_git(primary_root, "rev-parse", "--abbrev-ref", "HEAD")
     configured_worktrees_dir = profile.paths.worktrees_dir.resolve()
@@ -216,7 +230,10 @@ def worktree_preflight(profile: Profile) -> dict[str, Any]:
         "primary_worktree": str(primary_root),
         "primary_branch": primary_branch,
         "dirty": _status_dirty(profile.paths.project_root.resolve()),
-        "implementation_dirty": _status_dirty(profile.paths.project_root.resolve(), ignore_runtime=True),
+        "implementation_dirty": _status_dirty(
+            profile.paths.project_root.resolve(),
+            ignore_prefixes=runtime_ignore_prefixes,
+        ),
         "worktree_model": "branch-backed",
         "worktrees_dir": str(configured_worktrees_dir),
         "worktrees_dir_inside_repo": _is_within(primary_root, configured_worktrees_dir),
@@ -226,7 +243,14 @@ def worktree_preflight(profile: Profile) -> dict[str, Any]:
 
 def primary_worktree_is_dirty(profile: Profile, *, ignore_runtime: bool = True) -> bool:
     primary_root = find_primary_worktree(profile.paths.project_root)
-    return _status_dirty(primary_root, ignore_runtime=ignore_runtime)
+    ignore_prefixes = _runtime_ignore_prefixes(profile) if ignore_runtime else ()
+    return _status_dirty(primary_root, ignore_prefixes=ignore_prefixes)
+
+
+def primary_worktree_dirty_paths(profile: Profile, *, ignore_runtime: bool = True) -> list[str]:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    ignore_prefixes = _runtime_ignore_prefixes(profile) if ignore_runtime else ()
+    return dirty_paths(primary_root, ignore_prefixes=ignore_prefixes)
 
 
 def start_task_worktree(
@@ -293,50 +317,130 @@ def land_branch(
         target_worktree.parent.mkdir(parents=True, exist_ok=True)
         _run_git(primary_root, "worktree", "add", str(target_worktree), resolved_target)
         created_target = True
+    try:
+        if _status_dirty(target_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile)):
+            raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
+        if pull:
+            upstream = _run_git_no_check(target_worktree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+            if upstream.returncode == 0:
+                _run_git(target_worktree, "pull", "--ff-only")
 
-    if _status_dirty(target_worktree, ignore_runtime=True):
-        raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
-    if pull:
-        upstream = _run_git_no_check(target_worktree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-        if upstream.returncode == 0:
-            _run_git(target_worktree, "pull", "--ff-only")
+        head_commit = _run_git(target_worktree, "rev-parse", "HEAD")
+        ancestor = _run_git_no_check(target_worktree, "merge-base", "--is-ancestor", head_commit, resolved_branch)
+        if ancestor.returncode != 0:
+            raise WorktreeError(
+                f"cannot land: {resolved_branch} is not based on the current {resolved_target}; rebase it first"
+            )
+        landed_commit = _run_git(target_worktree, "rev-parse", resolved_branch)
+        _run_git(target_worktree, "merge", "--ff-only", resolved_branch)
 
-    head_commit = _run_git(target_worktree, "rev-parse", "HEAD")
-    ancestor = _run_git_no_check(target_worktree, "merge-base", "--is-ancestor", head_commit, resolved_branch)
-    if ancestor.returncode != 0:
-        raise WorktreeError(
-            f"cannot land: {resolved_branch} is not based on the current {resolved_target}; rebase it first"
-        )
-    landed_commit = _run_git(target_worktree, "rev-parse", resolved_branch)
-    _run_git(target_worktree, "merge", "--ff-only", resolved_branch)
+        cleaned_worktree: str | None = None
+        deleted_branch = False
+        branch_worktree = _find_worktree_for_branch(primary_root, f"refs/heads/{resolved_branch}")
+        if cleanup and branch_worktree is not None and branch_worktree != target_worktree:
+            if _status_dirty(branch_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile)):
+                raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {branch_worktree}")
+            _run_git(primary_root, "worktree", "remove", str(branch_worktree))
+            cleaned_worktree = str(branch_worktree)
+            _run_git(target_worktree, "branch", "-d", resolved_branch)
+            deleted_branch = True
 
-    cleaned_worktree: str | None = None
-    deleted_branch = False
-    branch_worktree = _find_worktree_for_branch(primary_root, f"refs/heads/{resolved_branch}")
-    if cleanup and branch_worktree is not None and branch_worktree != target_worktree:
-        if _status_dirty(branch_worktree, ignore_runtime=True):
-            raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {branch_worktree}")
-        _run_git(primary_root, "worktree", "remove", str(branch_worktree))
-        cleaned_worktree = str(branch_worktree)
-        _run_git(target_worktree, "branch", "-d", resolved_branch)
-        deleted_branch = True
+        removed_target = False
+        if created_target:
+            _run_git(primary_root, "worktree", "remove", str(target_worktree))
+            removed_target = True
 
-    removed_target = False
-    if created_target:
-        _run_git(primary_root, "worktree", "remove", str(target_worktree))
-        removed_target = True
+        return {
+            "branch": resolved_branch,
+            "target_branch": resolved_target,
+            "primary_worktree": str(primary_root),
+            "target_worktree": str(target_worktree),
+            "landed_commit": landed_commit,
+            "cleanup": cleanup,
+            "cleaned_worktree": cleaned_worktree,
+            "deleted_branch": deleted_branch,
+            "removed_temporary_target": removed_target,
+        }
+    except Exception:
+        if created_target and target_worktree.exists():
+            _run_git_no_check(primary_root, "worktree", "remove", "--force", str(target_worktree))
+        raise
 
-    return {
-        "branch": resolved_branch,
-        "target_branch": resolved_target,
-        "primary_worktree": str(primary_root),
-        "target_worktree": str(target_worktree),
-        "landed_commit": landed_commit,
-        "cleanup": cleanup,
-        "cleaned_worktree": cleaned_worktree,
-        "deleted_branch": deleted_branch,
-        "removed_temporary_target": removed_target,
-    }
+
+def stash_worktree_changes(repo_root: Path, *, message: str) -> str | None:
+    completed = _run_git_no_check(repo_root, "stash", "push", "--include-untracked", "--message", message)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise WorktreeError(f"git stash push failed: {detail}")
+    output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
+    if "No local changes to save" in output:
+        return None
+    listing = _run_git(repo_root, "stash", "list", "--format=%gd %s")
+    for line in listing.splitlines():
+        ref, _, subject = line.partition(" ")
+        if message in subject:
+            return ref
+    raise WorktreeError(f"unable to locate stash created for message: {message}")
+
+
+def branch_changed_paths(profile: Profile, *, branch: str, target_branch: str | None = None) -> list[str]:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    resolved_target = target_branch or _current_branch(primary_root)
+    completed = _run_git_no_check(primary_root, "diff", "--name-only", f"{resolved_target}..{branch}")
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise WorktreeError(f"git diff --name-only {resolved_target}..{branch} failed: {detail}")
+    return sorted({line.strip() for line in completed.stdout.splitlines() if line.strip()})
+
+
+def rebase_branch_onto_target(
+    profile: Profile,
+    *,
+    branch: str,
+    target_branch: str | None = None,
+    pull: bool = True,
+) -> dict[str, Any]:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    resolved_target = target_branch or _current_branch(primary_root)
+    target_ref = f"refs/heads/{resolved_target}"
+    target_worktree = _find_worktree_for_branch(primary_root, target_ref)
+    created_target = False
+    if target_worktree is None:
+        target_worktree = (profile.paths.worktrees_dir / f"wt-rebase-{slugify(f'{resolved_target}-{int(time.time())}')}").resolve()
+        target_worktree.parent.mkdir(parents=True, exist_ok=True)
+        _run_git(primary_root, "worktree", "add", str(target_worktree), resolved_target)
+        created_target = True
+    try:
+        branch_worktree = _find_worktree_for_branch(primary_root, f"refs/heads/{branch}")
+        if branch_worktree is None:
+            raise WorktreeError(f"could not find worktree for branch: {branch}")
+        if _status_dirty(branch_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile)):
+            raise WorktreeError(f"branch worktree has uncommitted changes: {branch_worktree}")
+        if _status_dirty(target_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile)):
+            raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
+        if pull:
+            upstream = _run_git_no_check(target_worktree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+            if upstream.returncode == 0:
+                _run_git(target_worktree, "pull", "--ff-only")
+
+        before_commit = _run_git(branch_worktree, "rev-parse", "HEAD")
+        rebase = _run_git_no_check(branch_worktree, "rebase", resolved_target)
+        if rebase.returncode != 0:
+            _run_git_no_check(branch_worktree, "rebase", "--abort")
+            detail = rebase.stderr.strip() or rebase.stdout.strip() or f"exit code {rebase.returncode}"
+            raise WorktreeError(f"git rebase {resolved_target} failed: {detail}")
+        after_commit = _run_git(branch_worktree, "rev-parse", "HEAD")
+
+        return {
+            "branch": branch,
+            "target_branch": resolved_target,
+            "worktree": str(branch_worktree),
+            "before_commit": before_commit,
+            "after_commit": after_commit,
+        }
+    finally:
+        if created_target and target_worktree.exists():
+            _run_git_no_check(primary_root, "worktree", "remove", "--force", str(target_worktree))
 
 
 def branch_ahead_of_target(profile: Profile, *, branch: str, target_branch: str | None = None) -> bool:

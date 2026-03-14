@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import shlex
 
 from .backlog import (
     render_html,
@@ -134,6 +136,13 @@ def render_project_html(profile: Profile) -> Path:
     return profile.paths.html_file
 
 
+def _preferred_cli_command(project_root: Path, executable: str) -> str:
+    candidate = (project_root / ".VE" / "bin" / executable).resolve()
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return shlex.quote(str(candidate))
+    return executable
+
+
 def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     skill_dir = profile.paths.skill_dir
     agents_dir = skill_dir / "agents"
@@ -142,9 +151,10 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     agent_file = agents_dir / "openai.yaml"
     if skill_file.exists() and not force:
         raise ScaffoldError(f"Refusing to overwrite {skill_file}; pass --force to replace it")
-    project_slug = profile.project_name.lower().replace(" ", "-")
     skill_name = "blackdog"
     display_name = "Blackdog"
+    cli_command = _preferred_cli_command(profile.paths.project_root, "blackdog")
+    skill_command = _preferred_cli_command(profile.paths.project_root, "blackdog-skill")
     validation_lines = "\n".join(f"  - `{command}`" for command in profile.validation_commands)
     skill_text = f"""---
 name: {skill_name}
@@ -154,6 +164,11 @@ description: "Use the project-local Blackdog backlog contract for {profile.proje
 # {display_name}
 
 Use the local Blackdog CLI instead of mutating backlog state by hand.
+
+## CLI Entry Points
+
+- Blackdog CLI: `{cli_command}`
+- Skill refresh CLI: `{skill_command}`
 
 ## Core Paths
 
@@ -168,14 +183,14 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Standard Flow
 
-1. Run `blackdog validate`.
-2. Run `blackdog summary`.
-3. Inspect runnable work with `blackdog next`.
-4. For direct implementation work, run `blackdog worktree preflight` and `blackdog worktree start --id TASK` before editing repo files.
-5. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
+1. Run `{cli_command} validate`.
+2. Run `{cli_command} summary`.
+3. Inspect runnable work with `{cli_command} next`.
+4. For direct implementation work, run `{cli_command} worktree preflight` and `{cli_command} worktree start --id TASK` before editing repo files.
+5. Claim one task with `{cli_command} claim --agent <agent-name>`, then record structured output with `{cli_command} result record ...`.
 6. Complete or release the task through the CLI for direct work.
-7. Use `blackdog supervise run` or `blackdog supervise loop` when you want Blackdog to launch child agents instead of editing directly.
-8. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+7. Use `{cli_command} supervise run` or `{cli_command} supervise loop` when you want Blackdog to launch child agents instead of editing directly.
+8. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 
 ## Supervisor Model
 
@@ -187,7 +202,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `{profile.paths.control_dir}`.
-- Regenerate this skill after profile changes with `blackdog-skill refresh backlog --project-root {profile.paths.project_root}`.
+- Regenerate this skill after profile changes with `{skill_command} refresh backlog --project-root {profile.paths.project_root}`.
 
 ## Repo Defaults
 

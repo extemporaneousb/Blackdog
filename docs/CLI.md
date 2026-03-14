@@ -2,6 +2,8 @@
 
 The current CLI covers the backlog runtime, a one-shot supervisor runner, an initial long-lived supervisor loop, and a served readonly live UI.
 
+When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
+
 ## `blackdog`
 
 ### Project setup
@@ -46,15 +48,15 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 
 The default `worktrees_dir` is now `../.worktrees`, which keeps Blackdog task worktrees as siblings of the primary checkout rather than nesting them under repo-controlled runtime artifacts. If a repo prefers a `.worktrees` symlink inside the repo root, Blackdog will follow that resolved path when it is configured in `blackdog.toml`.
 
-When `workspace_mode = "git-worktree"`, Blackdog creates a branch-backed child worktree from the primary worktree branch. The primary worktree must be clean with respect to implementation changes before launch. Child agents are expected to commit on their task branch, and the supervisor lands that branch through the primary worktree with fast-forward semantics before completing the task.
+When `workspace_mode = "git-worktree"`, Blackdog creates a branch-backed child worktree from the primary worktree branch even if the primary worktree is dirty. If landing is blocked by dirty primary-worktree changes, the supervisor retries, warns through the inbox, and can auto-stash those changes as a last resort so the landing path keeps moving. Child agents are expected to commit on their task branch, and the supervisor lands that branch through the primary worktree with fast-forward semantics before completing the task.
 
-The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state.
+The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state. When the project root contains `.VE/bin/blackdog`, the prompt points child agents at that repo-local CLI; otherwise it falls back to `blackdog` from the active environment.
 
 `blackdog supervise loop` keeps a supervisor session alive across multiple cycles, writes loop status under the configured control root `supervisor-runs/` directory, refreshes the HTML control page after each cycle, and can be steered through inbox messages sent to the supervisor actor. `pause` messages prevent new launches while they remain open, and `stop` messages end the loop before the next cycle starts. These are boundary controls; they do not interrupt a child task that is already running.
 
-`blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes backlog counts, objectives, graph nodes and dependency edges, open inbox messages, recent task results, recent supervisor runs, and recent supervisor loops.
+`blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes repo identity (`project_name`, `project_root`, `control_dir`), backlog counts, objectives, graph nodes and dependency edges, open inbox messages, recent task results, recent supervisor runs, and recent supervisor loops.
 
-`blackdog ui serve` starts a local HTTP server that serves a readonly monitor over the same snapshot contract. The UI shell lives at `/`, the full snapshot is exposed at `/api/snapshot`, and server-sent events are streamed from `/api/stream`. Blackdog write paths notify that server on state changes, so the browser updates without polling. The server also exposes repo-local runtime artifacts under `/artifacts/...`.
+`blackdog ui serve` starts a local HTTP server that serves a readonly monitor over the same snapshot contract. The UI shell lives at `/`, the full snapshot is exposed at `/api/snapshot`, and server-sent events are streamed from `/api/stream`. Blackdog write paths notify that server on state changes, so the browser updates without polling. The startup payload and `ui-server.json` state file include the served repo identity (`project_name`, `project_root`, `control_dir`) so active servers can be distinguished when multiple repos are open. The server also exposes repo-local runtime artifacts under `/artifacts/...`.
 
 ### Structured results
 

@@ -286,6 +286,9 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
         "generated_at": now_iso(),
         "project_name": profile.project_name,
+        "project_root": str(profile.paths.project_root),
+        "control_dir": str(profile.paths.control_dir),
+        "profile_file": str(profile.paths.profile_file),
         "counts": summary["counts"],
         "total": summary["total"],
         "push_objective": summary["push_objective"],
@@ -305,7 +308,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         },
         "links": {
             "backlog": "/artifacts/backlog.md",
-            "legacy_html": "/artifacts/backlog-index.html",
+            "static_html": "/artifacts/backlog-index.html",
             "events": "/artifacts/events.jsonl",
             "inbox": "/artifacts/inbox.jsonl",
         },
@@ -317,6 +320,9 @@ def _snapshot_error_payload(profile: Profile, exc: Exception) -> dict[str, Any]:
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
         "generated_at": now_iso(),
         "project_name": profile.project_name,
+        "project_root": str(profile.paths.project_root),
+        "control_dir": str(profile.paths.control_dir),
+        "profile_file": str(profile.paths.profile_file),
         "error": {
             "type": exc.__class__.__name__,
             "message": str(exc),
@@ -540,6 +546,12 @@ def _render_ui_shell() -> str:
     }
     .sync-pill.live .sync-dot { background: var(--done); }
     .sync-pill.error .sync-dot { background: var(--risk); }
+    .hero-meta {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      overflow-wrap: anywhere;
+    }
     .hero-links, .inline-links {
       display: flex;
       flex-wrap: wrap;
@@ -658,6 +670,7 @@ def _render_ui_shell() -> str:
           <div>
             <div class="brand"><span class="brand-mark">BD</span><span>Blackdog Live</span></div>
             <h1 id="project-name">Blackdog</h1>
+            <p id="repo-root" class="hero-meta"></p>
           </div>
           <div id="sync-status" class="sync-pill"><span class="sync-dot"></span><span>Connecting…</span></div>
         </div>
@@ -725,13 +738,14 @@ def _render_ui_shell() -> str:
 
     function renderHero(snapshot) {
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
+      document.getElementById("repo-root").textContent = snapshot.project_root ? `Repo: ${snapshot.project_root}` : "";
       const pushObjective = (snapshot.push_objective || []).slice(0, 2).join(" ");
       document.getElementById("push-objective").textContent = pushObjective || "Live backlog monitoring for Blackdog.";
       const links = snapshot.links || {};
       const nextRows = snapshot.next_rows || [];
       document.getElementById("hero-links").innerHTML = [
         links.backlog ? `<a href="${escapeHtml(links.backlog)}" target="_blank" rel="noreferrer">Backlog</a>` : "",
-        links.legacy_html ? `<a href="${escapeHtml(links.legacy_html)}" target="_blank" rel="noreferrer">Static HTML</a>` : "",
+        links.static_html ? `<a href="${escapeHtml(links.static_html)}" target="_blank" rel="noreferrer">Static HTML</a>` : "",
         nextRows.length ? `<a href="#dag">Next: ${escapeHtml(nextRows[0].id)}</a>` : `<a href="#dag">No runnable tasks</a>`,
         snapshot.generated_at ? `<span class="chip">Updated ${escapeHtml(snapshot.generated_at)}</span>` : "",
       ].filter(Boolean).join("");
@@ -932,6 +946,7 @@ def _render_ui_shell() -> str:
 
     function renderError(snapshot) {
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
+      document.getElementById("repo-root").textContent = snapshot.project_root ? `Repo: ${snapshot.project_root}` : "";
       document.getElementById("push-objective").textContent = snapshot.error?.message || "UI snapshot failed.";
       document.getElementById("stats").innerHTML = `<div class="stat error"><span class="eyebrow">Snapshot Error</span><strong>${escapeHtml(snapshot.error?.type || "Error")}</strong></div>`;
       document.getElementById("objectives").innerHTML = "";
@@ -1019,6 +1034,9 @@ def serve_ui(
         "port": actual_port,
         "snapshot_url": f"http://{actual_host}:{actual_port}/api/snapshot",
         "stream_url": f"http://{actual_host}:{actual_port}/api/stream",
+        "project_name": profile.project_name,
+        "project_root": str(profile.paths.project_root),
+        "control_dir": str(profile.paths.control_dir),
         "state_file": str(ui_server_state_file(profile.paths)),
     }
     state_file = ui_server_state_file(profile.paths)

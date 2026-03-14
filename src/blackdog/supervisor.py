@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 import json
 import os
+import shlex
 import subprocess
 import textwrap
 import time
@@ -38,9 +39,12 @@ from .worktree import (
     WorktreeError,
     WorktreeSpec,
     branch_ahead_of_target,
-    cleanup_task_worktree,
+    branch_changed_paths,
+    find_primary_worktree,
     land_branch,
-    primary_worktree_is_dirty,
+    primary_worktree_dirty_paths,
+    rebase_branch_onto_target,
+    stash_worktree_changes,
     supervisor_task_branch,
     supervisor_task_worktree_path,
     start_task_worktree,
@@ -86,6 +90,33 @@ class ChildRun:
 class PreparedWorkspace:
     workspace: Path
     worktree_spec: WorktreeSpec | None = None
+
+
+def _preferred_blackdog_command(profile: Profile) -> str:
+    candidate = (profile.paths.project_root / ".VE" / "bin" / "blackdog").resolve()
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return shlex.quote(str(candidate))
+    return "blackdog"
+
+
+def _notify_supervisor(
+    profile: Profile,
+    *,
+    actor: str,
+    task_id: str | None,
+    kind: str,
+    tags: list[str],
+    body: str,
+) -> None:
+    send_message(
+        profile.paths,
+        sender="blackdog",
+        recipient=actor,
+        body=body,
+        kind=kind,
+        task_id=task_id,
+        tags=tags,
+    )
 
 
 def _supervisor_text(view: dict[str, Any]) -> str:
@@ -262,10 +293,6 @@ def _prepare_workspace(
 ) -> PreparedWorkspace:
     if workspace_mode == "current":
         return PreparedWorkspace(workspace=profile.paths.project_root)
-    if primary_worktree_is_dirty(profile, ignore_runtime=True):
-        raise SupervisorError(
-            "Primary worktree has uncommitted implementation changes; commit, stash, or land them before launching branch-backed child runs"
-        )
     profile.paths.worktrees_dir.mkdir(parents=True, exist_ok=True)
     branch = supervisor_task_branch(task, run_id)
     workspace = supervisor_task_worktree_path(profile, task, run_id).resolve()
@@ -281,6 +308,111 @@ def _prepare_workspace(
     return PreparedWorkspace(workspace=workspace, worktree_spec=spec)
 
 
+def _land_child_branch(profile: Profile, child: ChildRun, *, actor: str, run_id: str) -> dict[str, Any]:
+    spec = child.worktree_spec
+    if spec is None:
+        raise WorktreeError("missing worktree spec for branch-backed child run")
+
+    errors: list[str] = []
+    rebase_result: dict[str, Any] | None = None
+    dirty_primary_block = False
+    for _ in range(2):
+        try:
+            payload = land_branch(
+                profile,
+                branch=spec.branch,
+                target_branch=spec.target_branch,
+                cleanup=True,
+            )
+            if rebase_result is not None:
+                payload["rebase"] = rebase_result
+            if errors:
+                payload["retry_errors"] = list(errors)
+            return payload
+        except WorktreeError as exc:
+            detail = str(exc)
+            errors.append(detail)
+            if "cannot land:" in detail and "not based on the current" in detail:
+                try:
+                    rebase_result = rebase_branch_onto_target(
+                        profile,
+                        branch=spec.branch,
+                        target_branch=spec.target_branch,
+                    )
+                except WorktreeError as rebase_exc:
+                    errors.append(str(rebase_exc))
+                    break
+                time.sleep(1)
+                continue
+            if "target worktree has uncommitted changes" in detail:
+                dirty_primary_block = True
+                time.sleep(1)
+                continue
+            break
+
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    dirty_paths = primary_worktree_dirty_paths(profile, ignore_runtime=True)
+    overlap_paths: list[str] = []
+    if dirty_primary_block and dirty_paths:
+        try:
+            branch_paths = branch_changed_paths(profile, branch=spec.branch, target_branch=spec.target_branch)
+        except WorktreeError as exc:
+            errors.append(str(exc))
+            branch_paths = []
+        overlap_paths = sorted(set(dirty_paths).intersection(branch_paths))
+        _notify_supervisor(
+            profile,
+            actor=actor,
+            task_id=child.task.id,
+            kind="warning",
+            tags=["supervisor", "dirty-primary", "land"],
+            body=(
+                f"Landing {spec.branch} for {child.task.id} is blocked by a dirty primary worktree. "
+                f"Overlap with branch changes: {', '.join(overlap_paths) or 'none detected'}. "
+                f"Dirty paths: {', '.join(dirty_paths)}. Please clean up or land your work; Blackdog will retry before stashing."
+            ),
+        )
+        time.sleep(1)
+        try:
+            payload = land_branch(
+                profile,
+                branch=spec.branch,
+                target_branch=spec.target_branch,
+                cleanup=True,
+            )
+        except WorktreeError as exc:
+            detail = str(exc)
+            errors.append(detail)
+            if "target worktree has uncommitted changes" not in detail:
+                raise WorktreeError("; ".join(errors[-4:]))
+            stash_ref = stash_worktree_changes(primary_root, message=f"blackdog-supervisor-land-{run_id}-{child.task.id}")
+            payload = land_branch(
+                profile,
+                branch=spec.branch,
+                target_branch=spec.target_branch,
+                cleanup=True,
+            )
+            payload["auto_stash"] = {
+                "worktree": str(primary_root),
+                "stash_ref": stash_ref,
+                "dirty_paths": dirty_paths,
+                "overlap_paths": overlap_paths,
+            }
+            if rebase_result is not None:
+                payload["rebase"] = rebase_result
+            if errors:
+                payload["retry_errors"] = list(errors)
+            return payload
+        else:
+            if rebase_result is not None:
+                payload["rebase"] = rebase_result
+            if errors:
+                payload["retry_errors"] = list(errors)
+            return payload
+
+    raise WorktreeError("; ".join(errors[-4:]) if errors else "landing failed")
+
+
 def _build_child_prompt(
     profile: Profile,
     task: TaskInfo,
@@ -290,6 +422,7 @@ def _build_child_prompt(
     workspace: Path,
     worktree_spec: WorktreeSpec | None = None,
 ) -> str:
+    blackdog_command = _preferred_blackdog_command(profile)
     docs = "\n".join(f"- {item}" for item in task.payload.get("docs", [])) or "- No routed docs."
     checks = "\n".join(f"- {item}" for item in task.payload.get("checks", [])) or "- No validation commands."
     paths = "\n".join(f"- {item}" for item in task.payload.get("paths", [])) or "- No specific paths."
@@ -310,12 +443,11 @@ def _build_child_prompt(
             - This is a branch-backed task worktree on branch `{worktree_spec.branch}` targeting `{worktree_spec.target_branch}`.
             - Commit your code changes on that task branch before you exit if you want the supervisor to land them.
             - Do not land, merge, or delete the branch yourself. The supervisor will land `{worktree_spec.branch}` through the primary worktree and then clean it up.
-            - Do not run `blackdog complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
+            - Do not run `{blackdog_command} complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
             """
         ).strip()
         if worktree_spec is not None
-        else "- If the task is complete, mark it done with `PYTHONPATH=src python3 -m blackdog.cli complete --project-root "
-        f"{profile.paths.project_root} --agent {child_agent} --id {task.id}`."
+        else f"- If the task is complete, mark it done with `{blackdog_command} complete --project-root {profile.paths.project_root} --agent {child_agent} --id {task.id}`."
     )
     return textwrap.dedent(
         f"""
@@ -356,10 +488,10 @@ def _build_child_prompt(
         - Work only on `{task.id}`.
         - Use the current directory for code edits.
         - For Blackdog state commands, always target the central root with `--project-root {profile.paths.project_root}`.
-        - Before starting, read your inbox with `PYTHONPATH=src python3 -m blackdog.cli inbox list --project-root {profile.paths.project_root} --recipient {child_agent}`.
-        - When finished, record a structured result with `PYTHONPATH=src python3 -m blackdog.cli result record --project-root {profile.paths.project_root} --id {task.id} --actor {child_agent} ...`.
+        - Before starting, read your inbox with `{blackdog_command} inbox list --project-root {profile.paths.project_root} --recipient {child_agent}`.
+        - When finished, record a structured result with `{blackdog_command} result record --project-root {profile.paths.project_root} --id {task.id} --actor {child_agent} ...`.
         {branch_rules}
-        - If blocked, record a blocked or partial result and release the task with `PYTHONPATH=src python3 -m blackdog.cli release --project-root {profile.paths.project_root} --agent {child_agent} --id {task.id} --note "<reason>"`.
+        - If blocked, record a blocked or partial result and release the task with `{blackdog_command} release --project-root {profile.paths.project_root} --agent {child_agent} --id {task.id} --note "<reason>"`.
         - Do not start unrelated tasks.
         """
     ).strip()
@@ -421,12 +553,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
             )
         return
     try:
-        payload = land_branch(
-            profile,
-            branch=spec.branch,
-            target_branch=spec.target_branch,
-            cleanup=True,
-        )
+        payload = _land_child_branch(profile, child, actor=actor, run_id=run_id)
     except WorktreeError as exc:
         child.land_error = str(exc)
         if current_status == "claimed":
@@ -487,6 +614,16 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         validation.append(f"Exit code: {child.exit_code}")
     if child.land_result is not None:
         validation.append(f"Landed branch {child.land_result['branch']} into {child.land_result['target_branch']}")
+        auto_stash = child.land_result.get("auto_stash")
+        if isinstance(auto_stash, dict) and auto_stash.get("stash_ref"):
+            validation.append(
+                f"Auto-stashed {auto_stash['worktree']} into {auto_stash['stash_ref']} before landing"
+            )
+        rebase = child.land_result.get("rebase")
+        if isinstance(rebase, dict):
+            validation.append(
+                f"Rebased {rebase['branch']} onto {rebase['target_branch']} before landing"
+            )
     if child.land_error:
         validation.append(f"Land error: {child.land_error}")
     if child.final_task_status == "done":

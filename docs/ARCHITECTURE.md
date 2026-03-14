@@ -50,11 +50,11 @@ Today Blackdog implements the durable backlog runtime, the coordination primitiv
 10. `blackdog ui serve` serves that contract over local HTTP and pushes snapshot refreshes to the browser with SSE when Blackdog state changes.
 11. `blackdog render` rebuilds the static HTML control page from the current backlog, state, inbox, events, and task results.
 
-This layout now resolves mutable runtime files from one shared git control root. Legacy repo-root `.blackdog/` files are migrated into that control root and removed, so the working tree no longer carries duplicate runtime state.
+This layout resolves mutable runtime files from one shared git control root rather than repo-root runtime directories, so the working tree no longer carries duplicate execution state.
 
 The current supervisor launcher assumes an exec-capable Codex runtime. With default settings, Blackdog prefers the desktop Codex.app binary when it is installed and falls back to the configured launcher command only if that runtime is unavailable.
 
-For `git-worktree` launches, Blackdog now creates a branch-backed child worktree from the primary worktree branch and refuses to launch if the primary worktree has uncommitted implementation changes. That keeps delegated work aligned with the same WTAM-style lifecycle used for direct implementation tasks.
+For `git-worktree` launches, Blackdog creates a branch-backed child worktree from the primary worktree branch even when the primary worktree is dirty. If landing is later blocked by dirty primary-worktree changes, Blackdog retries, warns, and can auto-stash as a last resort so delegated work keeps moving without turning launch-time dirt into a hard stop.
 
 The supervisor-generated prompt tells the child that committed repo state is the baseline, that the task is already claimed, that code changes must be committed on the task branch, and that Blackdog CLI output is the source of truth for coordination state.
 
