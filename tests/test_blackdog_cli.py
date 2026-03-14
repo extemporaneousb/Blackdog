@@ -188,7 +188,7 @@ class BlackdogCliTests(unittest.TestCase):
         paths = self.runtime_paths()
         self.assertTrue((self.root / "blackdog.toml").exists())
         self.assertTrue(paths.backlog_file.exists())
-        self.assertTrue((self.root / ".codex/skills/blackdog-backlog/SKILL.md").exists())
+        self.assertTrue((self.root / ".codex/skills/blackdog/SKILL.md").exists())
 
         second_payload = json.loads(
             subprocess.run(
@@ -411,7 +411,7 @@ class BlackdogCliTests(unittest.TestCase):
             ).stdout
         )
         self.assertEqual(len(resolved), 1)
-        self.assertTrue((self.root / ".codex/skills/blackdog-backlog/SKILL.md").exists())
+        self.assertTrue((self.root / ".codex/skills/blackdog/SKILL.md").exists())
 
     def test_skill_refresh_regenerates_existing_project_skill(self) -> None:
         run_skill_cli("new", "backlog", "--project-root", str(self.root), "--project-name", "Inbox Demo")
@@ -420,7 +420,7 @@ class BlackdogCliTests(unittest.TestCase):
             '"make test"',
         )
         (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
-        skill_file = self.root / ".codex/skills/blackdog-backlog/SKILL.md"
+        skill_file = self.root / ".codex/skills/blackdog/SKILL.md"
         skill_file.write_text("stale skill text\n", encoding="utf-8")
 
         payload = json.loads(

@@ -30,13 +30,13 @@ Planned but not implemented yet:
 - `blackdog.toml`: repo-local profile for id prefixes, bucket/domain taxonomy, defaults, and heuristics
 - shared runtime state under the git control root, which defaults to `@git-common/blackdog`
 - `blackdog worktree ...`: explicit branch-backed worktree start/land/cleanup entrypoints for implementation work
-- `.codex/skills/blackdog-backlog/`: project-local skill scaffold that teaches agents how to use Blackdog in that repo
+- `.codex/skills/blackdog/`: project-local skill scaffold that teaches agents how to use Blackdog in that repo
 
 ## Quick start
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .VE
+source .VE/bin/activate
 python -m pip install -e .
 blackdog bootstrap --project-name "My Project"
 blackdog add \
@@ -75,6 +75,8 @@ For delegated slices:
 Mutable runtime state now lives under one shared local control root across worktrees rather than as checked-in repo artifacts. In this repo, the default resolved location is `.git/blackdog/`.
 
 Current dogfood evidence lives under the resolved control root in `supervisor-runs/` and `task-results/`.
+
+This repo uses a top-level `.VE/` virtual environment for local Blackdog development. Recreate it with `python3 -m venv .VE` and install Blackdog into it with `./.VE/bin/python -m pip install -e .`.
 
 ## Design goals
 

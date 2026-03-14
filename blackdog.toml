@@ -4,7 +4,7 @@ profile_version = 1
 
 [paths]
 control_dir = "@git-common/blackdog"
-skill_dir = ".codex/skills/blackdog-backlog"
+skill_dir = ".codex/skills/blackdog"
 worktrees_dir = "../.worktrees"
 
 [ids]
@@ -30,4 +30,4 @@ doc_routing_defaults = ["AGENTS.md", "docs/INDEX.md", "docs/ARCHITECTURE.md", "d
 
 [pm_heuristics]
 summary_focus = "Lead with direct status, then backlog state, then test focus."
-skill_usage = "Prefer the repo-versioned blackdog CLI over hand-edited state transitions."
+skill_usage = "Prefer the project-local blackdog CLI over hand-edited state transitions."

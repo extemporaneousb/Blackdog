@@ -1,9 +1,9 @@
 ---
-name: blackdog-backlog
+name: blackdog
 description: "Use the project-local Blackdog backlog contract for Blackdog. Trigger this skill when reviewing, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
 ---
 
-# Blackdog Backlog
+# Blackdog
 
 Use the local Blackdog CLI instead of mutating backlog state by hand.
 

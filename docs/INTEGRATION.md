@@ -7,7 +7,7 @@ This document describes the current integration path for adopting Blackdog in an
 - a one-command repo bootstrap once Blackdog is installed in the local Python environment
 - repo-local profile in `blackdog.toml`
 - mutable backlog/runtime artifacts under a shared git control root
-- project-local skill scaffold under `.codex/skills/blackdog-backlog/`
+- project-local skill scaffold under `.codex/skills/blackdog/`
 - a branch-backed `blackdog worktree` lifecycle for implementation tasks
 - CLI support for task intake, claims, approvals, comments, inbox messaging, task results, and HTML rendering
 - an initial supervisor runner that can launch child commands against runnable tasks, with a default preference for the desktop Codex exec runtime
@@ -35,7 +35,7 @@ This document describes the current integration path for adopting Blackdog in an
 
 ## How agents discover the Blackdog contract
 
-Bootstrap creates a project-local skill at `.codex/skills/blackdog-backlog/` with:
+Bootstrap creates a project-local skill at `.codex/skills/blackdog/` with:
 
 - `SKILL.md`: the repo-specific operating instructions
 - `agents/openai.yaml`: UI-facing metadata for skill lists and default prompts

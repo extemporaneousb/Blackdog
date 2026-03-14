@@ -527,7 +527,7 @@ def cmd_inbox_resolve(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Blackdog backlog CLI")
+    parser = argparse.ArgumentParser(description="Blackdog CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_bootstrap = subparsers.add_parser("bootstrap", help="Initialize backlog artifacts and generate the project-local Blackdog skill")

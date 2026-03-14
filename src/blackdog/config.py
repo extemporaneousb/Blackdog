@@ -338,7 +338,7 @@ def render_default_profile(project_name: str) -> str:
         f"profile_version = 1\n\n"
         f'[paths]\n'
         f'control_dir = "{DEFAULT_CONTROL_DIR}"\n'
-        f'skill_dir = ".codex/skills/blackdog-backlog"\n\n'
+        f'skill_dir = ".codex/skills/blackdog"\n\n'
         f'worktrees_dir = "{DEFAULT_WORKTREES_DIR}"\n'
         f"\n"
         f'[ids]\n'
@@ -360,7 +360,7 @@ def render_default_profile(project_name: str) -> str:
         f"doc_routing_defaults = [{doc_routing}]\n\n"
         f'[pm_heuristics]\n'
         f'summary_focus = "Lead with direct status, then backlog state, then test focus."\n'
-        f'skill_usage = "Prefer the repo-versioned blackdog CLI over hand-edited state transitions."\n'
+        f'skill_usage = "Prefer the project-local blackdog CLI over hand-edited state transitions."\n'
     )
 
 

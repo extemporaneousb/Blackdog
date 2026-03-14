@@ -26,7 +26,7 @@ Today Blackdog implements the durable backlog runtime, the coordination primitiv
    - `blackdog.toml` stays repo-local, but runtime state is no longer a checked-in working-tree artifact.
 
 4. Project-local skill scaffold
-   - Generated under `.codex/skills/blackdog-backlog/`.
+   - Generated under `.codex/skills/blackdog/`.
    - Tells an AI agent how to use the local CLI and local artifact paths.
 
 ## Why this split

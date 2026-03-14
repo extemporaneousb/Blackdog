@@ -71,6 +71,6 @@ The generated child prompt tells the agent that committed repo state is the base
 - `blackdog-skill new backlog --project-root PATH`
 - `blackdog-skill refresh backlog --project-root PATH`
 
-`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/blackdog-backlog/`.
+`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/blackdog/`.
 
 `blackdog-skill refresh backlog` regenerates `SKILL.md` and `agents/openai.yaml` from the current `blackdog.toml` profile without rebuilding backlog/runtime files. Use it after changing validation commands, taxonomy, or other repo-local contract details that agents should see.

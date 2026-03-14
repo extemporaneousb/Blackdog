@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blackdog"
 version = "0.1.0"
-description = "Repo-versioned backlog CLI for AI-assisted local development"
+description = "Repo-scoped backlog CLI for AI-assisted local development"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
@@ -19,4 +19,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

@@ -1078,7 +1078,7 @@ def render_initial_backlog(
     release_gates: list[str] | None = None,
 ) -> str:
     objectives = objectives or [
-        "OBJ-1: Maintain a repo-versioned backlog core",
+        "OBJ-1: Maintain a repo-scoped backlog core",
         "OBJ-2: Keep AI-agent interaction structured and local",
         "OBJ-3: Preserve simple local usage before scale",
     ]
@@ -1087,7 +1087,7 @@ def render_initial_backlog(
     ]
     non_negotiables = non_negotiables or [
         "Backlog state transitions should flow through the CLI, not through ad hoc file edits.",
-        "Skills should remain thin adapters over repo-versioned code.",
+        "Skills should remain thin adapters over repo-local code and configuration.",
     ]
     evidence_requirements = evidence_requirements or [
         "Every completed task should record structured results.",
@@ -1137,7 +1137,7 @@ def render_initial_backlog(
         "",
         "## Alignment Notes",
         "",
-        "- This backlog is optimized for local AI-assisted development and repo-versioned coordination.",
+        "- This backlog is optimized for local AI-assisted development and repo-scoped coordination.",
         "",
         "## Inventory Map",
         "",

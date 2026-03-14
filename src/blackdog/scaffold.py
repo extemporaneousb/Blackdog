@@ -143,8 +143,8 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     if skill_file.exists() and not force:
         raise ScaffoldError(f"Refusing to overwrite {skill_file}; pass --force to replace it")
     project_slug = profile.project_name.lower().replace(" ", "-")
-    skill_name = "blackdog-backlog" if project_slug == "blackdog" else f"{project_slug}-blackdog-backlog"
-    display_name = "Blackdog Backlog" if project_slug == "blackdog" else f"{profile.project_name} Blackdog Backlog"
+    skill_name = "blackdog"
+    display_name = "Blackdog"
     validation_lines = "\n".join(f"  - `{command}`" for command in profile.validation_commands)
     skill_text = f"""---
 name: {skill_name}
