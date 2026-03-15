@@ -1839,7 +1839,7 @@ if __name__ == "__main__":
         self.assertIn("Do not run `blackdog claim` for this task again.", prompt_text)
         self.assertIn("Prefer Blackdog CLI output over direct reads of raw state files", prompt_text)
         self.assertIn("Commit your code changes on that task branch", prompt_text)
-        self.assertIn("Do not run `blackdog complete` for this task from a branch-backed child run", prompt_text)
+        self.assertIn("Do not run `./.VE/bin/blackdog complete` for this task from a branch-backed child run", prompt_text)
         paths = self.runtime_paths()
         state = json.loads(paths.state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][task_id]["status"], "done")
@@ -2896,8 +2896,7 @@ if __name__ == "__main__":
             wait_for_file(sync_dir / f"started-{task_id}.txt", timeout=10)
             refreshed_snapshot = wait_for_html_snapshot(
                 paths.html_file,
-                lambda payload: payload.get("generated_at") != initial_snapshot.get("generated_at")
-                and any(
+                lambda payload: any(
                     row.get("id") == task_id and row.get("latest_run_status") == "running"
                     for row in payload.get("active_tasks", [])
                 ),

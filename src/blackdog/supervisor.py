@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 import json
 import os
+import queue
 import shlex
 import subprocess
+import threading
 import textwrap
 import time
 import uuid
@@ -867,6 +869,44 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         )
 
 
+def _wait_for_child_process(child: ChildRun, completion_queue: queue.Queue[tuple[str, int | None]]) -> None:
+    process = child.process
+    if process is None:
+        return
+    try:
+        completion_queue.put((child.child_agent, process.wait()))
+    except Exception:
+        completion_queue.put((child.child_agent, process.poll()))
+
+
+def _finish_child(
+    profile: Profile,
+    child: ChildRun,
+    *,
+    actor: str,
+    run_id: str,
+) -> None:
+    _attempt_land_child_worktree(profile, child, actor=actor, run_id=run_id)
+    _finalize_child_run(profile, child, actor=actor)
+    append_event(
+        profile.paths,
+        event_type="child_finish",
+        actor=actor,
+        task_id=child.task.id,
+        payload={
+            "run_id": run_id,
+            "child_agent": child.child_agent,
+            "exit_code": child.exit_code,
+            "timed_out": child.timed_out,
+            "result_recorded": child.result_recorded,
+            "final_task_status": child.final_task_status,
+            "land_error": child.land_error,
+            "landed_commit": (child.land_result or {}).get("landed_commit"),
+        },
+    )
+    _emit_render(profile)
+
+
 def run_supervisor(
     profile: Profile,
     snapshot: BacklogSnapshot,
@@ -1087,41 +1127,40 @@ def run_supervisor(
         )
         _emit_render(profile)
 
-    active = [child for child in children if child.process is not None]
+    active = {child.child_agent: child for child in children if child.process is not None}
+    completion_queue: queue.Queue[tuple[str, int | None]] = queue.Queue()
+    for child in active.values():
+        threading.Thread(target=_wait_for_child_process, args=(child, completion_queue), daemon=True).start()
     while active:
         current = time.monotonic()
-        for child in list(active):
+        timed_out_children = [
+            child
+            for child in active.values()
+            if child.process is not None and child.process.poll() is None and current >= child.deadline
+        ]
+        for child in timed_out_children:
             assert child.process is not None
-            exit_code = child.process.poll()
-            if exit_code is None and current < child.deadline:
-                continue
-            if exit_code is None:
-                child.timed_out = True
+            child.timed_out = True
+            try:
                 child.process.kill()
-                exit_code = child.process.wait(timeout=5)
-            child.exit_code = exit_code
-            _attempt_land_child_worktree(profile, child, actor=actor, run_id=run_id)
-            _finalize_child_run(profile, child, actor=actor)
-            append_event(
-                profile.paths,
-                event_type="child_finish",
-                actor=actor,
-                task_id=child.task.id,
-                payload={
-                    "run_id": run_id,
-                    "child_agent": child.child_agent,
-                    "exit_code": child.exit_code,
-                    "timed_out": child.timed_out,
-                    "result_recorded": child.result_recorded,
-                    "final_task_status": child.final_task_status,
-                    "land_error": child.land_error,
-                    "landed_commit": (child.land_result or {}).get("landed_commit"),
-                },
-            )
-            _emit_render(profile)
-            active.remove(child)
-        if active:
-            time.sleep(1)
+            except OSError:
+                pass
+            child.exit_code = child.process.wait(timeout=5)
+            _finish_child(profile, child, actor=actor, run_id=run_id)
+            active.pop(child.child_agent, None)
+        if not active:
+            break
+        next_deadline = min(child.deadline for child in active.values())
+        wait_timeout = max(0.0, next_deadline - time.monotonic())
+        try:
+            child_agent, exit_code = completion_queue.get(timeout=wait_timeout)
+        except queue.Empty:
+            continue
+        child = active.pop(child_agent, None)
+        if child is None:
+            continue
+        child.exit_code = exit_code if exit_code is not None else child.process.poll() if child.process is not None else None
+        _finish_child(profile, child, actor=actor, run_id=run_id)
 
     append_event(
         profile.paths,
