@@ -285,6 +285,7 @@ Top-level keys:
 - `control_dir`
 - `profile_file`
 - `workspace_contract`
+- `last_activity`
 - `counts`
 - `total`
 - `push_objective`
@@ -307,6 +308,7 @@ Current `graph` keys:
 
 Current `graph.tasks[*]` keys include task identity and planning fields plus derived operator metadata:
 
+- `activity`
 - `claimed_by`
 - `claimed_at`
 - `completed_at`
@@ -333,6 +335,9 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `task_branch`
 - `target_branch`
 - `child_agent`
+- `operator_status`
+- `operator_status_key`
+- `operator_status_detail`
 - `links`
 
 Current `active_tasks[*]` keys summarize the operator-facing running/claimed view:
@@ -349,6 +354,8 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `latest_result_status`
 - `latest_result_href`
 - `latest_run_status`
+- `operator_status`
+- `operator_status_key`
 - `workspace_mode`
 - `task_branch`
 - `target_branch`

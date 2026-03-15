@@ -912,12 +912,16 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         task_ids = {task["title"]: task["id"] for task in snapshot["graph"]["tasks"]}
-        self.assertEqual(snapshot["schema_version"], 2)
+        self.assertEqual(snapshot["schema_version"], 3)
         self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
         self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
         self.assertEqual(snapshot["graph"]["edges"], [{"from": task_ids["UI slice one"], "to": task_ids["UI slice two"]}])
         self.assertEqual(snapshot["links"]["backlog"], "backlog.md")
         self.assertEqual(snapshot["links"]["results"], "task-results")
+        self.assertEqual(snapshot["last_activity"]["actor"], "blackdog")
+        self.assertEqual(snapshot["last_activity"]["actor_role"], "system")
+        self.assertEqual(snapshot["graph"]["tasks"][0]["operator_status"], "Ready")
+        self.assertEqual(snapshot["graph"]["tasks"][1]["operator_status"], "Waiting")
 
     def test_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1084,6 +1088,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
         self.assertEqual(snapshot["active_tasks"][0]["latest_run_status"], "running")
         self.assertEqual(graph_tasks[first_task]["latest_result_status"], "success")
+        self.assertEqual(graph_tasks[first_task]["operator_status"], "Running")
+        self.assertEqual(graph_tasks[second_task]["operator_status"], "Waiting")
+        self.assertTrue(any(row["message"] == "claimed" for row in graph_tasks[first_task]["activity"]))
+        self.assertTrue(any(row["message"] == "result success" for row in graph_tasks[first_task]["activity"]))
         self.assertIsNotNone(graph_tasks[first_task]["active_compute_label"])
         self.assertGreaterEqual(int(graph_tasks[first_task]["total_compute_seconds"]), 0)
         self.assertEqual(graph_tasks[second_task]["predecessor_ids"], [first_task])
@@ -1094,6 +1102,9 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn("EventSource(", html)
         self.assertNotIn("fetch(", html)
         self.assertIn('id="blackdog-snapshot"', html)
+        self.assertIn("Operator Board", html)
+        self.assertIn("Inbox JSON", html)
+        self.assertIn("renderStats()", html)
         self.assertIn("supervisor-runs/20260314-120000-liverun1", html)
 
     def test_supervise_status_reports_loop_controls_ready_tasks_and_recent_results(self) -> None:
@@ -1358,6 +1369,9 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("blackdog-snapshot", updated_html)
         self.assertIn("backlog.md", updated_html)
         self.assertIn("task-results", updated_html)
+        self.assertIn("Operator Board", updated_html)
+        self.assertIn("Inbox JSON", updated_html)
+        self.assertIn("renderStats()", updated_html)
 
     def test_build_child_prompt_prefers_repo_local_ve_blackdog(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
