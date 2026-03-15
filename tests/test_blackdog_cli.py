@@ -539,6 +539,11 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(str((ve_bin / "blackdog-skill").resolve()), refreshed_text)
         self.assertIn("Control root:", refreshed_text)
         self.assertIn("`make test`", refreshed_text)
+        self.assertIn("Before any repo edit you intend to keep", refreshed_text)
+        self.assertIn("## Docs to Review", refreshed_text)
+        self.assertIn("`AGENTS.md`", refreshed_text)
+        self.assertIn("doc_routing_defaults", refreshed_text)
+        self.assertIn("Treat `current` as compatibility-only", refreshed_text)
         self.assertIn("refresh backlog", refreshed_text)
 
     def test_plan_summary_reports_epics_lanes_and_waves(self) -> None:

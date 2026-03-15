@@ -28,11 +28,12 @@ This document describes the current integration path for adopting Blackdog in an
    If needed, `blackdog-skill new backlog` remains as a compatibility wrapper around the same bootstrap flow.
 3. Review `blackdog.toml` and tune taxonomy, validation commands, and doc routing for the host repo.
    Review `paths.control_dir` and `paths.worktrees_dir` in particular; the defaults are `@git-common/blackdog` and `../.worktrees`, so runtime state is shared across worktrees and implementation work lands through sibling task worktrees rather than nested repo-runtime directories.
+   Set `taxonomy.doc_routing_defaults` to the minimum repo docs agents must review before making kept changes; Blackdog emits that list into the generated project-local skill.
 4. Commit `blackdog.toml` and the project-local skill scaffold if they are part of the repo's working contract.
    Do not plan around checking in mutable runtime files; Blackdog now defaults to a shared local control root outside the built artifact.
 5. If you later change `blackdog.toml`, regenerate the tailored skill with `blackdog-skill refresh backlog --project-root /path/to/repo`.
 6. In each fresh git worktree, create that worktree's own `.VE/` (or equivalent repo-local environment) before running repo-local commands. Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
-7. For implementation work, start with `blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
+7. Treat implementation edits in the primary worktree as a contract violation. Start with `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
 8. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, `blackdog render`, and optionally `blackdog ui serve` during normal work.
 
 ## How agents discover the Blackdog contract
@@ -42,7 +43,7 @@ Bootstrap creates a project-local skill at `.codex/skills/blackdog/` with:
 - `SKILL.md`: the repo-specific operating instructions
 - `agents/openai.yaml`: UI-facing metadata for skill lists and default prompts
 
-That generated skill is tailored from the current Blackdog profile. It includes the repo name, runtime paths, validation commands, and the expected operator model for direct work and supervisor-driven work.
+That generated skill is tailored from the current Blackdog profile. It includes the repo name, runtime paths, validation commands, `taxonomy.doc_routing_defaults`, and the expected operator model for direct work and supervisor-driven work.
 
 Blackdog does not currently shell out to an external skill-authoring workflow at bootstrap time. Instead, it generates and refreshes this project-local skill deterministically from `blackdog.toml` so the skill stays aligned with the repo contract.
 
@@ -51,7 +52,7 @@ Blackdog does not currently shell out to an external skill-authoring workflow at
 - `[taxonomy].buckets`: align with the host repo's work categories
 - `[taxonomy].domains`: reflect the host repo's meaningful system boundaries
 - `[taxonomy].validation_commands`: set the narrowest standard checks an agent should run by default
-- `[taxonomy].doc_routing_defaults`: point at the docs an agent must review before changing code
+- `[taxonomy].doc_routing_defaults`: point at the docs an agent must review before changing code; Blackdog emits this list into the generated skill, so keep it limited to the required review set
 - `[rules].default_claim_lease_hours`: match expected task duration
 - `[rules].require_claim_for_completion`: keep this enabled unless the repo intentionally allows ad hoc completions
 - `[paths].control_dir`: keep the git-common default unless the host repo has a strong reason to relocate mutable runtime state
@@ -71,7 +72,9 @@ Blackdog does not currently shell out to an external skill-authoring workflow at
 
 Today, Blackdog works best as a coordinating contract used by a foreground agent or an initial supervisor loop. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the readonly live UI can surface state to a browser without becoming a second source of truth.
 
-For implementation tasks, the intended operator model is now explicit: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
+For implementation tasks, the intended operator model is now explicit and hard-gated: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
+
+The generated skill should mirror that hard gate and enumerate the repo docs from `taxonomy.doc_routing_defaults` so agents see both the worktree contract and the required review set before they edit.
 
 Delegated child runs use the same lifecycle: the coordinating supervisor stays in the primary worktree, launches each child in a branch-backed task worktree, expects a commit on that branch, and lands it through the primary worktree after a successful run. Repos that want a WTAM-style hard gate should keep `supervisor.workspace_mode = "git-worktree"` and treat `current` as compatibility-only.
 

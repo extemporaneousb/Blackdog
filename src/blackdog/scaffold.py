@@ -211,6 +211,7 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     cli_command = _preferred_cli_command(profile.paths.project_root, "blackdog")
     skill_command = _preferred_cli_command(profile.paths.project_root, "blackdog-skill")
     validation_lines = "\n".join(f"  - `{command}`" for command in profile.validation_commands)
+    doc_routing_lines = "\n".join(f"  - `{path}`" for path in profile.doc_routing_defaults)
     skill_text = f"""---
 name: {skill_name}
 description: "Use the project-local Blackdog backlog contract for {profile.project_name}. Trigger this skill when reviewing, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
@@ -241,16 +242,24 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 1. Run `{cli_command} validate`.
 2. Run `{cli_command} summary`.
 3. Inspect runnable work with `{cli_command} next`.
-4. For direct implementation work, run `{cli_command} worktree preflight` and `{cli_command} worktree start --id TASK` before editing repo files.
+4. Before any repo edit you intend to keep, run `{cli_command} worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `{cli_command} worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
 5. Claim one task with `{cli_command} claim --agent <agent-name>`, then record structured output with `{cli_command} result record ...`.
 6. Complete or release the task through the CLI for direct work.
 7. Use `{cli_command} supervise run` or `{cli_command} supervise loop` when you want Blackdog to launch child agents instead of editing directly.
 8. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 
+## Docs to Review
+
+Review these repo docs before editing when they apply:
+{doc_routing_lines}
+
+Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's required review set, then regenerate this skill after routing changes.
+
 ## Supervisor Model
 
 - The coordinating agent stays in the primary worktree.
 - Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
+- Keep `supervisor.workspace_mode = "git-worktree"` when the repo wants WTAM-style implementation isolation. Treat `current` as compatibility-only, not the normal implementation path.
 - `pause` and `stop` messages are checked between loop cycles. They do not interrupt an already-running child claim.
 
 ## Repo Contract
