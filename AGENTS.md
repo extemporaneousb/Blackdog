@@ -20,6 +20,13 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
 - `.VE/` is not versioned. Each git worktree needs its own `.VE`
   rooted at that worktree; do not copy virtualenv directories between
   worktrees because they embed absolute paths.
+- Until the runtime-hardening tasks land, run Blackdog's own repo in
+  manual-first mode: unless a supervisor-issued child prompt already
+  claimed the task, prefer the direct `blackdog claim` ->
+  `blackdog worktree preflight|start` -> `blackdog result record` ->
+  land/`blackdog complete` flow. Treat `blackdog supervise ...` and
+  the static HTML control surface as optional aids rather than the
+  default way to keep Blackdog moving.
 - Blackdog uses WTAM for kept implementation changes. There is no
   non-WTAM implementation mode.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents

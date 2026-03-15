@@ -35,6 +35,12 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 8. Check `/Users/bullard/Work/Blackdog/.VE/bin/blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 9. Open `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` directly when you want the static task index; `blackdog render` refreshes it and supervisor cycles rewrite it after each loop pass.
 
+For Blackdog's own repo, manual-first is the default until the
+runtime-hardening tasks land: unless a supervisor-issued child prompt
+already claimed the task for you, prefer the direct `claim ->
+worktree preflight|start -> result record -> complete` flow over
+`supervise ...`.
+
 ## Docs to Review
 
 Review these repo docs before editing when they apply:

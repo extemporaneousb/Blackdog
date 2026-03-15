@@ -2,6 +2,15 @@
 
 Blackdog is a local-first backlog runtime for AI-assisted software work, with a target direction toward local multi-agent supervision.
 
+Until the runtime-hardening tasks land, Blackdog's own repo should use
+the direct WTAM path as its default operating mode: claim work
+explicitly, run `blackdog worktree preflight|start`, make the change
+in the task worktree, record `blackdog result record`, and then
+land/complete manually. `blackdog supervise ...` and the static HTML
+surface remain available for delegated runs and inspection, but they
+are not the required control path for Blackdog-on-Blackdog
+development.
+
 ## Core idea
 
 The backlog system should live in the repo that depends on it. Skills should explain how to use it, but they should not be the source of executable state logic.
@@ -121,6 +130,12 @@ That model is explicit in both `blackdog worktree ...` and
 `blackdog supervise ...`. Delegated child runs use unique task
 branches/worktrees and are landed through the primary worktree when
 they exit cleanly with committable changes.
+
+For Blackdog's own repo, that WTAM path is intentionally manual-first
+until supervisor hardening lands. The supervisor and rendered control
+surface are still useful, but operators should be able to continue
+Blackdog development with the direct claim/worktree/result/complete
+flow alone when runtime reliability is in doubt.
 
 ## Static control surface
 

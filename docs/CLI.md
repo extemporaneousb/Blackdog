@@ -28,6 +28,14 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 - `blackdog worktree cleanup` removes a landed task worktree and, when explicitly told, deletes the associated branch
 - `blackdog worktree preflight` reports the current worktree, primary worktree, configured worktree base, whether there are implementation-blocking local changes, the enforced WTAM workspace contract, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
 
+For Blackdog's own repo, manual-first is the default operating mode
+until the runtime-hardening tasks land. Prefer the direct `blackdog
+claim` -> `blackdog worktree preflight|start` -> `blackdog result
+record` -> land/`blackdog complete` flow for normal Blackdog-on-
+Blackdog work. Use `blackdog supervise run|loop` when you are
+explicitly exercising delegated execution or supervisor behavior, not
+as the required path to continue product development.
+
 ### Backlog management
 
 - `blackdog backlog new NAME`
