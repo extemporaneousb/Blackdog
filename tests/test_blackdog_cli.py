@@ -1882,6 +1882,189 @@ if __name__ == "__main__":
         )
         self.assertEqual(len(resolved_messages), 1)
 
+    def test_supervise_run_times_out_child_and_releases_task(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+import time
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    time.sleep(10)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint launcher for supervisor timeout test",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Timed out child task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove timed out child runs release their claims and record evidence.",
+            "--evidence",
+            "A child that exceeds the supervisor deadline should be blocked and released.",
+            "--safe-first-slice",
+            "Run one child longer than the timeout window.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Timeouts",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Timed out child task"]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_id,
+                "--timeout-seconds",
+                "1",
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        child = payload["children"][0]
+        self.assertTrue(child["timed_out"])
+        self.assertEqual(child["final_task_status"], "released")
+        self.assertIsNone(child["land_result"])
+        self.assertIsNone(child["land_error"])
+        self.assertTrue(Path(child["workspace"]).exists())
+
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][task_id]["status"], "released")
+
+        result_files = sorted((self.runtime_paths().results_dir / task_id).glob("*.json"))
+        self.assertTrue(result_files)
+        result_payload = json.loads(result_files[-1].read_text(encoding="utf-8"))
+        self.assertEqual(result_payload["status"], "blocked")
+        self.assertIn("Timed out before the supervisor deadline", result_payload["validation"])
+
+    def test_supervise_run_releases_task_after_clean_child_exit_without_completion(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint launcher for clean child exit test",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Clean exit child task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove clean child exits still release unfinished tasks.",
+            "--evidence",
+            "A child that exits 0 without landing work should record a partial result and release the claim.",
+            "--safe-first-slice",
+            "Run one child that exits successfully without writing a result or commit.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Cleanup",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Clean exit child task"]
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_id,
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        child = payload["children"][0]
+        self.assertFalse(child["timed_out"])
+        self.assertEqual(child["exit_code"], 0)
+        self.assertEqual(child["final_task_status"], "released")
+        self.assertIsNone(child["land_result"])
+        self.assertIsNone(child["land_error"])
+        self.assertTrue(Path(child["workspace"]).exists())
+
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][task_id]["status"], "released")
+
+        result_files = sorted((self.runtime_paths().results_dir / task_id).glob("*.json"))
+        self.assertTrue(result_files)
+        result_payload = json.loads(result_files[-1].read_text(encoding="utf-8"))
+        self.assertEqual(result_payload["status"], "partial")
+        self.assertIn("Child run exited cleanly but did not complete the task.", result_payload["residual"])
+
     def test_supervise_run_blocks_on_dirty_primary_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         install_exec_launcher(
