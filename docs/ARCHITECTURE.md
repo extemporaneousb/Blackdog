@@ -80,7 +80,7 @@ drift-management workflows still do not.
    artifacts.
 8. `blackdog supervise loop` repeats that cycle over time, records
    loop heartbeats, and refreshes the repo-local control surface.
-9. `blackdog ui snapshot` builds the canonical readonly monitor
+9. `blackdog snapshot` builds the canonical readonly monitor
    contract from backlog, state, inbox, events, results, and
    supervisor artifacts.
 10. `blackdog render` rebuilds the static HTML control page from the

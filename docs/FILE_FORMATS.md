@@ -200,7 +200,7 @@ Current keys:
 - `completed_at`
 - `final_status`
 
-## `blackdog ui snapshot`
+## `blackdog snapshot`
 
 Canonical static-page snapshot payload.
 
@@ -274,7 +274,7 @@ Current keys:
 
 ## Static HTML snapshot contract
 
-Embedded by `blackdog render` into `backlog-index.html` and printable with `blackdog ui snapshot`.
+Embedded by `blackdog render` into `backlog-index.html` and printable with `blackdog snapshot`.
 
 Top-level keys:
 

@@ -298,7 +298,7 @@ def cmd_next(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_ui_snapshot(args: argparse.Namespace) -> int:
+def cmd_snapshot(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     print(json.dumps(build_ui_snapshot(profile), indent=2))
     return 0
@@ -653,11 +653,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_next.add_argument("--format", choices=("text", "json"), default="text")
     p_next.set_defaults(func=cmd_next)
 
-    p_ui = subparsers.add_parser("ui", help="Static HTML snapshot helpers")
-    ui_subparsers = p_ui.add_subparsers(dest="ui_command", required=True)
-    p_ui_snapshot = ui_subparsers.add_parser("snapshot", help="Print the canonical static-HTML snapshot contract")
-    p_ui_snapshot.add_argument("--project-root", default=None)
-    p_ui_snapshot.set_defaults(func=cmd_ui_snapshot)
+    p_snapshot = subparsers.add_parser("snapshot", help="Print the canonical static-HTML snapshot contract")
+    p_snapshot.add_argument("--project-root", default=None)
+    p_snapshot.set_defaults(func=cmd_snapshot)
 
     p_worktree = subparsers.add_parser("worktree", help="Branch-backed worktree lifecycle for implementation tasks")
     worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)

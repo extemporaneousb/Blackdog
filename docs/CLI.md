@@ -12,7 +12,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog init --project-root PATH --project-name NAME`
 - `blackdog validate`
 - `blackdog render`
-- `blackdog ui snapshot`
+- `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
 - `blackdog worktree land [--branch BRANCH] [--into TARGET]`
@@ -65,7 +65,7 @@ The generated child prompt tells the agent that committed repo state is the base
 
 `blackdog supervise status` is the chat-native inspection surface for that loop. It reports the latest saved loop status for a supervisor actor, the currently open `pause`/`stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
 
-`blackdog ui snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, backlog counts, objectives, graph nodes and dependency edges, per-task compute/result metadata, direct artifact links, active-task summaries, recent task results, and grouping guidance.
+`blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, backlog counts, objectives, graph nodes and dependency edges, per-task compute/result metadata, direct artifact links, active-task summaries, recent task results, and grouping guidance.
 
 `blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and supervisor loop cycles rerender that page as part of normal state changes. The page embeds the current snapshot JSON directly and links to filesystem artifacts like result JSON files, prompt/stdout/stderr logs, and captured child diffs. Reload the file when you want the latest state.
 

@@ -873,7 +873,7 @@ class BlackdogCliTests(unittest.TestCase):
             )
             self.assertIn("worktree_land", {row["type"] for row in events})
 
-    def test_ui_snapshot_reports_graph_and_static_contract(self) -> None:
+    def test_snapshot_reports_graph_and_static_contract(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         for title in ("UI slice one", "UI slice two"):
             run_cli(
@@ -902,7 +902,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         snapshot = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "ui", "snapshot", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog.cli", "snapshot", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -919,7 +919,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["links"]["backlog"], "backlog.md")
         self.assertEqual(snapshot["links"]["results"], "task-results")
 
-    def test_ui_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
+    def test_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
         for title in ("Operator slice one", "Operator slice two"):
@@ -1064,7 +1064,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         snapshot = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "ui", "snapshot", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog.cli", "snapshot", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
