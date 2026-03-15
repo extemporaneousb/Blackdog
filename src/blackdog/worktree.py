@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+import os
 import subprocess
 import time
 
@@ -38,6 +39,12 @@ class DirtyPrimaryWorktreeError(WorktreeError):
             f"dirty paths: {dirty_text}; "
             "clean up or land the primary worktree changes and retry without using git stash"
         )
+
+
+WTAM_WORKTREE_VE_NOTE = (
+    ".VE is unversioned and bound to this worktree path; bootstrap one per worktree and do not reuse another "
+    "worktree's .VE."
+)
 
 
 @dataclass(frozen=True)
@@ -142,8 +149,8 @@ def _status_entries(repo_root: Path) -> list[list[str]]:
     return rows
 
 
-def _runtime_ignore_prefixes(profile: Profile) -> tuple[str, ...]:
-    repo_root = _repo_root(profile.paths.project_root)
+def _runtime_ignore_prefixes(profile: Profile, *, repo_root: Path | None = None) -> tuple[str, ...]:
+    repo_root = (repo_root or _repo_root(profile.paths.project_root)).resolve()
     control_dir = profile.paths.control_dir.resolve()
     if not _is_within(repo_root, control_dir):
         return ()
@@ -182,6 +189,35 @@ def _status_dirty(
     ignore_prefixes: tuple[str, ...] = (),
 ) -> bool:
     return bool(dirty_paths(repo_root, ignore_paths=ignore_paths, ignore_prefixes=ignore_prefixes))
+
+
+def worktree_contract(
+    profile: Profile,
+    *,
+    workspace: Path | None = None,
+    workspace_mode: str | None = None,
+) -> dict[str, Any]:
+    resolved_workspace = _repo_root(workspace or profile.paths.project_root)
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    target_branch = _run_git(primary_root, "rev-parse", "--abbrev-ref", "HEAD")
+    ignore_prefixes = _runtime_ignore_prefixes(profile, repo_root=primary_root)
+    workspace_blackdog = resolved_workspace / ".VE" / "bin" / "blackdog"
+    workspace_has_local_blackdog = workspace_blackdog.is_file() and os.access(workspace_blackdog, os.X_OK)
+    return {
+        "workspace_mode": workspace_mode or profile.supervisor_workspace_mode,
+        "current_worktree": str(resolved_workspace),
+        "current_branch": _run_git(resolved_workspace, "rev-parse", "--abbrev-ref", "HEAD"),
+        "current_is_primary": _is_primary_worktree(resolved_workspace),
+        "primary_worktree": str(primary_root),
+        "primary_branch": target_branch,
+        "target_branch": target_branch,
+        "primary_dirty": _status_dirty(primary_root, ignore_prefixes=ignore_prefixes),
+        "primary_dirty_paths": dirty_paths(primary_root, ignore_prefixes=ignore_prefixes),
+        "workspace_ve": str(resolved_workspace / ".VE"),
+        "workspace_blackdog_path": str(workspace_blackdog),
+        "workspace_has_local_blackdog": workspace_has_local_blackdog,
+        "ve_expectation": WTAM_WORKTREE_VE_NOTE,
+    }
 
 
 def _current_branch(repo_root: Path) -> str:
@@ -232,10 +268,9 @@ def _resolve_from_ref(primary_root: Path, from_ref: str | None, *, default_branc
 
 def worktree_preflight(profile: Profile) -> dict[str, Any]:
     current_root = _repo_root(profile.paths.project_root)
-    primary_root = find_primary_worktree(profile.paths.project_root)
+    contract = worktree_contract(profile, workspace=current_root)
+    primary_root = Path(contract["primary_worktree"]).resolve()
     runtime_ignore_prefixes = _runtime_ignore_prefixes(profile)
-    current_branch = _run_git(current_root, "rev-parse", "--abbrev-ref", "HEAD")
-    primary_branch = _run_git(primary_root, "rev-parse", "--abbrev-ref", "HEAD")
     configured_worktrees_dir = profile.paths.worktrees_dir.resolve()
     worktrees = []
     for row in _parse_worktree_list(profile.paths.project_root):
@@ -250,17 +285,26 @@ def worktree_preflight(profile: Profile) -> dict[str, Any]:
         )
     return {
         "repo_root": str(current_root),
-        "current_worktree": str(profile.paths.project_root.resolve()),
-        "current_branch": current_branch,
-        "current_is_primary": _is_primary_worktree(profile.paths.project_root.resolve()),
-        "primary_worktree": str(primary_root),
-        "primary_branch": primary_branch,
-        "dirty": _status_dirty(profile.paths.project_root.resolve()),
+        "current_worktree": contract["current_worktree"],
+        "current_branch": contract["current_branch"],
+        "current_is_primary": contract["current_is_primary"],
+        "primary_worktree": contract["primary_worktree"],
+        "primary_branch": contract["primary_branch"],
+        "dirty": _status_dirty(current_root),
         "implementation_dirty": _status_dirty(
-            profile.paths.project_root.resolve(),
+            current_root,
             ignore_prefixes=runtime_ignore_prefixes,
         ),
         "worktree_model": "branch-backed",
+        "workspace_mode": contract["workspace_mode"],
+        "target_branch": contract["target_branch"],
+        "primary_dirty": contract["primary_dirty"],
+        "primary_dirty_paths": contract["primary_dirty_paths"],
+        "current_worktree_ve": contract["workspace_ve"],
+        "current_worktree_blackdog_path": contract["workspace_blackdog_path"],
+        "current_worktree_has_local_blackdog": contract["workspace_has_local_blackdog"],
+        "ve_expectation": contract["ve_expectation"],
+        "workspace_contract": contract,
         "worktrees_dir": str(configured_worktrees_dir),
         "worktrees_dir_inside_repo": _is_within(primary_root, configured_worktrees_dir),
         "worktrees": worktrees,
@@ -519,16 +563,27 @@ def cleanup_task_worktree(
 def render_preflight_text(payload: dict[str, Any]) -> str:
     dirty = "yes" if payload["dirty"] else "no"
     implementation_dirty = "yes" if payload["implementation_dirty"] else "no"
+    primary_clean = "yes" if not payload["primary_dirty"] else "no"
     primary = "yes" if payload["current_is_primary"] else f"no (hint: {payload['primary_worktree']})"
     location = "inside repo" if payload["worktrees_dir_inside_repo"] else "outside repo"
+    workspace_blackdog = (
+        payload["current_worktree_blackdog_path"] if payload["current_worktree_has_local_blackdog"] else "blackdog"
+    )
     lines = [
         f"[blackdog-worktree] preflight: {payload['repo_root']} (branch: {payload['current_branch']}, dirty: {dirty})",
         f"[blackdog-worktree] cwd: {payload['current_worktree']}",
         f"[blackdog-worktree] primary worktree: {primary}",
+        f"[blackdog-worktree] workspace mode: {payload['workspace_mode']}",
         f"[blackdog-worktree] model: {payload['worktree_model']}",
+        f"[blackdog-worktree] target branch: {payload['target_branch']}",
+        f"[blackdog-worktree] primary clean for landing: {primary_clean}",
         f"[blackdog-worktree] implementation dirty: {implementation_dirty}",
         f"[blackdog-worktree] worktrees dir: {payload['worktrees_dir']} ({location})",
+        f"[blackdog-worktree] current worktree CLI: {workspace_blackdog}",
+        f"[blackdog-worktree] .VE rule: {payload['ve_expectation']}",
     ]
+    if payload["primary_dirty_paths"]:
+        lines.append(f"[blackdog-worktree] primary dirty paths: {', '.join(payload['primary_dirty_paths'])}")
     for row in payload["worktrees"]:
         label = "primary" if row["is_primary"] else row["branch"] or "(detached)"
         lines.append(f"[blackdog-worktree] known: {row['path']} [{label}]")

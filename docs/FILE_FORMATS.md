@@ -230,6 +230,50 @@ Current top-level identity keys:
 - `control_dir`
 - `profile_file`
 
+## `blackdog worktree preflight --format json`
+
+Structured preflight payload for WTAM implementation work.
+
+Current keys include:
+
+- `repo_root`
+- `current_worktree`
+- `current_branch`
+- `current_is_primary`
+- `primary_worktree`
+- `primary_branch`
+- `dirty`
+- `implementation_dirty`
+- `worktree_model`
+- `workspace_mode`
+- `target_branch`
+- `primary_dirty`
+- `primary_dirty_paths`
+- `current_worktree_ve`
+- `current_worktree_blackdog_path`
+- `current_worktree_has_local_blackdog`
+- `ve_expectation`
+- `workspace_contract`
+- `worktrees_dir`
+- `worktrees_dir_inside_repo`
+- `worktrees`
+
+`workspace_contract` is the normalized WTAM contract reused across CLI, supervisor, and UI surfaces. It carries the resolved workspace mode, current and primary worktree identity, target branch, primary dirty state, workspace-local Blackdog path, and the per-worktree `.VE` expectation.
+
+## `blackdog supervise status --format json`
+
+Canonical chat-native supervisor inspection payload.
+
+Current keys include:
+
+- `actor`
+- `latest_loop`
+- `workspace_contract`
+- `control_action`
+- `open_control_messages`
+- `ready_tasks`
+- `recent_results`
+
 ## `blackdog worktree start --format json`
 
 Structured worktree spec emitted by the CLI and reused in the `worktree_start` event payload.
@@ -259,6 +303,7 @@ Top-level keys:
 - `project_root`
 - `control_dir`
 - `profile_file`
+- `workspace_contract`
 - `counts`
 - `total`
 - `push_objective`
@@ -317,8 +362,25 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `total_compute_label`
 - `latest_result_status`
 - `latest_result_href`
+- `workspace_mode`
+- `task_branch`
+- `target_branch`
+- `primary_worktree`
 - `run_id`
 - `run_href`
 - `prompt_href`
 - `stdout_href`
 - `stderr_href`
+
+Current `supervisor.active_runs[*]` and `supervisor.recent_runs[*]` rows also include:
+
+- `workspace_mode`
+- `target_branches`
+
+Current `supervisor.*.children[*]` rows include:
+
+- `workspace`
+- `workspace_mode`
+- `task_branch`
+- `target_branch`
+- `primary_worktree`

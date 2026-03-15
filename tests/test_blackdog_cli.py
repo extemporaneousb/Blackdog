@@ -24,6 +24,7 @@ from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import append_jsonl, record_task_result, send_message
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command
+from blackdog.worktree import WorktreeSpec
 
 
 def cli_env() -> dict[str, str]:
@@ -681,6 +682,21 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(preflight["worktree_model"], "branch-backed")
         self.assertTrue(preflight["current_is_primary"])
         self.assertFalse(preflight["worktrees_dir_inside_repo"])
+        self.assertEqual(preflight["workspace_mode"], "git-worktree")
+        self.assertEqual(preflight["target_branch"], "main")
+        self.assertIn(".VE is unversioned", preflight["workspace_contract"]["ve_expectation"])
+
+        preflight_text = subprocess.run(
+            [sys.executable, "-m", "blackdog.cli", "worktree", "preflight", "--project-root", str(self.root)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        ).stdout
+        self.assertIn("[blackdog-worktree] workspace mode: git-worktree", preflight_text)
+        self.assertIn("[blackdog-worktree] target branch: main", preflight_text)
+        self.assertIn("[blackdog-worktree] .VE rule:", preflight_text)
 
         with tempfile.TemporaryDirectory() as worktree_parent:
             expected_path = Path(worktree_parent) / "task-worktree"
@@ -1058,6 +1074,24 @@ class BlackdogCliTests(unittest.TestCase):
         append_jsonl(
             paths.events_file,
             {
+                "event_id": "evt-live-worktree",
+                "type": "worktree_start",
+                "at": "2026-03-14T12:00:03-07:00",
+                "actor": "supervisor",
+                "task_id": first_task,
+                "payload": {
+                    "run_id": "liverun1",
+                    "child_agent": "supervisor/child-01",
+                    "branch": "agent/operator-slice-one-liverun1",
+                    "target_branch": "main",
+                    "worktree_path": str(live_task_dir.parent),
+                    "primary_worktree": str(self.root),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
                 "event_id": "evt-live-child",
                 "type": "child_launch",
                 "at": "2026-03-14T12:00:05-07:00",
@@ -1092,8 +1126,11 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual({row["run_id"] for row in snapshot["supervisor"]["recent_runs"]}, {"liverun1", "stalerun1"})
         self.assertNotIn("result-noise", recent_runs)
         self.assertEqual(set(active_runs), {"liverun1"})
+        self.assertEqual(snapshot["workspace_contract"]["target_branch"], "main")
+        self.assertIn(".VE is unversioned", snapshot["workspace_contract"]["ve_expectation"])
         self.assertEqual(recent_runs["stalerun1"]["status"], "interrupted")
         self.assertEqual(snapshot["active_tasks"][0]["task_id"], first_task)
+        self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"/artifacts/supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
         self.assertEqual(graph_tasks[first_task]["latest_result_status"], "success")
         self.assertIsNotNone(graph_tasks[first_task]["active_compute_label"])
@@ -1292,6 +1329,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["latest_loop"]["loop_id"], "abcd1234")
         self.assertEqual(payload["latest_loop"]["status_file"], str(status_file))
         self.assertEqual(payload["latest_loop"]["status"], "paused")
+        self.assertEqual(payload["workspace_contract"]["workspace_mode"], "git-worktree")
+        self.assertEqual(payload["workspace_contract"]["target_branch"], "main")
+        self.assertIsInstance(payload["workspace_contract"]["primary_dirty"], bool)
+        self.assertIn(".VE is unversioned", payload["workspace_contract"]["ve_expectation"])
         self.assertEqual(payload["control_action"], {"action": "pause", "message_id": pause_message["message_id"]})
         self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [pause_message["message_id"]])
         self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Status task one"])
@@ -1318,6 +1359,8 @@ class BlackdogCliTests(unittest.TestCase):
             cwd=self.root,
         ).stdout
         self.assertIn("Latest loop: paused | abcd1234 | cycles 1 | workspace git-worktree", text_output)
+        self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
+        self.assertIn(".VE rule: .VE is unversioned", text_output)
         self.assertIn(f"Next cycle control: pause via {pause_message['message_id']}", text_output)
         self.assertIn("Recent child-run results:", text_output)
 
@@ -1434,7 +1477,94 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         self.assertIn(str(blackdog_script.resolve()), prompt)
+        self.assertIn(".VE is unversioned and bound to this worktree path", prompt)
         self.assertNotIn("PYTHONPATH=src python3 -m blackdog.cli", prompt)
+
+    def test_build_child_prompt_does_not_reuse_primary_worktree_ve_for_branch_backed_runs(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Prompt worktree slice",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need one task to inspect branch-backed prompt wording.",
+            "--evidence",
+            "The prompt should not tell child worktrees to use another worktree's .VE.",
+            "--safe-first-slice",
+            "Generate a prompt for one branch-backed child workspace.",
+            "--path",
+            "src/blackdog/supervisor.py",
+            "--epic-title",
+            "Prompting",
+            "--lane-title",
+            "WTAM",
+            "--wave",
+            "0",
+        )
+        ve_bin = self.root / ".VE" / "bin"
+        ve_bin.mkdir(parents=True)
+        blackdog_script = ve_bin / "blackdog"
+        blackdog_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        blackdog_script.chmod(0o755)
+
+        with tempfile.TemporaryDirectory() as worktree_parent:
+            workspace = Path(worktree_parent) / "prompt-worktree"
+            subprocess.run(
+                ["git", "-C", str(self.root), "worktree", "add", str(workspace), "-b", "agent/prompt-worktree", "main"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                profile = load_profile(self.root)
+                snapshot = load_backlog(profile.paths, profile)
+                task = next(iter(snapshot.tasks.values()))
+                base_commit = subprocess.run(
+                    ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                prompt = _build_child_prompt(
+                    profile,
+                    task,
+                    child_agent="supervisor/child-01",
+                    workspace_mode="git-worktree",
+                    workspace=workspace,
+                    worktree_spec=WorktreeSpec(
+                        task_id=task.id,
+                        task_title=task.title,
+                        task_slug="prompt-worktree",
+                        branch="agent/prompt-worktree",
+                        base_ref="main",
+                        base_commit=base_commit,
+                        target_branch="main",
+                        worktree_path=str(workspace),
+                        primary_worktree=str(self.root),
+                        current_worktree=str(self.root),
+                    ),
+                )
+            finally:
+                subprocess.run(
+                    ["git", "-C", str(self.root), "worktree", "remove", "--force", str(workspace)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(self.root), "branch", "-D", "agent/prompt-worktree"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+        self.assertNotIn(str(blackdog_script.resolve()), prompt)
+        self.assertIn("This workspace does not currently have", prompt)
+        self.assertIn("do not reuse another worktree's .VE", prompt)
 
     def test_supervise_run_launches_child_command_in_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1564,6 +1694,8 @@ if __name__ == "__main__":
         prompt_text = Path(payload["children"][0]["prompt_file"]).read_text(encoding="utf-8")
         self.assertFalse(workspace.exists())
         self.assertIn("Treat committed repo state as the baseline for this task", prompt_text)
+        self.assertIn("Primary-worktree landing gate:", prompt_text)
+        self.assertIn(".VE is unversioned and bound to this worktree path", prompt_text)
         self.assertIn("Do not run `blackdog claim` for this task again.", prompt_text)
         self.assertIn("Prefer Blackdog CLI output over direct reads of raw state files", prompt_text)
         self.assertIn("Commit your code changes on that task branch", prompt_text)

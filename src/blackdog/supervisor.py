@@ -45,6 +45,7 @@ from .worktree import (
     supervisor_task_branch,
     supervisor_task_worktree_path,
     start_task_worktree,
+    worktree_contract,
 )
 
 
@@ -94,8 +95,8 @@ class PreparedWorkspace:
     worktree_spec: WorktreeSpec | None = None
 
 
-def _preferred_blackdog_command(profile: Profile) -> str:
-    candidate = (profile.paths.project_root / ".VE" / "bin" / "blackdog").resolve()
+def _preferred_blackdog_command(profile: Profile, *, workspace: Path | None = None) -> str:
+    candidate = ((workspace or profile.paths.project_root) / ".VE" / "bin" / "blackdog").resolve()
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return shlex.quote(str(candidate))
     return "blackdog"
@@ -181,6 +182,19 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
     else:
         lines.append("Latest loop: none")
         lines.append("Status file: none")
+    contract = view.get("workspace_contract")
+    if isinstance(contract, dict):
+        primary_state = "dirty" if contract.get("primary_dirty") else "clean"
+        local_ve_state = "ready" if contract.get("workspace_has_local_blackdog") else "missing"
+        lines.append(
+            "WTAM contract: "
+            f"{contract.get('workspace_mode') or 'unknown'} -> {contract.get('target_branch') or '?'}"
+            f" | primary {primary_state}"
+            f" | local .VE {local_ve_state}"
+        )
+        if contract.get("primary_dirty_paths"):
+            lines.append("Primary dirty paths: " + ", ".join(str(item) for item in contract["primary_dirty_paths"]))
+        lines.append(f".VE rule: {contract.get('ve_expectation') or ''}")
     control = view.get("control_action")
     if isinstance(control, dict):
         lines.append(f"Next cycle control: {control['action']} via {control['message_id']}")
@@ -316,6 +330,8 @@ def build_supervisor_status_view(
 ) -> dict[str, Any]:
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    latest_loop = _latest_loop_status(profile, actor=actor)
+    workspace_mode = str((latest_loop or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
     open_messages = load_inbox(profile.paths, recipient=actor, status="open")
     control_messages = []
     for message in open_messages:
@@ -378,7 +394,8 @@ def build_supervisor_status_view(
             break
     return {
         "actor": actor,
-        "latest_loop": _latest_loop_status(profile, actor=actor),
+        "latest_loop": latest_loop,
+        "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
         "control_action": (
             {
                 "action": control_action,
@@ -556,7 +573,8 @@ def _build_child_prompt(
     workspace: Path,
     worktree_spec: WorktreeSpec | None = None,
 ) -> str:
-    blackdog_command = _preferred_blackdog_command(profile)
+    blackdog_command = _preferred_blackdog_command(profile, workspace=workspace)
+    contract = worktree_contract(profile, workspace=workspace, workspace_mode=workspace_mode)
     docs = "\n".join(f"- {item}" for item in task.payload.get("docs", [])) or "- No routed docs."
     checks = "\n".join(f"- {item}" for item in task.payload.get("checks", [])) or "- No validation commands."
     paths = "\n".join(f"- {item}" for item in task.payload.get("paths", [])) or "- No specific paths."
@@ -570,6 +588,21 @@ def _build_child_prompt(
         "- Keep your changes isolated to the task branch and target paths unless the task requires broader edits."
         if worktree_spec is not None
         else "- Preserve inherited changes outside the target paths unless the task requires touching them."
+    )
+    primary_cleanliness_rule = (
+        f"- Primary-worktree landing gate: currently dirty ({', '.join(contract['primary_dirty_paths'])}). "
+        f"The supervisor cannot land `{worktree_spec.branch}` into `{contract['target_branch']}` until the primary checkout is clean."
+        if worktree_spec is not None and contract["primary_dirty_paths"]
+        else (
+            f"- Primary-worktree landing gate: `{contract['primary_worktree']}` must stay clean for the supervisor to land changes into `{contract['target_branch']}`."
+            if worktree_spec is not None
+            else "- Primary-worktree landing gate: if you keep changes, finish with a clean landing path through the coordinating checkout."
+        )
+    )
+    venv_rule = (
+        f"- `{contract['ve_expectation']}` Preferred CLI for this workspace: `{contract['workspace_blackdog_path']}`."
+        if contract["workspace_has_local_blackdog"]
+        else f"- `{contract['ve_expectation']}` This workspace does not currently have `{contract['workspace_blackdog_path']}`, so use `blackdog` from the active environment or bootstrap `./.VE` here."
     )
     branch_rules = (
         textwrap.dedent(
@@ -617,6 +650,9 @@ def _build_child_prompt(
         Required operating rules:
         {workspace_baseline_rule}
         {preserve_rule}
+        - Supervisor workspace mode for this run: `{contract['workspace_mode']}`.
+        {primary_cleanliness_rule}
+        {venv_rule}
         - The supervisor has already claimed `{task.id}` for you as `{child_agent}`. Do not run `blackdog claim` for this task again.
         - Prefer Blackdog CLI output over direct reads of raw state files when checking claims, inbox state, results, or task status.
         - Work only on `{task.id}`.

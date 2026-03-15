@@ -23,6 +23,7 @@ from .backlog import (
 )
 from .config import ConfigError, Profile, ProjectPaths
 from .store import StoreError, load_events, load_inbox, load_state, load_task_results, now_iso
+from .worktree import worktree_contract
 
 
 UI_SNAPSHOT_SCHEMA_VERSION = 1
@@ -264,6 +265,7 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
     relevant_events = {
         "supervisor_run_started",
         "supervisor_run_finished",
+        "worktree_start",
         "child_launch",
         "child_launch_failed",
         "child_finish",
@@ -299,7 +301,7 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
         elif event_type == "supervisor_run_finished":
             run["status"] = "finished"
             run["finished_at"] = str(event.get("at") or "")
-        elif event_type in {"child_launch", "child_launch_failed", "child_finish"}:
+        elif event_type in {"worktree_start", "child_launch", "child_launch_failed", "child_finish"}:
             task_id = str(event.get("task_id") or "")
             child_agent = str(payload.get("child_agent") or task_id or "child")
             child = run["children"].setdefault(
@@ -309,6 +311,10 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
                     "task_id": task_id,
                     "status": "pending",
                     "workspace": None,
+                    "workspace_mode": run["workspace_mode"],
+                    "task_branch": None,
+                    "target_branch": None,
+                    "primary_worktree": None,
                     "pid": None,
                     "exit_code": None,
                     "timed_out": False,
@@ -319,9 +325,15 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
             )
             if task_id:
                 child["task_id"] = task_id
-            if event_type == "child_launch":
+            if event_type == "worktree_start":
+                child["workspace"] = payload.get("worktree_path") or child.get("workspace")
+                child["task_branch"] = payload.get("branch")
+                child["target_branch"] = payload.get("target_branch")
+                child["primary_worktree"] = payload.get("primary_worktree")
+            elif event_type == "child_launch":
                 child["status"] = "running"
                 child["workspace"] = payload.get("workspace")
+                child["workspace_mode"] = payload.get("workspace_mode") or child.get("workspace_mode") or run["workspace_mode"]
                 child["pid"] = payload.get("pid")
                 child["started_at"] = str(event.get("at") or "")
             elif event_type == "child_launch_failed":
@@ -360,6 +372,13 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
             latest_finished_at = str(child.get("finished_at") or latest_finished_at or "")
             artifacts = _child_artifacts(paths, run_dir, str(child.get("task_id") or ""))
             children.append({**child, **artifacts})
+        target_branches = sorted(
+            {
+                str(child.get("target_branch") or "").strip()
+                for child in children
+                if str(child.get("target_branch") or "").strip()
+            }
+        )
         if run["status"] != "finished":
             if has_running_child:
                 run["status"] = "running"
@@ -388,6 +407,7 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
                 "elapsed_seconds": run_elapsed,
                 "elapsed_label": _format_duration(run_elapsed),
                 "workspace_mode": run["workspace_mode"],
+                "target_branches": target_branches,
                 "task_ids": run["task_ids"],
                 "run_dir": str(run_dir) if run_dir is not None else None,
                 "run_href": _artifact_href(paths, run_dir) if run_dir is not None else None,
@@ -475,6 +495,10 @@ def _build_active_tasks(graph_tasks: list[dict[str, Any]], active_runs: list[dic
                     "latest_result_at": task.get("latest_result_at"),
                     "latest_result_href": task.get("latest_result_href"),
                     "child_agent": child.get("child_agent"),
+                    "workspace_mode": child.get("workspace_mode"),
+                    "task_branch": child.get("task_branch"),
+                    "target_branch": child.get("target_branch"),
+                    "primary_worktree": child.get("primary_worktree"),
                     "run_id": run.get("run_id"),
                     "run_href": run.get("run_href"),
                     "prompt_href": child.get("prompt_href"),
@@ -590,6 +614,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         **_build_supervisor_runs(profile.paths, events),
         "loops": _load_supervisor_loops(profile.paths),
     }
+    workspace = worktree_contract(profile)
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
@@ -598,6 +623,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "project_root": str(profile.paths.project_root),
         "control_dir": str(profile.paths.control_dir),
         "profile_file": str(profile.paths.profile_file),
+        "workspace_contract": workspace,
         "counts": summary["counts"],
         "total": summary["total"],
         "push_objective": summary["push_objective"],
@@ -1183,6 +1209,7 @@ def _render_ui_shell() -> str:
       <div>
         <h2>Supervisor Monitor</h2>
         <div id="supervisor-strip" class="supervisor-strip"></div>
+        <p id="workspace-contract-note" class="history-note"></p>
       </div>
     </section>
     <section class="panel">
@@ -1492,7 +1519,7 @@ def _render_ui_shell() -> str:
                 <div class="chips">${statusChip(row.status || "claimed")}${row.latest_result_status ? statusChip(`latest ${row.latest_result_status}`) : ""}</div>
               </div>
               <span class="subtle">${escapeHtml(row.epic_title || "")}</span>
-              <span class="meta">${escapeHtml(row.claimed_by || row.child_agent || "")}${row.elapsed_label ? ` · running ${row.elapsed_label}` : ""}${row.total_compute_label ? ` · total ${row.total_compute_label}` : ""}</span>
+              <span class="meta">${escapeHtml(row.claimed_by || row.child_agent || "")}${row.workspace_mode ? ` · ${escapeHtml(row.workspace_mode)}` : ""}${row.target_branch ? ` · ${escapeHtml(row.task_branch || "task")} -> ${escapeHtml(row.target_branch)}` : ""}${row.elapsed_label ? ` · running ${row.elapsed_label}` : ""}${row.total_compute_label ? ` · total ${escapeHtml(row.total_compute_label)}` : ""}</span>
               <span class="subtle">${escapeHtml(row.detail || "")}</span>
               <div class="inline-links">
                 ${link("Run", row.run_href)}
@@ -1508,16 +1535,24 @@ def _render_ui_shell() -> str:
 
     function renderSupervisorStrip(snapshot) {
       const supervisor = snapshot.supervisor || {};
+      const contract = snapshot.workspace_contract || {};
       const interruptedRuns = asArray(supervisor.recent_runs).filter((row) => uiStatus(row.status) === "interrupted").length;
       const rows = [
         ["Active runs", (supervisor.active_runs || []).length],
         ["Interrupted", interruptedRuns],
         ["Loops", (supervisor.loops || []).length],
         ["Dispatches", (snapshot.dispatch_messages || []).length],
+        ["Mode", contract.workspace_mode || "unknown"],
+        ["Target", contract.target_branch || "?"],
+        ["Primary", contract.primary_dirty ? "dirty" : "clean"],
+        ["Local .VE", contract.workspace_has_local_blackdog ? "ready" : "missing"],
       ];
       document.getElementById("supervisor-strip").innerHTML = rows
         .map(([label, value]) => `<article class="strip-card"><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
         .join("");
+      document.getElementById("workspace-contract-note").textContent = contract.ve_expectation
+        ? `${contract.ve_expectation} CLI for this checkout: ${contract.workspace_has_local_blackdog ? contract.workspace_blackdog_path : "blackdog"}.`
+        : "";
     }
 
     function renderMessages(snapshot) {
@@ -1634,7 +1669,7 @@ def _render_ui_shell() -> str:
                 <span class="eyebrow">${escapeHtml(run.actor || "supervisor")} · ${escapeHtml(run.run_id || "")}</span>
                 <div class="chips">${statusChip(run.status || "running")}</div>
               </div>
-              <strong>${escapeHtml(run.workspace_mode || "supervisor run")}${run.elapsed_label ? ` · ${escapeHtml(run.elapsed_label)}` : ""}</strong>
+              <strong>${escapeHtml(run.workspace_mode || "supervisor run")}${run.target_branches?.length ? ` -> ${escapeHtml(run.target_branches.join(", "))}` : ""}${run.elapsed_label ? ` · ${escapeHtml(run.elapsed_label)}` : ""}</strong>
               <span class="run-summary">${escapeHtml((run.children || []).length)} task(s)${run.completed_at ? " · finished" : ""}</span>
               <div class="inline-links">
                 ${link("Run Artifacts", run.run_href)}
@@ -1644,7 +1679,7 @@ def _render_ui_shell() -> str:
                   <div class="child-row">
                     <strong>${escapeHtml(child.task_id || "?")}</strong>
                     <div class="chips">${statusChip(child.status || "pending")}${child.final_task_status ? statusChip(child.final_task_status) : ""}${child.elapsed_label ? statusChip(child.elapsed_label) : ""}</div>
-                    <span class="meta">${escapeHtml(child.child_agent || "")}</span>
+                    <span class="meta">${escapeHtml(child.child_agent || "")}${child.workspace_mode ? ` · ${escapeHtml(child.workspace_mode)}` : ""}${child.target_branch ? ` · ${escapeHtml(child.task_branch || "task")} -> ${escapeHtml(child.target_branch)}` : ""}</span>
                     ${child.error ? `<span class="run-summary">${escapeHtml(excerpt(child.error, 112))}</span>` : ""}
                     <div class="inline-links">
                       ${link("Prompt", child.prompt_href)}
@@ -1786,6 +1821,7 @@ def _render_ui_shell() -> str:
       document.getElementById("activity-summary").innerHTML = "";
       document.getElementById("active-tasks").innerHTML = "";
       document.getElementById("supervisor-strip").innerHTML = "";
+      document.getElementById("workspace-contract-note").textContent = "";
       document.getElementById("filters").innerHTML = "";
       document.getElementById("message-actions").innerHTML = "";
       document.getElementById("result-actions").innerHTML = "";
