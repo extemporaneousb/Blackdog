@@ -22,6 +22,7 @@ from .backlog import (
     task_done,
 )
 from .config import DEFAULT_SUPERVISOR_COMMAND, Profile
+from .scaffold import render_project_html
 from .store import (
     append_event,
     claim_task_entry,
@@ -120,6 +121,11 @@ def _notify_supervisor(
         task_id=task_id,
         tags=tags,
     )
+
+
+def _emit_render(profile: Profile) -> None:
+    if profile.auto_render_html:
+        render_project_html(profile)
 
 
 def _supervisor_text(view: dict[str, Any]) -> str:
@@ -956,6 +962,7 @@ def run_supervisor(
                 task_id=task.id,
                 payload={"run_id": run_id, "child_agent": child_agent, "error": str(exc)},
             )
+            _emit_render(profile)
             continue
         workspace = prepared.workspace
         if prepared.worktree_spec is not None:
@@ -1062,6 +1069,7 @@ def run_supervisor(
                 task_id=task.id,
                 payload={"run_id": run_id, "child_agent": child_agent, "error": str(exc)},
             )
+            _emit_render(profile)
             continue
         children.append(child)
         append_event(
@@ -1077,6 +1085,7 @@ def run_supervisor(
                 "pid": child.process.pid,
             },
         )
+        _emit_render(profile)
 
     active = [child for child in children if child.process is not None]
     while active:
@@ -1109,6 +1118,7 @@ def run_supervisor(
                     "landed_commit": (child.land_result or {}).get("landed_commit"),
                 },
             )
+            _emit_render(profile)
             active.remove(child)
         if active:
             time.sleep(1)

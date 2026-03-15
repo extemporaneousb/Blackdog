@@ -77,6 +77,31 @@ def wait_for_json(path: Path, predicate, *, timeout: float = 5.0) -> dict[str, o
     raise AssertionError(f"Timed out waiting for JSON predicate on {path}; last payload={last_payload}")
 
 
+def html_snapshot(path: Path) -> dict[str, object]:
+    html = path.read_text(encoding="utf-8")
+    match = re.search(r'<script id="blackdog-snapshot" type="application/json">(.*?)</script>', html, re.S)
+    if match is None:
+        raise AssertionError(f"Could not find embedded snapshot in {path}")
+    return json.loads(match.group(1))
+
+
+def wait_for_html_snapshot(path: Path, predicate, *, timeout: float = 5.0) -> dict[str, object]:
+    deadline = time.time() + timeout
+    last_payload: dict[str, object] | None = None
+    while time.time() < deadline:
+        if path.exists():
+            try:
+                payload = html_snapshot(path)
+            except (AssertionError, json.JSONDecodeError):
+                time.sleep(0.05)
+                continue
+            last_payload = payload
+            if predicate(payload):
+                return payload
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for HTML snapshot predicate on {path}; last payload={last_payload}")
+
+
 def task_ids_by_title(root: Path) -> dict[str, str]:
     profile = load_profile(root)
     snapshot = load_backlog(profile.paths, profile)
@@ -2605,6 +2630,159 @@ if __name__ == "__main__":
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][current_task_id]["status"], "done")
         self.assertEqual(state["task_claims"][downstream_task_id]["status"], "done")
+
+    def test_supervise_loop_refreshes_static_html_while_child_is_running(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Render while child runs",
+            "--bucket",
+            "html",
+            "--why",
+            "Need the static operator view to stay current during an active child run.",
+            "--evidence",
+            "The backlog index should show a running task before the child completes.",
+            "--safe-first-slice",
+            "Hold a child run open and wait for the rendered HTML snapshot to flip to running.",
+            "--path",
+            "src/blackdog/supervisor.py",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Rendered heartbeats",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Render while child runs"]
+        paths = self.runtime_paths()
+        sync_dir = paths.control_dir / "render-sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        initial_snapshot = html_snapshot(paths.html_file)
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    sync_dir = project_root / ".git" / "blackdog" / "render-sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    started_file = sync_dir / f"started-{task_id}.txt"
+    release_file = sync_dir / f"release-{task_id}.txt"
+    started_file.write_text("started\\n", encoding="utf-8")
+    deadline = time.time() + 10
+    while time.time() < deadline and not release_file.exists():
+        time.sleep(0.05)
+    if not release_file.exists():
+        print(f"timed out waiting for release of {task_id}", file=sys.stderr)
+        return 3
+    Path("render-running.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "render-running.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after render refresh"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"render refresh child completed {task_id}",
+            "--validation",
+            "fake-render-refresh-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint gated launcher for render refresh test",
+        )
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "loop",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--count",
+                "1",
+                "--poll-interval-seconds",
+                "0",
+                "--max-cycles",
+                "1",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            wait_for_file(sync_dir / f"started-{task_id}.txt", timeout=10)
+            refreshed_snapshot = wait_for_html_snapshot(
+                paths.html_file,
+                lambda payload: payload.get("generated_at") != initial_snapshot.get("generated_at")
+                and any(
+                    row.get("id") == task_id and row.get("latest_run_status") == "running"
+                    for row in payload.get("active_tasks", [])
+                ),
+                timeout=10,
+            )
+            active_rows = [row for row in refreshed_snapshot["active_tasks"] if row["id"] == task_id]
+            self.assertEqual(len(active_rows), 1)
+            self.assertEqual(active_rows[0]["operator_status"], "Running")
+            self.assertFalse((sync_dir / f"release-{task_id}.txt").exists())
+            (sync_dir / f"release-{task_id}.txt").write_text("release\n", encoding="utf-8")
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+
+        payload = json.loads(stdout)
+        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran"])
+        self.assertEqual(payload["cycles"][0]["task_ids"], [task_id])
 
     def test_supervise_loop_skips_removed_downstream_task_and_runs_next_available(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
