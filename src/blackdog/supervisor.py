@@ -413,12 +413,6 @@ def build_supervisor_status_view(
 def _write_loop_status(paths, status_file: Path, payload: dict[str, Any]) -> None:
     status_file.parent.mkdir(parents=True, exist_ok=True)
     status_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    try:
-        from .ui import notify_ui_server
-
-        notify_ui_server(paths)
-    except ImportError:
-        pass
 
 
 def _claim_for_child(profile: Profile, snapshot: BacklogSnapshot, task: TaskInfo, *, child_agent: str) -> None:
@@ -491,8 +485,8 @@ def _prepare_workspace(
     workspace_mode: str,
     run_id: str,
 ) -> PreparedWorkspace:
-    if workspace_mode == "current":
-        return PreparedWorkspace(workspace=profile.paths.project_root)
+    if workspace_mode != "git-worktree":
+        raise SupervisorError("Blackdog only supports git-worktree supervisor workspaces")
     profile.paths.worktrees_dir.mkdir(parents=True, exist_ok=True)
     branch = supervisor_task_branch(task, run_id)
     workspace = supervisor_task_worktree_path(profile, task, run_id).resolve()
@@ -573,49 +567,35 @@ def _build_child_prompt(
     workspace: Path,
     worktree_spec: WorktreeSpec | None = None,
 ) -> str:
+    if worktree_spec is None:
+        raise SupervisorError("Blackdog only supports branch-backed task worktrees for child runs")
     blackdog_command = _preferred_blackdog_command(profile, workspace=workspace)
     contract = worktree_contract(profile, workspace=workspace, workspace_mode=workspace_mode)
     docs = "\n".join(f"- {item}" for item in task.payload.get("docs", [])) or "- No routed docs."
     checks = "\n".join(f"- {item}" for item in task.payload.get("checks", [])) or "- No validation commands."
     paths = "\n".join(f"- {item}" for item in task.payload.get("paths", [])) or "- No specific paths."
     domains = ", ".join(str(item) for item in task.payload.get("domains", [])) or "none"
-    workspace_baseline_rule = (
-        f"- This branch-backed worktree was created from the primary worktree branch. Treat committed repo state as the baseline for this task."
-        if worktree_spec is not None
-        else "- This workspace may already contain uncommitted changes materialized from the coordinating repo checkout. Treat those inherited changes as your starting baseline for this task, not as unrelated user edits."
-    )
-    preserve_rule = (
-        "- Keep your changes isolated to the task branch and target paths unless the task requires broader edits."
-        if worktree_spec is not None
-        else "- Preserve inherited changes outside the target paths unless the task requires touching them."
-    )
+    workspace_baseline_rule = "- This branch-backed worktree was created from the primary worktree branch. Treat committed repo state as the baseline for this task."
+    preserve_rule = "- Keep your changes isolated to the task branch and target paths unless the task requires broader edits."
     primary_cleanliness_rule = (
         f"- Primary-worktree landing gate: currently dirty ({', '.join(contract['primary_dirty_paths'])}). "
         f"The supervisor cannot land `{worktree_spec.branch}` into `{contract['target_branch']}` until the primary checkout is clean."
-        if worktree_spec is not None and contract["primary_dirty_paths"]
-        else (
-            f"- Primary-worktree landing gate: `{contract['primary_worktree']}` must stay clean for the supervisor to land changes into `{contract['target_branch']}`."
-            if worktree_spec is not None
-            else "- Primary-worktree landing gate: if you keep changes, finish with a clean landing path through the coordinating checkout."
-        )
+        if contract["primary_dirty_paths"]
+        else f"- Primary-worktree landing gate: `{contract['primary_worktree']}` must stay clean for the supervisor to land changes into `{contract['target_branch']}`."
     )
     venv_rule = (
         f"- `{contract['ve_expectation']}` Preferred CLI for this workspace: `{contract['workspace_blackdog_path']}`."
         if contract["workspace_has_local_blackdog"]
         else f"- `{contract['ve_expectation']}` This workspace does not currently have `{contract['workspace_blackdog_path']}`, so use `blackdog` from the active environment or bootstrap `./.VE` here."
     )
-    branch_rules = (
-        textwrap.dedent(
-            f"""
-            - This is a branch-backed task worktree on branch `{worktree_spec.branch}` targeting `{worktree_spec.target_branch}`.
-            - Commit your code changes on that task branch before you exit if you want the supervisor to land them.
-            - Do not land, merge, or delete the branch yourself. The supervisor will land `{worktree_spec.branch}` through the primary worktree and then clean it up.
-            - Do not run `{blackdog_command} complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
-            """
-        ).strip()
-        if worktree_spec is not None
-        else f"- If the task is complete, mark it done with `{blackdog_command} complete --project-root {profile.paths.project_root} --agent {child_agent} --id {task.id}`."
-    )
+    branch_rules = textwrap.dedent(
+        f"""
+        - This is a branch-backed task worktree on branch `{worktree_spec.branch}` targeting `{worktree_spec.target_branch}`.
+        - Commit your code changes on that task branch before you exit if you want the supervisor to land them.
+        - Do not land, merge, or delete the branch yourself. The supervisor will land `{worktree_spec.branch}` through the primary worktree and then clean it up.
+        - Do not run `{blackdog_command} complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
+        """
+    ).strip()
     return textwrap.dedent(
         f"""
         You are Blackdog child agent `{child_agent}` working on one Blackdog backlog task.
@@ -702,6 +682,21 @@ def _preflight_launch_command(launch_command: tuple[str, ...]) -> None:
         raise SupervisorError(f"Codex launcher {binary} does not support `exec`; prompt launcher support has been removed")
 
 
+def _capture_child_diff_artifacts(child: ChildRun) -> None:
+    spec = child.worktree_spec
+    if spec is None:
+        return
+    primary_root = Path(spec.primary_worktree)
+    commands = (
+        (child.run_dir / "changes.diff", ["git", "-C", str(primary_root), "diff", "--binary", f"{spec.target_branch}..{spec.branch}"]),
+        (child.run_dir / "changes.stat.txt", ["git", "-C", str(primary_root), "diff", "--stat", f"{spec.target_branch}..{spec.branch}"]),
+    )
+    for output_path, command in commands:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        if completed.returncode == 0:
+            output_path.write_text(completed.stdout, encoding="utf-8")
+
+
 def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: str, run_id: str) -> None:
     spec = child.worktree_spec
     if spec is None or child.launch_error or child.timed_out or child.exit_code not in {0, None}:
@@ -722,6 +717,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
                 note="Supervisor released task after child run ended without a committable branch change.",
             )
         return
+    _capture_child_diff_artifacts(child)
     try:
         payload = _land_child_branch(profile, child, actor=actor)
     except DirtyPrimaryWorktreeError as exc:
@@ -881,8 +877,8 @@ def run_supervisor(
     selected_count = count or profile.supervisor_max_parallel
     resolved_workspace_mode = workspace_mode or profile.supervisor_workspace_mode
     resolved_timeout_seconds = timeout_seconds or profile.supervisor_task_timeout_seconds
-    if resolved_workspace_mode not in {"git-worktree", "current"}:
-        raise BacklogError("workspace mode must be 'git-worktree' or 'current'")
+    if resolved_workspace_mode != "git-worktree":
+        raise BacklogError("workspace mode must be 'git-worktree'")
     if resolved_timeout_seconds < 1:
         raise BacklogError("timeout must be at least 1 second")
     selected = _select_tasks(
@@ -893,8 +889,6 @@ def run_supervisor(
         limit=selected_count,
         force=force,
     )
-    if resolved_workspace_mode == "current" and len(selected) > 1:
-        raise BacklogError("workspace mode 'current' only supports a single child run at a time")
     resolved_launch_command = tuple(_resolved_launch_command(profile))
     if selected:
         _preflight_launch_command(resolved_launch_command)
@@ -922,11 +916,7 @@ def run_supervisor(
         prompt_file = child_run_dir / "prompt.txt"
         stdout_file = child_run_dir / "stdout.log"
         stderr_file = child_run_dir / "stderr.log"
-        workspace_path = (
-            profile.paths.project_root
-            if resolved_workspace_mode == "current"
-            else supervisor_task_worktree_path(profile, task, run_id)
-        )
+        workspace_path = supervisor_task_worktree_path(profile, task, run_id)
         result_files_before = {
             str(row["result_file"])
             for row in load_task_results(profile.paths, task_id=task.id)

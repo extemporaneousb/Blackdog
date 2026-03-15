@@ -9,13 +9,13 @@ The backlog system should live in the repo that depends on it. Skills should exp
 ## Current architecture
 
 Today Blackdog implements the durable backlog runtime, the
-coordination primitives, a WTAM-style branch-backed worktree lifecycle
+coordination primitives, a WTAM branch-backed worktree lifecycle
 for implementation tasks, an initial supervisor runner, an initial
-persistent supervisor loop, and a served readonly live UI. Claims,
-inbox messages, structured results, HTML rendering, a canonical UI
-snapshot contract, per-task workspaces, and one-shot child-agent
-launches exist. Richer active-run steering and drift-management
-workflows still do not.
+persistent supervisor loop, and a static HTML index that embeds its
+own snapshot data. Claims, inbox messages, structured results, HTML
+rendering, a canonical snapshot contract, per-task workspaces, and
+one-shot child-agent launches exist. Richer active-run steering and
+drift-management workflows still do not.
 
 
 ## Main layers
@@ -28,7 +28,7 @@ workflows still do not.
    - Core runtime.
    - Owns backlog parsing, validation, selection, state transitions,
      events, inbox messages, structured results, HTML view generation,
-     and the live UI snapshot/server.
+     and the static snapshot renderer.
 	 
 
 3. Shared git control root
@@ -83,11 +83,10 @@ workflows still do not.
 9. `blackdog ui snapshot` builds the canonical readonly monitor
    contract from backlog, state, inbox, events, results, and
    supervisor artifacts.
-10. `blackdog ui serve` serves that contract over local HTTP and
-    pushes snapshot refreshes to the browser with SSE when Blackdog
-    state changes.
-11. `blackdog render` rebuilds the static HTML control page from the
-    current backlog, state, inbox, events, and task results.
+10. `blackdog render` rebuilds the static HTML control page from the
+    current backlog, state, inbox, events, task results, and
+    supervisor artifacts by embedding the snapshot JSON directly into
+    the file.
 
 This layout resolves mutable runtime files from one shared git control
 root rather than repo-root runtime directories, so the working tree no
@@ -111,22 +110,42 @@ state is the baseline, that the task is already claimed, that code
 changes must be committed on the task branch, and that Blackdog CLI
 output is the source of truth for coordination state.
 
-For direct implementation work, Blackdog now prefers a branch-backed
-lifecycle that resembles WTAM:
+For direct implementation work, Blackdog uses WTAM:
 
 - create task worktrees from the primary worktree branch
 - keep the task change isolated to that branch/worktree
 - land with `--ff-only` semantics into the target branch
 - clean up the task worktree after landing
 
-That model is explicit in both `blackdog worktree ...` and `blackdog supervise ...`. Delegated child runs now use unique task branches/worktrees and are landed through the primary worktree when they exit cleanly with committable changes.
+That model is explicit in both `blackdog worktree ...` and
+`blackdog supervise ...`. Delegated child runs use unique task
+branches/worktrees and are landed through the primary worktree when
+they exit cleanly with committable changes.
+
+## Static control surface
+
+Blackdog's browser surface is now a rendered artifact, not a runtime
+service:
+
+- CLI commands write backlog/state/events/inbox/task-result artifacts
+- supervisor cycles write run artifacts and rerender the static HTML
+- `blackdog render` rebuilds `backlog-index.html` by embedding the
+  current snapshot JSON directly in the file
+- the page runs only local filtering and dialog behavior in the
+  browser; it does not fetch, stream, or post state
+- task cards link directly to on-disk artifacts such as result JSON,
+  prompt/stdout/stderr logs, and captured child diffs
+
+That keeps the communication path simple: file writers update the
+control root, the renderer snapshots those files into one HTML view,
+and the operator reloads the page when they want the latest state.
 
 The initial supervisor loop is inbox-steerable in a narrow way: open
 `pause` messages addressed to the supervisor actor prevent new
 launches, and `stop` messages terminate the loop while preserving
-repo-local events and status files. The live UI is readonly: it
-surfaces the graph, inbox, results, and active supervisor state, but
-intervention still flows back through chat and Blackdog CLI writes.
+repo-local events and status files. The static HTML index is readonly:
+it surfaces tasks, results, and artifact links, but intervention still
+flows back through chat and Blackdog CLI writes.
 
 
 ## WTAM audit
@@ -137,13 +156,13 @@ into enforced surfaces, documented guidance, and open gaps.
 
 | Requirement | Blackdog surfaces today | Audit |
 | --- | --- | --- |
-| No implementation from the primary worktree | `blackdog worktree preflight` reports whether the current checkout is primary, `blackdog worktree start` creates an external branch-backed task worktree, and supervisor child prompts always describe a branch-backed workspace. Public docs and skill text were weaker, and the CLI still exposes `supervise ... --workspace-mode current`. | Partial. Blackdog can surface the boundary, but it does not yet hard-reject every non-WTAM implementation path. |
+| No implementation from the primary worktree | `blackdog worktree preflight` reports whether the current checkout is primary, `blackdog worktree start` creates an external branch-backed task worktree, and supervisor child prompts always describe a branch-backed workspace. The CLI and config now hard-gate `git-worktree` as the only implementation mode. | Present. WTAM is the only kept-change implementation path. |
 | Branch-backed task worktrees created from the primary branch | `blackdog worktree start|land|cleanup` plus supervisor workspace prep implement the lifecycle, keep worktrees outside the repo by default, and land through the primary worktree with fast-forward semantics. | Present. This is the strongest part of Blackdog's current WTAM surface. |
 | Supervisor stays in the primary worktree; children commit on task branches and land through the primary worktree | Architecture, integration docs, tests, and generated child prompts all say the coordinator remains in the primary worktree while children work in task branches; prompts also forbid child-side landing or completion after a branch-backed run. | Present, but the child prompt is still the most explicit source for the commit/no-self-land rules. |
 | Committed repo state is the baseline for delegated child work | Supervisor prompts tell children to treat committed repo state as the baseline, keep changes isolated to task scope, prefer Blackdog CLI output over raw state reads, and record structured results. | Partial. The delegated contract is explicit, but the repo-level docs and skill text had not mirrored it clearly enough. |
 | Each git worktree carries its own `.VE` | Blackdog prefers `./.VE/bin/blackdog` when it exists, but the docs and generated skill did not previously say that `.VE/` is unversioned, absolute-path-bound, and per-worktree. | Gap. This is a documentation and scaffold-contract hole rather than a current CLI behavior. |
 
-This audit tightens the repo-facing docs and skill text around the primary-worktree boundary, delegated-child contract, and per-worktree `.VE` rule. A later enforcement slice should turn the remaining partial row into a repo-wide hard gate by removing or explicitly gating `workspace_mode = "current"` for WTAM-compliant repos.
+This audit tightens the repo-facing docs and skill text around the primary-worktree boundary, delegated-child contract, and per-worktree `.VE` rule. WTAM is now both the documented and enforced implementation path.
 
 ## Target architecture
 

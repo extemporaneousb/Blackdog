@@ -20,7 +20,6 @@ auto_render_html = true
 launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
 max_parallel = 2
 task_timeout_seconds = 1200
-workspace_mode = "git-worktree"
 
 [taxonomy]
 buckets = ["core", "cli", "html", "skills", "docs", "testing", "integration"]

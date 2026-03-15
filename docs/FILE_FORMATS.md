@@ -47,7 +47,6 @@ Current keys:
   - `launch_command`
   - `max_parallel`
   - `task_timeout_seconds`
-  - `workspace_mode`
 - `[taxonomy]`
   - `buckets`
   - `domains`
@@ -64,7 +63,7 @@ Current supervisor launcher contract:
 - Prompt-style Codex launchers are no longer supported by the supervisor.
 - `control_dir` accepts the special prefix `@git-common`, which resolves against `git rev-parse --git-common-dir`.
 - The default `worktrees_dir` value is `../.worktrees`, which places branch-backed task worktrees beside the primary checkout by default.
-- With `workspace_mode = "git-worktree"`, child workspaces are branch-backed task worktrees created from the primary worktree branch.
+- Child workspaces are branch-backed task worktrees created from the primary worktree branch.
 - Dirty primary-worktree state blocks branch landing as a contract violation. The supervisor sends an inbox warning, records a blocked result, and leaves the child branch/worktree intact rather than auto-stashing the primary checkout.
 - Successful branch-backed child runs are landed through the primary worktree with fast-forward semantics, and the supervisor completes the task after a successful land.
 
@@ -201,27 +200,9 @@ Current keys:
 - `completed_at`
 - `final_status`
 
-## `<control_dir>/supervisor-runs/ui-server.json`
-
-State snapshot written by `blackdog ui serve`.
-
-Current keys:
-
-- `url`
-- `host`
-- `port`
-- `snapshot_url`
-- `stream_url`
-- `project_name`
-- `project_root`
-- `control_dir`
-- `state_file`
-- `started_at`
-- `pid`
-
 ## `blackdog ui snapshot`
 
-Canonical readonly UI payload.
+Canonical static-page snapshot payload.
 
 Current top-level identity keys:
 
@@ -291,9 +272,9 @@ Current keys:
 - `primary_worktree`
 - `current_worktree`
 
-## Live UI snapshot contract
+## Static HTML snapshot contract
 
-Served by `blackdog ui snapshot` and `blackdog ui serve` at `/api/snapshot`.
+Embedded by `blackdog render` into `backlog-index.html` and printable with `blackdog ui snapshot`.
 
 Top-level keys:
 
@@ -310,15 +291,14 @@ Top-level keys:
 - `objectives`
 - `next_rows`
 - `open_messages`
-- `control_messages`
-- `dispatch_messages`
 - `recent_results`
 - `recent_events`
 - `plan`
+- `tasks`
 - `graph`
 - `active_tasks`
-- `supervisor`
 - `links`
+- `grouping_guide`
 
 Current `graph` keys:
 
@@ -338,49 +318,41 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `latest_result_status`
 - `latest_result_at`
 - `latest_result_href`
-
-Current `supervisor` keys:
-
-- `active_runs`
-- `recent_runs`
-- `loops`
-
-Operator-facing status labels may normalize abandoned runtime state to `interrupted` even when the underlying runtime classified it as stale-by-timeout.
+- `latest_result_dir_href`
+- `latest_result_preview`
+- `result_count`
+- `latest_run_status`
+- `run_dir_href`
+- `prompt_href`
+- `stdout_href`
+- `stderr_href`
+- `metadata_href`
+- `diff_href`
+- `diffstat_href`
+- `workspace_mode`
+- `task_branch`
+- `target_branch`
+- `child_agent`
+- `links`
 
 Current `active_tasks[*]` keys summarize the operator-facing running/claimed view:
 
-- `task_id`
+- `id`
 - `title`
 - `status`
 - `lane_title`
 - `epic_title`
 - `claimed_by`
 - `claimed_at`
-- `elapsed_seconds`
-- `elapsed_label`
 - `total_compute_seconds`
 - `total_compute_label`
 - `latest_result_status`
 - `latest_result_href`
+- `latest_run_status`
 - `workspace_mode`
 - `task_branch`
 - `target_branch`
-- `primary_worktree`
-- `run_id`
-- `run_href`
 - `prompt_href`
 - `stdout_href`
 - `stderr_href`
-
-Current `supervisor.active_runs[*]` and `supervisor.recent_runs[*]` rows also include:
-
-- `workspace_mode`
-- `target_branches`
-
-Current `supervisor.*.children[*]` rows include:
-
-- `workspace`
-- `workspace_mode`
-- `task_branch`
-- `target_branch`
-- `primary_worktree`
+- `run_dir_href`

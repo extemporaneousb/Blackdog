@@ -1,6 +1,6 @@
 # CLI Reference
 
-The current CLI covers the backlog runtime, a one-shot supervisor runner, an initial long-lived supervisor loop, and a served readonly live UI.
+The current CLI covers the backlog runtime, a one-shot supervisor runner, an initial long-lived supervisor loop, and a static task index renderer.
 
 When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
 
@@ -13,7 +13,6 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog validate`
 - `blackdog render`
 - `blackdog ui snapshot`
-- `blackdog ui serve`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
 - `blackdog worktree land [--branch BRANCH] [--into TARGET]`
@@ -21,13 +20,13 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 
 Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
 
-`blackdog worktree ...` is the implementation-work entrypoint. The intended model now matches WTAM more closely:
+`blackdog worktree ...` is the implementation-work entrypoint. WTAM is the implementation model:
 
 - implementation work should happen from a branch-backed task worktree, not the primary checkout
 - `blackdog worktree start` creates a task branch from the primary worktree branch and returns a structured worktree spec
 - `blackdog worktree land` fast-forwards that task branch into the target branch and can remove the task worktree with `--cleanup`
 - `blackdog worktree cleanup` removes a landed task worktree and, when explicitly told, deletes the associated branch
-- `blackdog worktree preflight` reports the current worktree, primary worktree, configured worktree base, whether there are implementation-blocking local changes, the current workspace mode, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
+- `blackdog worktree preflight` reports the current worktree, primary worktree, configured worktree base, whether there are implementation-blocking local changes, the enforced WTAM workspace contract, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
 
 ### Backlog management
 
@@ -58,7 +57,7 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 
 The default `worktrees_dir` is now `../.worktrees`, which keeps Blackdog task worktrees as siblings of the primary checkout rather than nesting them under repo-controlled runtime artifacts. If a repo prefers a `.worktrees` symlink inside the repo root, Blackdog will follow that resolved path when it is configured in `blackdog.toml`.
 
-When `workspace_mode = "git-worktree"`, Blackdog creates a branch-backed child worktree from the primary worktree branch and treats committed repo state as the delegated baseline. If landing is blocked by dirty primary-worktree changes, the supervisor treats that as a contract violation: it sends an inbox warning, records a blocked supervisor result, and leaves the child branch/worktree in place for inspection instead of auto-stashing the primary checkout. Child agents are expected to commit on their task branch, and the supervisor lands that branch through the primary worktree with fast-forward semantics before completing the task.
+Blackdog creates branch-backed child worktrees from the primary worktree branch and treats committed repo state as the delegated baseline. If landing is blocked by dirty primary-worktree changes, the supervisor treats that as a contract violation: it sends an inbox warning, records a blocked supervisor result, and leaves the child branch/worktree in place for inspection. Child agents are expected to commit on their task branch, and the supervisor lands that branch through the primary worktree with fast-forward semantics before completing the task.
 
 The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state. It also surfaces the run workspace mode, the task branch to target-branch landing path, the primary-worktree cleanliness gate, and the per-worktree `.VE` rule. When the current workspace contains `.VE/bin/blackdog`, the prompt points child agents at that workspace-local CLI; otherwise it falls back to `blackdog` from the active environment and tells the agent to bootstrap `./.VE` in that worktree rather than reusing another worktree's environment.
 
@@ -66,11 +65,9 @@ The generated child prompt tells the agent that committed repo state is the base
 
 `blackdog supervise status` is the chat-native inspection surface for that loop. It reports the latest saved loop status for a supervisor actor, the currently open `pause`/`stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
 
-`blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, backlog counts, objectives, graph nodes and dependency edges, filtered control-vs-dispatch inbox views, per-task compute/result metadata, active-task summaries, recent task results, recent supervisor runs, and recent supervisor loops.
+`blackdog ui snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, backlog counts, objectives, graph nodes and dependency edges, per-task compute/result metadata, direct artifact links, active-task summaries, recent task results, and grouping guidance.
 
-`blackdog ui serve` starts a local HTTP server that serves a readonly monitor over the same snapshot contract. The UI shell lives at `/`, the full snapshot is exposed at `/api/snapshot`, and server-sent events are streamed from `/api/stream`. Blackdog write paths notify that server on state changes, so the browser updates without polling. The startup payload and `ui-server.json` state file include the served repo identity (`project_name`, `project_root`, `control_dir`) so active servers can be distinguished when multiple repos are open. The server also exposes repo-local runtime artifacts under `/artifacts/...`.
-
-The operator UI defaults to the active wave, hides done tasks, collapses long message/error text behind a reader, hides historical supervisor state by default, and labels abandoned run state as `interrupted` instead of `stale`.
+`blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and supervisor loop cycles rerender that page as part of normal state changes. The page embeds the current snapshot JSON directly and links to filesystem artifacts like result JSON files, prompt/stdout/stderr logs, and captured child diffs. Reload the file when you want the latest state.
 
 ### Structured results
 

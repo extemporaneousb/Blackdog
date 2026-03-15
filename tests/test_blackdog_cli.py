@@ -9,7 +9,6 @@ import sys
 import tempfile
 import time
 import unittest
-import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,31 +75,6 @@ def wait_for_json(path: Path, predicate, *, timeout: float = 5.0) -> dict[str, o
                 return payload
         time.sleep(0.05)
     raise AssertionError(f"Timed out waiting for JSON predicate on {path}; last payload={last_payload}")
-
-
-def read_sse_event(stream) -> dict[str, object]:
-    event_name = ""
-    event_id = ""
-    data_lines: list[str] = []
-    while True:
-        raw = stream.readline()
-        if not raw:
-            raise AssertionError("SSE stream closed before an event was received")
-        line = raw.decode("utf-8").rstrip("\r\n")
-        if not line:
-            if data_lines:
-                return {
-                    "event": event_name,
-                    "id": event_id,
-                    "data": json.loads("\n".join(data_lines)),
-                }
-            continue
-        if line.startswith("id: "):
-            event_id = line[4:]
-        elif line.startswith("event: "):
-            event_name = line[7:]
-        elif line.startswith("data: "):
-            data_lines.append(line[6:])
 
 
 def task_ids_by_title(root: Path) -> dict[str, str]:
@@ -544,7 +518,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("## Docs to Review", refreshed_text)
         self.assertIn("`AGENTS.md`", refreshed_text)
         self.assertIn("doc_routing_defaults", refreshed_text)
-        self.assertIn("Treat `current` as compatibility-only", refreshed_text)
+        self.assertIn("Blackdog uses branch-backed task worktrees for kept implementation changes.", refreshed_text)
         self.assertIn("refresh backlog", refreshed_text)
 
     def test_plan_summary_reports_epics_lanes_and_waves(self) -> None:
@@ -639,7 +613,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why",
             "Implementation work should happen in a branch-backed worktree.",
             "--evidence",
-            "Blackdog should expose a WTAM-style start entrypoint.",
+            "Blackdog should expose a WTAM start entrypoint.",
             "--safe-first-slice",
             "Create one task worktree from the primary branch.",
             "--path",
@@ -899,9 +873,8 @@ class BlackdogCliTests(unittest.TestCase):
             )
             self.assertIn("worktree_land", {row["type"] for row in events})
 
-    def test_ui_snapshot_reports_graph_and_loop_contract(self) -> None:
+    def test_ui_snapshot_reports_graph_and_static_contract(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        paths = self.runtime_paths()
         for title in ("UI slice one", "UI slice two"):
             run_cli(
                 "add",
@@ -926,23 +899,6 @@ class BlackdogCliTests(unittest.TestCase):
                 "--wave",
                 "0",
             )
-        loop_dir = paths.supervisor_runs_dir / "20260313-120000-loop-abcd1234"
-        loop_dir.mkdir(parents=True)
-        (loop_dir / "status.json").write_text(
-            json.dumps(
-                {
-                    "loop_id": "abcd1234",
-                    "actor": "supervisor",
-                    "workspace_mode": "git-worktree",
-                    "cycles": [{"index": 1, "status": "paused"}],
-                    "completed_at": "2026-03-13T12:00:05-07:00",
-                    "final_status": "paused",
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
 
         snapshot = json.loads(
             subprocess.run(
@@ -956,12 +912,12 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         task_ids = {task["title"]: task["id"] for task in snapshot["graph"]["tasks"]}
-        self.assertEqual(snapshot["schema_version"], 1)
+        self.assertEqual(snapshot["schema_version"], 2)
         self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
         self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
         self.assertEqual(snapshot["graph"]["edges"], [{"from": task_ids["UI slice one"], "to": task_ids["UI slice two"]}])
-        self.assertEqual(snapshot["supervisor"]["loops"][0]["loop_id"], "abcd1234")
-        self.assertEqual(snapshot["links"]["backlog"], "/artifacts/backlog.md")
+        self.assertEqual(snapshot["links"]["backlog"], "backlog.md")
+        self.assertEqual(snapshot["links"]["results"], "task-results")
 
     def test_ui_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -978,7 +934,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "--why",
                 "Operators need to understand active backlog work.",
                 "--evidence",
-                "The live UI should separate activity, inbox controls, and result history.",
+                "The static backlog view should separate activity, inbox controls, and result history.",
                 "--safe-first-slice",
                 "Add snapshot fields for active tasks and filtered inbox messages.",
                 "--path",
@@ -1118,26 +1074,27 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         graph_tasks = {task["id"]: task for task in snapshot["graph"]["tasks"]}
-        active_runs = {run["run_id"]: run for run in snapshot["supervisor"]["active_runs"]}
-        recent_runs = {run["run_id"]: run for run in snapshot["supervisor"]["recent_runs"]}
+        open_recipients = {row["recipient"] for row in snapshot["open_messages"]}
 
-        self.assertEqual([row["recipient"] for row in snapshot["control_messages"]], ["supervisor"])
-        self.assertEqual([row["recipient"] for row in snapshot["dispatch_messages"]], ["supervisor/child-01"])
-        self.assertEqual({row["run_id"] for row in snapshot["supervisor"]["recent_runs"]}, {"liverun1", "stalerun1"})
-        self.assertNotIn("result-noise", recent_runs)
-        self.assertEqual(set(active_runs), {"liverun1"})
+        self.assertEqual(open_recipients, {"supervisor", "supervisor/child-01"})
         self.assertEqual(snapshot["workspace_contract"]["target_branch"], "main")
         self.assertIn(".VE is unversioned", snapshot["workspace_contract"]["ve_expectation"])
-        self.assertEqual(recent_runs["stalerun1"]["status"], "interrupted")
-        self.assertEqual(snapshot["active_tasks"][0]["task_id"], first_task)
+        self.assertEqual(snapshot["active_tasks"][0]["id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
-        self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"/artifacts/supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
+        self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
+        self.assertEqual(snapshot["active_tasks"][0]["latest_run_status"], "running")
         self.assertEqual(graph_tasks[first_task]["latest_result_status"], "success")
         self.assertIsNotNone(graph_tasks[first_task]["active_compute_label"])
         self.assertGreaterEqual(int(graph_tasks[first_task]["total_compute_seconds"]), 0)
         self.assertEqual(graph_tasks[second_task]["predecessor_ids"], [first_task])
+        self.assertEqual(graph_tasks[first_task]["run_dir_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}")
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
-        self.assertNotIn('style="', paths.html_file.read_text(encoding="utf-8"))
+        html = paths.html_file.read_text(encoding="utf-8")
+        self.assertNotIn('style="', html)
+        self.assertNotIn("EventSource(", html)
+        self.assertNotIn("fetch(", html)
+        self.assertIn('id="blackdog-snapshot"', html)
+        self.assertIn("supervisor-runs/20260314-120000-liverun1", html)
 
     def test_supervise_status_reports_loop_controls_ready_tasks_and_recent_results(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1364,75 +1321,43 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(f"Next cycle control: pause via {pause_message['message_id']}", text_output)
         self.assertIn("Recent child-run results:", text_output)
 
-    def test_ui_serve_stream_updates_after_backlog_change(self) -> None:
+    def test_render_writes_static_html_with_embedded_snapshot(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "blackdog.cli",
-                "ui",
-                "serve",
-                "--project-root",
-                str(self.root),
-                "--port",
-                "0",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=cli_env(),
-            cwd=self.root,
+        html_path = self.runtime_paths().html_file
+        initial_html = html_path.read_text(encoding="utf-8")
+        self.assertIn('id="blackdog-snapshot"', initial_html)
+        self.assertNotIn("EventSource(", initial_html)
+        self.assertNotIn("fetch(", initial_html)
+
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Static UI task",
+            "--bucket",
+            "html",
+            "--why",
+            "Need one task to prove render writes a static HTML page.",
+            "--evidence",
+            "The rendered file should embed updated JSON instead of depending on a web server.",
+            "--safe-first-slice",
+            "Append one task and regenerate backlog-index.html.",
+            "--path",
+            "src/blackdog/ui.py",
+            "--epic-title",
+            "UI",
+            "--lane-title",
+            "Static lane",
+            "--wave",
+            "0",
         )
-        try:
-            state_file = wait_for_file(self.runtime_paths().supervisor_runs_dir / "ui-server.json")
-            server_state = json.loads(state_file.read_text(encoding="utf-8"))
-            self.assertEqual(Path(server_state["project_root"]).resolve(), self.root.resolve())
-            self.assertEqual(Path(server_state["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
-            stream = urllib.request.urlopen(server_state["stream_url"], timeout=10)
-            try:
-                initial_event = read_sse_event(stream)
-                self.assertEqual(initial_event["event"], "snapshot")
-                self.assertEqual(initial_event["data"]["total"], 0)
 
-                run_cli(
-                    "add",
-                    "--project-root",
-                    str(self.root),
-                    "--title",
-                    "Live UI task",
-                    "--bucket",
-                    "html",
-                    "--why",
-                    "Need one task to trigger a live update.",
-                    "--evidence",
-                    "A server-sent event should arrive after the add command mutates backlog state.",
-                    "--safe-first-slice",
-                    "Append one task and let the UI server publish a new snapshot.",
-                    "--path",
-                    "src/blackdog/ui.py",
-                    "--epic-title",
-                    "UI",
-                    "--lane-title",
-                    "Live lane",
-                    "--wave",
-                    "0",
-                )
-
-                updated_event = read_sse_event(stream)
-                self.assertEqual(updated_event["event"], "snapshot")
-                self.assertEqual(updated_event["data"]["total"], 1)
-                self.assertEqual(updated_event["data"]["graph"]["tasks"][0]["title"], "Live UI task")
-            finally:
-                stream.close()
-        finally:
-            process.send_signal(signal.SIGINT)
-            process.wait(timeout=5)
-            if process.stdout is not None:
-                process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
-            self.assertFalse((self.runtime_paths().supervisor_runs_dir / "ui-server.json").exists())
+        updated_html = html_path.read_text(encoding="utf-8")
+        self.assertIn("Static UI task", updated_html)
+        self.assertIn("blackdog-snapshot", updated_html)
+        self.assertIn("backlog.md", updated_html)
+        self.assertIn("task-results", updated_html)
 
     def test_build_child_prompt_prefers_repo_local_ve_blackdog(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1459,22 +1384,62 @@ class BlackdogCliTests(unittest.TestCase):
             "--wave",
             "0",
         )
-        ve_bin = self.root / ".VE" / "bin"
-        ve_bin.mkdir(parents=True)
-        blackdog_script = ve_bin / "blackdog"
-        blackdog_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        blackdog_script.chmod(0o755)
+        with tempfile.TemporaryDirectory() as worktree_parent:
+            workspace = Path(worktree_parent) / "prompt-worktree"
+            subprocess.run(
+                ["git", "-C", str(self.root), "worktree", "add", str(workspace), "-b", "agent/prompt-local-cli", "main"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                ve_bin = workspace / ".VE" / "bin"
+                ve_bin.mkdir(parents=True)
+                blackdog_script = ve_bin / "blackdog"
+                blackdog_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                blackdog_script.chmod(0o755)
 
-        profile = load_profile(self.root)
-        snapshot = load_backlog(profile.paths, profile)
-        task = next(iter(snapshot.tasks.values()))
-        prompt = _build_child_prompt(
-            profile,
-            task,
-            child_agent="supervisor/child-01",
-            workspace_mode="current",
-            workspace=self.root,
-        )
+                profile = load_profile(self.root)
+                snapshot = load_backlog(profile.paths, profile)
+                task = next(iter(snapshot.tasks.values()))
+                base_commit = subprocess.run(
+                    ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                prompt = _build_child_prompt(
+                    profile,
+                    task,
+                    child_agent="supervisor/child-01",
+                    workspace_mode="git-worktree",
+                    workspace=workspace,
+                    worktree_spec=WorktreeSpec(
+                        task_id=task.id,
+                        task_title=task.title,
+                        task_slug="prompt-local-cli",
+                        branch="agent/prompt-local-cli",
+                        base_ref="main",
+                        base_commit=base_commit,
+                        target_branch="main",
+                        worktree_path=str(workspace),
+                        primary_worktree=str(self.root),
+                        current_worktree=str(self.root),
+                    ),
+                )
+            finally:
+                subprocess.run(
+                    ["git", "-C", str(self.root), "worktree", "remove", "--force", str(workspace)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                subprocess.run(
+                    ["git", "-C", str(self.root), "branch", "-D", "agent/prompt-local-cli"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
 
         self.assertIn(str(blackdog_script.resolve()), prompt)
         self.assertIn(".VE is unversioned and bound to this worktree path", prompt)
@@ -1692,6 +1657,7 @@ if __name__ == "__main__":
         self.assertEqual(payload["children"][0]["launch_command"][0], str(launcher_script))
         workspace = Path(payload["children"][0]["workspace"])
         prompt_text = Path(payload["children"][0]["prompt_file"]).read_text(encoding="utf-8")
+        child_run_dir = Path(payload["children"][0]["prompt_file"]).parent
         self.assertFalse(workspace.exists())
         self.assertIn("Treat committed repo state as the baseline for this task", prompt_text)
         self.assertIn("Primary-worktree landing gate:", prompt_text)
@@ -1707,6 +1673,8 @@ if __name__ == "__main__":
         self.assertIsNotNone(payload["children"][0]["task_branch"])
         self.assertIsNone(payload["children"][0]["land_error"])
         self.assertIsNotNone(payload["children"][0]["land_result"])
+        self.assertTrue((child_run_dir / "changes.diff").exists())
+        self.assertTrue((child_run_dir / "changes.stat.txt").exists())
         result_files = sorted((paths.results_dir / task_id).glob("*.json"))
         self.assertTrue(result_files)
         branch_check = subprocess.run(

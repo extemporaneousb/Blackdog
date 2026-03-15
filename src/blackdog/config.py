@@ -274,8 +274,8 @@ def load_profile(project_root: Path | None = None) -> Profile:
     if not launch_command:
         raise ConfigError("supervisor.launch_command must contain at least one argv token")
     workspace_mode = str(supervisor.get("workspace_mode") or "git-worktree").strip()
-    if workspace_mode not in {"git-worktree", "current"}:
-        raise ConfigError("supervisor.workspace_mode must be 'git-worktree' or 'current'")
+    if workspace_mode != "git-worktree":
+        raise ConfigError("supervisor.workspace_mode must be 'git-worktree'")
     max_parallel = int(supervisor.get("max_parallel") or 2)
     if max_parallel < 1:
         raise ConfigError("supervisor.max_parallel must be at least 1")
@@ -332,8 +332,7 @@ def render_default_profile(project_name: str) -> str:
         f'[supervisor]\n'
         f'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]\n'
         f"max_parallel = 2\n"
-        f"task_timeout_seconds = 1200\n"
-        f'workspace_mode = "git-worktree"\n\n'
+        f"task_timeout_seconds = 1200\n\n"
         f'[taxonomy]\n'
         f"buckets = [{buckets}]\n"
         f"domains = [{domains}]\n"

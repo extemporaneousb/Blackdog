@@ -53,7 +53,7 @@ from .supervisor import (
     run_supervisor,
     run_supervisor_loop,
 )
-from .ui import UIError, build_ui_snapshot, serve_ui
+from .ui import UIError, build_ui_snapshot
 from .worktree import (
     WorktreeError,
     cleanup_task_worktree,
@@ -240,7 +240,7 @@ def cmd_supervise_run(args: argparse.Namespace) -> int:
         count=args.count,
         allow_high_risk=args.allow_high_risk,
         force=args.force,
-        workspace_mode=args.workspace_mode,
+        workspace_mode=None,
         timeout_seconds=args.timeout_seconds,
     )
     _emit_render(profile)
@@ -256,7 +256,7 @@ def cmd_supervise_loop(args: argparse.Namespace) -> int:
         count=args.count,
         allow_high_risk=args.allow_high_risk,
         force=args.force,
-        workspace_mode=args.workspace_mode,
+        workspace_mode=None,
         timeout_seconds=args.timeout_seconds or None,
         poll_interval_seconds=args.poll_interval_seconds,
         max_cycles=args.max_cycles or None,
@@ -301,18 +301,6 @@ def cmd_next(args: argparse.Namespace) -> int:
 def cmd_ui_snapshot(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     print(json.dumps(build_ui_snapshot(profile), indent=2))
-    return 0
-
-
-def cmd_ui_serve(args: argparse.Namespace) -> int:
-    profile = load_profile(Path(args.project_root) if args.project_root else None)
-    serve_ui(
-        profile,
-        host=args.host,
-        port=args.port,
-        open_browser=args.open_browser,
-        announce=lambda payload: print(json.dumps(payload, indent=2), flush=True),
-    )
     return 0
 
 
@@ -665,17 +653,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_next.add_argument("--format", choices=("text", "json"), default="text")
     p_next.set_defaults(func=cmd_next)
 
-    p_ui = subparsers.add_parser("ui", help="Live readonly UI for backlog and supervisor monitoring")
+    p_ui = subparsers.add_parser("ui", help="Static HTML snapshot helpers")
     ui_subparsers = p_ui.add_subparsers(dest="ui_command", required=True)
-    p_ui_snapshot = ui_subparsers.add_parser("snapshot", help="Print the canonical live-UI snapshot contract")
+    p_ui_snapshot = ui_subparsers.add_parser("snapshot", help="Print the canonical static-HTML snapshot contract")
     p_ui_snapshot.add_argument("--project-root", default=None)
     p_ui_snapshot.set_defaults(func=cmd_ui_snapshot)
-    p_ui_serve = ui_subparsers.add_parser("serve", help="Serve the live readonly UI with SSE updates")
-    p_ui_serve.add_argument("--project-root", default=None)
-    p_ui_serve.add_argument("--host", default="127.0.0.1")
-    p_ui_serve.add_argument("--port", type=int, default=0)
-    p_ui_serve.add_argument("--open-browser", action="store_true")
-    p_ui_serve.set_defaults(func=cmd_ui_serve)
 
     p_worktree = subparsers.add_parser("worktree", help="Branch-backed worktree lifecycle for implementation tasks")
     worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
@@ -719,7 +701,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_run.add_argument("--count", type=int, default=0)
     p_supervise_run.add_argument("--allow-high-risk", action="store_true")
     p_supervise_run.add_argument("--force", action="store_true")
-    p_supervise_run.add_argument("--workspace-mode", choices=("git-worktree", "current"), default=None)
     p_supervise_run.add_argument("--timeout-seconds", type=int, default=0)
     p_supervise_run.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_run.set_defaults(func=cmd_supervise_run)
@@ -729,7 +710,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_loop.add_argument("--count", type=int, default=0)
     p_supervise_loop.add_argument("--allow-high-risk", action="store_true")
     p_supervise_loop.add_argument("--force", action="store_true")
-    p_supervise_loop.add_argument("--workspace-mode", choices=("git-worktree", "current"), default=None)
     p_supervise_loop.add_argument("--timeout-seconds", type=int, default=0)
     p_supervise_loop.add_argument("--poll-interval-seconds", type=float, default=5.0)
     p_supervise_loop.add_argument("--max-cycles", type=int, default=0)
@@ -791,7 +771,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_events.add_argument("--limit", type=int, default=20)
     p_events.set_defaults(func=cmd_events)
 
-    p_render = subparsers.add_parser("render", help="Render the backlog HTML control page")
+    p_render = subparsers.add_parser("render", help="Render the static backlog HTML page")
     p_render.add_argument("--project-root", default=None)
     p_render.add_argument("--actor", default="blackdog")
     p_render.set_defaults(func=cmd_render)

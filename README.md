@@ -12,10 +12,10 @@ Implemented today:
 - Plan structure with epics, lanes, and waves encoded in the backlog file
 - A one-command repo bootstrap that creates the local profile, control-root runtime scaffold, and project skill
 - Project-local skill scaffolding for host repositories
-- A WTAM-style branch-backed worktree lifecycle for implementation tasks
+- A WTAM branch-backed worktree lifecycle for implementation tasks
 - An initial supervisor runner that launches child agents into branch-backed task worktrees and lands their commits through the primary worktree
 - An initial persistent supervisor loop that can keep cycling, refresh repo-local status views, honor inbox `pause` or `stop` control messages, and reread backlog state between cycles
-- A served readonly live UI with a canonical snapshot contract and SSE updates driven by Blackdog state changes
+- A static backlog index that embeds JSON task data and links directly to task artifacts on disk
 
 Planned but not implemented yet:
 
@@ -25,7 +25,7 @@ Planned but not implemented yet:
 
 ## What it provides
 
-- `blackdog`: core CLI for repo bootstrap, backlog parsing, validation, task selection, claims, approvals, completion, inbox messaging, task results, HTML rendering, and the live UI server
+- `blackdog`: core CLI for repo bootstrap, backlog parsing, validation, task selection, claims, approvals, completion, inbox messaging, task results, static HTML rendering, and supervisor control
 - `blackdog-skill`: compatibility wrapper for project-specific skill generation
 - `blackdog.toml`: repo-local profile for id prefixes, bucket/domain taxonomy, defaults, and heuristics
 - shared runtime state under the git control root, which defaults to `@git-common/blackdog`
@@ -48,7 +48,7 @@ blackdog add \
 blackdog summary
 blackdog worktree preflight
 blackdog render
-blackdog ui serve --open-browser
+open .git/blackdog/backlog-index.html
 ```
 
 ## Using Blackdog In This Repo
@@ -67,8 +67,8 @@ For direct slices:
 
 For delegated slices:
 
-1. Launch `./.VE/bin/blackdog ui serve --open-browser` for the live readonly monitor.
-2. Launch `./.VE/bin/blackdog supervise run --id TASK` for a one-shot pass or `./.VE/bin/blackdog supervise loop` for ongoing processing.
+1. Launch `./.VE/bin/blackdog supervise run --id TASK` for a one-shot pass or `./.VE/bin/blackdog supervise loop` for ongoing processing.
+2. Open `.git/blackdog/backlog-index.html` directly when you want the latest static task index. Reload the file after supervisor or CLI writes.
 3. Keep the coordinating agent in the primary worktree. Blackdog gives each child task agent its own branch-backed task worktree and lands successful commits through the primary worktree.
 4. Use inbox `pause` or `stop` messages as boundary controls between loop cycles. They do not interrupt a child task that is already running.
 5. Inspect the resolved control-root artifacts from `blackdog.toml` as the run proceeds.

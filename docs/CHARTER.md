@@ -48,7 +48,7 @@ Well encoded today:
 Partially encoded today:
 
 - multi-agent coordination primitives exist, but only as building blocks
-- the worktree model is now explicit, mutable runtime state is shared from one control root, and delegated child runs land through the same WTAM-style lifecycle as direct work
+- the worktree model is now explicit, mutable runtime state is shared from one control root, and delegated child runs land through the same WTAM lifecycle as direct work
 - a persistent supervisor loop can cycle work, reread backlog state between cycles, refresh repo-local status views, and honor simple inbox control messages
 - child-agent launch, monitoring, and worktree lifecycle exist, but still require better active-run steering and cleanup ergonomics
 - backlog planning exists in the file format, but management UX is still task-by-task

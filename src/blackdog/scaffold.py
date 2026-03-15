@@ -7,15 +7,12 @@ import shlex
 import shutil
 
 from .backlog import (
-    render_html,
     render_initial_backlog,
-    build_view_model,
-    load_backlog,
     refresh_backlog_headers,
-    sync_state_for_backlog,
 )
 from .config import load_profile, named_backlog_paths, write_default_profile, Profile
-from .store import append_event, default_state, load_events, load_inbox, load_state, load_task_results, save_state
+from .store import append_event, default_state, save_state
+from .ui import build_ui_snapshot, render_static_html
 
 
 class ScaffoldError(RuntimeError):
@@ -175,19 +172,8 @@ def refresh_project_skill(profile: Profile) -> Path:
 
 def render_project_html(profile: Profile) -> Path:
     refresh_backlog_headers(profile)
-    snapshot = load_backlog(profile.paths, profile)
-    state = load_state(profile.paths.state_file)
-    state = sync_state_for_backlog(state, snapshot)
-    save_state(profile.paths.state_file, state)
-    view = build_view_model(
-        profile,
-        snapshot,
-        state,
-        events=load_events(profile.paths, limit=20),
-        messages=load_inbox(profile.paths),
-        results=load_task_results(profile.paths),
-    )
-    render_html(view, profile.paths.html_file)
+    snapshot = build_ui_snapshot(profile)
+    render_static_html(snapshot, profile.paths.html_file)
     return profile.paths.html_file
 
 
@@ -247,6 +233,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 6. Complete or release the task through the CLI for direct work.
 7. Use `{cli_command} supervise run` or `{cli_command} supervise loop` when you want Blackdog to launch child agents instead of editing directly.
 8. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+9. Open `{profile.paths.html_file}` directly when you want the static task index; `blackdog render` refreshes it and supervisor cycles rewrite it after each loop pass.
 
 ## Docs to Review
 
@@ -259,7 +246,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - The coordinating agent stays in the primary worktree.
 - Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
-- Keep `supervisor.workspace_mode = "git-worktree"` when the repo wants WTAM-style implementation isolation. Treat `current` as compatibility-only, not the normal implementation path.
+- Blackdog uses branch-backed task worktrees for kept implementation changes.
 - `pause` and `stop` messages are checked between loop cycles. They do not interrupt an already-running child claim.
 
 ## Repo Contract

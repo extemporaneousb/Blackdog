@@ -12,7 +12,7 @@ This document describes the current integration path for adopting Blackdog in an
 - CLI support for task intake, claims, approvals, comments, inbox messaging, task results, and HTML rendering
 - an initial supervisor runner that can launch child commands against runnable tasks, with a default preference for the desktop Codex exec runtime
 - an initial persistent supervisor loop that refreshes repo-local status views and honors inbox `pause` or `stop` messages
-- a served readonly live UI that exposes the canonical monitor snapshot over local HTTP and updates via SSE when Blackdog state changes
+- a static backlog index that embeds the current snapshot JSON and links directly to artifact files on disk
 
 ## What does not exist yet
 
@@ -34,7 +34,7 @@ This document describes the current integration path for adopting Blackdog in an
 5. If you later change `blackdog.toml`, regenerate the tailored skill with `blackdog-skill refresh backlog --project-root /path/to/repo`.
 6. In each fresh git worktree, create that worktree's own `.VE/` (or equivalent repo-local environment) before running repo-local commands. Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
 7. Treat implementation edits in the primary worktree as a contract violation. Start with `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-8. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, `blackdog render`, and optionally `blackdog ui serve` during normal work.
+8. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work. Open `backlog-index.html` directly and reload it when you want the latest state.
 
 ## How agents discover the Blackdog contract
 
@@ -57,8 +57,6 @@ Blackdog does not currently shell out to an external skill-authoring workflow at
 - `[rules].require_claim_for_completion`: keep this enabled unless the repo intentionally allows ad hoc completions
 - `[paths].control_dir`: keep the git-common default unless the host repo has a strong reason to relocate mutable runtime state
 - `[paths].worktrees_dir`: prefer a sibling worktree base or an explicit `.worktrees` symlink target over an in-repo runtime directory
-- `[supervisor].workspace_mode`: keep `git-worktree` when the host repo wants WTAM-style implementation isolation; treat `current` as a compatibility mode for non-WTAM cases, not the normal implementation path
-
 ## Adoption checklist for a first pilot
 
 - Confirm the repo can tolerate a shared local Blackdog control root that is not part of the built artifact.
@@ -70,13 +68,13 @@ Blackdog does not currently shell out to an external skill-authoring workflow at
 
 ## Expected operator model today
 
-Today, Blackdog works best as a coordinating contract used by a foreground agent or an initial supervisor loop. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the readonly live UI can surface state to a browser without becoming a second source of truth.
+Today, Blackdog works best as a coordinating contract used by a foreground agent or an initial supervisor loop. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the static HTML index surfaces task state and artifact links without becoming a second source of truth.
 
 For implementation tasks, the intended operator model is now explicit and hard-gated: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
 
 The generated skill should mirror that hard gate and enumerate the repo docs from `taxonomy.doc_routing_defaults` so agents see both the worktree contract and the required review set before they edit.
 
-Delegated child runs use the same lifecycle: the coordinating supervisor stays in the primary worktree, launches each child in a branch-backed task worktree, expects a commit on that branch, and lands it through the primary worktree after a successful run. Repos that want a WTAM-style hard gate should keep `supervisor.workspace_mode = "git-worktree"` and treat `current` as compatibility-only.
+Delegated child runs use the same lifecycle: the coordinating supervisor stays in the primary worktree, launches each child in a branch-backed task worktree, expects a commit on that branch, and lands it through the primary worktree after a successful run. WTAM is the only kept-change implementation path.
 
 Each worktree should also carry its own repo-local `.VE/` when the host repo uses one. Blackdog will prefer `./.VE/bin/blackdog`, but operators must create that environment per worktree rather than copying it across checkouts.
 

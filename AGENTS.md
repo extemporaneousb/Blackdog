@@ -20,9 +20,8 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
 - `.VE/` is not versioned. Each git worktree needs its own `.VE`
   rooted at that worktree; do not copy virtualenv directories between
   worktrees because they embed absolute paths.
-- Keep `supervisor.workspace_mode = "git-worktree"` for repos that
-  want a WTAM-style hard gate. Treat `current` as a compatibility
-  escape hatch, not the default implementation contract.
+- Blackdog uses WTAM for kept implementation changes. There is no
+  non-WTAM implementation mode.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents
   must review before editing, and refresh the generated project skill
   when that routing changes so the repo contract stays explicit.
