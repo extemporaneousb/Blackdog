@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
+from blackdog import backlog as backlog_module
 from blackdog.backlog import load_backlog
 from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
@@ -242,6 +243,76 @@ class BlackdogCliTests(unittest.TestCase):
         with patch("blackdog.supervisor.atomic_write_text") as status_write:
             _write_loop_status(None, status_file, {"cycles": []})
         status_write.assert_called_once()
+
+    def test_add_task_serializes_overlapping_backlog_mutations(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        profile = load_profile(self.root)
+        first_validate_entered = threading.Event()
+        release_first_validate = threading.Event()
+        validate_count = 0
+        validate_count_lock = threading.Lock()
+        errors: list[BaseException] = []
+        original_validate = backlog_module.validate_task_payload
+
+        def gated_validate(task: dict[str, object], task_profile) -> None:
+            nonlocal validate_count
+            original_validate(task, task_profile)
+            with validate_count_lock:
+                validate_count += 1
+                current = validate_count
+            if current == 1:
+                first_validate_entered.set()
+                if not release_first_validate.wait(timeout=5):
+                    raise AssertionError("timed out waiting to release the first concurrent add")
+
+        def add_slice(title: str) -> None:
+            try:
+                backlog_module.add_task(
+                    profile,
+                    title=title,
+                    bucket="core",
+                    priority="P2",
+                    risk="medium",
+                    effort="M",
+                    why="Concurrent adds should preserve every task.",
+                    evidence="Two overlapping add flows should not drop one task's plan/task update.",
+                    safe_first_slice="Serialize the backlog rewrite around add_task.",
+                    paths=["README.md"],
+                    checks=[],
+                    docs=[],
+                    domains=[],
+                    packages=[],
+                    affected_paths=[],
+                    objective="",
+                    requires_approval=False,
+                    approval_reason="",
+                    epic_id=None,
+                    epic_title="Concurrency",
+                    lane_id=None,
+                    lane_title="Concurrent adds",
+                    wave=0,
+                )
+            except BaseException as exc:  # pragma: no cover - surfaced via assertion below
+                errors.append(exc)
+
+        with patch("blackdog.backlog.validate_task_payload", side_effect=gated_validate):
+            first = threading.Thread(target=add_slice, args=("Overlap one",))
+            second = threading.Thread(target=add_slice, args=("Overlap two",))
+            first.start()
+            self.assertTrue(first_validate_entered.wait(timeout=5))
+            second.start()
+            time.sleep(0.1)
+            release_first_validate.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertFalse(errors, errors)
+        snapshot = load_backlog(profile.paths, profile)
+        titles = {task.title for task in snapshot.tasks.values()}
+        self.assertIn("Overlap one", titles)
+        self.assertIn("Overlap two", titles)
 
     def test_bootstrap_creates_skill_and_is_idempotent(self) -> None:
         payload = json.loads(

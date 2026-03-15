@@ -11,7 +11,7 @@ import subprocess
 import textwrap
 
 from .config import Profile, ProjectPaths, slugify
-from .store import claim_is_active, parse_datetime
+from .store import atomic_write_text, claim_is_active, locked_path, parse_datetime
 
 
 TASK_BLOCK_RE = re.compile(r"```json backlog-task\n(.*?)\n```", re.S)
@@ -755,10 +755,13 @@ def _apply_runtime_headers(text: str, profile: Profile) -> str:
 def refresh_backlog_headers(profile: Profile) -> None:
     if not profile.paths.backlog_file.exists():
         return
-    text = profile.paths.backlog_file.read_text(encoding="utf-8")
-    updated = _apply_runtime_headers(text, profile)
-    if updated != text:
-        profile.paths.backlog_file.write_text(updated, encoding="utf-8")
+    with locked_path(profile.paths.backlog_file):
+        if not profile.paths.backlog_file.exists():
+            return
+        text = profile.paths.backlog_file.read_text(encoding="utf-8")
+        updated = _apply_runtime_headers(text, profile)
+        if updated != text:
+            atomic_write_text(profile.paths.backlog_file, updated)
 
 
 def _replace_plan_block(text: str, plan: dict[str, Any]) -> str:
@@ -817,63 +820,64 @@ def add_task(
     lane_title: str | None,
     wave: int | None,
 ) -> dict[str, Any]:
-    snapshot = load_backlog(profile.paths, profile)
-    task_id = make_task_id(profile, bucket=bucket, title=title, paths=paths)
-    if task_id in snapshot.tasks:
-        raise BacklogError(f"Task id already exists: {task_id}")
-    payload = {
-        "id": task_id,
-        "title": title,
-        "bucket": bucket,
-        "priority": priority,
-        "risk": risk,
-        "effort": effort,
-        "packages": packages,
-        "paths": paths,
-        "checks": checks or list(profile.validation_commands),
-        "docs": docs or list(profile.doc_routing_defaults),
-        "objective": objective,
-        "domains": domains,
-        "requires_approval": requires_approval,
-        "approval_reason": approval_reason,
-        "safe_first_slice": safe_first_slice,
-    }
-    validate_task_payload(payload, profile)
-    plan = json.loads(json.dumps(snapshot.plan))
-    if not isinstance(plan.get("epics"), list):
-        plan["epics"] = []
-    if not isinstance(plan.get("lanes"), list):
-        plan["lanes"] = []
-    resolved_epic_title = epic_title or "Unplanned"
-    resolved_epic_id = epic_id or f"epic-{slugify(resolved_epic_title)}"
-    resolved_lane_title = lane_title or "Unplanned"
-    resolved_lane_id = lane_id or f"lane-{slugify(resolved_lane_title)}"
-    resolved_wave = wave
-    if resolved_wave is None:
-        existing_waves = [int(item.get("wave", 0)) for item in plan["lanes"]]
-        resolved_wave = max(existing_waves, default=0)
-    epic_entry = _ensure_plan_entry(plan, kind="epic", entry_id=resolved_epic_id, title=resolved_epic_title)
-    lane_entry = _ensure_plan_entry(
-        plan,
-        kind="lane",
-        entry_id=resolved_lane_id,
-        title=resolved_lane_title,
-        wave=resolved_wave,
-    )
-    epic_entry["task_ids"].append(task_id)
-    lane_entry["task_ids"].append(task_id)
-    validate_plan_payload(plan, task_ids={*snapshot.tasks.keys(), task_id})
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+        task_id = make_task_id(profile, bucket=bucket, title=title, paths=paths)
+        if task_id in snapshot.tasks:
+            raise BacklogError(f"Task id already exists: {task_id}")
+        payload = {
+            "id": task_id,
+            "title": title,
+            "bucket": bucket,
+            "priority": priority,
+            "risk": risk,
+            "effort": effort,
+            "packages": packages,
+            "paths": paths,
+            "checks": checks or list(profile.validation_commands),
+            "docs": docs or list(profile.doc_routing_defaults),
+            "objective": objective,
+            "domains": domains,
+            "requires_approval": requires_approval,
+            "approval_reason": approval_reason,
+            "safe_first_slice": safe_first_slice,
+        }
+        validate_task_payload(payload, profile)
+        plan = json.loads(json.dumps(snapshot.plan))
+        if not isinstance(plan.get("epics"), list):
+            plan["epics"] = []
+        if not isinstance(plan.get("lanes"), list):
+            plan["lanes"] = []
+        resolved_epic_title = epic_title or "Unplanned"
+        resolved_epic_id = epic_id or f"epic-{slugify(resolved_epic_title)}"
+        resolved_lane_title = lane_title or "Unplanned"
+        resolved_lane_id = lane_id or f"lane-{slugify(resolved_lane_title)}"
+        resolved_wave = wave
+        if resolved_wave is None:
+            existing_waves = [int(item.get("wave", 0)) for item in plan["lanes"]]
+            resolved_wave = max(existing_waves, default=0)
+        epic_entry = _ensure_plan_entry(plan, kind="epic", entry_id=resolved_epic_id, title=resolved_epic_title)
+        lane_entry = _ensure_plan_entry(
+            plan,
+            kind="lane",
+            entry_id=resolved_lane_id,
+            title=resolved_lane_title,
+            wave=resolved_wave,
+        )
+        epic_entry["task_ids"].append(task_id)
+        lane_entry["task_ids"].append(task_id)
+        validate_plan_payload(plan, task_ids={*snapshot.tasks.keys(), task_id})
 
-    updated = _apply_runtime_headers(snapshot.raw_text, profile)
-    updated = _replace_plan_block(updated, plan)
-    updated = updated.rstrip() + "\n\n" + render_task_section(
-        payload,
-        why=why,
-        evidence=evidence,
-        affected_paths=affected_paths or paths,
-    ).rstrip() + "\n"
-    profile.paths.backlog_file.write_text(updated, encoding="utf-8")
-    return payload
+        updated = _apply_runtime_headers(snapshot.raw_text, profile)
+        updated = _replace_plan_block(updated, plan)
+        updated = updated.rstrip() + "\n\n" + render_task_section(
+            payload,
+            why=why,
+            evidence=evidence,
+            affected_paths=affected_paths or paths,
+        ).rstrip() + "\n"
+        atomic_write_text(profile.paths.backlog_file, updated)
+        return payload
 
 
 def render_initial_backlog(
