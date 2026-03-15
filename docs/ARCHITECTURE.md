@@ -69,6 +69,20 @@ That model is explicit in both `blackdog worktree ...` and `blackdog supervise .
 
 The initial supervisor loop is inbox-steerable in a narrow way: open `pause` messages addressed to the supervisor actor prevent new launches, and `stop` messages terminate the loop while preserving repo-local events and status files. The live UI is readonly: it surfaces the graph, inbox, results, and active supervisor state, but intervention still flows back through chat and Blackdog CLI writes.
 
+## WTAM audit
+
+Against the Utter WTAM baseline, Blackdog's current contract splits into enforced surfaces, documented guidance, and open gaps.
+
+| Requirement | Blackdog surfaces today | Audit |
+| --- | --- | --- |
+| No implementation from the primary worktree | `blackdog worktree preflight` reports whether the current checkout is primary, `blackdog worktree start` creates an external branch-backed task worktree, and supervisor child prompts always describe a branch-backed workspace. Public docs and skill text were weaker, and the CLI still exposes `supervise ... --workspace-mode current`. | Partial. Blackdog can surface the boundary, but it does not yet hard-reject every non-WTAM implementation path. |
+| Branch-backed task worktrees created from the primary branch | `blackdog worktree start|land|cleanup` plus supervisor workspace prep implement the lifecycle, keep worktrees outside the repo by default, and land through the primary worktree with fast-forward semantics. | Present. This is the strongest part of Blackdog's current WTAM surface. |
+| Supervisor stays in the primary worktree; children commit on task branches and land through the primary worktree | Architecture, integration docs, tests, and generated child prompts all say the coordinator remains in the primary worktree while children work in task branches; prompts also forbid child-side landing or completion after a branch-backed run. | Present, but the child prompt is still the most explicit source for the commit/no-self-land rules. |
+| Committed repo state is the baseline for delegated child work | Supervisor prompts tell children to treat committed repo state as the baseline, keep changes isolated to task scope, prefer Blackdog CLI output over raw state reads, and record structured results. | Partial. The delegated contract is explicit, but the repo-level docs and skill text had not mirrored it clearly enough. |
+| Each git worktree carries its own `.VE` | Blackdog prefers `./.VE/bin/blackdog` when it exists, but the docs and generated skill did not previously say that `.VE/` is unversioned, absolute-path-bound, and per-worktree. | Gap. This is a documentation and scaffold-contract hole rather than a current CLI behavior. |
+
+This audit tightens the repo-facing docs and skill text around the primary-worktree boundary, delegated-child contract, and per-worktree `.VE` rule. A later enforcement slice should turn the remaining partial row into a repo-wide hard gate by removing or explicitly gating `workspace_mode = "current"` for WTAM-compliant repos.
+
 ## Target architecture
 
 The intended next layer is a repo-local supervisor runtime that can:

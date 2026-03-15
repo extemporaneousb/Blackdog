@@ -28,7 +28,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 1. Run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog validate`.
 2. Run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog summary`.
 3. Inspect runnable work with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog next`.
-4. For direct implementation work, run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree preflight` and `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree start --id TASK` before editing repo files.
+4. For any direct implementation work you intend to keep, run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree preflight` first. If it reports `primary worktree: yes`, do not edit repo files there; create or enter a branch-backed task worktree with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree start --id TASK` before editing. Analysis-only work can stay in the current checkout.
 5. Claim one task with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog claim --agent <agent-name>`, then record structured output with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog result record ...`.
 6. Complete or release the task through the CLI for direct work.
 7. Use `/Users/bullard/Work/Blackdog/.VE/bin/blackdog supervise run` or `/Users/bullard/Work/Blackdog/.VE/bin/blackdog supervise loop` when you want Blackdog to launch child agents instead of editing directly.
@@ -38,12 +38,14 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 - The coordinating agent stays in the primary worktree.
 - Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
+- Keep `workspace_mode = "git-worktree"` for WTAM-compliant repos. Treat `current` as compatibility-only rather than the normal implementation path.
 - `pause` and `stop` messages are checked between loop cycles. They do not interrupt an already-running child claim.
 
 ## Repo Contract
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `/Users/bullard/Work/Blackdog/.git/blackdog`.
+- `.VE/` is not versioned. Each git worktree needs its own `.VE` rooted at that worktree; do not copy virtualenv directories between worktrees.
 - Regenerate this skill after profile changes with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog-skill refresh backlog --project-root /Users/bullard/Work/Blackdog`.
 
 ## Repo Defaults
