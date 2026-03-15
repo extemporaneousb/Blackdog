@@ -65,7 +65,7 @@ Current supervisor launcher contract:
 - `control_dir` accepts the special prefix `@git-common`, which resolves against `git rev-parse --git-common-dir`.
 - The default `worktrees_dir` value is `../.worktrees`, which places branch-backed task worktrees beside the primary checkout by default.
 - With `workspace_mode = "git-worktree"`, child workspaces are branch-backed task worktrees created from the primary worktree branch.
-- Blackdog may auto-stash uncommitted primary-worktree changes when branch landing remains blocked after retry/warning handling so the supervisor loop can keep moving.
+- Dirty primary-worktree state blocks branch landing as a contract violation. The supervisor sends an inbox warning, records a blocked result, and leaves the child branch/worktree intact rather than auto-stashing the primary checkout.
 - Successful branch-backed child runs are landed through the primary worktree with fast-forward semantics, and the supervisor completes the task after a successful land.
 
 ## `<control_dir>/backlogs/<slug>/...`

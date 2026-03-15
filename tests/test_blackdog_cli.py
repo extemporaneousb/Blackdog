@@ -1608,7 +1608,7 @@ if __name__ == "__main__":
         )
         self.assertEqual(len(resolved_messages), 1)
 
-    def test_supervise_run_lands_through_dirty_primary_worktree(self) -> None:
+    def test_supervise_run_blocks_on_dirty_primary_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         install_exec_launcher(
             self.root,
@@ -1665,7 +1665,7 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 """,
-            commit_message="Checkpoint dirty primary launcher for supervisor autostash test",
+            commit_message="Checkpoint dirty primary launcher for supervisor contract-violation test",
         )
 
         run_cli(
@@ -1732,18 +1732,37 @@ if __name__ == "__main__":
 
         self.assertEqual(payload["children"][0]["exit_code"], 0)
         self.assertIsNone(payload["children"][0]["launch_error"])
-        self.assertIsNotNone(payload["children"][0]["land_result"])
-        self.assertIsNotNone(payload["children"][0]["land_result"]["auto_stash"])
-        self.assertTrue(payload["children"][0]["land_result"]["auto_stash"]["stash_ref"])
-        self.assertFalse((self.root / "dirty.txt").exists())
-        self.assertEqual((self.root / "dirty-landed.txt").read_text(encoding="utf-8"), task_id + "\n")
+        self.assertIsNone(payload["children"][0]["land_result"])
+        self.assertIn("dirty primary worktree contract violation", payload["children"][0]["land_error"])
+        self.assertTrue((self.root / "dirty.txt").exists())
+        self.assertFalse((self.root / "dirty-landed.txt").exists())
+        self.assertTrue(Path(payload["children"][0]["workspace"]).exists())
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][task_id]["status"], "released")
+        branch_check = subprocess.run(
+            ["git", "-C", str(self.root), "show-ref", "--verify", f"refs/heads/{payload['children'][0]['task_branch']}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(branch_check.returncode, 0)
         stash_list = subprocess.run(
             ["git", "-C", str(self.root), "stash", "list"],
             check=True,
             capture_output=True,
             text=True,
         ).stdout
-        self.assertIn("blackdog-supervisor-land-", stash_list)
+        self.assertEqual(stash_list.strip(), "")
+        result_files = sorted((self.runtime_paths().results_dir / task_id).glob("*.json"))
+        self.assertGreaterEqual(len(result_files), 2)
+        results = [json.loads(path.read_text(encoding="utf-8")) for path in result_files]
+        blocked_results = [row for row in results if row["actor"] == "supervisor" and row["status"] == "blocked"]
+        self.assertEqual(len(blocked_results), 1)
+        self.assertTrue(blocked_results[0]["needs_user_input"])
+        self.assertIn(
+            "Clean up or land the primary worktree changes in the primary checkout.",
+            blocked_results[0]["followup_candidates"],
+        )
         open_messages = json.loads(
             subprocess.run(
                 [
@@ -1764,7 +1783,9 @@ if __name__ == "__main__":
                 cwd=self.root,
             ).stdout
         )
-        self.assertTrue(any("Please clean up or land your work; Blackdog will retry before stashing." in row["body"] for row in open_messages))
+        self.assertTrue(
+            any("Blackdog will not auto-stash the primary checkout." in row["body"] for row in open_messages)
+        )
 
     def test_supervise_loop_runs_multiple_cycles(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2327,7 +2348,9 @@ if __name__ == "__main__":
             "0",
         )
         current_task_id = task_ids_by_title(self.root)["Current running task"]
-        (self.root / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
+        sync_dir = self.runtime_paths().control_dir / "loop-sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        (sync_dir / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
         install_exec_launcher(
             self.root,
             """
@@ -2352,9 +2375,11 @@ def main() -> int:
     project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
-    started_file = project_root / f"started-{task_id}.txt"
-    gate_file = project_root / f"gate-{task_id}.txt"
-    release_file = project_root / f"release-{task_id}.txt"
+    sync_dir = project_root / ".git" / "blackdog" / "loop-sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    started_file = sync_dir / f"started-{task_id}.txt"
+    gate_file = sync_dir / f"gate-{task_id}.txt"
+    release_file = sync_dir / f"release-{task_id}.txt"
     started_file.write_text("started\\n", encoding="utf-8")
     if gate_file.exists():
         deadline = time.time() + 10
@@ -2426,7 +2451,7 @@ if __name__ == "__main__":
             cwd=self.root,
         )
         try:
-            wait_for_file(self.root / f"started-{current_task_id}.txt", timeout=10)
+            wait_for_file(sync_dir / f"started-{current_task_id}.txt", timeout=10)
             run_cli(
                 "add",
                 "--project-root",
@@ -2451,7 +2476,7 @@ if __name__ == "__main__":
                 "0",
             )
             downstream_task_id = task_ids_by_title(self.root)["Task added during active run"]
-            (self.root / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
+            (sync_dir / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
             stdout, stderr = process.communicate(timeout=15)
             self.assertEqual(process.returncode, 0, stderr)
         finally:
@@ -2497,7 +2522,9 @@ if __name__ == "__main__":
         current_task_id = ids["Current running task"]
         removed_task_id = ids["Removed downstream task"]
         remaining_task_id = ids["Remaining downstream task"]
-        (self.root / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
+        sync_dir = self.runtime_paths().control_dir / "loop-sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        (sync_dir / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
         install_exec_launcher(
             self.root,
             """
@@ -2522,9 +2549,11 @@ def main() -> int:
     project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
-    started_file = project_root / f"started-{task_id}.txt"
-    gate_file = project_root / f"gate-{task_id}.txt"
-    release_file = project_root / f"release-{task_id}.txt"
+    sync_dir = project_root / ".git" / "blackdog" / "loop-sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    started_file = sync_dir / f"started-{task_id}.txt"
+    gate_file = sync_dir / f"gate-{task_id}.txt"
+    release_file = sync_dir / f"release-{task_id}.txt"
     started_file.write_text("started\\n", encoding="utf-8")
     if gate_file.exists():
         deadline = time.time() + 10
@@ -2596,10 +2625,10 @@ if __name__ == "__main__":
             cwd=self.root,
         )
         try:
-            wait_for_file(self.root / f"started-{current_task_id}.txt", timeout=10)
+            wait_for_file(sync_dir / f"started-{current_task_id}.txt", timeout=10)
             remove_task_from_backlog(self.root, removed_task_id)
             self.assertNotIn("Removed downstream task", task_ids_by_title(self.root))
-            (self.root / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
+            (sync_dir / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
             stdout, stderr = process.communicate(timeout=15)
             self.assertEqual(process.returncode, 0, stderr)
         finally:

@@ -54,7 +54,7 @@ This layout resolves mutable runtime files from one shared git control root rath
 
 The current supervisor launcher assumes an exec-capable Codex runtime. With default settings, Blackdog prefers the desktop Codex.app binary when it is installed and falls back to the configured launcher command only if that runtime is unavailable.
 
-For `git-worktree` launches, Blackdog creates a branch-backed child worktree from the primary worktree branch even when the primary worktree is dirty. If landing is later blocked by dirty primary-worktree changes, Blackdog retries, warns, and can auto-stash as a last resort so delegated work keeps moving without turning launch-time dirt into a hard stop.
+For `git-worktree` launches, Blackdog creates a branch-backed child worktree from the primary worktree branch and treats committed repo state as the delegated baseline. If landing is later blocked by dirty primary-worktree changes, Blackdog treats that as a contract violation: it warns through the inbox, records a blocked result, and leaves the child branch/worktree intact instead of mutating the primary checkout with `git stash`.
 
 The supervisor-generated prompt tells the child that committed repo state is the baseline, that the task is already claimed, that code changes must be committed on the task branch, and that Blackdog CLI output is the source of truth for coordination state.
 

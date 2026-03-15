@@ -14,6 +14,32 @@ class WorktreeError(RuntimeError):
     pass
 
 
+class DirtyPrimaryWorktreeError(WorktreeError):
+    def __init__(
+        self,
+        *,
+        primary_worktree: Path,
+        branch: str,
+        target_branch: str,
+        dirty_paths: list[str],
+        overlap_paths: list[str],
+    ) -> None:
+        self.primary_worktree = str(primary_worktree)
+        self.branch = branch
+        self.target_branch = target_branch
+        self.dirty_paths = tuple(dirty_paths)
+        self.overlap_paths = tuple(overlap_paths)
+        dirty_text = ", ".join(self.dirty_paths) or "none detected"
+        overlap_text = ", ".join(self.overlap_paths) or "none detected"
+        super().__init__(
+            "dirty primary worktree contract violation: "
+            f"{self.primary_worktree} has uncommitted changes blocking landing {self.branch} into {self.target_branch}; "
+            f"overlap with branch changes: {overlap_text}; "
+            f"dirty paths: {dirty_text}; "
+            "clean up or land the primary worktree changes and retry without using git stash"
+        )
+
+
 @dataclass(frozen=True)
 class WorktreeSpec:
     task_id: str
@@ -253,6 +279,25 @@ def primary_worktree_dirty_paths(profile: Profile, *, ignore_runtime: bool = Tru
     return dirty_paths(primary_root, ignore_prefixes=ignore_prefixes)
 
 
+def dirty_primary_worktree_error(
+    profile: Profile,
+    *,
+    branch: str,
+    target_branch: str | None = None,
+) -> DirtyPrimaryWorktreeError:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    resolved_target = target_branch or _current_branch(primary_root)
+    dirty = primary_worktree_dirty_paths(profile, ignore_runtime=True)
+    overlap = sorted(set(dirty).intersection(branch_changed_paths(profile, branch=branch, target_branch=resolved_target)))
+    return DirtyPrimaryWorktreeError(
+        primary_worktree=primary_root,
+        branch=branch,
+        target_branch=resolved_target,
+        dirty_paths=dirty,
+        overlap_paths=overlap,
+    )
+
+
 def start_task_worktree(
     profile: Profile,
     *,
@@ -319,6 +364,8 @@ def land_branch(
         created_target = True
     try:
         if _status_dirty(target_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile)):
+            if target_worktree == primary_root:
+                raise dirty_primary_worktree_error(profile, branch=resolved_branch, target_branch=resolved_target)
             raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
         if pull:
             upstream = _run_git_no_check(target_worktree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
@@ -365,22 +412,6 @@ def land_branch(
         if created_target and target_worktree.exists():
             _run_git_no_check(primary_root, "worktree", "remove", "--force", str(target_worktree))
         raise
-
-
-def stash_worktree_changes(repo_root: Path, *, message: str) -> str | None:
-    completed = _run_git_no_check(repo_root, "stash", "push", "--include-untracked", "--message", message)
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
-        raise WorktreeError(f"git stash push failed: {detail}")
-    output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
-    if "No local changes to save" in output:
-        return None
-    listing = _run_git(repo_root, "stash", "list", "--format=%gd %s")
-    for line in listing.splitlines():
-        ref, _, subject = line.partition(" ")
-        if message in subject:
-            return ref
-    raise WorktreeError(f"unable to locate stash created for message: {message}")
 
 
 def branch_changed_paths(profile: Profile, *, branch: str, target_branch: str | None = None) -> list[str]:
