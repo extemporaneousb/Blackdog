@@ -266,8 +266,9 @@ def _resolve_from_ref(primary_root: Path, from_ref: str | None, *, default_branc
     raise WorktreeError(f"could not resolve --from ref: {from_ref} (try: git fetch --all --prune)")
 
 
-def worktree_preflight(profile: Profile) -> dict[str, Any]:
-    current_root = _repo_root(profile.paths.project_root)
+def worktree_preflight(profile: Profile, *, cwd: Path | None = None) -> dict[str, Any]:
+    resolved_cwd = (cwd or Path.cwd()).resolve()
+    current_root = _repo_root(resolved_cwd)
     contract = worktree_contract(profile, workspace=current_root)
     primary_root = Path(contract["primary_worktree"]).resolve()
     runtime_ignore_prefixes = _runtime_ignore_prefixes(profile)
@@ -284,7 +285,9 @@ def worktree_preflight(profile: Profile) -> dict[str, Any]:
             }
         )
     return {
+        "project_root": str(profile.paths.project_root),
         "repo_root": str(current_root),
+        "cwd": str(resolved_cwd),
         "current_worktree": contract["current_worktree"],
         "current_branch": contract["current_branch"],
         "current_is_primary": contract["current_is_primary"],
@@ -571,7 +574,9 @@ def render_preflight_text(payload: dict[str, Any]) -> str:
     )
     lines = [
         f"[blackdog-worktree] preflight: {payload['repo_root']} (branch: {payload['current_branch']}, dirty: {dirty})",
-        f"[blackdog-worktree] cwd: {payload['current_worktree']}",
+        f"[blackdog-worktree] project root: {payload['project_root']}",
+        f"[blackdog-worktree] cwd: {payload['cwd']}",
+        f"[blackdog-worktree] current worktree: {payload['current_worktree']}",
         f"[blackdog-worktree] primary worktree: {primary}",
         f"[blackdog-worktree] workspace mode: {payload['workspace_mode']}",
         f"[blackdog-worktree] model: {payload['worktree_model']}",

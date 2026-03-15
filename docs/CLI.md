@@ -26,7 +26,7 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 - `blackdog worktree start` creates a task branch from the primary worktree branch and returns a structured worktree spec
 - `blackdog worktree land` fast-forwards that task branch into the target branch and can remove the task worktree with `--cleanup`
 - `blackdog worktree cleanup` removes a landed task worktree and, when explicitly told, deletes the associated branch
-- `blackdog worktree preflight` reports the current worktree, primary worktree, configured worktree base, whether there are implementation-blocking local changes, the enforced WTAM workspace contract, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
+- `blackdog worktree preflight` reports the central project root, the actual current `cwd` and worktree, the primary worktree, configured worktree base, whether there are implementation-blocking local changes, the enforced WTAM workspace contract, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
 
 For Blackdog's own repo, manual-first is the default operating mode
 until the runtime-hardening tasks land. Prefer the direct `blackdog

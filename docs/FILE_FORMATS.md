@@ -217,7 +217,9 @@ Structured preflight payload for WTAM implementation work.
 
 Current keys include:
 
+- `project_root`
 - `repo_root`
+- `cwd`
 - `current_worktree`
 - `current_branch`
 - `current_is_primary`

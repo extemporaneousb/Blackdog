@@ -306,7 +306,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
 def cmd_worktree_preflight(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
-    payload = worktree_preflight(profile)
+    payload = worktree_preflight(profile, cwd=Path.cwd())
     if args.format == "json":
         print(json.dumps(payload, indent=2))
     else:

@@ -683,6 +683,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertFalse(preflight["worktrees_dir_inside_repo"])
         self.assertEqual(preflight["workspace_mode"], "git-worktree")
         self.assertEqual(preflight["target_branch"], "main")
+        self.assertEqual(Path(preflight["project_root"]).resolve(), self.root.resolve())
+        self.assertEqual(Path(preflight["cwd"]).resolve(), self.root.resolve())
         self.assertIn(".VE is unversioned", preflight["workspace_contract"]["ve_expectation"])
 
         preflight_text = subprocess.run(
@@ -695,6 +697,8 @@ class BlackdogCliTests(unittest.TestCase):
         ).stdout
         self.assertIn("[blackdog-worktree] workspace mode: git-worktree", preflight_text)
         self.assertIn("[blackdog-worktree] target branch: main", preflight_text)
+        self.assertIn(f"[blackdog-worktree] project root: {self.root.resolve()}", preflight_text)
+        self.assertIn(f"[blackdog-worktree] current worktree: {self.root.resolve()}", preflight_text)
         self.assertIn("[blackdog-worktree] .VE rule:", preflight_text)
 
         with tempfile.TemporaryDirectory() as worktree_parent:
@@ -736,6 +740,31 @@ class BlackdogCliTests(unittest.TestCase):
                 text=True,
             ).stdout.strip()
             self.assertEqual(worktree_branch, created["branch"])
+
+            delegated_preflight = json.loads(
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "blackdog.cli",
+                        "worktree",
+                        "preflight",
+                        "--project-root",
+                        str(self.root),
+                        "--format",
+                        "json",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=cli_env(),
+                    cwd=worktree_path,
+                ).stdout
+            )
+            self.assertFalse(delegated_preflight["current_is_primary"])
+            self.assertEqual(Path(delegated_preflight["project_root"]).resolve(), self.root.resolve())
+            self.assertEqual(Path(delegated_preflight["cwd"]).resolve(), worktree_path.resolve())
+            self.assertEqual(Path(delegated_preflight["current_worktree"]).resolve(), worktree_path.resolve())
 
             events = json.loads(
                 subprocess.run(
