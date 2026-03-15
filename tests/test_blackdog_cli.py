@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -21,8 +22,8 @@ from blackdog.backlog import load_backlog
 from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
-from blackdog.store import append_jsonl, record_task_result, send_message
-from blackdog.supervisor import _build_child_prompt, _resolved_launch_command
+from blackdog.store import append_jsonl, atomic_write_text, record_task_result, save_state, send_message
+from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_loop_status
 from blackdog.worktree import WorktreeSpec
 
 
@@ -208,6 +209,39 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(len(payload["next_rows"]), 1)
         self.assertTrue(paths.html_file.exists())
+
+    def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
+        state_file = self.root / "state.json"
+        state_file.write_text('{"version": 1}\n', encoding="utf-8")
+        replace_ready = threading.Event()
+        allow_replace = threading.Event()
+
+        def writer() -> None:
+            atomic_write_text(
+                state_file,
+                '{"version": 2}\n',
+                before_replace=lambda _temp_path: (replace_ready.set(), allow_replace.wait(timeout=5)),
+            )
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        self.assertTrue(replace_ready.wait(timeout=5))
+        self.assertEqual(json.loads(state_file.read_text(encoding="utf-8"))["version"], 1)
+        allow_replace.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(json.loads(state_file.read_text(encoding="utf-8"))["version"], 2)
+
+    def test_save_state_and_loop_status_use_atomic_writes(self) -> None:
+        state_file = self.root / "state.json"
+        with patch("blackdog.store.atomic_write_text") as state_write:
+            save_state(state_file, {"schema_version": 1, "approval_tasks": {}, "task_claims": {}})
+        state_write.assert_called_once()
+
+        status_file = self.root / "status.json"
+        with patch("blackdog.supervisor.atomic_write_text") as status_write:
+            _write_loop_status(None, status_file, {"cycles": []})
+        status_write.assert_called_once()
 
     def test_bootstrap_creates_skill_and_is_idempotent(self) -> None:
         payload = json.loads(

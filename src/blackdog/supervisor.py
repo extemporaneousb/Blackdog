@@ -24,6 +24,7 @@ from .backlog import (
 from .config import DEFAULT_SUPERVISOR_COMMAND, Profile
 from .scaffold import render_project_html
 from .store import (
+    atomic_write_text,
     append_event,
     claim_task_entry,
     load_inbox,
@@ -417,8 +418,7 @@ def build_supervisor_status_view(
 
 
 def _write_loop_status(paths, status_file: Path, payload: dict[str, Any]) -> None:
-    status_file.parent.mkdir(parents=True, exist_ok=True)
-    status_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(status_file, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def _claim_for_child(profile: Profile, snapshot: BacklogSnapshot, task: TaskInfo, *, child_agent: str) -> None:

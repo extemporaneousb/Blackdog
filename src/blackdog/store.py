@@ -3,9 +3,11 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 import fcntl
 import json
+import os
+import tempfile
 import uuid
 
 from .config import ProjectPaths
@@ -62,29 +64,61 @@ def load_state(state_file: Path) -> dict[str, Any]:
     return normalize_state(payload, state_file=state_file)
 
 
+def _lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def locked_path(path: Path) -> Iterator[None]:
+    lock_path = _lock_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    before_replace: Callable[[Path], None] | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_path = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(raw_path)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if before_replace is not None:
+            before_replace(temp_path)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 def save_state(state_file: Path, state: dict[str, Any]) -> None:
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    with locked_path(state_file):
+        atomic_write_text(state_file, payload)
 
 
 @contextmanager
 def locked_state(state_file: Path) -> Iterator[dict[str, Any]]:
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    if not state_file.exists():
-        save_state(state_file, default_state())
-    with state_file.open("r+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            raw = handle.read().strip()
-            payload = default_state() if not raw else json.loads(raw)
-            state = normalize_state(payload, state_file=state_file)
-            yield state
-            handle.seek(0)
-            handle.truncate()
-            handle.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
-            handle.flush()
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with locked_path(state_file):
+        if not state_file.exists():
+            atomic_write_text(state_file, json.dumps(default_state(), indent=2, sort_keys=True) + "\n")
+        raw = state_file.read_text(encoding="utf-8").strip()
+        payload = default_state() if not raw else json.loads(raw)
+        state = normalize_state(payload, state_file=state_file)
+        yield state
+        atomic_write_text(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
 
 
 def claim_is_active(entry: dict[str, Any]) -> bool:
@@ -298,7 +332,7 @@ def record_task_result(
         "needs_user_input": needs_user_input,
         "followup_candidates": followup_candidates,
     }
-    result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(result_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     append_event(
         paths,
         event_type="task_result",
