@@ -1569,6 +1569,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn(str(blackdog_script.resolve()), prompt)
         self.assertIn("This workspace does not currently have", prompt)
         self.assertIn("do not reuse another worktree's .VE", prompt)
+        self.assertIn("`./.VE/bin/blackdog inbox list", prompt)
 
     def test_supervise_run_launches_child_command_in_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

@@ -100,7 +100,7 @@ def _preferred_blackdog_command(profile: Profile, *, workspace: Path | None = No
     candidate = ((workspace or profile.paths.project_root) / ".VE" / "bin" / "blackdog").resolve()
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return shlex.quote(str(candidate))
-    return "blackdog"
+    return "./.VE/bin/blackdog"
 
 
 def _notify_supervisor(
