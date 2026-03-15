@@ -716,8 +716,8 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       --running-fg: #0f4fb5;
       --waiting-bg: #ece6dc;
       --waiting-fg: #615548;
-      --blocked-bg: #fde0ba;
-      --blocked-fg: #8b4c04;
+      --blocked-bg: #f7d7d0;
+      --blocked-fg: #8c2f1f;
       --failed-bg: #f8d4d4;
       --failed-fg: #8d2020;
       --complete-bg: #d9efdf;
@@ -891,10 +891,29 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
     }
     .lane-board {
       display: grid;
+      gap: 18px;
+      margin-top: 16px;
+      align-items: stretch;
+    }
+    .wave-section {
+      display: grid;
+      gap: 16px;
+      padding: 18px;
+      border: 1px solid rgba(182, 106, 35, 0.18);
+      border-radius: 26px;
+      background:
+        linear-gradient(180deg, rgba(255, 253, 248, 0.96) 0%, rgba(248, 241, 232, 0.82) 100%);
+    }
+    .wave-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 16px;
+    }
+    .wave-grid {
+      display: grid;
       grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
       gap: 16px;
-      margin-top: 16px;
-      align-items: start;
     }
     .lane-column {
       display: grid;
@@ -953,7 +972,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
     .chip-claimed { background: var(--claimed-bg); border-color: #bec8ff; color: var(--claimed-fg); }
     .chip-running { background: var(--running-bg); border-color: #a9cbff; color: var(--running-fg); }
     .chip-waiting { background: var(--waiting-bg); border-color: #d1c5b8; color: var(--waiting-fg); }
-    .chip-blocked, .chip-approval, .chip-high-risk { background: var(--blocked-bg); border-color: #eeb469; color: var(--blocked-fg); }
+    .chip-blocked, .chip-approval, .chip-high-risk { background: var(--blocked-bg); border-color: #df9c8f; color: var(--blocked-fg); }
     .chip-failed, .chip-launch-failed, .chip-timed-out, .chip-interrupted { background: var(--failed-bg); border-color: #eca2a2; color: var(--failed-fg); }
     .chip-complete, .chip-done, .chip-success, .chip-finished { background: var(--complete-bg); border-color: #9ed0af; color: var(--complete-fg); }
     .chip-partial { background: var(--partial-bg); border-color: #e3bc84; color: var(--partial-fg); }
@@ -1344,6 +1363,26 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
         });
     }
 
+    function waveRows(lanes) {
+      const rows = new Map();
+      for (const lane of lanes) {
+        const key = lane.wave == null ? "unplanned" : String(lane.wave);
+        if (!rows.has(key)) {
+          rows.set(key, {
+            key,
+            wave: lane.wave,
+            lanes: []
+          });
+        }
+        rows.get(key).lanes.push(lane);
+      }
+      return Array.from(rows.values()).sort((left, right) => {
+        const leftWave = left.wave == null ? 9999 : Number(left.wave);
+        const rightWave = right.wave == null ? 9999 : Number(right.wave);
+        return leftWave - rightWave;
+      });
+    }
+
     function renderHeader() {
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
@@ -1454,31 +1493,53 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       `;
     }
 
+    function renderLaneColumn(lane) {
+      const counts = countStatuses(lane.tasks);
+      const laneChips = ["running", "claimed", "waiting", "blocked", "failed", "complete", "ready"]
+        .filter((key) => counts[key])
+        .map((key) => chip(`${statusMeta[key].label} ${counts[key]}`, key))
+        .join("");
+      return `
+        <section class="lane-column">
+          <div class="lane-top">
+            <div>
+              <span class="eyebrow">Wave ${escapeHtml(lane.wave ?? "unplanned")}</span>
+              <h3>${escapeHtml(lane.title)}</h3>
+            </div>
+            <span class="lane-count">${lane.tasks.length} task(s)</span>
+          </div>
+          <div class="lane-summary">${laneChips}</div>
+          <div class="lane-stack">${lane.tasks.map(taskCard).join("")}</div>
+        </section>
+      `;
+    }
+
     function renderBoard() {
       const visibleTasks = allTasks.filter(taskMatches);
       const lanes = laneRows(visibleTasks);
+      const waves = waveRows(lanes);
       document.getElementById("filter-summary").textContent =
         filterState.status === "total" ? "Filter: all tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
       document.getElementById("board-summary").textContent =
-        `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s)`;
-      document.getElementById("lane-board").innerHTML = lanes.length
-        ? lanes.map((lane) => {
-            const counts = countStatuses(lane.tasks);
-            const laneChips = ["running", "claimed", "waiting", "blocked", "failed", "complete", "ready"]
-              .filter((key) => counts[key])
-              .map((key) => chip(`${statusMeta[key].label} ${counts[key]}`, key))
+        `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave group(s)`;
+      document.getElementById("lane-board").innerHTML = waves.length
+        ? waves.map((wave) => {
+            const waveTasks = wave.lanes.flatMap((lane) => lane.tasks);
+            const waveCounts = countStatuses(waveTasks);
+            const waveChips = ["running", "claimed", "waiting", "blocked", "failed", "complete", "ready"]
+              .filter((key) => waveCounts[key])
+              .map((key) => chip(`${statusMeta[key].label} ${waveCounts[key]}`, key))
               .join("");
             return `
-              <section class="lane-column">
-                <div class="lane-top">
+              <section class="wave-section">
+                <div class="wave-head">
                   <div>
-                    <span class="eyebrow">Wave ${escapeHtml(lane.wave ?? "unplanned")}</span>
-                    <h3>${escapeHtml(lane.title)}</h3>
+                    <span class="eyebrow">Wave Boundary</span>
+                    <h3>Wave ${escapeHtml(wave.wave ?? "unplanned")}</h3>
                   </div>
-                  <span class="lane-count">${lane.tasks.length} task(s)</span>
+                  <div class="chips">${waveChips}</div>
                 </div>
-                <div class="lane-summary">${laneChips}</div>
-                <div class="lane-stack">${lane.tasks.map(taskCard).join("")}</div>
+                <div class="wave-grid">${wave.lanes.map(renderLaneColumn).join("")}</div>
               </section>
             `;
           }).join("")
