@@ -56,6 +56,9 @@ class SupervisorError(RuntimeError):
 
 
 DESKTOP_CODEX_BINARY = Path("/Applications/Codex.app/Contents/Resources/codex")
+SUPERVISOR_STATUS_READY_LIMIT = 8
+SUPERVISOR_STATUS_RESULT_LIMIT = 5
+SUPERVISOR_STATUS_CONTROL_LIMIT = 8
 
 
 @dataclass
@@ -165,6 +168,57 @@ def render_supervisor_loop_output(view: dict[str, Any], *, as_json: bool) -> str
     return _supervisor_loop_text(view)
 
 
+def _supervisor_status_text(view: dict[str, Any]) -> str:
+    lines = [f"Supervisor actor: {view['actor']}"]
+    latest_loop = view.get("latest_loop")
+    if isinstance(latest_loop, dict):
+        lines.append(
+            f"Latest loop: {latest_loop['status']} | {latest_loop['loop_id']} | cycles {latest_loop['cycle_count']} | workspace {latest_loop['workspace_mode']}"
+        )
+        lines.append(f"Status file: {latest_loop['status_file']}")
+        last_cycle = latest_loop.get("last_cycle")
+        if isinstance(last_cycle, dict):
+            lines.append(f"Last cycle: {last_cycle.get('status')} @ {last_cycle.get('at')}")
+    else:
+        lines.append("Latest loop: none")
+        lines.append("Status file: none")
+    control = view.get("control_action")
+    if isinstance(control, dict):
+        lines.append(f"Next cycle control: {control['action']} via {control['message_id']}")
+
+    lines.extend(["", "Open supervisor controls:"])
+    if view["open_control_messages"]:
+        for message in view["open_control_messages"]:
+            lines.append(
+                f"- {message['message_id']} {message['sender']} [{message['control_action']}] {message['body']}"
+            )
+    else:
+        lines.append("- No open control messages.")
+
+    lines.extend(["", "Ready tasks:"])
+    if view["ready_tasks"]:
+        for task in view["ready_tasks"]:
+            lines.append(f"- {task['id']} [{task['risk']}] {task['title']}")
+    else:
+        lines.append("- No runnable tasks.")
+
+    lines.extend(["", "Recent child-run results:"])
+    if view["recent_results"]:
+        for result in view["recent_results"]:
+            lines.append(
+                f"- {result['task_id']} [{result['status']}] {result['actor']} {result['recorded_at']} {result['title']}"
+            )
+    else:
+        lines.append("- No recent child-run results.")
+    return "\n".join(lines) + "\n"
+
+
+def render_supervisor_status_output(view: dict[str, Any], *, as_json: bool) -> str:
+    if as_json:
+        return json.dumps(view, indent=2) + "\n"
+    return _supervisor_status_text(view)
+
+
 def _select_tasks(
     snapshot: BacklogSnapshot,
     state: dict[str, Any],
@@ -199,15 +253,145 @@ def _load_synced_runtime(profile: Profile) -> tuple[BacklogSnapshot, dict[str, A
 def _loop_control_action(messages: list[dict[str, Any]]) -> tuple[str | None, dict[str, Any] | None]:
     pause_message: dict[str, Any] | None = None
     for message in messages:
-        tags = {str(tag).strip().lower() for tag in message.get("tags") or []}
-        body = str(message.get("body") or "").strip().lower()
-        if "stop" in tags or body.startswith("stop"):
+        action = _message_control_action(message)
+        if action == "stop":
             return "stop", message
-        if pause_message is None and ("pause" in tags or body.startswith("pause")):
+        if pause_message is None and action == "pause":
             pause_message = message
     if pause_message is not None:
         return "pause", pause_message
     return None, None
+
+
+def _message_control_action(message: dict[str, Any]) -> str | None:
+    tags = {str(tag).strip().lower() for tag in message.get("tags") or []}
+    body = str(message.get("body") or "").strip().lower()
+    if "stop" in tags or body.startswith("stop"):
+        return "stop"
+    if "pause" in tags or body.startswith("pause"):
+        return "pause"
+    return None
+
+
+def _latest_loop_status(profile: Profile, *, actor: str) -> dict[str, Any] | None:
+    status_files = sorted(
+        profile.paths.supervisor_runs_dir.glob("*-loop-*/status.json"),
+        reverse=True,
+    )
+    for status_file in status_files:
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("actor") or "") != actor:
+            continue
+        cycles = payload.get("cycles") if isinstance(payload.get("cycles"), list) else []
+        last_cycle = cycles[-1] if cycles and isinstance(cycles[-1], dict) else None
+        status = str(payload.get("final_status") or (last_cycle or {}).get("status") or "running")
+        return {
+            "loop_id": payload.get("loop_id"),
+            "actor": payload.get("actor"),
+            "status": status,
+            "workspace_mode": payload.get("workspace_mode"),
+            "poll_interval_seconds": payload.get("poll_interval_seconds"),
+            "max_cycles": payload.get("max_cycles"),
+            "stop_when_idle": payload.get("stop_when_idle"),
+            "loop_dir": payload.get("loop_dir") or str(status_file.parent),
+            "status_file": str(status_file),
+            "cycle_count": len(cycles),
+            "last_cycle": last_cycle,
+            "completed_at": payload.get("completed_at"),
+            "final_status": payload.get("final_status"),
+            "stopped_by_message_id": payload.get("stopped_by_message_id"),
+        }
+    return None
+
+
+def build_supervisor_status_view(
+    profile: Profile,
+    *,
+    actor: str,
+    allow_high_risk: bool,
+) -> dict[str, Any]:
+    snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    open_messages = load_inbox(profile.paths, recipient=actor, status="open")
+    control_messages = []
+    for message in open_messages:
+        action = _message_control_action(message)
+        if action is None:
+            continue
+        control_messages.append(
+            {
+                "message_id": str(message.get("message_id") or ""),
+                "at": message.get("at"),
+                "sender": message.get("sender"),
+                "recipient": message.get("recipient"),
+                "kind": message.get("kind"),
+                "task_id": message.get("task_id"),
+                "tags": list(message.get("tags") or []),
+                "body": message.get("body"),
+                "control_action": action,
+            }
+        )
+        if len(control_messages) >= SUPERVISOR_STATUS_CONTROL_LIMIT:
+            break
+    control_action, control_message = _loop_control_action(open_messages)
+    ready_tasks = [
+        {
+            "id": task.id,
+            "title": task.title,
+            "lane": task.lane_title,
+            "wave": task.wave,
+            "risk": task.payload["risk"],
+            "priority": task.payload["priority"],
+        }
+        for task in next_runnable_tasks(
+            snapshot,
+            state,
+            allow_high_risk=allow_high_risk,
+            limit=SUPERVISOR_STATUS_READY_LIMIT,
+        )
+    ]
+    recent_results = []
+    child_actor_prefix = f"{actor}/child-"
+    for row in load_task_results(profile.paths):
+        result_actor = str(row.get("actor") or "")
+        if result_actor != actor and not result_actor.startswith(child_actor_prefix):
+            continue
+        task_id = str(row.get("task_id") or "")
+        task = snapshot.tasks.get(task_id)
+        recent_results.append(
+            {
+                "task_id": task_id,
+                "title": task.title if task is not None else "",
+                "status": row.get("status"),
+                "actor": result_actor,
+                "run_id": row.get("run_id"),
+                "recorded_at": row.get("recorded_at"),
+                "needs_user_input": bool(row.get("needs_user_input")),
+                "result_file": row.get("result_file"),
+            }
+        )
+        if len(recent_results) >= SUPERVISOR_STATUS_RESULT_LIMIT:
+            break
+    return {
+        "actor": actor,
+        "latest_loop": _latest_loop_status(profile, actor=actor),
+        "control_action": (
+            {
+                "action": control_action,
+                "message_id": str(control_message.get("message_id") or ""),
+            }
+            if control_action is not None and control_message is not None
+            else None
+        ),
+        "open_control_messages": control_messages,
+        "ready_tasks": ready_tasks,
+        "recent_results": recent_results,
+    }
 
 
 def _write_loop_status(paths, status_file: Path, payload: dict[str, Any]) -> None:

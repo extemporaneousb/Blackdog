@@ -36,7 +36,15 @@ from .store import (
     save_state,
     send_message,
 )
-from .supervisor import SupervisorError, render_supervisor_loop_output, render_supervisor_output, run_supervisor, run_supervisor_loop
+from .supervisor import (
+    SupervisorError,
+    build_supervisor_status_view,
+    render_supervisor_loop_output,
+    render_supervisor_output,
+    render_supervisor_status_output,
+    run_supervisor,
+    run_supervisor_loop,
+)
 from .ui import UIError, build_ui_snapshot, serve_ui
 from .worktree import (
     WorktreeError,
@@ -227,6 +235,17 @@ def cmd_supervise_loop(args: argparse.Namespace) -> int:
         after_cycle=lambda: _emit_render(profile),
     )
     print(render_supervisor_loop_output(payload, as_json=args.format == "json"), end="")
+    return 0
+
+
+def cmd_supervise_status(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = build_supervisor_status_view(
+        profile,
+        actor=args.actor,
+        allow_high_risk=args.allow_high_risk,
+    )
+    print(render_supervisor_status_output(payload, as_json=args.format == "json"), end="")
     return 0
 
 
@@ -672,6 +691,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_loop.add_argument("--stop-when-idle", action="store_true")
     p_supervise_loop.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_loop.set_defaults(func=cmd_supervise_loop)
+    p_supervise_status = supervise_subparsers.add_parser("status", help="Report loop state, open controls, ready tasks, and recent child results")
+    p_supervise_status.add_argument("--project-root", default=None)
+    p_supervise_status.add_argument("--actor", default="supervisor")
+    p_supervise_status.add_argument("--allow-high-risk", action="store_true")
+    p_supervise_status.add_argument("--format", choices=("text", "json"), default="text")
+    p_supervise_status.set_defaults(func=cmd_supervise_status)
 
     p_claim = subparsers.add_parser("claim", help="Claim tasks for an agent")
     p_claim.add_argument("--project-root", default=None)

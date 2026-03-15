@@ -37,6 +37,7 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 - `blackdog next`
 - `blackdog supervise run`
 - `blackdog supervise loop`
+- `blackdog supervise status`
 - `blackdog claim --agent NAME`
 - `blackdog release --id TASK --agent NAME`
 - `blackdog complete --id TASK --agent NAME`
@@ -53,6 +54,8 @@ When `workspace_mode = "git-worktree"`, Blackdog creates a branch-backed child w
 The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state. When the project root contains `.VE/bin/blackdog`, the prompt points child agents at that repo-local CLI; otherwise it falls back to `blackdog` from the active environment.
 
 `blackdog supervise loop` keeps a supervisor session alive across multiple cycles, writes loop status under the configured control root `supervisor-runs/` directory, refreshes the HTML control page after each cycle, and can be steered through inbox messages sent to the supervisor actor. `pause` messages prevent new launches while they remain open, and `stop` messages end the loop before the next cycle starts. These are boundary controls; they do not interrupt a child task that is already running.
+
+`blackdog supervise status` is the chat-native inspection surface for that loop. It reports the latest saved loop status for a supervisor actor, the currently open `pause`/`stop` control messages for that actor, the current ready-task queue, and the most recent supervisor or child-agent task results in one compact text or JSON view.
 
 `blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes repo identity (`project_name`, `project_root`, `control_dir`), backlog counts, objectives, graph nodes and dependency edges, open inbox messages, recent task results, recent supervisor runs, and recent supervisor loops.
 

@@ -873,6 +873,225 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["supervisor"]["loops"][0]["loop_id"], "abcd1234")
         self.assertEqual(snapshot["links"]["backlog"], "/artifacts/backlog.md")
 
+    def test_supervise_status_reports_loop_controls_ready_tasks_and_recent_results(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        for title in ("Status task one", "Status task two"):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "cli",
+                "--why",
+                "Need a compact supervisor inspection surface.",
+                "--evidence",
+                "Chat needs loop state, controls, ready tasks, and recent child results.",
+                "--safe-first-slice",
+                "Print a readonly supervisor status summary.",
+                "--path",
+                "src/blackdog/cli.py",
+                "--epic-title",
+                "Supervisor interface",
+                "--lane-title",
+                "Chat investigation",
+                "--wave",
+                "0",
+            )
+        task_ids = task_ids_by_title(self.root)
+        pause_message = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "inbox",
+                    "send",
+                    "--project-root",
+                    str(self.root),
+                    "--sender",
+                    "user",
+                    "--recipient",
+                    "supervisor",
+                    "--kind",
+                    "instruction",
+                    "--tag",
+                    "pause",
+                    "--body",
+                    "pause loop before the next cycle",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "inbox",
+                "send",
+                "--project-root",
+                str(self.root),
+                "--sender",
+                "user",
+                "--recipient",
+                "supervisor",
+                "--kind",
+                "instruction",
+                "--body",
+                "this should not count as a control message",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        loop_dir = self.runtime_paths().supervisor_runs_dir / "20260313-120000-loop-abcd1234"
+        loop_dir.mkdir(parents=True)
+        status_file = loop_dir / "status.json"
+        status_file.write_text(
+            json.dumps(
+                {
+                    "loop_id": "abcd1234",
+                    "actor": "supervisor",
+                    "workspace_mode": "git-worktree",
+                    "poll_interval_seconds": 5.0,
+                    "max_cycles": None,
+                    "stop_when_idle": False,
+                    "loop_dir": str(loop_dir),
+                    "status_file": str(status_file),
+                    "cycles": [
+                        {
+                            "index": 1,
+                            "at": "2026-03-13T12:00:00-07:00",
+                            "status": "paused",
+                            "ready_task_ids": [task_ids["Status task one"], task_ids["Status task two"]],
+                            "open_message_ids": [pause_message["message_id"]],
+                        }
+                    ],
+                    "completed_at": "2026-03-13T12:00:05-07:00",
+                    "final_status": "paused",
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "result",
+                "record",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_ids["Status task one"],
+                "--actor",
+                "supervisor/child-01",
+                "--status",
+                "success",
+                "--what-changed",
+                "child completed the first status task",
+                "--validation",
+                "status-smoke",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "result",
+                "record",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_ids["Status task two"],
+                "--actor",
+                "other-agent",
+                "--status",
+                "partial",
+                "--what-changed",
+                "unrelated result should be filtered out",
+                "--validation",
+                "status-smoke",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "status",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(payload["actor"], "supervisor")
+        self.assertEqual(payload["latest_loop"]["loop_id"], "abcd1234")
+        self.assertEqual(payload["latest_loop"]["status_file"], str(status_file))
+        self.assertEqual(payload["latest_loop"]["status"], "paused")
+        self.assertEqual(payload["control_action"], {"action": "pause", "message_id": pause_message["message_id"]})
+        self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [pause_message["message_id"]])
+        self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Status task one"])
+        self.assertEqual(len(payload["recent_results"]), 1)
+        self.assertEqual(payload["recent_results"][0]["task_id"], task_ids["Status task one"])
+        self.assertEqual(payload["recent_results"][0]["actor"], "supervisor/child-01")
+
+        text_output = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "status",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        ).stdout
+        self.assertIn("Latest loop: paused | abcd1234 | cycles 1 | workspace git-worktree", text_output)
+        self.assertIn(f"Next cycle control: pause via {pause_message['message_id']}", text_output)
+        self.assertIn("Recent child-run results:", text_output)
+
     def test_ui_serve_stream_updates_after_backlog_change(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         process = subprocess.Popen(
