@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import os
 import shlex
+import shutil
 
 from .backlog import (
     render_html,
@@ -12,7 +14,7 @@ from .backlog import (
     refresh_backlog_headers,
     sync_state_for_backlog,
 )
-from .config import load_profile, write_default_profile, Profile
+from .config import load_profile, named_backlog_paths, write_default_profile, Profile
 from .store import append_event, default_state, load_events, load_inbox, load_state, load_task_results, save_state
 
 
@@ -24,6 +26,59 @@ def _ensure_runtime_dirs(profile: Profile) -> None:
     profile.paths.backlog_dir.mkdir(parents=True, exist_ok=True)
     profile.paths.results_dir.mkdir(parents=True, exist_ok=True)
     profile.paths.supervisor_runs_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _profile_for_paths(profile: Profile, *, paths) -> Profile:
+    return replace(profile, paths=paths)
+
+
+def scaffold_named_backlog(profile: Profile, name: str, *, force: bool = False) -> Path:
+    paths = named_backlog_paths(profile, name)
+    named_profile = _profile_for_paths(profile, paths=paths)
+    if paths.backlog_dir.exists() and any(paths.backlog_dir.iterdir()) and not force:
+        raise ScaffoldError(f"Refusing to overwrite {paths.backlog_dir}; pass --force to replace it")
+    if paths.backlog_dir.exists() and force:
+        shutil.rmtree(paths.backlog_dir)
+    _ensure_runtime_dirs(named_profile)
+    paths.backlog_file.write_text(render_initial_backlog(named_profile), encoding="utf-8")
+    save_state(paths.state_file, default_state())
+    paths.events_file.write_text("", encoding="utf-8")
+    paths.inbox_file.write_text("", encoding="utf-8")
+    append_event(paths, event_type="init", actor="blackdog", payload={"project_name": profile.project_name, "backlog_name": name})
+    render_project_html(named_profile)
+    return paths.backlog_dir
+
+
+def remove_named_backlog(profile: Profile, name: str) -> Path:
+    paths = named_backlog_paths(profile, name)
+    if not paths.backlog_dir.exists():
+        raise ScaffoldError(f"Named backlog does not exist: {paths.backlog_dir}")
+    shutil.rmtree(paths.backlog_dir)
+    return paths.backlog_dir
+
+
+def reset_default_backlog(profile: Profile, *, purge_named: bool = False) -> Path:
+    control_dir = profile.paths.control_dir
+    if control_dir.exists():
+        for child in list(control_dir.iterdir()):
+            if child.name == profile.paths.profile_file.name:
+                continue
+            if child.name == ".DS_Store":
+                child.unlink(missing_ok=True)
+                continue
+            if purge_named or child.name != "backlogs":
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+    _ensure_runtime_dirs(profile)
+    profile.paths.backlog_file.write_text(render_initial_backlog(profile), encoding="utf-8")
+    save_state(profile.paths.state_file, default_state())
+    profile.paths.events_file.write_text("", encoding="utf-8")
+    profile.paths.inbox_file.write_text("", encoding="utf-8")
+    append_event(profile.paths, event_type="init", actor="blackdog", payload={"project_name": profile.project_name})
+    render_project_html(profile)
+    return profile.paths.backlog_dir
 
 
 def scaffold_project(

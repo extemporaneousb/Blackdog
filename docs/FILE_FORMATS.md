@@ -2,6 +2,8 @@
 
 Mutable runtime state now lives under one shared local control root across worktrees. By default, `paths.control_dir = "@git-common/blackdog"` resolves to `<git-common-dir>/blackdog`, which is shared by the primary checkout and all linked worktrees.
 
+The near-term contract is intentionally one format. The default backlog lives at `<control_dir>/...`, and any named backlog lives at `<control_dir>/backlogs/<slug>/...` using the exact same file set. Blackdog does not use a separate test-only schema.
+
 ## `blackdog.toml`
 
 Repo-local profile file.
@@ -66,6 +68,22 @@ Current supervisor launcher contract:
 - Blackdog may auto-stash uncommitted primary-worktree changes when branch landing remains blocked after retry/warning handling so the supervisor loop can keep moving.
 - Successful branch-backed child runs are landed through the primary worktree with fast-forward semantics, and the supervisor completes the task after a successful land.
 
+## `<control_dir>/backlogs/<slug>/...`
+
+Named backlog root.
+
+Each named backlog reuses the same artifact layout as the default backlog root:
+
+- `backlog.md`
+- `backlog-state.json`
+- `events.jsonl`
+- `inbox.jsonl`
+- `task-results/`
+- `backlog-index.html`
+- `supervisor-runs/`
+
+These named roots are created and removed with `blackdog backlog new NAME` and `blackdog backlog remove NAME`. The default CLI still operates on the default backlog unless a command explicitly targets a named root in the future.
+
 ## `<control_dir>/backlog.md`
 
 Human-readable backlog plus machine-readable fenced JSON blocks.
@@ -89,6 +107,15 @@ Each task block requires:
 - `requires_approval`
 - `approval_reason`
 - `safe_first_slice`
+
+## Planning model
+
+- `task`: the executable unit. Claims, results, completion, and dependencies are tracked at task level.
+- `epic`: a thematic grouping for related tasks. Epics organize reporting and intent; they do not control runnable order.
+- `lane`: an ordered stream of tasks inside an epic or work area. Earlier tasks in a lane become predecessors of later tasks in that same lane.
+- `wave`: the cross-lane activation boundary. Blackdog only considers the lowest unfinished wave runnable, so wave `1` waits for unfinished work in wave `0`.
+
+In practice: `epic` answers "why this cluster exists", `lane` answers "what must happen in sequence", `wave` answers "which phase is currently open", and `task` is the unit an agent actually executes.
 
 ## `<control_dir>/backlog-state.json`
 
@@ -220,21 +247,6 @@ Current keys:
 - `primary_worktree`
 - `current_worktree`
 
-## `<control_dir>/supervisor-runs/ui-server.json`
-
-Ephemeral state file written by `blackdog ui serve`.
-
-Current keys:
-
-- `host`
-- `port`
-- `url`
-- `snapshot_url`
-- `stream_url`
-- `state_file`
-- `started_at`
-- `pid`
-
 ## Live UI snapshot contract
 
 Served by `blackdog ui snapshot` and `blackdog ui serve` at `/api/snapshot`.
@@ -287,6 +299,8 @@ Current `supervisor` keys:
 - `active_runs`
 - `recent_runs`
 - `loops`
+
+Operator-facing status labels may normalize abandoned runtime state to `interrupted` even when the underlying runtime classified it as stale-by-timeout.
 
 Current `active_tasks[*]` keys summarize the operator-facing running/claimed view:
 

@@ -34,6 +34,7 @@ DEFAULT_VALIDATION_COMMANDS = (
     "PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'",
 )
 DEFAULT_CONTROL_DIR = f"{GIT_COMMON_TOKEN}/blackdog"
+DEFAULT_NAMED_BACKLOGS_DIR = "backlogs"
 DEFAULT_WORKTREES_DIR = "../.worktrees"
 DEFAULT_SUPERVISOR_COMMAND = (
     "codex",
@@ -101,6 +102,28 @@ class Profile:
     supervisor_workspace_mode: str
     pm_heuristics: dict[str, str]
     paths: ProjectPaths
+
+
+def named_backlog_paths(profile: Profile, name: str) -> ProjectPaths:
+    slug = slugify(name.strip())
+    if not name.strip():
+        raise ConfigError("backlog name must be non-empty")
+    backlog_dir = (profile.paths.control_dir / DEFAULT_NAMED_BACKLOGS_DIR / slug).resolve()
+    return ProjectPaths(
+        project_root=profile.paths.project_root,
+        profile_file=profile.paths.profile_file,
+        control_dir=profile.paths.control_dir,
+        backlog_dir=backlog_dir,
+        backlog_file=backlog_dir / "backlog.md",
+        state_file=backlog_dir / "backlog-state.json",
+        events_file=backlog_dir / "events.jsonl",
+        results_dir=backlog_dir / "task-results",
+        inbox_file=backlog_dir / "inbox.jsonl",
+        html_file=backlog_dir / "backlog-index.html",
+        skill_dir=profile.paths.skill_dir,
+        worktrees_dir=profile.paths.worktrees_dir,
+        supervisor_runs_dir=backlog_dir / "supervisor-runs",
+    )
 
 
 def find_project_root(start: Path | None = None) -> Path:

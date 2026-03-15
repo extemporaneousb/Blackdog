@@ -300,6 +300,74 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(summary["headers"]["State file"], str(paths.state_file))
 
+    def test_backlog_namespace_commands_create_remove_and_reset_runtime_sets(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        created = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "backlog", "new", "--project-root", str(self.root), "Test Me"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        named_dir = Path(created["backlog_dir"])
+        self.assertEqual(named_dir, (paths.control_dir / "backlogs/test-me").resolve())
+        self.assertTrue((named_dir / "backlog.md").exists())
+
+        (paths.control_dir / "runtime-noise.log").write_text("noise\n", encoding="utf-8")
+        (named_dir / "keep.txt").write_text("named backlog\n", encoding="utf-8")
+
+        reset_payload = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "backlog", "reset", "--project-root", str(self.root)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(Path(reset_payload["backlog_dir"]).resolve(), paths.backlog_dir.resolve())
+        self.assertTrue(paths.backlog_file.exists())
+        self.assertFalse((paths.control_dir / "runtime-noise.log").exists())
+        self.assertTrue(named_dir.exists())
+        self.assertTrue((named_dir / "keep.txt").exists())
+
+        removed = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "backlog", "remove", "--project-root", str(self.root), "Test Me"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(Path(removed["removed"]).resolve(), named_dir)
+        self.assertFalse(named_dir.exists())
+
+        subprocess.run(
+            [sys.executable, "-m", "blackdog.cli", "backlog", "new", "--project-root", str(self.root), "scratch"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        subprocess.run(
+            [sys.executable, "-m", "blackdog.cli", "backlog", "reset", "--project-root", str(self.root), "--purge-named"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertFalse((paths.control_dir / "backlogs").exists())
+
     def test_claim_complete_and_result_record(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         for title in ("First task", "Second task"):
@@ -874,7 +942,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["supervisor"]["loops"][0]["loop_id"], "abcd1234")
         self.assertEqual(snapshot["links"]["backlog"], "/artifacts/backlog.md")
 
-    def test_ui_snapshot_exposes_active_tasks_filters_messages_and_stales_empty_runs(self) -> None:
+    def test_ui_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
         for title in ("Operator slice one", "Operator slice two"):
@@ -945,8 +1013,8 @@ class BlackdogCliTests(unittest.TestCase):
             tags=["dirty-primary", "land"],
         )
 
-        stale_run_dir = paths.supervisor_runs_dir / "20260313-120000-stalerun1"
-        stale_run_dir.mkdir(parents=True)
+        interrupted_run_dir = paths.supervisor_runs_dir / "20260313-120000-stalerun1"
+        interrupted_run_dir.mkdir(parents=True)
         live_task_dir = paths.supervisor_runs_dir / "20260314-120000-liverun1" / first_task
         live_task_dir.mkdir(parents=True)
         for filename in ("prompt.txt", "stdout.log", "stderr.log"):
@@ -955,7 +1023,7 @@ class BlackdogCliTests(unittest.TestCase):
         append_jsonl(
             paths.events_file,
             {
-                "event_id": "evt-stale-run",
+                "event_id": "evt-interrupted-run",
                 "type": "supervisor_run_started",
                 "at": "2026-03-13T12:00:00-07:00",
                 "actor": "supervisor",
@@ -1019,13 +1087,15 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual({row["run_id"] for row in snapshot["supervisor"]["recent_runs"]}, {"liverun1", "stalerun1"})
         self.assertNotIn("result-noise", recent_runs)
         self.assertEqual(set(active_runs), {"liverun1"})
-        self.assertEqual(recent_runs["stalerun1"]["status"], "stale")
+        self.assertEqual(recent_runs["stalerun1"]["status"], "interrupted")
         self.assertEqual(snapshot["active_tasks"][0]["task_id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"/artifacts/supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
         self.assertEqual(graph_tasks[first_task]["latest_result_status"], "success")
         self.assertIsNotNone(graph_tasks[first_task]["active_compute_label"])
         self.assertGreaterEqual(int(graph_tasks[first_task]["total_compute_seconds"]), 0)
         self.assertEqual(graph_tasks[second_task]["predecessor_ids"], [first_task])
+        run_cli("render", "--project-root", str(self.root), "--actor", "tester")
+        self.assertNotIn('style="', paths.html_file.read_text(encoding="utf-8"))
 
     def test_supervise_status_reports_loop_controls_ready_tasks_and_recent_results(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

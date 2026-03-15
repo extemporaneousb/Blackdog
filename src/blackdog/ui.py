@@ -343,17 +343,17 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
         run_dir = _find_run_dir(paths, str(run["run_id"]))
         children: list[dict[str, Any]] = []
         has_running_child = False
-        has_stale_child = False
+        has_interrupted_child = False
         latest_finished_at: str | None = run.get("finished_at")
         for child in sorted(run["children"].values(), key=lambda row: (str(row.get("task_id") or ""), str(row.get("child_agent") or ""))):
             if child.get("status") == "running" and not _pid_alive(child.get("pid")):
-                child["status"] = "stale"
+                child["status"] = "interrupted"
                 child["error"] = "child process is no longer running"
                 child["finished_at"] = child.get("finished_at") or run.get("last_event_at")
             if child.get("status") == "running":
                 has_running_child = True
-            if child.get("status") == "stale":
-                has_stale_child = True
+            if child.get("status") == "interrupted":
+                has_interrupted_child = True
             child_elapsed = _duration_seconds(_parse_iso(child.get("started_at")), _parse_iso(child.get("finished_at")))
             child["elapsed_seconds"] = child_elapsed
             child["elapsed_label"] = _format_duration(child_elapsed)
@@ -366,16 +366,16 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
             elif children and all(child.get("status") in {"finished", "launch-failed"} for child in children):
                 run["status"] = "finished"
                 run["finished_at"] = run.get("finished_at") or latest_finished_at
-            elif children and has_stale_child:
-                run["status"] = "stale"
+            elif children and has_interrupted_child:
+                run["status"] = "interrupted"
                 run["finished_at"] = run.get("finished_at") or latest_finished_at
             elif children:
-                run["status"] = "stale"
+                run["status"] = "interrupted"
                 run["finished_at"] = run.get("finished_at") or latest_finished_at
             else:
                 run_age_seconds = _duration_seconds(_parse_iso(run.get("started_at")), _parse_iso(run.get("finished_at")))
                 if run_age_seconds is not None and run_age_seconds > stale_after_seconds:
-                    run["status"] = "stale"
+                    run["status"] = "interrupted"
                     run["finished_at"] = run.get("finished_at") or run.get("last_event_at")
         run_elapsed = _duration_seconds(_parse_iso(run.get("started_at")), _parse_iso(run.get("finished_at")))
         ordered_runs.append(
@@ -426,7 +426,7 @@ def _load_supervisor_loops(paths: ProjectPaths, *, limit: int = 6) -> list[dict[
         age_seconds = max(0, int(datetime.now().astimezone().timestamp() - status_file.stat().st_mtime))
         status = payload.get("final_status") or last_cycle_status or "running"
         if not payload.get("completed_at") and age_seconds > stale_after_seconds:
-            status = "stale"
+            status = "interrupted"
         loops.append(
             {
                 "loop_id": payload.get("loop_id"),
@@ -782,7 +782,7 @@ def _render_ui_shell() -> str:
       --waiting: #6f7782;
       --approval: #744ab0;
       --risk: #9d241f;
-      --stale: #7e4d28;
+      --interrupted: #7e4d28;
       --running: #b86716;
     }
     * { box-sizing: border-box; }
@@ -909,9 +909,19 @@ def _render_ui_shell() -> str:
       border: 1px solid var(--line);
       background: var(--panel-strong);
     }
-    .objectives, .supervisor-strip, .message-grid, .result-grid, .task-grid {
+    .objectives, .task-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .supervisor-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+    .message-grid, .result-grid {
+      display: grid;
+      grid-template-columns: 1fr;
       gap: 12px;
     }
     .objective, .strip-card, .run-card, .loop-card, .message-card, .result-card, .active-task {
@@ -1021,23 +1031,25 @@ def _render_ui_shell() -> str:
     .task-done { border-color: rgba(18, 114, 74, 0.35); }
     .task-waiting, .task-high-risk { border-color: rgba(123, 128, 136, 0.35); }
     .task-approval { border-color: rgba(123, 75, 183, 0.35); }
-    .task-stale { border-color: rgba(126, 77, 40, 0.35); }
+    .task-interrupted { border-color: rgba(126, 77, 40, 0.35); }
     .meta { color: var(--muted); font-size: 0.92rem; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
       display: inline-flex;
+      align-items: center;
       padding: 4px 8px;
-      border: 1px solid var(--line);
+      border: 0;
       border-radius: 999px;
       font-size: 0.8rem;
-      background: rgba(255, 255, 255, 0.65);
+      color: #fff;
+      background: var(--muted);
     }
-    .chip-running, .chip-claimed { color: var(--claimed); border-color: rgba(21, 95, 193, 0.24); }
-    .chip-ready { color: var(--ready); border-color: rgba(156, 90, 19, 0.24); }
-    .chip-done, .chip-success { color: var(--done); border-color: rgba(18, 114, 74, 0.24); }
-    .chip-waiting, .chip-approval, .chip-high-risk { color: var(--waiting); border-color: rgba(123, 128, 136, 0.24); }
-    .chip-blocked, .chip-failed { color: var(--risk); border-color: rgba(161, 38, 38, 0.24); }
-    .chip-stale { color: var(--stale); border-color: rgba(126, 77, 40, 0.24); }
+    .chip-running, .chip-claimed { background: var(--claimed); }
+    .chip-ready { background: var(--ready); }
+    .chip-done, .chip-success { background: var(--done); }
+    .chip-waiting, .chip-approval, .chip-high-risk { background: var(--waiting); }
+    .chip-blocked, .chip-failed, .chip-released { background: var(--risk); }
+    .chip-interrupted { background: var(--interrupted); }
     .empty {
       padding: 14px;
       border-radius: 18px;
@@ -1066,6 +1078,78 @@ def _render_ui_shell() -> str:
       justify-content: space-between;
       align-items: start;
       gap: 10px;
+    }
+    .section-actions {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .ghost-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+    }
+    .ghost-button.active {
+      background: var(--ink);
+      border-color: var(--ink);
+      color: #fff;
+    }
+    .message-summary, .result-summary, .run-summary {
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+    .stack-gap {
+      height: 12px;
+    }
+    .reader-dialog {
+      width: min(760px, calc(100vw - 32px));
+      border: 0;
+      border-radius: 20px;
+      padding: 0;
+      background: transparent;
+    }
+    .reader-dialog::backdrop {
+      background: rgba(31, 23, 18, 0.48);
+      backdrop-filter: blur(4px);
+    }
+    .reader-shell {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+      box-shadow: 0 24px 64px rgba(31, 23, 18, 0.2);
+    }
+    .reader-body {
+      margin: 0;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--panel-muted);
+      color: var(--ink);
+      font: 0.95rem/1.55 "SFMono-Regular", "Menlo", monospace;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 60vh;
+    }
+    .reader-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .history-note {
+      color: var(--muted);
+      font-size: 0.9rem;
     }
     @media (max-width: 1100px) {
       .hero, .layout { grid-template-columns: 1fr; }
@@ -1133,6 +1217,7 @@ def _render_ui_shell() -> str:
               <span class="eyebrow">Operator Controls</span>
               <h2>Control Inbox</h2>
             </div>
+            <div id="message-actions" class="section-actions"></div>
           </div>
           <div id="messages" class="message-grid"></div>
         </section>
@@ -1140,18 +1225,38 @@ def _render_ui_shell() -> str:
           <div class="section-head">
             <div>
               <span class="eyebrow">Outcomes</span>
-              <h2>Recent Results</h2>
+              <h2>Latest Results</h2>
             </div>
+            <div id="result-actions" class="section-actions"></div>
           </div>
           <div id="results" class="result-grid"></div>
         </section>
       </div>
     </div>
     <section class="panel">
-      <h2>Supervisor Runs</h2>
+      <div class="section-head">
+        <div>
+          <h2>Supervisor Runs</h2>
+        </div>
+        <div id="run-actions" class="section-actions"></div>
+      </div>
       <div id="runs"></div>
     </section>
   </div>
+  <dialog id="reader-dialog" class="reader-dialog">
+    <div class="reader-shell">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Detail</span>
+          <h2 id="reader-title">Reader</h2>
+        </div>
+      </div>
+      <pre id="reader-body" class="reader-body"></pre>
+      <div class="reader-actions">
+        <button id="reader-close" type="button" class="ghost-button">Close</button>
+      </div>
+    </div>
+  </dialog>
   <script>
     let currentSnapshot = null;
     let eventSource = null;
@@ -1160,6 +1265,12 @@ def _render_ui_shell() -> str:
       showDone: false,
       showWaiting: true,
       scope: "active-wave",
+    };
+    const currentPanels = {
+      showAllMessages: false,
+      showAllResults: false,
+      showRunHistory: false,
+      showInterrupted: false,
     };
 
     function escapeHtml(value) {
@@ -1171,19 +1282,34 @@ def _render_ui_shell() -> str:
         .replace(/'/g, "&#39;");
     }
 
-    function statusTone(label) {
+    function uiStatus(label) {
       const value = String(label || "").toLowerCase();
+      return value === "stale" ? "interrupted" : value;
+    }
+
+    function statusLabel(label) {
+      const value = uiStatus(label);
+      if (!value) return "";
+      if (value === "high-risk") return "high risk";
+      if (value === "launch-failed") return "launch failed";
+      return value;
+    }
+
+    function statusTone(label) {
+      const value = uiStatus(label);
       if (["running", "claimed"].includes(value)) return "chip-running";
       if (["ready"].includes(value)) return "chip-ready";
       if (["done", "success", "finished"].includes(value)) return "chip-success";
       if (["blocked", "failed", "launch-failed", "released"].includes(value)) return "chip-blocked";
-      if (["stale"].includes(value)) return "chip-stale";
+      if (["interrupted"].includes(value)) return "chip-interrupted";
       if (["waiting", "approval", "high-risk", "paused"].includes(value)) return "chip-waiting";
       return "";
     }
 
     function statusChip(label) {
-      return `<span class="chip ${statusTone(label)}">${escapeHtml(label)}</span>`;
+      const display = statusLabel(label);
+      if (!display) return "";
+      return `<span class="chip ${statusTone(label)}">${escapeHtml(display)}</span>`;
     }
 
     function link(label, href) {
@@ -1193,6 +1319,38 @@ def _render_ui_shell() -> str:
 
     function asArray(value) {
       return Array.isArray(value) ? value : [];
+    }
+
+    function excerpt(value, limit = 120) {
+      const text = String(value || "").trim().replace(/\\s+/g, " ");
+      if (text.length <= limit) return text;
+      return `${text.slice(0, limit - 1)}…`;
+    }
+
+    function readerButton(label, title, body) {
+      if (!body) return "";
+      return `<button type="button" class="ghost-button js-reader" data-reader-title="${escapeHtml(title)}" data-reader-body="${escapeHtml(body)}">${escapeHtml(label)}</button>`;
+    }
+
+    function bindReaderButtons(root) {
+      root.querySelectorAll(".js-reader").forEach((button) => {
+        button.addEventListener("click", () => {
+          openReader(button.getAttribute("data-reader-title") || "Detail", button.getAttribute("data-reader-body") || "");
+        });
+      });
+    }
+
+    function openReader(title, body) {
+      const dialog = document.getElementById("reader-dialog");
+      document.getElementById("reader-title").textContent = title;
+      document.getElementById("reader-body").textContent = body;
+      if (!dialog.open) {
+        dialog.showModal();
+      }
+    }
+
+    function setPanelActions(containerId, buttons) {
+      document.getElementById(containerId).innerHTML = buttons.filter(Boolean).join("");
     }
 
     function activeWave(tasks) {
@@ -1350,10 +1508,10 @@ def _render_ui_shell() -> str:
 
     function renderSupervisorStrip(snapshot) {
       const supervisor = snapshot.supervisor || {};
-      const staleRuns = asArray(supervisor.recent_runs).filter((row) => row.status === "stale").length;
+      const interruptedRuns = asArray(supervisor.recent_runs).filter((row) => uiStatus(row.status) === "interrupted").length;
       const rows = [
         ["Active runs", (supervisor.active_runs || []).length],
-        ["Stale runs", staleRuns],
+        ["Interrupted", interruptedRuns],
         ["Loops", (supervisor.loops || []).length],
         ["Dispatches", (snapshot.dispatch_messages || []).length],
       ];
@@ -1364,61 +1522,120 @@ def _render_ui_shell() -> str:
 
     function renderMessages(snapshot) {
       const rows = snapshot.control_messages || [];
-      document.getElementById("messages").innerHTML = rows.length
-        ? rows.map((row) => `
+      const visibleRows = currentPanels.showAllMessages ? rows : rows.slice(0, 3);
+      setPanelActions("message-actions", rows.length > 3 ? [
+        `<button type="button" class="ghost-button ${currentPanels.showAllMessages ? "active" : ""}" data-panel-action="toggle-messages">${currentPanels.showAllMessages ? "Latest only" : "Show all"}</button>`,
+      ] : []);
+      document.querySelectorAll('[data-panel-action="toggle-messages"]').forEach((button) => {
+        button.addEventListener("click", () => {
+          currentPanels.showAllMessages = !currentPanels.showAllMessages;
+          renderMessages(currentSnapshot || snapshot);
+        });
+      });
+      const container = document.getElementById("messages");
+      container.innerHTML = rows.length
+        ? visibleRows.map((row) => `
             <article class="message-card">
               <span class="eyebrow">${escapeHtml(row.sender)} -> ${escapeHtml(row.recipient)}</span>
               <strong>${escapeHtml(row.kind || "message")}</strong>
-              <span>${escapeHtml(row.body || "")}</span>
+              <span class="message-summary">${escapeHtml(excerpt(row.body || "", 140))}</span>
               <div class="chips">${(row.tags || []).map(statusChip).join("")}</div>
+              <div class="inline-links">${readerButton("View message", `${row.kind || "Message"} · ${row.sender} -> ${row.recipient}`, row.body || "")}</div>
             </article>
           `).join("")
         : `<div class="empty">No open control messages. Dispatch instructions to child agents are hidden here.</div>`;
+      bindReaderButtons(container);
     }
 
     function renderResults(snapshot) {
       const rows = snapshot.recent_results || [];
-      document.getElementById("results").innerHTML = rows.length
-        ? rows.map((row) => `
+      const visibleRows = currentPanels.showAllResults ? rows : rows.slice(0, 3);
+      setPanelActions("result-actions", rows.length > 3 ? [
+        `<button type="button" class="ghost-button ${currentPanels.showAllResults ? "active" : ""}" data-panel-action="toggle-results">${currentPanels.showAllResults ? "Latest only" : "Show all"}</button>`,
+      ] : []);
+      document.querySelectorAll('[data-panel-action="toggle-results"]').forEach((button) => {
+        button.addEventListener("click", () => {
+          currentPanels.showAllResults = !currentPanels.showAllResults;
+          renderResults(currentSnapshot || snapshot);
+        });
+      });
+      const container = document.getElementById("results");
+      container.innerHTML = rows.length
+        ? visibleRows.map((row) => `
             <article class="result-card">
               <span class="eyebrow">${escapeHtml(row.recorded_at || "")}</span>
               <strong>${escapeHtml(row.task_id || "?")}</strong>
               <div class="chips">${statusChip(row.status || "?")}</div>
-              <span>${escapeHtml(row.actor || "")}</span>
+              <span class="result-summary">${escapeHtml(row.actor || "")}${row.elapsed_label ? ` · ${escapeHtml(row.elapsed_label)}` : ""}${row.total_compute_label ? ` · total ${escapeHtml(row.total_compute_label)}` : ""}</span>
               <div class="inline-links">
                 ${link("Result JSON", row.result_href)}
               </div>
             </article>
           `).join("")
         : `<div class="empty">No task results yet.</div>`;
+      bindReaderButtons(container);
     }
 
     function renderRuns(snapshot) {
       const supervisor = snapshot.supervisor || {};
       const loops = supervisor.loops || [];
       const runs = supervisor.recent_runs || [];
-      const loopHtml = loops.length
-        ? loops.map((loop) => `
+      const runningLoops = loops.filter((loop) => !loop.completed_at);
+      let visibleLoops = currentPanels.showRunHistory ? [...loops] : runningLoops;
+      let visibleRuns = currentPanels.showRunHistory
+        ? [...runs]
+        : runs.filter((run) => uiStatus(run.status) === "running");
+      if (!currentPanels.showInterrupted) {
+        visibleLoops = visibleLoops.filter((loop) => uiStatus(loop.status) !== "interrupted");
+      }
+      if (!currentPanels.showInterrupted) {
+        visibleRuns = visibleRuns.filter((run) => uiStatus(run.status) !== "interrupted");
+      }
+      const hiddenLoopCount = Math.max(0, loops.length - visibleLoops.length);
+      const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
+      setPanelActions("run-actions", [
+        (hiddenLoopCount || hiddenRunCount || currentPanels.showRunHistory)
+          ? `<button type="button" class="ghost-button ${currentPanels.showRunHistory ? "active" : ""}" data-panel-action="toggle-run-history">${currentPanels.showRunHistory ? "Hide history" : "Show history"}</button>`
+          : "",
+        [...asArray(loops), ...asArray(runs)].some((row) => uiStatus(row.status) === "interrupted")
+          ? `<button type="button" class="ghost-button ${currentPanels.showInterrupted ? "active" : ""}" data-panel-action="toggle-interrupted">${currentPanels.showInterrupted ? "Hide interrupted" : "Show interrupted"}</button>`
+          : "",
+      ]);
+      document.querySelectorAll('[data-panel-action="toggle-run-history"]').forEach((button) => {
+        button.addEventListener("click", () => {
+          currentPanels.showRunHistory = !currentPanels.showRunHistory;
+          renderRuns(currentSnapshot || snapshot);
+        });
+      });
+      document.querySelectorAll('[data-panel-action="toggle-interrupted"]').forEach((button) => {
+        button.addEventListener("click", () => {
+          currentPanels.showInterrupted = !currentPanels.showInterrupted;
+          renderRuns(currentSnapshot || snapshot);
+        });
+      });
+      const loopHtml = visibleLoops.length
+        ? visibleLoops.map((loop) => `
             <article class="loop-card">
               <div class="run-header">
                 <span class="eyebrow">${escapeHtml(loop.actor || "loop")} · ${escapeHtml(loop.loop_id || "")}</span>
                 <div class="chips">${statusChip(loop.status || "running")}</div>
               </div>
-              <span>${escapeHtml(loop.cycle_count || 0)} cycle(s)${loop.age_label ? ` · age ${escapeHtml(loop.age_label)}` : ""}</span>
+              <span class="run-summary">${escapeHtml(loop.cycle_count || 0)} cycle(s)${loop.age_label ? ` · age ${escapeHtml(loop.age_label)}` : ""}</span>
               <div class="inline-links">
                 ${link("Status JSON", loop.status_href)}
               </div>
             </article>
           `).join("")
-        : `<div class="empty">No supervisor loop snapshots yet.</div>`;
-      const runHtml = runs.length
-        ? runs.map((run) => `
+        : `<div class="empty">No active supervisor loops.</div>`;
+      const runHtml = visibleRuns.length
+        ? visibleRuns.map((run) => `
             <article class="run-card">
               <div class="run-header">
                 <span class="eyebrow">${escapeHtml(run.actor || "supervisor")} · ${escapeHtml(run.run_id || "")}</span>
                 <div class="chips">${statusChip(run.status || "running")}</div>
               </div>
               <strong>${escapeHtml(run.workspace_mode || "supervisor run")}${run.elapsed_label ? ` · ${escapeHtml(run.elapsed_label)}` : ""}</strong>
+              <span class="run-summary">${escapeHtml((run.children || []).length)} task(s)${run.completed_at ? " · finished" : ""}</span>
               <div class="inline-links">
                 ${link("Run Artifacts", run.run_href)}
               </div>
@@ -1427,23 +1644,30 @@ def _render_ui_shell() -> str:
                   <div class="child-row">
                     <strong>${escapeHtml(child.task_id || "?")}</strong>
                     <div class="chips">${statusChip(child.status || "pending")}${child.final_task_status ? statusChip(child.final_task_status) : ""}${child.elapsed_label ? statusChip(child.elapsed_label) : ""}</div>
-                    <span class="meta">${escapeHtml(child.child_agent || "")}${child.error ? ` · ${escapeHtml(child.error)}` : ""}</span>
+                    <span class="meta">${escapeHtml(child.child_agent || "")}</span>
+                    ${child.error ? `<span class="run-summary">${escapeHtml(excerpt(child.error, 112))}</span>` : ""}
                     <div class="inline-links">
                       ${link("Prompt", child.prompt_href)}
                       ${link("Stdout", child.stdout_href)}
                       ${link("Stderr", child.stderr_href)}
+                      ${readerButton("View detail", `${child.task_id || "Task"} · ${child.child_agent || "child"}`, child.error || "")}
                     </div>
                   </div>
                 `).join("")}
               </div>
             </article>
           `).join("")
-        : `<div class="empty">No supervisor runs yet.</div>`;
-      document.getElementById("runs").innerHTML = `
+        : `<div class="empty">No current supervisor runs.${hiddenRunCount ? ` ${escapeHtml(hiddenRunCount)} historical run(s) hidden by default.` : ""}</div>`;
+      const container = document.getElementById("runs");
+      container.innerHTML = `
         <div class="supervisor-strip">${loopHtml}</div>
-        <div style="height: 12px"></div>
+        <div class="stack-gap"></div>
+        ${(hiddenLoopCount || hiddenRunCount) && !currentPanels.showRunHistory
+          ? `<div class="history-note">${escapeHtml(hiddenLoopCount + hiddenRunCount)} historical supervisor artifact(s) hidden by default.</div><div class="stack-gap"></div>`
+          : ""}
         <div class="supervisor-strip">${runHtml}</div>
       `;
+      bindReaderButtons(container);
     }
 
     function renderDag(snapshot) {
@@ -1563,6 +1787,9 @@ def _render_ui_shell() -> str:
       document.getElementById("active-tasks").innerHTML = "";
       document.getElementById("supervisor-strip").innerHTML = "";
       document.getElementById("filters").innerHTML = "";
+      document.getElementById("message-actions").innerHTML = "";
+      document.getElementById("result-actions").innerHTML = "";
+      document.getElementById("run-actions").innerHTML = "";
       document.getElementById("messages").innerHTML = `<div class="empty error">${escapeHtml(snapshot.error?.message || "")}</div>`;
       document.getElementById("results").innerHTML = "";
       document.getElementById("runs").innerHTML = "";
@@ -1618,6 +1845,15 @@ def _render_ui_shell() -> str:
     });
 
     window.addEventListener("load", async () => {
+      const dialog = document.getElementById("reader-dialog");
+      document.getElementById("reader-close").addEventListener("click", () => {
+        dialog.close();
+      });
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) {
+          dialog.close();
+        }
+      });
       setSyncState("Connecting…", "");
       await loadSnapshot();
       connectStream();

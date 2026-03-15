@@ -31,6 +31,9 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 
 ### Backlog management
 
+- `blackdog backlog new NAME`
+- `blackdog backlog remove NAME`
+- `blackdog backlog reset`
 - `blackdog add --title ... --bucket ... --why ... --evidence ... --safe-first-slice ...`
 - `blackdog plan`
 - `blackdog summary`
@@ -44,6 +47,12 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 - `blackdog decide --id TASK --agent NAME --decision approved|denied|deferred|done`
 - `blackdog comment --actor NAME --id TASK --body ...`
 - `blackdog events`
+
+`blackdog backlog new NAME` creates a separate backlog artifact set under the configured control root. It uses the same file layout as the default backlog and is intended for scratch queues, test fixtures, or alternate operator views without polluting the default backlog.
+
+`blackdog backlog remove NAME` deletes one of those named backlog artifact sets.
+
+`blackdog backlog reset` obliterates the mutable state for the default backlog and recreates a fresh empty runtime. Use `--purge-named` when you also want to remove every named backlog under `<control_dir>/backlogs/`.
 
 `blackdog supervise run` now assumes an exec-capable Codex launcher. With the default config, it prefers the Codex.app runtime when available and no longer supports the legacy prompt launcher.
 
@@ -60,6 +69,8 @@ The generated child prompt tells the agent that committed repo state is the base
 `blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes repo identity (`project_name`, `project_root`, `control_dir`), backlog counts, objectives, graph nodes and dependency edges, filtered control-vs-dispatch inbox views, per-task compute/result metadata, active-task summaries, recent task results, recent supervisor runs, and recent supervisor loops.
 
 `blackdog ui serve` starts a local HTTP server that serves a readonly monitor over the same snapshot contract. The UI shell lives at `/`, the full snapshot is exposed at `/api/snapshot`, and server-sent events are streamed from `/api/stream`. Blackdog write paths notify that server on state changes, so the browser updates without polling. The startup payload and `ui-server.json` state file include the served repo identity (`project_name`, `project_root`, `control_dir`) so active servers can be distinguished when multiple repos are open. The server also exposes repo-local runtime artifacts under `/artifacts/...`.
+
+The operator UI defaults to the active wave, hides done tasks, collapses long message/error text behind a reader, hides historical supervisor state by default, and labels abandoned run state as `interrupted` instead of `stale`.
 
 ### Structured results
 

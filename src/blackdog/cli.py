@@ -18,7 +18,15 @@ from .backlog import (
     sync_state_for_backlog,
 )
 from .config import ConfigError, load_profile
-from .scaffold import ScaffoldError, bootstrap_project, render_project_html, scaffold_project
+from .scaffold import (
+    ScaffoldError,
+    bootstrap_project,
+    remove_named_backlog,
+    render_project_html,
+    reset_default_backlog,
+    scaffold_named_backlog,
+    scaffold_project,
+)
 from .store import (
     StoreError,
     append_event,
@@ -109,6 +117,27 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
+    return 0
+
+
+def cmd_backlog_new(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    backlog_dir = scaffold_named_backlog(profile, args.name, force=args.force)
+    print(json.dumps({"name": args.name, "backlog_dir": str(backlog_dir)}, indent=2))
+    return 0
+
+
+def cmd_backlog_remove(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    backlog_dir = remove_named_backlog(profile, args.name)
+    print(json.dumps({"name": args.name, "removed": str(backlog_dir)}, indent=2))
+    return 0
+
+
+def cmd_backlog_reset(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    backlog_dir = reset_default_backlog(profile, purge_named=args.purge_named)
+    print(json.dumps({"backlog_dir": str(backlog_dir), "purge_named": bool(args.purge_named)}, indent=2))
     return 0
 
 
@@ -570,6 +599,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--evidence-requirement", action="append", default=[])
     p_init.add_argument("--release-gate", action="append", default=[])
     p_init.set_defaults(func=cmd_init)
+
+    p_backlog = subparsers.add_parser("backlog", help="Manage default and named backlog artifact sets")
+    backlog_subparsers = p_backlog.add_subparsers(dest="backlog_command", required=True)
+    p_backlog_new = backlog_subparsers.add_parser("new", help="Create a named backlog artifact set under the control root")
+    p_backlog_new.add_argument("--project-root", default=None)
+    p_backlog_new.add_argument("name")
+    p_backlog_new.add_argument("--force", action="store_true")
+    p_backlog_new.set_defaults(func=cmd_backlog_new)
+    p_backlog_remove = backlog_subparsers.add_parser("remove", help="Delete a named backlog artifact set from the control root")
+    p_backlog_remove.add_argument("--project-root", default=None)
+    p_backlog_remove.add_argument("name")
+    p_backlog_remove.set_defaults(func=cmd_backlog_remove)
+    p_backlog_reset = backlog_subparsers.add_parser("reset", help="Rebuild the default backlog and runtime state from scratch")
+    p_backlog_reset.add_argument("--project-root", default=None)
+    p_backlog_reset.add_argument("--purge-named", action="store_true")
+    p_backlog_reset.set_defaults(func=cmd_backlog_reset)
 
     p_validate = subparsers.add_parser("validate", help="Validate profile, backlog, state, inbox, and events")
     p_validate.add_argument("--project-root", default=None)
