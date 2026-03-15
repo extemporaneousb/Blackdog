@@ -244,16 +244,22 @@ Top-level keys:
 - `schema_version`
 - `generated_at`
 - `project_name`
+- `project_root`
+- `control_dir`
+- `profile_file`
 - `counts`
 - `total`
 - `push_objective`
 - `objectives`
 - `next_rows`
 - `open_messages`
+- `control_messages`
+- `dispatch_messages`
 - `recent_results`
 - `recent_events`
 - `plan`
 - `graph`
+- `active_tasks`
 - `supervisor`
 - `links`
 
@@ -262,8 +268,43 @@ Current `graph` keys:
 - `tasks`
 - `edges`
 
+Current `graph.tasks[*]` keys include task identity and planning fields plus derived operator metadata:
+
+- `claimed_by`
+- `claimed_at`
+- `completed_at`
+- `released_at`
+- `active_compute_seconds`
+- `active_compute_label`
+- `total_compute_seconds`
+- `total_compute_label`
+- `latest_result_status`
+- `latest_result_at`
+- `latest_result_href`
+
 Current `supervisor` keys:
 
 - `active_runs`
 - `recent_runs`
 - `loops`
+
+Current `active_tasks[*]` keys summarize the operator-facing running/claimed view:
+
+- `task_id`
+- `title`
+- `status`
+- `lane_title`
+- `epic_title`
+- `claimed_by`
+- `claimed_at`
+- `elapsed_seconds`
+- `elapsed_label`
+- `total_compute_seconds`
+- `total_compute_label`
+- `latest_result_status`
+- `latest_result_href`
+- `run_id`
+- `run_href`
+- `prompt_href`
+- `stdout_href`
+- `stderr_href`

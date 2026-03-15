@@ -57,7 +57,7 @@ The generated child prompt tells the agent that committed repo state is the base
 
 `blackdog supervise status` is the chat-native inspection surface for that loop. It reports the latest saved loop status for a supervisor actor, the currently open `pause`/`stop` control messages for that actor, the current ready-task queue, and the most recent supervisor or child-agent task results in one compact text or JSON view.
 
-`blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes repo identity (`project_name`, `project_root`, `control_dir`), backlog counts, objectives, graph nodes and dependency edges, open inbox messages, recent task results, recent supervisor runs, and recent supervisor loops.
+`blackdog ui snapshot` prints the canonical JSON contract used by the live UI. It includes repo identity (`project_name`, `project_root`, `control_dir`), backlog counts, objectives, graph nodes and dependency edges, filtered control-vs-dispatch inbox views, per-task compute/result metadata, active-task summaries, recent task results, recent supervisor runs, and recent supervisor loops.
 
 `blackdog ui serve` starts a local HTTP server that serves a readonly monitor over the same snapshot contract. The UI shell lives at `/`, the full snapshot is exposed at `/api/snapshot`, and server-sent events are streamed from `/api/stream`. Blackdog write paths notify that server on state changes, so the browser updates without polling. The startup payload and `ui-server.json` state file include the served repo identity (`project_name`, `project_root`, `control_dir`) so active servers can be distinguished when multiple repos are open. The server also exposes repo-local runtime artifacts under `/artifacts/...`.
 

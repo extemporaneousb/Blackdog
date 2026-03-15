@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -67,6 +68,51 @@ def notify_ui_server(paths: ProjectPaths) -> bool:
         connection.close()
 
 
+def _parse_iso(value: Any) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _duration_seconds(start: datetime | None, end: datetime | None = None) -> int | None:
+    if start is None:
+        return None
+    stop = end or datetime.now().astimezone()
+    return max(0, int((stop - start).total_seconds()))
+
+
+def _format_duration(seconds: int | None) -> str | None:
+    if seconds is None:
+        return None
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid < 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def _artifact_href(paths: ProjectPaths, path: str | Path | None) -> str | None:
     if not path:
         return None
@@ -102,10 +148,130 @@ def _child_artifacts(paths: ProjectPaths, run_dir: Path | None, task_id: str) ->
     }
 
 
+def _empty_task_activity() -> dict[str, Any]:
+    return {
+        "claimed_by": None,
+        "claimed_at": None,
+        "completed_at": None,
+        "released_at": None,
+        "active_compute_seconds": None,
+        "active_compute_label": None,
+        "total_compute_seconds": 0,
+        "total_compute_label": "0s",
+        "latest_result_status": None,
+        "latest_result_at": None,
+        "latest_result_href": None,
+    }
+
+
+def _build_task_activity(
+    paths: ProjectPaths,
+    state: dict[str, Any],
+    events: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    activities: dict[str, dict[str, Any]] = {}
+    open_claims: dict[str, dict[str, Any]] = {}
+    ordered_events = sorted(events, key=lambda row: str(row.get("at") or ""))
+    for event in ordered_events:
+        task_id = str(event.get("task_id") or "")
+        if not task_id:
+            continue
+        event_type = str(event.get("type") or "")
+        event_at_text = str(event.get("at") or "")
+        event_at = _parse_iso(event_at_text)
+        activity = activities.setdefault(task_id, _empty_task_activity())
+        if event_type == "claim" and event_at is not None:
+            open_claims[task_id] = {
+                "started_at": event_at,
+                "started_at_text": event_at_text,
+                "claimed_by": str(event.get("actor") or ""),
+            }
+            activity["claimed_at"] = event_at_text
+            activity["claimed_by"] = str(event.get("actor") or "")
+        elif event_type in {"release", "complete"}:
+            current = open_claims.pop(task_id, None)
+            if current and event_at is not None:
+                activity["total_compute_seconds"] = int(activity.get("total_compute_seconds") or 0) + (
+                    _duration_seconds(current["started_at"], event_at) or 0
+                )
+            if event_type == "release":
+                activity["released_at"] = event_at_text
+            else:
+                activity["completed_at"] = event_at_text
+
+    latest_results: dict[str, dict[str, Any]] = {}
+    for row in results:
+        task_id = str(row.get("task_id") or "")
+        if task_id and task_id not in latest_results:
+            latest_results[task_id] = row
+
+    for task_id, entry in state.get("task_claims", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        task_id_text = str(task_id)
+        activity = activities.setdefault(task_id_text, _empty_task_activity())
+        claimed_at_text = str(entry.get("claimed_at") or "") or None
+        claimed_at = _parse_iso(claimed_at_text)
+        completed_at_text = str(entry.get("completed_at") or "") or None
+        completed_at = _parse_iso(completed_at_text)
+        released_at_text = str(entry.get("released_at") or "") or None
+        status = str(entry.get("status") or "")
+        if claimed_at_text and not activity.get("claimed_at"):
+            activity["claimed_at"] = claimed_at_text
+        if entry.get("claimed_by"):
+            activity["claimed_by"] = str(entry.get("claimed_by") or "")
+        if completed_at_text:
+            activity["completed_at"] = completed_at_text
+        if released_at_text:
+            activity["released_at"] = released_at_text
+
+        total_seconds = int(activity.get("total_compute_seconds") or 0)
+        if status == "claimed" and claimed_at is not None:
+            active_seconds = _duration_seconds(claimed_at)
+            activity["active_compute_seconds"] = active_seconds
+            activity["active_compute_label"] = _format_duration(active_seconds)
+            total_seconds += active_seconds or 0
+        elif status == "done" and total_seconds == 0 and claimed_at is not None and completed_at is not None:
+            total_seconds = _duration_seconds(claimed_at, completed_at) or 0
+        activity["total_compute_seconds"] = total_seconds
+        activity["total_compute_label"] = _format_duration(total_seconds)
+
+    for task_id, row in latest_results.items():
+        activity = activities.setdefault(task_id, _empty_task_activity())
+        activity["latest_result_status"] = row.get("status")
+        activity["latest_result_at"] = row.get("recorded_at")
+        activity["latest_result_href"] = _artifact_href(paths, row.get("result_file"))
+    return activities
+
+
+def _split_open_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    control_messages: list[dict[str, Any]] = []
+    dispatch_messages: list[dict[str, Any]] = []
+    for row in messages:
+        recipient = str(row.get("recipient") or "")
+        tags = {str(tag).strip().lower() for tag in row.get("tags") or []}
+        if recipient.startswith("supervisor/child-") or "supervisor-run" in tags:
+            dispatch_messages.append(row)
+        else:
+            control_messages.append(row)
+    return control_messages, dispatch_messages
+
+
 def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *, limit: int = 6) -> dict[str, Any]:
     runs: dict[str, dict[str, Any]] = {}
+    stale_after_seconds = 30
+    relevant_events = {
+        "supervisor_run_started",
+        "supervisor_run_finished",
+        "child_launch",
+        "child_launch_failed",
+        "child_finish",
+    }
     for event in events:
         event_type = str(event.get("type") or "")
+        if event_type not in relevant_events:
+            continue
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         run_id = str(payload.get("run_id") or "")
         if not run_id:
@@ -147,6 +313,8 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
                     "exit_code": None,
                     "timed_out": False,
                     "final_task_status": None,
+                    "started_at": None,
+                    "finished_at": None,
                 },
             )
             if task_id:
@@ -155,22 +323,61 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
                 child["status"] = "running"
                 child["workspace"] = payload.get("workspace")
                 child["pid"] = payload.get("pid")
+                child["started_at"] = str(event.get("at") or "")
             elif event_type == "child_launch_failed":
                 child["status"] = "launch-failed"
                 child["error"] = payload.get("error")
+                child["finished_at"] = str(event.get("at") or "")
             elif event_type == "child_finish":
                 child["status"] = "finished"
                 child["exit_code"] = payload.get("exit_code")
                 child["timed_out"] = bool(payload.get("timed_out"))
                 child["final_task_status"] = payload.get("final_task_status")
+                child["land_error"] = payload.get("land_error")
+                if payload.get("land_error") and not child.get("error"):
+                    child["error"] = payload.get("land_error")
+                child["finished_at"] = str(event.get("at") or "")
 
     ordered_runs: list[dict[str, Any]] = []
     for run in runs.values():
         run_dir = _find_run_dir(paths, str(run["run_id"]))
         children: list[dict[str, Any]] = []
+        has_running_child = False
+        has_stale_child = False
+        latest_finished_at: str | None = run.get("finished_at")
         for child in sorted(run["children"].values(), key=lambda row: (str(row.get("task_id") or ""), str(row.get("child_agent") or ""))):
+            if child.get("status") == "running" and not _pid_alive(child.get("pid")):
+                child["status"] = "stale"
+                child["error"] = "child process is no longer running"
+                child["finished_at"] = child.get("finished_at") or run.get("last_event_at")
+            if child.get("status") == "running":
+                has_running_child = True
+            if child.get("status") == "stale":
+                has_stale_child = True
+            child_elapsed = _duration_seconds(_parse_iso(child.get("started_at")), _parse_iso(child.get("finished_at")))
+            child["elapsed_seconds"] = child_elapsed
+            child["elapsed_label"] = _format_duration(child_elapsed)
+            latest_finished_at = str(child.get("finished_at") or latest_finished_at or "")
             artifacts = _child_artifacts(paths, run_dir, str(child.get("task_id") or ""))
             children.append({**child, **artifacts})
+        if run["status"] != "finished":
+            if has_running_child:
+                run["status"] = "running"
+            elif children and all(child.get("status") in {"finished", "launch-failed"} for child in children):
+                run["status"] = "finished"
+                run["finished_at"] = run.get("finished_at") or latest_finished_at
+            elif children and has_stale_child:
+                run["status"] = "stale"
+                run["finished_at"] = run.get("finished_at") or latest_finished_at
+            elif children:
+                run["status"] = "stale"
+                run["finished_at"] = run.get("finished_at") or latest_finished_at
+            else:
+                run_age_seconds = _duration_seconds(_parse_iso(run.get("started_at")), _parse_iso(run.get("finished_at")))
+                if run_age_seconds is not None and run_age_seconds > stale_after_seconds:
+                    run["status"] = "stale"
+                    run["finished_at"] = run.get("finished_at") or run.get("last_event_at")
+        run_elapsed = _duration_seconds(_parse_iso(run.get("started_at")), _parse_iso(run.get("finished_at")))
         ordered_runs.append(
             {
                 "run_id": run["run_id"],
@@ -178,6 +385,8 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
                 "status": run["status"],
                 "started_at": run["started_at"],
                 "finished_at": run["finished_at"],
+                "elapsed_seconds": run_elapsed,
+                "elapsed_label": _format_duration(run_elapsed),
                 "workspace_mode": run["workspace_mode"],
                 "task_ids": run["task_ids"],
                 "run_dir": str(run_dir) if run_dir is not None else None,
@@ -188,7 +397,7 @@ def _build_supervisor_runs(paths: ProjectPaths, events: list[dict[str, Any]], *,
         )
     ordered_runs.sort(key=lambda row: str(row.get("last_event_at") or ""), reverse=True)
     return {
-        "active_runs": [row for row in ordered_runs if row.get("status") != "finished"],
+        "active_runs": [row for row in ordered_runs if row.get("status") == "running"],
         "recent_runs": ordered_runs[:limit],
     }
 
@@ -212,20 +421,102 @@ def _load_supervisor_loops(paths: ProjectPaths, *, limit: int = 6) -> list[dict[
         last_cycle_status = None
         if isinstance(cycles, list) and cycles:
             last_cycle_status = cycles[-1].get("status")
+        poll_interval_seconds = float(payload.get("poll_interval_seconds") or 0)
+        stale_after_seconds = max(15.0, (poll_interval_seconds * 3.0) + 5.0)
+        age_seconds = max(0, int(datetime.now().astimezone().timestamp() - status_file.stat().st_mtime))
+        status = payload.get("final_status") or last_cycle_status or "running"
+        if not payload.get("completed_at") and age_seconds > stale_after_seconds:
+            status = "stale"
         loops.append(
             {
                 "loop_id": payload.get("loop_id"),
                 "actor": payload.get("actor"),
-                "status": payload.get("final_status") or last_cycle_status or "running",
+                "status": status,
                 "workspace_mode": payload.get("workspace_mode"),
                 "cycle_count": cycle_count,
                 "last_cycle_status": last_cycle_status,
                 "completed_at": payload.get("completed_at"),
+                "age_seconds": age_seconds,
+                "age_label": _format_duration(age_seconds),
                 "status_file": str(status_file),
                 "status_href": _artifact_href(paths, status_file),
             }
         )
     return loops
+
+
+def _build_active_tasks(graph_tasks: list[dict[str, Any]], active_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tasks_by_id = {str(task.get("id") or ""): task for task in graph_tasks}
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for run in active_runs:
+        for child in run.get("children") or []:
+            task_id = str(child.get("task_id") or "")
+            if not task_id or task_id in seen:
+                continue
+            task = tasks_by_id.get(task_id)
+            if task is None:
+                continue
+            rows.append(
+                {
+                    "task_id": task_id,
+                    "title": task.get("title"),
+                    "status": child.get("status") or task.get("status"),
+                    "lane_title": task.get("lane_title"),
+                    "epic_title": task.get("epic_title"),
+                    "detail": task.get("detail"),
+                    "claimed_by": task.get("claimed_by"),
+                    "claimed_at": task.get("claimed_at"),
+                    "active_compute_seconds": task.get("active_compute_seconds"),
+                    "active_compute_label": task.get("active_compute_label"),
+                    "total_compute_seconds": task.get("total_compute_seconds"),
+                    "total_compute_label": task.get("total_compute_label"),
+                    "latest_result_status": task.get("latest_result_status"),
+                    "latest_result_at": task.get("latest_result_at"),
+                    "latest_result_href": task.get("latest_result_href"),
+                    "child_agent": child.get("child_agent"),
+                    "run_id": run.get("run_id"),
+                    "run_href": run.get("run_href"),
+                    "prompt_href": child.get("prompt_href"),
+                    "stdout_href": child.get("stdout_href"),
+                    "stderr_href": child.get("stderr_href"),
+                    "elapsed_seconds": child.get("elapsed_seconds"),
+                    "elapsed_label": child.get("elapsed_label"),
+                }
+            )
+            seen.add(task_id)
+    for task in graph_tasks:
+        if task.get("status") != "claimed" or task.get("id") in seen:
+            continue
+        rows.append(
+            {
+                "task_id": task.get("id"),
+                "title": task.get("title"),
+                "status": task.get("status"),
+                "lane_title": task.get("lane_title"),
+                "epic_title": task.get("epic_title"),
+                "detail": task.get("detail"),
+                "claimed_by": task.get("claimed_by"),
+                "claimed_at": task.get("claimed_at"),
+                "active_compute_seconds": task.get("active_compute_seconds"),
+                "active_compute_label": task.get("active_compute_label"),
+                "total_compute_seconds": task.get("total_compute_seconds"),
+                "total_compute_label": task.get("total_compute_label"),
+                "latest_result_status": task.get("latest_result_status"),
+                "latest_result_at": task.get("latest_result_at"),
+                "latest_result_href": task.get("latest_result_href"),
+                "child_agent": None,
+                "run_id": None,
+                "run_href": None,
+                "prompt_href": None,
+                "stdout_href": None,
+                "stderr_href": None,
+                "elapsed_seconds": task.get("active_compute_seconds"),
+                "elapsed_label": task.get("active_compute_label"),
+            }
+        )
+    rows.sort(key=lambda row: str(row.get("task_id") or ""))
+    return rows
 
 
 def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
@@ -234,6 +525,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     events = load_events(profile.paths)
     messages = load_inbox(profile.paths)
     results = load_task_results(profile.paths)
+    task_activity = _build_task_activity(profile.paths, state, events, results)
     summary = build_view_model(
         profile,
         snapshot,
@@ -248,6 +540,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     ordered_tasks = sorted(snapshot.tasks.values(), key=lambda task: ((task.wave or 9999), (task.lane_order or 9999), task.id))
     for task in ordered_tasks:
         status, detail = classify_task_status(task, snapshot, state, allow_high_risk=False)
+        activity = task_activity.get(task.id, _empty_task_activity())
         graph_tasks.append(
             {
                 "id": task.id,
@@ -264,6 +557,17 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
                 "domains": list(task.payload.get("domains", [])),
                 "safe_first_slice": task.payload["safe_first_slice"],
                 "predecessor_ids": list(task.predecessor_ids),
+                "claimed_by": activity.get("claimed_by"),
+                "claimed_at": activity.get("claimed_at"),
+                "completed_at": activity.get("completed_at"),
+                "released_at": activity.get("released_at"),
+                "active_compute_seconds": activity.get("active_compute_seconds"),
+                "active_compute_label": activity.get("active_compute_label"),
+                "total_compute_seconds": activity.get("total_compute_seconds"),
+                "total_compute_label": activity.get("total_compute_label"),
+                "latest_result_status": activity.get("latest_result_status"),
+                "latest_result_at": activity.get("latest_result_at"),
+                "latest_result_href": activity.get("latest_result_href"),
             }
         )
         for predecessor_id in task.predecessor_ids:
@@ -281,6 +585,11 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
                 "result_href": _artifact_href(profile.paths, row.get("result_file")),
             }
         )
+    control_messages, dispatch_messages = _split_open_messages(summary["open_messages"])
+    supervisor = {
+        **_build_supervisor_runs(profile.paths, events),
+        "loops": _load_supervisor_loops(profile.paths),
+    }
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
@@ -295,6 +604,8 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "objectives": summary["objectives"],
         "next_rows": summary["next_rows"],
         "open_messages": summary["open_messages"][:10],
+        "control_messages": control_messages[:10],
+        "dispatch_messages": dispatch_messages[:10],
         "recent_results": recent_results,
         "recent_events": summary["recent_events"],
         "plan": plan,
@@ -302,10 +613,8 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "tasks": graph_tasks,
             "edges": graph_edges,
         },
-        "supervisor": {
-            **_build_supervisor_runs(profile.paths, events),
-            "loops": _load_supervisor_loops(profile.paths),
-        },
+        "active_tasks": _build_active_tasks(graph_tasks, supervisor["active_runs"]),
+        "supervisor": supervisor,
         "links": {
             "backlog": "/artifacts/backlog.md",
             "static_html": "/artifacts/backlog-index.html",
@@ -460,18 +769,20 @@ def _render_ui_shell() -> str:
   <title>Blackdog Live UI</title>
   <style>
     :root {
-      --bg: #f7f1ea;
-      --panel: rgba(255, 252, 248, 0.95);
-      --panel-strong: rgba(255, 255, 255, 0.9);
-      --ink: #201913;
-      --muted: #6d635b;
-      --line: rgba(57, 43, 28, 0.14);
-      --ready: #9c5a13;
-      --claimed: #155fc1;
-      --done: #12724a;
-      --waiting: #7b8088;
-      --approval: #7b4bb7;
-      --risk: #a12626;
+      --bg: #f5f0e8;
+      --panel: rgba(255, 252, 248, 0.96);
+      --panel-strong: rgba(255, 255, 255, 0.92);
+      --panel-muted: rgba(248, 243, 236, 0.92);
+      --ink: #1f1712;
+      --muted: #6c6158;
+      --line: rgba(56, 42, 28, 0.14);
+      --ready: #a35a12;
+      --claimed: #165fae;
+      --done: #0f6a46;
+      --waiting: #6f7782;
+      --approval: #744ab0;
+      --risk: #9d241f;
+      --stale: #7e4d28;
       --running: #b86716;
     }
     * { box-sizing: border-box; }
@@ -481,18 +792,21 @@ def _render_ui_shell() -> str:
       color: var(--ink);
       background:
         radial-gradient(circle at top right, rgba(208, 168, 97, 0.2), transparent 28%),
+        radial-gradient(circle at bottom left, rgba(30, 110, 93, 0.08), transparent 24%),
         linear-gradient(180deg, #fbf7f1 0%, var(--bg) 100%);
     }
     a { color: inherit; }
-    .page { max-width: 1680px; margin: 0 auto; padding: 28px; }
+    .page { width: min(1680px, 100%); margin: 0 auto; padding: 24px; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 22px;
       padding: 20px;
       margin-bottom: 18px;
+      min-width: 0;
+      box-shadow: 0 16px 40px rgba(73, 47, 22, 0.05);
     }
-    .hero { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; }
+    .hero { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; }
     .hero-top {
       display: flex;
       justify-content: space-between;
@@ -519,11 +833,20 @@ def _render_ui_shell() -> str:
       place-items: center;
       font-size: 0.82rem;
     }
+    .hero-copy {
+      margin: 6px 0 0;
+      font-size: 1.02rem;
+      line-height: 1.55;
+      color: var(--ink);
+      max-width: 64ch;
+    }
     .stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
-    .stat, .strip-card, .run-card, .loop-card, .message-card, .result-card, .task-node, .objective, .lane {
+    .stat, .strip-card, .run-card, .loop-card, .message-card, .result-card, .task-node, .objective, .lane, .active-task {
       border: 1px solid var(--line);
       border-radius: 18px;
       background: rgba(255, 255, 255, 0.78);
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     .stat { padding: 12px; }
     .stat strong { display: block; font-size: 1.6rem; }
@@ -552,6 +875,16 @@ def _render_ui_shell() -> str:
       font-size: 0.92rem;
       overflow-wrap: anywhere;
     }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .section-head h2 {
+      margin: 0;
+    }
     .hero-links, .inline-links {
       display: flex;
       flex-wrap: wrap;
@@ -568,21 +901,69 @@ def _render_ui_shell() -> str:
       background: var(--panel-strong);
       text-decoration: none;
     }
-    .objectives, .supervisor-strip, .message-grid, .result-grid {
+    .hero-links span {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+    }
+    .objectives, .supervisor-strip, .message-grid, .result-grid, .task-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
     }
-    .objective, .strip-card, .run-card, .loop-card, .message-card, .result-card {
+    .objective, .strip-card, .run-card, .loop-card, .message-card, .result-card, .active-task {
       padding: 14px;
       display: grid;
       gap: 8px;
     }
-    .layout { display: grid; grid-template-columns: 1.55fr 0.95fr; gap: 18px; }
+    .task-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.9fr); gap: 18px; align-items: start; }
+    .side-stack { display: grid; gap: 18px; min-width: 0; }
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .filter-chip, .filter-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .filter-chip.active {
+      border-color: rgba(22, 95, 174, 0.36);
+      background: rgba(232, 241, 255, 0.92);
+      color: var(--claimed);
+    }
+    .filter-toggle input {
+      margin: 0;
+    }
+    .search-input {
+      min-width: 220px;
+      flex: 1 1 240px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--ink);
+      font: inherit;
+    }
     .dag-shell {
       position: relative;
       overflow: auto;
       padding-bottom: 8px;
+      max-width: 100%;
     }
     .dag-links {
       position: absolute;
@@ -599,8 +980,9 @@ def _render_ui_shell() -> str:
       position: relative;
       display: flex;
       gap: 18px;
-      min-width: fit-content;
+      min-width: max-content;
       align-items: start;
+      width: max-content;
     }
     .wave-column {
       min-width: 280px;
@@ -611,6 +993,7 @@ def _render_ui_shell() -> str:
       padding: 14px;
       display: grid;
       gap: 12px;
+      background: rgba(250, 246, 240, 0.88);
     }
     .task-node {
       padding: 12px;
@@ -618,11 +1001,27 @@ def _render_ui_shell() -> str:
       gap: 8px;
       background: rgba(255, 255, 255, 0.9);
     }
+    .task-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 8px;
+    }
+    .task-title {
+      font-size: 1rem;
+      line-height: 1.35;
+    }
+    .subtle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
     .task-ready { border-color: rgba(156, 90, 19, 0.35); }
     .task-claimed { border-color: rgba(21, 95, 193, 0.35); }
     .task-done { border-color: rgba(18, 114, 74, 0.35); }
     .task-waiting, .task-high-risk { border-color: rgba(123, 128, 136, 0.35); }
     .task-approval { border-color: rgba(123, 75, 183, 0.35); }
+    .task-stale { border-color: rgba(126, 77, 40, 0.35); }
     .meta { color: var(--muted); font-size: 0.92rem; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
@@ -633,6 +1032,12 @@ def _render_ui_shell() -> str:
       font-size: 0.8rem;
       background: rgba(255, 255, 255, 0.65);
     }
+    .chip-running, .chip-claimed { color: var(--claimed); border-color: rgba(21, 95, 193, 0.24); }
+    .chip-ready { color: var(--ready); border-color: rgba(156, 90, 19, 0.24); }
+    .chip-done, .chip-success { color: var(--done); border-color: rgba(18, 114, 74, 0.24); }
+    .chip-waiting, .chip-approval, .chip-high-risk { color: var(--waiting); border-color: rgba(123, 128, 136, 0.24); }
+    .chip-blocked, .chip-failed { color: var(--risk); border-color: rgba(161, 38, 38, 0.24); }
+    .chip-stale { color: var(--stale); border-color: rgba(126, 77, 40, 0.24); }
     .empty {
       padding: 14px;
       border-radius: 18px;
@@ -645,12 +1050,22 @@ def _render_ui_shell() -> str:
       border-color: rgba(161, 38, 38, 0.3);
       background: rgba(255, 243, 243, 0.9);
     }
+    .hint {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
     .run-children { display: grid; gap: 10px; }
     .child-row {
       padding-top: 10px;
       border-top: 1px solid var(--line);
       display: grid;
       gap: 8px;
+    }
+    .run-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 10px;
     }
     @media (max-width: 1100px) {
       .hero, .layout { grid-template-columns: 1fr; }
@@ -659,6 +1074,9 @@ def _render_ui_shell() -> str:
     @media (max-width: 700px) {
       .page { padding: 16px; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .section-head { align-items: start; flex-direction: column; }
+      .filter-bar { width: 100%; }
+      .search-input { width: 100%; }
     }
   </style>
 </head>
@@ -674,7 +1092,7 @@ def _render_ui_shell() -> str:
           </div>
           <div id="sync-status" class="sync-pill"><span class="sync-dot"></span><span>Connecting…</span></div>
         </div>
-        <p id="push-objective">Loading snapshot…</p>
+        <p id="push-objective" class="hero-copy">Loading snapshot…</p>
         <div id="stats" class="stats"></div>
         <div id="hero-links" class="hero-links"></div>
       </div>
@@ -684,20 +1102,50 @@ def _render_ui_shell() -> str:
       </div>
     </section>
     <section class="panel">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">Now</span>
+          <h2>Current Activity</h2>
+        </div>
+        <div id="activity-summary" class="hero-links"></div>
+      </div>
+      <div id="active-tasks" class="task-grid"></div>
+    </section>
+    <section class="panel">
       <h2>Objectives</h2>
       <div id="objectives" class="objectives"></div>
     </section>
     <div class="layout">
       <section class="panel">
-        <h2>Task Graph</h2>
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Backlog Browser</span>
+            <h2>Task Graph</h2>
+          </div>
+          <div id="filters" class="filter-bar"></div>
+        </div>
         <div id="dag" class="dag-shell"></div>
       </section>
-      <section class="panel">
-        <h2>Inbox</h2>
-        <div id="messages" class="message-grid"></div>
-        <h2>Recent Results</h2>
-        <div id="results" class="result-grid"></div>
-      </section>
+      <div class="side-stack">
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Operator Controls</span>
+              <h2>Control Inbox</h2>
+            </div>
+          </div>
+          <div id="messages" class="message-grid"></div>
+        </section>
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Outcomes</span>
+              <h2>Recent Results</h2>
+            </div>
+          </div>
+          <div id="results" class="result-grid"></div>
+        </section>
+      </div>
     </div>
     <section class="panel">
       <h2>Supervisor Runs</h2>
@@ -707,6 +1155,12 @@ def _render_ui_shell() -> str:
   <script>
     let currentSnapshot = null;
     let eventSource = null;
+    const currentFilters = {
+      query: "",
+      showDone: false,
+      showWaiting: true,
+      scope: "active-wave",
+    };
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -717,19 +1171,108 @@ def _render_ui_shell() -> str:
         .replace(/'/g, "&#39;");
     }
 
+    function statusTone(label) {
+      const value = String(label || "").toLowerCase();
+      if (["running", "claimed"].includes(value)) return "chip-running";
+      if (["ready"].includes(value)) return "chip-ready";
+      if (["done", "success", "finished"].includes(value)) return "chip-success";
+      if (["blocked", "failed", "launch-failed", "released"].includes(value)) return "chip-blocked";
+      if (["stale"].includes(value)) return "chip-stale";
+      if (["waiting", "approval", "high-risk", "paused"].includes(value)) return "chip-waiting";
+      return "";
+    }
+
     function statusChip(label) {
-      return `<span class="chip">${escapeHtml(label)}</span>`;
+      return `<span class="chip ${statusTone(label)}">${escapeHtml(label)}</span>`;
+    }
+
+    function link(label, href) {
+      if (!href) return "";
+      return `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
+    }
+
+    function asArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function activeWave(tasks) {
+      const waves = tasks
+        .filter((task) => task.status !== "done" && typeof task.wave === "number")
+        .map((task) => task.wave)
+        .sort((a, b) => a - b);
+      return waves.length ? waves[0] : null;
+    }
+
+    function dependencySummary(task) {
+      const predecessors = asArray(task.predecessor_ids);
+      if (!predecessors.length) return "";
+      return `Depends on ${predecessors.join(", ")}`;
+    }
+
+    function filterGraphTasks(tasks) {
+      const query = currentFilters.query.trim().toLowerCase();
+      const wave = activeWave(tasks);
+      return tasks.filter((task) => {
+        if (!currentFilters.showDone && task.status === "done") return false;
+        if (!currentFilters.showWaiting && ["waiting", "approval", "high-risk"].includes(task.status)) return false;
+        if (currentFilters.scope === "active-wave" && wave != null && task.status !== "claimed" && task.wave !== wave) return false;
+        if (!query) return true;
+        const haystack = [
+          task.id,
+          task.title,
+          task.lane_title,
+          task.epic_title,
+          task.status,
+          task.latest_result_status,
+          asArray(task.predecessor_ids).join(" "),
+        ].join(" ").toLowerCase();
+        return haystack.includes(query);
+      });
+    }
+
+    function renderFilterBar(snapshot) {
+      const tasks = asArray(snapshot.graph?.tasks);
+      const visibleCount = filterGraphTasks(tasks).length;
+      document.getElementById("filters").innerHTML = `
+        <input id="filter-query" class="search-input" type="search" placeholder="Filter by task, lane, epic, or status" value="${escapeHtml(currentFilters.query)}">
+        <button type="button" class="filter-chip ${currentFilters.scope === "active-wave" ? "active" : ""}" data-scope="active-wave">Active wave</button>
+        <button type="button" class="filter-chip ${currentFilters.scope === "all" ? "active" : ""}" data-scope="all">All waves</button>
+        <label class="filter-toggle"><input id="toggle-done" type="checkbox" ${currentFilters.showDone ? "checked" : ""}> Show done</label>
+        <label class="filter-toggle"><input id="toggle-waiting" type="checkbox" ${currentFilters.showWaiting ? "checked" : ""}> Show waiting</label>
+        <span class="hint">${escapeHtml(visibleCount)} visible</span>
+      `;
+      document.getElementById("filter-query").addEventListener("input", (event) => {
+        currentFilters.query = event.target.value;
+        refreshTaskBrowser();
+      });
+      document.querySelectorAll("[data-scope]").forEach((node) => {
+        node.addEventListener("click", () => {
+          currentFilters.scope = node.getAttribute("data-scope");
+          refreshTaskBrowser();
+        });
+      });
+      document.getElementById("toggle-done").addEventListener("change", (event) => {
+        currentFilters.showDone = event.target.checked;
+        refreshTaskBrowser();
+      });
+      document.getElementById("toggle-waiting").addEventListener("change", (event) => {
+        currentFilters.showWaiting = event.target.checked;
+        refreshTaskBrowser();
+      });
     }
 
     function renderStats(snapshot) {
       const counts = snapshot.counts || {};
+      const activeTasks = asArray(snapshot.active_tasks);
+      const blockedRecent = asArray(snapshot.recent_results).filter((row) => row.status === "blocked").length;
       const rows = [
         ["Total", snapshot.total || 0],
+        ["Active", activeTasks.length],
         ["Ready", counts.ready || 0],
-        ["Claimed", counts.claimed || 0],
+        ["Waiting", (counts.waiting || 0) + (counts.approval || 0) + (counts["high-risk"] || 0)],
         ["Done", counts.done || 0],
-        ["Approval", counts.approval || 0],
-        ["Open inbox", (snapshot.open_messages || []).length],
+        ["Blocked", blockedRecent],
+        ["Control inbox", asArray(snapshot.control_messages).length],
       ];
       document.getElementById("stats").innerHTML = rows
         .map(([label, value]) => `<div class="stat"><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
@@ -743,11 +1286,19 @@ def _render_ui_shell() -> str:
       document.getElementById("push-objective").textContent = pushObjective || "Live backlog monitoring for Blackdog.";
       const links = snapshot.links || {};
       const nextRows = snapshot.next_rows || [];
+      const activeTasks = asArray(snapshot.active_tasks);
+      const dispatchCount = asArray(snapshot.dispatch_messages).length;
+      const leadLink = nextRows.length
+        ? `Next ready: ${nextRows[0].id}`
+        : activeTasks.length
+          ? `${activeTasks.length} task(s) running`
+          : "No unclaimed runnable tasks";
       document.getElementById("hero-links").innerHTML = [
-        links.backlog ? `<a href="${escapeHtml(links.backlog)}" target="_blank" rel="noreferrer">Backlog</a>` : "",
-        links.static_html ? `<a href="${escapeHtml(links.static_html)}" target="_blank" rel="noreferrer">Static HTML</a>` : "",
-        nextRows.length ? `<a href="#dag">Next: ${escapeHtml(nextRows[0].id)}</a>` : `<a href="#dag">No runnable tasks</a>`,
-        snapshot.generated_at ? `<span class="chip">Updated ${escapeHtml(snapshot.generated_at)}</span>` : "",
+        link("Backlog", links.backlog),
+        link("Static HTML", links.static_html),
+        `<a href="#active-tasks">${escapeHtml(leadLink)}</a>`,
+        dispatchCount ? `<span>${escapeHtml(dispatchCount)} dispatch message(s) hidden from inbox</span>` : "",
+        snapshot.generated_at ? `<span>Updated ${escapeHtml(snapshot.generated_at)}</span>` : "",
       ].filter(Boolean).join("");
       renderStats(snapshot);
     }
@@ -765,13 +1316,46 @@ def _render_ui_shell() -> str:
         : `<div class="empty">No objectives tagged yet.</div>`;
     }
 
+    function renderActiveTasks(snapshot) {
+      const rows = asArray(snapshot.active_tasks);
+      const activeRuns = asArray(snapshot.supervisor?.active_runs);
+      document.getElementById("activity-summary").innerHTML = [
+        `<span>${escapeHtml(activeRuns.length)} active run(s)</span>`,
+        asArray(snapshot.control_messages).length ? `<span>${escapeHtml(asArray(snapshot.control_messages).length)} control message(s)</span>` : "",
+      ].filter(Boolean).join("");
+      document.getElementById("active-tasks").innerHTML = rows.length
+        ? rows.map((row) => `
+            <article class="active-task task-${escapeHtml(row.status || "claimed")}">
+              <div class="task-top">
+                <div>
+                  <span class="eyebrow">${escapeHtml(row.task_id || "?")} · ${escapeHtml(row.lane_title || "lane")}</span>
+                  <strong class="task-title">${escapeHtml(row.title || "")}</strong>
+                </div>
+                <div class="chips">${statusChip(row.status || "claimed")}${row.latest_result_status ? statusChip(`latest ${row.latest_result_status}`) : ""}</div>
+              </div>
+              <span class="subtle">${escapeHtml(row.epic_title || "")}</span>
+              <span class="meta">${escapeHtml(row.claimed_by || row.child_agent || "")}${row.elapsed_label ? ` · running ${row.elapsed_label}` : ""}${row.total_compute_label ? ` · total ${row.total_compute_label}` : ""}</span>
+              <span class="subtle">${escapeHtml(row.detail || "")}</span>
+              <div class="inline-links">
+                ${link("Run", row.run_href)}
+                ${link("Prompt", row.prompt_href)}
+                ${link("Stdout", row.stdout_href)}
+                ${link("Stderr", row.stderr_href)}
+                ${link("Latest result", row.latest_result_href)}
+              </div>
+            </article>
+          `).join("")
+        : `<div class="empty">No active tasks right now.</div>`;
+    }
+
     function renderSupervisorStrip(snapshot) {
       const supervisor = snapshot.supervisor || {};
+      const staleRuns = asArray(supervisor.recent_runs).filter((row) => row.status === "stale").length;
       const rows = [
         ["Active runs", (supervisor.active_runs || []).length],
-        ["Recent runs", (supervisor.recent_runs || []).length],
+        ["Stale runs", staleRuns],
         ["Loops", (supervisor.loops || []).length],
-        ["Next runnable", (snapshot.next_rows || []).length],
+        ["Dispatches", (snapshot.dispatch_messages || []).length],
       ];
       document.getElementById("supervisor-strip").innerHTML = rows
         .map(([label, value]) => `<article class="strip-card"><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`)
@@ -779,7 +1363,7 @@ def _render_ui_shell() -> str:
     }
 
     function renderMessages(snapshot) {
-      const rows = snapshot.open_messages || [];
+      const rows = snapshot.control_messages || [];
       document.getElementById("messages").innerHTML = rows.length
         ? rows.map((row) => `
             <article class="message-card">
@@ -789,7 +1373,7 @@ def _render_ui_shell() -> str:
               <div class="chips">${(row.tags || []).map(statusChip).join("")}</div>
             </article>
           `).join("")
-        : `<div class="empty">No open inbox messages.</div>`;
+        : `<div class="empty">No open control messages. Dispatch instructions to child agents are hidden here.</div>`;
     }
 
     function renderResults(snapshot) {
@@ -798,10 +1382,11 @@ def _render_ui_shell() -> str:
         ? rows.map((row) => `
             <article class="result-card">
               <span class="eyebrow">${escapeHtml(row.recorded_at || "")}</span>
-              <strong>${escapeHtml(row.task_id || "?")} · ${escapeHtml(row.status || "?")}</strong>
+              <strong>${escapeHtml(row.task_id || "?")}</strong>
+              <div class="chips">${statusChip(row.status || "?")}</div>
               <span>${escapeHtml(row.actor || "")}</span>
               <div class="inline-links">
-                ${row.result_href ? `<a href="${escapeHtml(row.result_href)}" target="_blank" rel="noreferrer">Result JSON</a>` : ""}
+                ${link("Result JSON", row.result_href)}
               </div>
             </article>
           `).join("")
@@ -815,11 +1400,13 @@ def _render_ui_shell() -> str:
       const loopHtml = loops.length
         ? loops.map((loop) => `
             <article class="loop-card">
-              <span class="eyebrow">${escapeHtml(loop.actor || "loop")} · ${escapeHtml(loop.loop_id || "")}</span>
-              <strong>${escapeHtml(loop.status || "running")}</strong>
-              <span>${escapeHtml(loop.cycle_count || 0)} cycle(s)</span>
+              <div class="run-header">
+                <span class="eyebrow">${escapeHtml(loop.actor || "loop")} · ${escapeHtml(loop.loop_id || "")}</span>
+                <div class="chips">${statusChip(loop.status || "running")}</div>
+              </div>
+              <span>${escapeHtml(loop.cycle_count || 0)} cycle(s)${loop.age_label ? ` · age ${escapeHtml(loop.age_label)}` : ""}</span>
               <div class="inline-links">
-                ${loop.status_href ? `<a href="${escapeHtml(loop.status_href)}" target="_blank" rel="noreferrer">Status JSON</a>` : ""}
+                ${link("Status JSON", loop.status_href)}
               </div>
             </article>
           `).join("")
@@ -827,21 +1414,24 @@ def _render_ui_shell() -> str:
       const runHtml = runs.length
         ? runs.map((run) => `
             <article class="run-card">
-              <span class="eyebrow">${escapeHtml(run.actor || "supervisor")} · ${escapeHtml(run.run_id || "")}</span>
-              <strong>${escapeHtml(run.status || "running")}</strong>
-              <span>${escapeHtml(run.workspace_mode || "")}</span>
+              <div class="run-header">
+                <span class="eyebrow">${escapeHtml(run.actor || "supervisor")} · ${escapeHtml(run.run_id || "")}</span>
+                <div class="chips">${statusChip(run.status || "running")}</div>
+              </div>
+              <strong>${escapeHtml(run.workspace_mode || "supervisor run")}${run.elapsed_label ? ` · ${escapeHtml(run.elapsed_label)}` : ""}</strong>
               <div class="inline-links">
-                ${run.run_href ? `<a href="${escapeHtml(run.run_href)}" target="_blank" rel="noreferrer">Run Artifacts</a>` : ""}
+                ${link("Run Artifacts", run.run_href)}
               </div>
               <div class="run-children">
                 ${(run.children || []).map((child) => `
                   <div class="child-row">
-                    <strong>${escapeHtml(child.task_id || "?")} · ${escapeHtml(child.status || "pending")}</strong>
-                    <span class="meta">${escapeHtml(child.child_agent || "")}</span>
+                    <strong>${escapeHtml(child.task_id || "?")}</strong>
+                    <div class="chips">${statusChip(child.status || "pending")}${child.final_task_status ? statusChip(child.final_task_status) : ""}${child.elapsed_label ? statusChip(child.elapsed_label) : ""}</div>
+                    <span class="meta">${escapeHtml(child.child_agent || "")}${child.error ? ` · ${escapeHtml(child.error)}` : ""}</span>
                     <div class="inline-links">
-                      ${child.prompt_href ? `<a href="${escapeHtml(child.prompt_href)}" target="_blank" rel="noreferrer">Prompt</a>` : ""}
-                      ${child.stdout_href ? `<a href="${escapeHtml(child.stdout_href)}" target="_blank" rel="noreferrer">Stdout</a>` : ""}
-                      ${child.stderr_href ? `<a href="${escapeHtml(child.stderr_href)}" target="_blank" rel="noreferrer">Stderr</a>` : ""}
+                      ${link("Prompt", child.prompt_href)}
+                      ${link("Stdout", child.stdout_href)}
+                      ${link("Stderr", child.stderr_href)}
                     </div>
                   </div>
                 `).join("")}
@@ -858,11 +1448,12 @@ def _render_ui_shell() -> str:
 
     function renderDag(snapshot) {
       const graph = snapshot.graph || {};
-      const tasks = graph.tasks || [];
-      const edges = graph.edges || [];
+      const tasks = filterGraphTasks(asArray(graph.tasks));
+      const visibleIds = new Set(tasks.map((task) => task.id));
+      const edges = asArray(graph.edges).filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
       const container = document.getElementById("dag");
       if (!tasks.length) {
-        container.innerHTML = `<div class="empty">No tasks in the graph yet.</div>`;
+        container.innerHTML = `<div class="empty">No tasks match the current filter set.</div>`;
         return;
       }
       const grouped = new Map();
@@ -898,13 +1489,25 @@ def _render_ui_shell() -> str:
                   </div>
                   ${lane.tasks.map((task) => `
                     <article class="task-node task-${escapeHtml(task.status)}" data-node-id="${escapeHtml(task.id)}">
-                      <code>${escapeHtml(task.id)}</code>
-                      <strong>${escapeHtml(task.title)}</strong>
-                      <span class="meta">${escapeHtml(task.status)} · ${escapeHtml(task.detail)}</span>
+                      <div class="task-top">
+                        <code>${escapeHtml(task.id)}</code>
+                        <div class="chips">
+                          ${statusChip(task.status || "")}
+                          ${task.latest_result_status ? statusChip(`latest ${task.latest_result_status}`) : ""}
+                          ${task.total_compute_label ? statusChip(task.total_compute_label) : ""}
+                        </div>
+                      </div>
+                      <strong class="task-title">${escapeHtml(task.title)}</strong>
+                      <span class="meta">${escapeHtml(task.epic_title || "")}</span>
+                      <span class="subtle">${escapeHtml(task.detail || "")}</span>
+                      ${dependencySummary(task) ? `<span class="subtle">${escapeHtml(dependencySummary(task))}</span>` : ""}
                       <div class="chips">
                         ${statusChip(task.priority || "")}
                         ${statusChip(task.risk || "")}
                         ${(task.domains || []).slice(0, 3).map(statusChip).join("")}
+                      </div>
+                      <div class="inline-links">
+                        ${link("Latest result", task.latest_result_href)}
                       </div>
                     </article>
                   `).join("")}
@@ -944,13 +1547,22 @@ def _render_ui_shell() -> str:
       svg.innerHTML = paths.join("");
     }
 
+    function refreshTaskBrowser() {
+      if (!currentSnapshot || currentSnapshot.error) return;
+      renderFilterBar(currentSnapshot);
+      renderDag(currentSnapshot);
+    }
+
     function renderError(snapshot) {
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
       document.getElementById("repo-root").textContent = snapshot.project_root ? `Repo: ${snapshot.project_root}` : "";
       document.getElementById("push-objective").textContent = snapshot.error?.message || "UI snapshot failed.";
       document.getElementById("stats").innerHTML = `<div class="stat error"><span class="eyebrow">Snapshot Error</span><strong>${escapeHtml(snapshot.error?.type || "Error")}</strong></div>`;
       document.getElementById("objectives").innerHTML = "";
+      document.getElementById("activity-summary").innerHTML = "";
+      document.getElementById("active-tasks").innerHTML = "";
       document.getElementById("supervisor-strip").innerHTML = "";
+      document.getElementById("filters").innerHTML = "";
       document.getElementById("messages").innerHTML = `<div class="empty error">${escapeHtml(snapshot.error?.message || "")}</div>`;
       document.getElementById("results").innerHTML = "";
       document.getElementById("runs").innerHTML = "";
@@ -964,12 +1576,13 @@ def _render_ui_shell() -> str:
         return;
       }
       renderHero(snapshot);
+      renderActiveTasks(snapshot);
       renderObjectives(snapshot);
       renderSupervisorStrip(snapshot);
       renderMessages(snapshot);
       renderResults(snapshot);
       renderRuns(snapshot);
-      renderDag(snapshot);
+      refreshTaskBrowser();
     }
 
     function setSyncState(label, stateClass) {
