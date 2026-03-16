@@ -2073,6 +2073,40 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in after_snapshot["board_tasks"]], [waiting_task_id])
         self.assertEqual(after_snapshot["board_tasks"][0]["wave"], 0)
 
+    def test_supervise_run_exits_idle_immediately_when_backlog_is_empty(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+            timeout=5,
+        )
+
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["final_status"], "idle")
+        self.assertEqual(payload["children"], [])
+
+        status_file = sorted(paths.supervisor_runs_dir.glob("*/status.json"))[-1]
+        latest_run = json.loads(status_file.read_text(encoding="utf-8"))
+        self.assertEqual(latest_run["final_status"], "idle")
+
     def test_render_writes_static_html_with_embedded_snapshot(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         html_path = self.runtime_paths().html_file
