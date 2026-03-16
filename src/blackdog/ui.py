@@ -1258,26 +1258,6 @@ __BLACKDOG_STYLES__
         });
     }
 
-    function waveRows(lanes) {
-      const rows = new Map();
-      for (const lane of lanes) {
-        const key = lane.wave == null ? "unplanned" : String(lane.wave);
-        if (!rows.has(key)) {
-          rows.set(key, {
-            key,
-            wave: lane.wave,
-            lanes: []
-          });
-        }
-        rows.get(key).lanes.push(lane);
-      }
-      return Array.from(rows.values()).sort((left, right) => {
-        const leftWave = left.wave == null ? 9999 : Number(left.wave);
-        const rightWave = right.wave == null ? 9999 : Number(right.wave);
-        return leftWave - rightWave;
-      });
-    }
-
     function objectiveSections(tasks) {
       if (!objectiveRows.length) {
         return [];
