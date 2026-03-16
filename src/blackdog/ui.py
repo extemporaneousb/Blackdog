@@ -22,7 +22,6 @@ from .worktree import worktree_contract
 
 
 UI_SNAPSHOT_SCHEMA_VERSION = 4
-UI_COMPLETED_HISTORY_LIMIT = 30
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
 
@@ -1090,32 +1089,13 @@ __BLACKDOG_STYLES__
             <h2>Backlog</h2>
             <p id="board-guide" class="section-copy"></p>
           </div>
-          <div id="backlog-controls" class="section-toolbar">
-            <div class="toolbar-topline">
-              <span id="board-summary" class="section-meta"></span>
-              <a id="inbox-link" class="text-link" href="#">Inbox JSON</a>
-            </div>
-            <input id="task-search" class="search" type="search" placeholder="Search task id, title, lane, epic, or artifact status">
-            <span id="filter-summary" class="search-hint"></span>
-            <div id="stats" class="stats"></div>
+          <div class="toolbar-topline">
+            <span id="board-summary" class="section-meta"></span>
+            <a id="inbox-link" class="text-link" href="#">Inbox JSON</a>
           </div>
         </div>
         <div id="status-legend" class="legend"></div>
         <div id="lane-board" class="lane-board"></div>
-      </section>
-
-      <section id="completed-history-panel" class="panel result-panel" data-panel="history">
-        <div class="section-head">
-          <div>
-            <span class="eyebrow">Completed Tasks</span>
-            <h2>Completed Tasks</h2>
-            <p class="section-copy">Completed work stays visible here with its latest recorded outcome and artifact links in a scrollable recent-history view.</p>
-          </div>
-          <span id="history-summary" class="section-meta"></span>
-        </div>
-        <div id="completed-history-scroll" class="result-history" data-history-limit="__BLACKDOG_HISTORY_LIMIT__">
-          <div id="recent-results" class="results-grid"></div>
-        </div>
       </section>
     </div>
   </div>
@@ -1147,7 +1127,6 @@ __BLACKDOG_STYLES__
     const objectiveRows = Array.isArray(snapshot.objective_rows) ? snapshot.objective_rows.slice() : [];
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
-    const filterState = { search: "", status: "total" };
     const statusMeta = {
       total: { label: "Total" },
       ready: { label: "Ready" },
@@ -1158,13 +1137,7 @@ __BLACKDOG_STYLES__
       failed: { label: "Failed" },
       complete: { label: "Complete" }
     };
-    const resultStatusLabels = {
-      success: "Success",
-      partial: "Partial",
-      blocked: "Blocked"
-    };
     const legendOrder = ["complete", "running", "claimed", "ready", "waiting", "blocked", "failed"];
-    const COMPLETED_HISTORY_LIMIT = __BLACKDOG_HISTORY_LIMIT__;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1191,6 +1164,13 @@ __BLACKDOG_STYLES__
         return "";
       }
       return `<a class="text-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+    }
+
+    function interactiveCardAttributes(taskId) {
+      if (!taskId) {
+        return "";
+      }
+      return ` data-task-id="${escapeHtml(taskId)}" role="button" tabindex="0"`;
     }
 
     function keyValueRows(rows) {
@@ -1342,30 +1322,6 @@ __BLACKDOG_STYLES__
       return task.latest_result_preview || task.operator_status_detail || task.detail || task.safe_first_slice || "";
     }
 
-    function taskMatches(task) {
-      if (filterState.status !== "total" && normalizeStatus(task.operator_status_key) !== filterState.status) {
-        return false;
-      }
-      if (!filterState.search) {
-        return true;
-      }
-      const haystack = [
-        task.id,
-        task.title,
-        task.objective,
-        task.objective_title,
-        task.lane_title,
-        task.epic_title,
-        task.operator_status,
-        task.operator_status_detail,
-        task.detail,
-        task.latest_result_preview,
-        task.latest_run_status,
-        task.latest_result_status
-      ].join(" ").toLowerCase();
-      return haystack.includes(filterState.search);
-    }
-
     function laneRows(tasks, progressInventory = null) {
       const rows = new Map();
       lanePlan.forEach((lane, index) => {
@@ -1504,6 +1460,7 @@ __BLACKDOG_STYLES__
       );
       const tone = objectiveTone(objective);
       const leadTask = objectiveLeadTask(objective);
+      const leadTaskId = leadTask ? String(leadTask.id || "") : "";
       const laneCount = Array.isArray(objective.lane_titles) ? objective.lane_titles.length : 0;
       const waveCount = Array.isArray(objective.wave_ids) ? objective.wave_ids.length : 0;
       const copy = leadTask
@@ -1515,7 +1472,7 @@ __BLACKDOG_STYLES__
         leadTask ? leadTask.id : ""
       ].filter(Boolean);
       return `
-        <article class="objective-card" data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
+        <article class="objective-card"${interactiveCardAttributes(leadTaskId)} data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
           <div class="objective-top">
             <div class="objective-heading">
               <span class="objective-id">${escapeHtml(objective.id || "Unassigned")}</span>
@@ -1590,10 +1547,11 @@ __BLACKDOG_STYLES__
       };
     }
 
-    function overviewCard(title, headline, copy, items = []) {
+    function overviewCard(title, headline, copy, items = [], options = {}) {
       const filteredItems = items.filter(Boolean);
+      const taskId = options.taskId ? String(options.taskId) : "";
       return `
-        <article class="compact-card">
+        <article class="compact-card"${interactiveCardAttributes(taskId)}>
           <span class="eyebrow">${escapeHtml(title)}</span>
           ${headline ? `<strong>${escapeHtml(headline)}</strong>` : ""}
           ${copy ? `<p>${escapeHtml(copy)}</p>` : ""}
@@ -1605,6 +1563,7 @@ __BLACKDOG_STYLES__
     function renderOverviewCards() {
       const currentObjective = objectiveRows.find((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length) || objectiveRows[0] || null;
       const currentObjectiveProgress = currentObjective?.progress || null;
+      const currentObjectiveLeadTask = currentObjective ? objectiveLeadTask(currentObjective) : null;
       const next = nextFocusRow();
       const heroHighlights = snapshot.hero_highlights || {};
       const activity = snapshot.last_activity || {};
@@ -1627,7 +1586,8 @@ __BLACKDOG_STYLES__
                   ? pluralize(currentObjective.wave_ids.length, "wave")
                   : ""
               ]
-            : []
+            : [],
+          { taskId: currentObjectiveLeadTask?.id }
         ),
         overviewCard(
           "What's Next",
@@ -1639,7 +1599,8 @@ __BLACKDOG_STYLES__
                 next.wave != null ? `Wave ${next.wave}` : "",
                 next.risk ? `Risk: ${next.risk}` : ""
               ]
-            : []
+            : [],
+          { taskId: next?.id }
         ),
         overviewCard(
           "Coordination",
@@ -1720,7 +1681,7 @@ __BLACKDOG_STYLES__
       inboxLink.textContent = `Inbox JSON · ${openMessages.length} open`;
 
       document.getElementById("board-guide").textContent =
-        "Search and status filters apply only to the execution map. Objectives lead the board, lane order stays intact inside each objective row, and completed tasks move into the history panel.";
+        "Objective and overview cards open the task reader, lane order stays intact inside each objective row, and the inbox artifact remains one click away.";
     }
 
     function renderLegend() {
@@ -1729,17 +1690,6 @@ __BLACKDOG_STYLES__
           <span class="legend-dot tone-${escapeHtml(key)}"></span>
           <span>${escapeHtml(statusMeta[key].label)}</span>
         </span>
-      `).join("");
-    }
-
-    function renderStats() {
-      const counts = countStatuses(boardTasks);
-      const order = ["total", "ready", "running", "claimed", "waiting", "blocked", "failed"];
-      document.getElementById("stats").innerHTML = order.map((key) => `
-        <button class="stat-card ${filterState.status === key ? "active" : ""}" type="button" data-status-filter="${escapeHtml(key)}">
-          <span class="eyebrow">${escapeHtml(statusMeta[key].label)}</span>
-          <strong>${escapeHtml(counts[key] || 0)}</strong>
-        </button>
       `).join("");
     }
 
@@ -1790,7 +1740,7 @@ __BLACKDOG_STYLES__
         ? renderStatusChipRows(task.card_status_chips)
         : chip(task.operator_status || "Ready", tone);
       return `
-        <article class="task-card tone-${escapeHtml(tone)}" id="${escapeHtml(task.id)}" data-task-id="${escapeHtml(task.id)}">
+        <article class="task-card tone-${escapeHtml(tone)}" id="${escapeHtml(task.id)}"${interactiveCardAttributes(task.id)}>
           <div class="task-card-top">
             <div class="task-id-group">
               <span class="task-code">${escapeHtml(task.id)}</span>
@@ -1871,17 +1821,15 @@ __BLACKDOG_STYLES__
     }
 
     function renderBoard() {
-      const visibleTasks = boardTasks.filter(taskMatches);
+      const visibleTasks = boardTasks.slice();
       const objectives = objectiveSections(visibleTasks);
       const lanes = laneRows(visibleTasks);
-      document.getElementById("filter-summary").textContent =
-        filterState.status === "total" ? "Filter: all backlog tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
       document.getElementById("board-summary").textContent =
         `${visibleTasks.length} visible task(s) across ${objectives.length} objective row(s) in ${lanes.length} lane(s)`;
       document.getElementById("status-legend").innerHTML = renderLegend();
       document.getElementById("lane-board").innerHTML = objectives.length
         ? objectives.map(renderObjectiveSection).join("")
-        : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Backlog empty." : "No backlog tasks match the current status/search filter."}</div>`;
+        : `<div class="empty">Backlog empty.</div>`;
       applyProgressBars(document.getElementById("lane-board"));
     }
 
@@ -1896,41 +1844,6 @@ __BLACKDOG_STYLES__
           }
           return String(left.id).localeCompare(String(right.id));
         });
-    }
-
-    function renderRecentResults() {
-      const completed = completedTasks();
-      const visibleCount = Math.min(completed.length, COMPLETED_HISTORY_LIMIT);
-      document.getElementById("history-summary").textContent = completed.length > visibleCount
-        ? `Showing latest ${visibleCount} of ${completed.length} completed`
-        : `${completed.length} completed`;
-      document.getElementById("recent-results").innerHTML = completed.length
-        ? completed.slice(0, COMPLETED_HISTORY_LIMIT).map((task) => {
-            const statusKey = normalizeStatus(task.latest_result_status || task.operator_status_key || "complete");
-            const statusLabel = task.latest_result_status
-              ? (resultStatusLabels[task.latest_result_status] || task.latest_result_status)
-              : "Complete";
-            return `
-              <article class="result-card" data-result-task="${escapeHtml(task.id || "")}">
-                <div class="result-top">
-                  <strong>${escapeHtml(task.id || "?")}</strong>
-                  <div class="chips">${chip(statusLabel, statusKey)}</div>
-                </div>
-                <h3 class="result-title">${escapeHtml(task.title || "")}</h3>
-                <div class="result-meta">
-                  <span>${escapeHtml(relativeTime(task.completed_at || task.latest_result_at || task.latest_run_at))}</span>
-                  ${task.total_compute_label ? `<span>Compute ${escapeHtml(task.total_compute_label)}</span>` : ""}
-                </div>
-                <p>${escapeHtml(task.latest_result_preview || task.operator_status_detail || task.safe_first_slice || "")}</p>
-                <div class="artifact-row">
-                  ${textLink("Result", task.latest_result_href)}
-                  ${textLink("Run", task.run_dir_href)}
-                  ${task.id ? `<a class="text-link" href="#${escapeHtml(task.id)}">Task</a>` : ""}
-                </div>
-              </article>
-            `;
-          }).join("")
-        : `<div class="empty">No completed tasks recorded yet.</div>`;
     }
 
     function detailBlock(label, content, options = {}) {
@@ -2068,31 +1981,23 @@ __BLACKDOG_STYLES__
 
     function wireStaticEvents() {
       document.addEventListener("click", (event) => {
-        const stat = event.target.closest("[data-status-filter]");
-        if (stat) {
-          const key = stat.getAttribute("data-status-filter") || "total";
-          filterState.status = filterState.status === key ? "total" : key;
-          renderStats();
-          renderBoard();
-          return;
-        }
-
         const taskCard = event.target.closest("[data-task-id]");
         if (taskCard && !event.target.closest("a, button")) {
           openTaskReader(taskCard.getAttribute("data-task-id"));
           return;
         }
-
-        const resultCard = event.target.closest("[data-result-task]");
-        if (resultCard && !event.target.closest("a, button")) {
-          openTaskReader(resultCard.getAttribute("data-result-task"));
-        }
       });
 
-      const search = document.getElementById("task-search");
-      search.addEventListener("input", (event) => {
-        filterState.search = String(event.target.value || "").trim().toLowerCase();
-        renderBoard();
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        const taskCard = event.target.closest("[data-task-id]");
+        if (!taskCard || event.target.closest("a, button")) {
+          return;
+        }
+        event.preventDefault();
+        openTaskReader(taskCard.getAttribute("data-task-id"));
       });
     }
 
@@ -2100,9 +2005,7 @@ __BLACKDOG_STYLES__
     renderObjectiveCards();
     renderOverviewCards();
     renderDomainChips();
-    renderStats();
     renderBoard();
-    renderRecentResults();
     wireStaticEvents();
     window.setInterval(renderHeader, 30000);
   </script>
@@ -2112,7 +2015,6 @@ __BLACKDOG_STYLES__
     html = (
         template.replace("__BLACKDOG_TITLE__", title)
         .replace("__BLACKDOG_STYLES__", stylesheet)
-        .replace("__BLACKDOG_HISTORY_LIMIT__", str(UI_COMPLETED_HISTORY_LIMIT))
         .replace("__BLACKDOG_SNAPSHOT__", _snapshot_json(snapshot))
     )
     output_path.write_text(html, encoding="utf-8")
