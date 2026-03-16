@@ -137,6 +137,27 @@ surface are still useful, but operators should be able to continue
 Blackdog development with the direct claim/worktree/result/complete
 flow alone when runtime reliability is in doubt.
 
+## Planning semantics
+
+Blackdog's planning model separates executable work from concurrency
+grouping:
+
+- tasks are the only executable unit; claims, completion, results, and
+  dependency checks all happen at task level
+- lanes are ordered task streams; lane order is preserved in the plan
+  and UI, and earlier lane tasks become predecessor tasks for later
+  lane tasks
+- waves group lanes that can open together for concurrent progress
+  once every lower wave is finished
+- waves are scheduler gates, not dependency nodes; they describe when a
+  set of lanes becomes eligible, while task-to-task predecessors still
+  explain why one task is waiting on another
+
+This distinction matters in the static control surface: the board
+should show lane order explicitly, use waves as concurrency boundaries,
+and avoid mixing historical child-run states into the current task
+status.
+
 ## Static control surface
 
 Blackdog's browser surface is now a rendered artifact, not a runtime

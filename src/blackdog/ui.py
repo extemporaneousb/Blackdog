@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from importlib import resources
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -25,6 +26,13 @@ UI_SNAPSHOT_SCHEMA_VERSION = 3
 
 class UIError(RuntimeError):
     pass
+
+
+def _ui_stylesheet() -> str:
+    try:
+        return resources.files("blackdog").joinpath("ui.css").read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise UIError("Packaged UI stylesheet is missing") from exc
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -472,6 +480,34 @@ def _operator_status(task_row: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _dialog_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
+    rows = [
+        {
+            "label": str(task_row.get("operator_status") or "Ready"),
+            "key": str(task_row.get("operator_status_key") or "ready"),
+        }
+    ]
+    current = str(task_row.get("operator_status_key") or "ready").strip().lower()
+    if current != "complete":
+        covered = {
+            "running": {"running"},
+            "claimed": {"prepared"},
+            "blocked": {"blocked"},
+            "failed": {"failed", "launch-failed", "timed-out", "interrupted"},
+            "complete": {"finished", "done"},
+        }.get(current, set())
+        run_status = str(task_row.get("latest_run_status") or "").strip()
+        if run_status and run_status not in covered:
+            rows.append({"label": _title_label(run_status), "key": run_status})
+        result_status = str(task_row.get("latest_result_status") or "").strip()
+        if result_status and not (result_status == "blocked" and current == "blocked"):
+            rows.append({"label": _title_label(result_status), "key": result_status})
+    priority = str(task_row.get("priority") or "").strip()
+    if priority:
+        rows.append({"label": priority, "key": "subtle"})
+    return rows
+
+
 def _activity_message(event: dict[str, Any]) -> str:
     event_type = str(event.get("type") or "")
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
@@ -537,6 +573,20 @@ def _task_links(task_row: dict[str, Any]) -> list[dict[str, str]]:
     return links
 
 
+def _lane_task_positions(plan: dict[str, Any]) -> dict[str, dict[str, int]]:
+    positions: dict[str, dict[str, int]] = {}
+    for lane_index, lane in enumerate(plan.get("lanes", [])):
+        task_ids = [str(item) for item in lane.get("task_ids", [])]
+        lane_size = len(task_ids)
+        for task_index, task_id in enumerate(task_ids, start=1):
+            positions[task_id] = {
+                "lane_plan_index": lane_index,
+                "lane_position": task_index,
+                "lane_task_count": lane_size,
+            }
+    return positions
+
+
 def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
@@ -556,6 +606,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         results=results,
     )
     plan = build_plan_view(profile, snapshot, state)
+    lane_positions = _lane_task_positions(snapshot.plan)
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
     ordered_tasks = sorted(snapshot.tasks.values(), key=lambda task: ((task.wave or 9999), (task.lane_order or 9999), task.id))
@@ -564,6 +615,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         activity = task_activity.get(task.id, _empty_task_activity())
         result_info = task_results.get(task.id, {})
         run_info = task_runs.get(task.id, {})
+        lane_info = lane_positions.get(task.id, {})
         task_row = {
             "id": task.id,
             "title": task.title,
@@ -584,6 +636,9 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "checks": list(task.payload.get("checks") or []),
             "docs": list(task.payload.get("docs") or []),
             "predecessor_ids": list(task.predecessor_ids),
+            "lane_plan_index": lane_info.get("lane_plan_index", task.lane_order if task.lane_order is not None else 9999),
+            "lane_position": lane_info.get("lane_position"),
+            "lane_task_count": lane_info.get("lane_task_count"),
             "activity": list(task_timeline.get(task.id, [])),
             "claimed_by": activity.get("claimed_by"),
             "claimed_at": activity.get("claimed_at"),
@@ -620,6 +675,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "run_elapsed_label": run_info.get("elapsed_label"),
         }
         task_row.update(_operator_status(task_row))
+        task_row["dialog_status_chips"] = _dialog_status_chips(task_row)
         task_row["links"] = _task_links(task_row)
         tasks.append(task_row)
         for predecessor_id in task.predecessor_ids:
@@ -678,10 +734,19 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "results": _artifact_href(profile.paths, profile.paths.results_dir, must_exist=True),
         },
         "grouping_guide": [
-            {"name": "task", "meaning": "The executable unit. Claims, results, and completion happen here."},
-            {"name": "epic", "meaning": "The thematic why for related tasks."},
-            {"name": "lane", "meaning": "The ordered stream inside an epic or work area."},
-            {"name": "wave", "meaning": "The current phase gate across lanes."},
+            {
+                "name": "task",
+                "meaning": "The executable unit. Claims, results, completion, and dependencies are tracked at task level.",
+            },
+            {"name": "epic", "meaning": "The thematic why for related tasks. Epics organize reporting, not runnable order."},
+            {
+                "name": "lane",
+                "meaning": "An ordered task stream. Blackdog preserves lane order top-to-bottom and earlier lane tasks become predecessors of later ones.",
+            },
+            {
+                "name": "wave",
+                "meaning": "A concurrency boundary that opens a group of lanes together after lower waves finish; a wave is a scheduler gate, not a dependency node.",
+            },
         ],
     }
 
@@ -692,6 +757,7 @@ def _snapshot_json(snapshot: dict[str, Any]) -> str:
 
 def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
     title = html_lib.escape(str(snapshot["project_name"]))
+    stylesheet = _ui_stylesheet()
     template = """<!doctype html>
 <html lang="en">
 <head>
@@ -699,391 +765,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>__BLACKDOG_TITLE__ Backlog</title>
   <style>
-    :root {
-      --page: #f3efe7;
-      --panel: rgba(255, 252, 247, 0.92);
-      --panel-strong: #fffdf8;
-      --ink: #1f160f;
-      --muted: #695d50;
-      --line: #d7cabb;
-      --accent: #b66a23;
-      --shadow: 0 18px 40px rgba(58, 44, 29, 0.08);
-      --ready-bg: #f7dfbb;
-      --ready-fg: #7a4d16;
-      --claimed-bg: #e0e7ff;
-      --claimed-fg: #3f3cb9;
-      --running-bg: #dbeafe;
-      --running-fg: #0f4fb5;
-      --waiting-bg: #ece6dc;
-      --waiting-fg: #615548;
-      --blocked-bg: #f7d7d0;
-      --blocked-fg: #8c2f1f;
-      --failed-bg: #f8d4d4;
-      --failed-fg: #8d2020;
-      --complete-bg: #d9efdf;
-      --complete-fg: #155f38;
-      --partial-bg: #f7e0bb;
-      --partial-fg: #81561d;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      color: var(--ink);
-      font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top right, rgba(214, 150, 63, 0.18), transparent 24%),
-        linear-gradient(180deg, #fcf8f2 0%, var(--page) 100%);
-    }
-    a { color: inherit; }
-    button, input { font: inherit; }
-    h1, h2, h3, p { margin: 0; }
-    .page { width: 100%; padding: 20px; }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-    }
-    .eyebrow {
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-size: 0.74rem;
-    }
-    .topbar {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
-      gap: 18px;
-      margin-bottom: 18px;
-      align-items: start;
-    }
-    .hero {
-      padding: 24px;
-      display: grid;
-      gap: 16px;
-    }
-    .hero-copy {
-      color: var(--muted);
-      max-width: 72ch;
-      font-size: 1rem;
-    }
-    .last-updated {
-      color: var(--muted);
-      font-size: 1rem;
-    }
-    .tag-row, .link-row, .artifact-row, .lane-summary, .reader-links {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .pill, .link-pill, .artifact-link, .reader-action, .search-hint {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      min-height: 34px;
-      padding: 0 12px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--panel-strong);
-      text-decoration: none;
-      color: var(--muted);
-    }
-    .top-stats {
-      margin-bottom: 18px;
-      padding: 16px 18px;
-    }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-      gap: 12px;
-    }
-    .stat-card {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--panel-strong);
-      padding: 14px;
-      text-align: left;
-      cursor: pointer;
-      transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
-    }
-    .stat-card:hover {
-      transform: translateY(-1px);
-      border-color: rgba(182, 106, 35, 0.45);
-    }
-    .stat-card.active {
-      border-color: var(--ink);
-      box-shadow: inset 0 0 0 1px var(--ink);
-    }
-    .stat-card strong {
-      display: block;
-      margin-top: 8px;
-      font-size: 2rem;
-      line-height: 1;
-      color: var(--ink);
-    }
-    .side-panel {
-      padding: 18px;
-      display: grid;
-      gap: 12px;
-    }
-    .side-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 12px;
-    }
-    .mini-stack {
-      display: grid;
-      gap: 10px;
-    }
-    .mini-card, .task-card, .result-card {
-      display: grid;
-      gap: 10px;
-      padding: 14px;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--panel-strong);
-    }
-    .mini-card, .task-card[data-task-id], .result-card[data-result-task] {
-      cursor: pointer;
-      transition: transform 120ms ease, border-color 120ms ease;
-    }
-    .mini-card:hover, .task-card[data-task-id]:hover, .result-card[data-result-task]:hover {
-      transform: translateY(-1px);
-      border-color: rgba(182, 106, 35, 0.45);
-    }
-    .mini-card p, .result-card p, .task-summary {
-      color: var(--muted);
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-    .mini-top, .task-bar, .result-top, .lane-top, .section-head, .reader-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: start;
-      gap: 12px;
-    }
-    .controls {
-      margin-bottom: 18px;
-      padding: 16px 18px;
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-    .search {
-      flex: 1 1 320px;
-      max-width: 480px;
-      min-height: 42px;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: var(--panel-strong);
-      padding: 0 14px;
-      color: var(--ink);
-    }
-    .board-panel {
-      margin-bottom: 18px;
-      padding: 18px;
-    }
-    .lane-board {
-      display: grid;
-      gap: 18px;
-      margin-top: 16px;
-      align-items: stretch;
-    }
-    .wave-section {
-      display: grid;
-      gap: 16px;
-      padding: 18px;
-      border: 1px solid rgba(182, 106, 35, 0.18);
-      border-radius: 26px;
-      background:
-        linear-gradient(180deg, rgba(255, 253, 248, 0.96) 0%, rgba(248, 241, 232, 0.82) 100%);
-    }
-    .wave-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: start;
-      gap: 16px;
-    }
-    .wave-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 16px;
-    }
-    .lane-column {
-      display: grid;
-      gap: 12px;
-      padding: 16px;
-      border: 1px solid var(--line);
-      border-radius: 22px;
-      background: rgba(255, 255, 255, 0.54);
-      min-height: 220px;
-    }
-    .lane-stack, .results-grid {
-      display: grid;
-      gap: 12px;
-    }
-    .task-code {
-      font-family: "SF Mono", "Menlo", monospace;
-      font-size: 0.88rem;
-      color: var(--muted);
-    }
-    .lane-count {
-      color: var(--muted);
-      font-size: 0.9rem;
-      white-space: nowrap;
-    }
-    .task-title {
-      font-size: 1.04rem;
-      line-height: 1.25;
-    }
-    .task-meta, .mini-meta, .result-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 12px;
-      color: var(--muted);
-      font-size: 0.86rem;
-    }
-    .chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      justify-content: flex-end;
-    }
-    .chip {
-      display: inline-flex;
-      align-items: center;
-      min-height: 28px;
-      padding: 0 10px;
-      border-radius: 999px;
-      border: 1px solid transparent;
-      font-size: 0.77rem;
-      font-weight: 700;
-      white-space: nowrap;
-    }
-    .chip-total { background: #efe7db; border-color: #d9cbbb; color: #62574a; }
-    .chip-ready { background: var(--ready-bg); border-color: #e7bf85; color: var(--ready-fg); }
-    .chip-claimed { background: var(--claimed-bg); border-color: #bec8ff; color: var(--claimed-fg); }
-    .chip-running { background: var(--running-bg); border-color: #a9cbff; color: var(--running-fg); }
-    .chip-waiting { background: var(--waiting-bg); border-color: #d1c5b8; color: var(--waiting-fg); }
-    .chip-blocked, .chip-approval, .chip-high-risk { background: var(--blocked-bg); border-color: #df9c8f; color: var(--blocked-fg); }
-    .chip-failed, .chip-launch-failed, .chip-timed-out, .chip-interrupted { background: var(--failed-bg); border-color: #eca2a2; color: var(--failed-fg); }
-    .chip-complete, .chip-done, .chip-success, .chip-finished { background: var(--complete-bg); border-color: #9ed0af; color: var(--complete-fg); }
-    .chip-partial { background: var(--partial-bg); border-color: #e3bc84; color: var(--partial-fg); }
-    .chip-subtle { background: #f0ebe3; border-color: #d8ccbc; color: var(--muted); }
-    .artifact-link, .reader-action {
-      min-height: 32px;
-      padding: 0 11px;
-      color: var(--ink);
-      background: white;
-    }
-    .result-panel {
-      padding: 18px;
-    }
-    .results-grid {
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      margin-top: 16px;
-    }
-    .empty {
-      padding: 16px;
-      border: 1px dashed var(--line);
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.46);
-      color: var(--muted);
-    }
-    dialog {
-      width: min(1024px, calc(100vw - 32px));
-      border: 0;
-      border-radius: 24px;
-      padding: 0;
-      background: var(--panel);
-      box-shadow: var(--shadow);
-    }
-    dialog::backdrop {
-      background: rgba(19, 13, 9, 0.42);
-    }
-    .reader {
-      padding: 22px;
-      display: grid;
-      gap: 16px;
-    }
-    .close-button {
-      min-height: 36px;
-      padding: 0 14px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--panel-strong);
-      cursor: pointer;
-    }
-    .detail-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .detail-block {
-      min-width: 0;
-      padding: 14px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: var(--panel-strong);
-      color: var(--muted);
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .detail-block strong {
-      display: block;
-      margin-bottom: 8px;
-      color: var(--ink);
-    }
-    .detail-block.wide {
-      grid-column: 1 / -1;
-    }
-    .detail-block ul {
-      margin: 0;
-      padding-left: 18px;
-    }
-    .detail-block li {
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .activity-list {
-      display: grid;
-      gap: 10px;
-    }
-    .activity-row {
-      display: grid;
-      grid-template-columns: 160px 180px minmax(0, 1fr);
-      gap: 12px;
-      align-items: start;
-      padding-bottom: 10px;
-      border-bottom: 1px solid rgba(215, 202, 187, 0.75);
-    }
-    .activity-row:last-child {
-      padding-bottom: 0;
-      border-bottom: 0;
-    }
-    .activity-row span {
-      min-width: 0;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-    .mono {
-      font-family: "SF Mono", "Menlo", monospace;
-      font-size: 0.88rem;
-    }
-    @media (max-width: 980px) {
-      .topbar { grid-template-columns: 1fr; }
-      .page { padding: 16px; }
-      .detail-grid { grid-template-columns: 1fr; }
-      .detail-block.wide { grid-column: auto; }
-      .activity-row { grid-template-columns: 1fr; gap: 4px; }
-    }
+__BLACKDOG_STYLES__
   </style>
 </head>
 <body>
@@ -1125,9 +807,10 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       <div class="section-head">
         <div>
           <span class="eyebrow">Lane View</span>
-          <h2>Operator Board</h2>
+          <h2>Execution Map</h2>
+          <p id="board-guide" class="section-copy"></p>
         </div>
-        <span id="board-summary" class="eyebrow"></span>
+        <span id="board-summary" class="section-meta"></span>
       </div>
       <div id="lane-board" class="lane-board"></div>
     </section>
@@ -1154,6 +837,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
           <button class="close-button" type="submit">Close</button>
         </form>
       </div>
+      <div id="reader-statuses" class="reader-statuses"></div>
       <div id="reader-links" class="reader-links"></div>
       <div id="reader-grid" class="detail-grid"></div>
     </article>
@@ -1176,38 +860,10 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       failed: { label: "Failed" },
       complete: { label: "Complete" }
     };
-    const taskStatusLabels = {
-      ready: "Ready",
-      claimed: "Claimed",
-      waiting: "Waiting",
-      approval: "Approval",
-      "high-risk": "High Risk",
-      done: "Complete"
-    };
     const resultStatusLabels = {
       success: "Success",
       partial: "Partial",
       blocked: "Blocked"
-    };
-    const runStatusLabels = {
-      prepared: "Prepared",
-      running: "Running",
-      blocked: "Blocked",
-      failed: "Failed",
-      "launch-failed": "Launch Failed",
-      "timed-out": "Timed Out",
-      interrupted: "Interrupted",
-      finished: "Finished",
-      done: "Complete"
-    };
-    const statusOrder = {
-      running: 0,
-      claimed: 1,
-      blocked: 2,
-      failed: 3,
-      waiting: 4,
-      ready: 5,
-      complete: 6
     };
 
     function escapeHtml(value) {
@@ -1320,14 +976,15 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
 
     function laneRows(tasks) {
       const rows = new Map();
-      for (const lane of lanePlan) {
+      lanePlan.forEach((lane, index) => {
         rows.set(String(lane.id), {
           id: String(lane.id),
           title: lane.title || "Unplanned",
           wave: lane.wave,
+          plan_index: index,
           tasks: []
         });
-      }
+      });
       for (const task of tasks) {
         const key = String(task.lane_id || `lane:${task.id}`);
         if (!rows.has(key)) {
@@ -1335,6 +992,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
             id: key,
             title: task.lane_title || "Unplanned",
             wave: task.wave,
+            plan_index: Number(task.lane_plan_index ?? 9999),
             tasks: []
           });
         }
@@ -1345,10 +1003,10 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
         .map((lane) => ({
           ...lane,
           tasks: lane.tasks.sort((left, right) => {
-            const leftStatus = statusOrder[normalizeStatus(left.operator_status_key)] ?? 99;
-            const rightStatus = statusOrder[normalizeStatus(right.operator_status_key)] ?? 99;
-            if (leftStatus !== rightStatus) {
-              return leftStatus - rightStatus;
+            const leftPosition = left.lane_position == null ? 9999 : Number(left.lane_position);
+            const rightPosition = right.lane_position == null ? 9999 : Number(right.lane_position);
+            if (leftPosition !== rightPosition) {
+              return leftPosition - rightPosition;
             }
             return String(left.id).localeCompare(String(right.id));
           })
@@ -1358,6 +1016,11 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
           const rightWave = right.wave == null ? 9999 : Number(right.wave);
           if (leftWave !== rightWave) {
             return leftWave - rightWave;
+          }
+          const leftPlan = left.plan_index == null ? 9999 : Number(left.plan_index);
+          const rightPlan = right.plan_index == null ? 9999 : Number(right.plan_index);
+          if (leftPlan !== rightPlan) {
+            return leftPlan - rightPlan;
           }
           return String(left.title).localeCompare(String(right.title));
         });
@@ -1387,7 +1050,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
       document.getElementById("hero-copy").textContent =
-        objective || "Static backlog board with direct links to task prompts, results, diffs, and run artifacts.";
+        objective || "Static backlog board with lane-ordered task stacks, task detail dialogs, and direct artifact links.";
       const activity = snapshot.last_activity || {};
       const actor = activity.actor ? ` by ${activity.actor}` : "";
       const role = activity.actor_role ? ` (${activity.actor_role})` : "";
@@ -1406,6 +1069,9 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       document.getElementById("global-links").innerHTML = globalLinks()
         .map(([label, href]) => href ? `<a class="link-pill" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : "")
         .join("");
+
+      document.getElementById("board-guide").textContent =
+        "Waves open groups of lanes for concurrent work. Lanes stay in top-to-bottom execution order. Tasks remain the only claimable and dependency-tracked unit.";
     }
 
     function renderStats() {
@@ -1442,71 +1108,85 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
         : `<div class="empty">No open inbox items.</div>`;
     }
 
-    function secondaryChips(task) {
-      const rows = [];
-      if (task.status && !["ready", "claimed", "waiting", "done"].includes(task.status)) {
-        rows.push(chip(taskStatusLabels[task.status] || task.status, task.status));
-      }
-      if (task.latest_run_status) {
-        const covered = {
-          running: ["running"],
-          claimed: ["prepared"],
-          blocked: ["blocked"],
-          failed: ["failed", "launch-failed", "timed-out", "interrupted"],
-          complete: ["finished", "done"]
-        }[normalizeStatus(task.operator_status_key)] || [];
-        if (!covered.includes(task.latest_run_status)) {
-          rows.push(chip(runStatusLabels[task.latest_run_status] || task.latest_run_status, task.latest_run_status));
-        }
-      }
-      if (task.latest_result_status && !(task.latest_result_status === "blocked" && normalizeStatus(task.operator_status_key) === "blocked")) {
-        rows.push(chip(resultStatusLabels[task.latest_result_status] || task.latest_result_status, task.latest_result_status));
-      }
-      if (task.priority) {
-        rows.push(chip(task.priority, "subtle"));
-      }
-      return rows.join("");
-    }
-
     function renderTaskLinks(task) {
       const links = Array.isArray(task.links) ? task.links : [];
       return links.map((row) => artifactLink(row.label, row.href)).join("");
     }
 
+    function groupStatusChips(tasks) {
+      const keys = [];
+      const seen = new Set();
+      for (const key of ["running", "claimed", "blocked", "failed", "waiting", "ready", "complete"]) {
+        if (tasks.some((task) => normalizeStatus(task.operator_status_key) === key) && !seen.has(key)) {
+          seen.add(key);
+          keys.push(key);
+        }
+      }
+      return keys.map((key) => chip(statusMeta[key].label, key)).join("");
+    }
+
+    function taskSequence(task) {
+      if (task.lane_position && task.lane_task_count) {
+        return `Step ${task.lane_position} of ${task.lane_task_count} in ${task.lane_title || "lane"}`;
+      }
+      if (task.lane_title) {
+        return `Single task in ${task.lane_title}`;
+      }
+      return "Unplanned task";
+    }
+
+    function dependencyLabel(task) {
+      return Array.isArray(task.predecessor_ids) && task.predecessor_ids.length
+        ? `After ${task.predecessor_ids.join(", ")}`
+        : "Lane opener";
+    }
+
+    function renderStatusChipRows(rows) {
+      if (!Array.isArray(rows) || !rows.length) {
+        return "";
+      }
+      return rows.map((row) => chip(row.label, row.key)).join("");
+    }
+
     function taskCard(task) {
+      const tone = normalizeStatus(task.operator_status_key || "ready");
+      const showOwner = ["claimed", "running"].includes(tone) && task.claimed_by;
       return `
-        <article class="task-card" id="${escapeHtml(task.id)}" data-task-id="${escapeHtml(task.id)}">
-          <div class="task-bar">
-            <span class="task-code">${escapeHtml(task.id)}</span>
-            <div class="chips">${chip(task.operator_status || "Ready", task.operator_status_key)}</div>
+        <article class="task-card tone-${escapeHtml(tone)}" id="${escapeHtml(task.id)}" data-task-id="${escapeHtml(task.id)}">
+          <div class="task-card-top">
+            <div class="task-id-group">
+              <span class="task-code">${escapeHtml(task.id)}</span>
+              ${task.priority ? `<span class="mini-chip">${escapeHtml(task.priority)}</span>` : ""}
+            </div>
+            <span class="status-pill tone-${escapeHtml(tone)}">${escapeHtml(task.operator_status || "Ready")}</span>
           </div>
           <h3 class="task-title">${escapeHtml(task.title)}</h3>
+          <p class="task-route">${escapeHtml(taskSequence(task))}</p>
           <div class="task-meta">
-            <span>Wave ${escapeHtml(task.wave ?? "unplanned")}</span>
             <span>${escapeHtml(task.epic_title || "No epic")}</span>
-            ${task.claimed_by ? `<span>${escapeHtml(task.claimed_by)}</span>` : ""}
+            <span>Wave ${escapeHtml(task.wave ?? "unplanned")}</span>
+            ${showOwner ? `<span>Owner ${escapeHtml(task.claimed_by)}</span>` : ""}
           </div>
           <p class="task-summary">${escapeHtml(taskSummary(task))}</p>
-          <div class="chips">${secondaryChips(task)}</div>
-          <div class="artifact-row">${renderTaskLinks(task)}</div>
+          <p class="task-dependency">${escapeHtml(dependencyLabel(task))}</p>
         </article>
       `;
     }
 
     function renderLaneColumn(lane) {
-      const counts = countStatuses(lane.tasks);
-      const laneChips = ["running", "claimed", "waiting", "blocked", "failed", "complete", "ready"]
-        .filter((key) => counts[key])
-        .map((key) => chip(`${statusMeta[key].label} ${counts[key]}`, key))
-        .join("");
+      const laneChips = groupStatusChips(lane.tasks);
+      const taskLabel = lane.tasks.length === 1 ? "task" : "tasks";
       return `
         <section class="lane-column">
-          <div class="lane-top">
+          <div class="lane-head">
             <div>
-              <span class="eyebrow">Wave ${escapeHtml(lane.wave ?? "unplanned")}</span>
+              <span class="lane-phase">Wave ${escapeHtml(lane.wave ?? "unplanned")}</span>
               <h3>${escapeHtml(lane.title)}</h3>
             </div>
-            <span class="lane-count">${lane.tasks.length} task(s)</span>
+            <div class="lane-meta">
+              <span>${lane.tasks.length} ${taskLabel}</span>
+              <span>Top to bottom lane order</span>
+            </div>
           </div>
           <div class="lane-summary">${laneChips}</div>
           <div class="lane-stack">${lane.tasks.map(taskCard).join("")}</div>
@@ -1521,24 +1201,27 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       document.getElementById("filter-summary").textContent =
         filterState.status === "total" ? "Filter: all tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
       document.getElementById("board-summary").textContent =
-        `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave group(s)`;
+        `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave(s)`;
       document.getElementById("lane-board").innerHTML = waves.length
         ? waves.map((wave) => {
             const waveTasks = wave.lanes.flatMap((lane) => lane.tasks);
-            const waveCounts = countStatuses(waveTasks);
-            const waveChips = ["running", "claimed", "waiting", "blocked", "failed", "complete", "ready"]
-              .filter((key) => waveCounts[key])
-              .map((key) => chip(`${statusMeta[key].label} ${waveCounts[key]}`, key))
-              .join("");
+            const laneLabel = wave.lanes.length === 1 ? "lane" : "lanes";
+            const taskLabel = waveTasks.length === 1 ? "task" : "tasks";
+            const waveChips = groupStatusChips(waveTasks);
             return `
               <section class="wave-section">
                 <div class="wave-head">
                   <div>
                     <span class="eyebrow">Wave Boundary</span>
                     <h3>Wave ${escapeHtml(wave.wave ?? "unplanned")}</h3>
+                    <p class="wave-copy">Lanes in this wave can advance concurrently once lower waves are complete.</p>
                   </div>
-                  <div class="chips">${waveChips}</div>
+                  <div class="wave-meta">
+                    <span>${wave.lanes.length} ${laneLabel}</span>
+                    <span>${waveTasks.length} ${taskLabel}</span>
+                  </div>
                 </div>
+                <div class="lane-summary">${waveChips}</div>
                 <div class="wave-grid">${wave.lanes.map(renderLaneColumn).join("")}</div>
               </section>
             `;
@@ -1642,12 +1325,17 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       document.getElementById("reader-eyebrow").textContent =
         `Wave ${task.wave ?? "unplanned"} · ${task.lane_title || "No lane"} · ${task.epic_title || "No epic"}`;
       document.getElementById("reader-title").textContent = `${task.id} ${task.title}`;
+      document.getElementById("reader-statuses").innerHTML = renderStatusChipRows(task.dialog_status_chips);
       document.getElementById("reader-links").innerHTML = renderTaskLinks(task);
 
       const activityRows = Array.isArray(task.activity) ? task.activity : [];
+      const sequenceRows = [
+        task.lane_position && task.lane_task_count ? `Step ${task.lane_position} of ${task.lane_task_count} in ${task.lane_title || "lane"}` : "",
+        Array.isArray(task.predecessor_ids) && task.predecessor_ids.length ? `Depends on ${task.predecessor_ids.join(", ")}` : "Lane opener"
+      ];
 
       const runtimeRows = [
-        `Operator status: ${task.operator_status}${task.operator_status_detail ? ` · ${task.operator_status_detail}` : ""}`,
+        task.operator_status_detail ? `Current detail: ${task.operator_status_detail}` : "",
         task.child_agent ? `Child agent: ${task.child_agent}` : "",
         task.target_branch ? `Branch path: ${task.task_branch || "task"} -> ${task.target_branch}` : "",
         task.workspace_mode ? `Workspace mode: ${task.workspace_mode}` : "",
@@ -1657,6 +1345,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       document.getElementById("reader-grid").innerHTML = [
         detailBlock("Summary", paragraphBlock(taskSummary(task))),
         detailBlock("Activity", activityList(activityRows), { wide: true }),
+        detailBlock("Sequence", detailList(sequenceRows)),
         detailBlock("Safe First Slice", paragraphBlock(task.safe_first_slice)),
         detailBlock("Runtime", detailList(runtimeRows)),
         detailBlock("Why", paragraphBlock(task.why)),
@@ -1678,6 +1367,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
       }
       document.getElementById("reader-eyebrow").textContent = "Inbox message";
       document.getElementById("reader-title").textContent = `${message.sender || "unknown"} -> ${message.recipient || "unknown"}`;
+      document.getElementById("reader-statuses").innerHTML = "";
       document.getElementById("reader-links").innerHTML = [
         artifactLink("Inbox JSON", snapshot.links?.inbox)
       ].join("");
@@ -1741,5 +1431,9 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
 </body>
 </html>
 """
-    html = template.replace("__BLACKDOG_TITLE__", title).replace("__BLACKDOG_SNAPSHOT__", _snapshot_json(snapshot))
+    html = (
+        template.replace("__BLACKDOG_TITLE__", title)
+        .replace("__BLACKDOG_STYLES__", stylesheet)
+        .replace("__BLACKDOG_SNAPSHOT__", _snapshot_json(snapshot))
+    )
     output_path.write_text(html, encoding="utf-8")

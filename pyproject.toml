@@ -17,5 +17,8 @@ blackdog-skill = "blackdog.skill_cli:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+blackdog = ["ui.css"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1469,6 +1469,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["last_activity"]["actor_role"], "system")
         self.assertEqual(snapshot["graph"]["tasks"][0]["operator_status"], "Ready")
         self.assertEqual(snapshot["graph"]["tasks"][1]["operator_status"], "Waiting")
+        self.assertEqual(snapshot["graph"]["tasks"][0]["lane_position"], 1)
+        self.assertEqual(snapshot["graph"]["tasks"][1]["lane_position"], 2)
+        self.assertEqual(snapshot["graph"]["tasks"][0]["lane_task_count"], 2)
+        self.assertIn("scheduler gate", snapshot["grouping_guide"][-1]["meaning"])
 
     def test_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1649,10 +1653,76 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn("EventSource(", html)
         self.assertNotIn("fetch(", html)
         self.assertIn('id="blackdog-snapshot"', html)
-        self.assertIn("Operator Board", html)
+        self.assertIn("Execution Map", html)
         self.assertIn("Inbox JSON", html)
         self.assertIn("renderStats()", html)
         self.assertIn("supervisor-runs/20260314-120000-liverun1", html)
+
+    def test_snapshot_dialog_status_chips_ignore_stale_blocked_run_after_completion(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Completed status cleanup",
+            "--bucket",
+            "html",
+            "--priority",
+            "P2",
+            "--why",
+            "Completed tasks should not read as blocked in the dialog.",
+            "--evidence",
+            "A stale blocked child run should stay historical once the task is done.",
+            "--safe-first-slice",
+            "Prefer current task status over stale run status in the UI snapshot.",
+            "--path",
+            "src/blackdog/ui.py",
+            "--epic-title",
+            "UI",
+            "--lane-title",
+            "Dialog status cleanup",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Completed status cleanup"]
+
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_id)
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-task-blocked-run",
+                "type": "child_finish",
+                "at": "2026-03-15T10:00:00-07:00",
+                "actor": "supervisor",
+                "task_id": task_id,
+                "payload": {
+                    "run_id": "blockedrun1",
+                    "land_error": "dirty target branch",
+                },
+            },
+        )
+        record_task_result(
+            paths,
+            task_id=task_id,
+            actor="agent/a",
+            status="success",
+            what_changed=["Completed the UI cleanup after the blocked run."],
+            validation=["status-cleanup"],
+            residual=[],
+            needs_user_input=False,
+            followup_candidates=[],
+        )
+        run_cli("complete", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_id, "--note", "done")
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
+        chip_keys = [row["key"] for row in task["dialog_status_chips"]]
+
+        self.assertEqual(task["operator_status"], "Complete")
+        self.assertEqual(chip_keys, ["complete", "subtle"])
+        self.assertEqual(task["latest_run_status"], "blocked")
 
     def test_supervise_status_reports_loop_controls_ready_tasks_and_recent_results(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1916,9 +1986,13 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("blackdog-snapshot", updated_html)
         self.assertIn("backlog.md", updated_html)
         self.assertIn("task-results", updated_html)
-        self.assertIn("Operator Board", updated_html)
+        self.assertIn("Execution Map", updated_html)
+        self.assertIn('id="board-guide"', updated_html)
         self.assertIn("Inbox JSON", updated_html)
         self.assertIn("renderStats()", updated_html)
+        self.assertIn(".tone-complete { border-left: 6px solid var(--complete-fg); }", updated_html)
+        self.assertIn('document.getElementById("reader-links").innerHTML = renderTaskLinks(task);', updated_html)
+        self.assertNotIn('artifact-row">${renderTaskLinks(task)}</div>', updated_html)
 
     def test_build_child_prompt_prefers_repo_local_ve_blackdog(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

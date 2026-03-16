@@ -111,10 +111,18 @@ Each task block requires:
 
 - `task`: the executable unit. Claims, results, completion, and dependencies are tracked at task level.
 - `epic`: a thematic grouping for related tasks. Epics organize reporting and intent; they do not control runnable order.
-- `lane`: an ordered stream of tasks inside an epic or work area. Earlier tasks in a lane become predecessors of later tasks in that same lane.
-- `wave`: the cross-lane activation boundary. Blackdog only considers the lowest unfinished wave runnable, so wave `1` waits for unfinished work in wave `0`.
+- `lane`: an ordered task stream inside an epic or work area. Lane order is preserved top-to-bottom in the plan and UI, and earlier tasks in a lane become predecessor tasks for later tasks in that same lane.
+- `wave`: a concurrency boundary that opens a group of lanes together. Blackdog only considers the lowest unfinished wave runnable, so wave `1` waits for unfinished work in wave `0`.
 
-In practice: `epic` answers "why this cluster exists", `lane` answers "what must happen in sequence", `wave` answers "which phase is currently open", and `task` is the unit an agent actually executes.
+Clarifications:
+
+- lanes and waves are planning/scheduling structures, not executable objects
+- only tasks are claimable, completable, and result-bearing
+- lanes capture serial order inside a concurrent work area
+- waves capture which set of lanes is currently open for concurrent progress
+- a wave is a scheduler gate, not a dependency node; task-to-task predecessor relationships still drive runnable checks inside an open wave
+
+In practice: `epic` answers "why this cluster exists", `lane` answers "what happens in sequence inside a concurrent stream", `wave` answers "which group of lanes is currently open", and `task` is the unit an agent actually executes.
 
 ## `<control_dir>/backlog-state.json`
 
