@@ -1675,6 +1675,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Inbox JSON", html)
         self.assertIn("renderStats()", html)
         self.assertIn("supervisor-runs/20260314-120000-liverun1", html)
+        self.assertIn('Latest activity ${formatTimestamp(activity.at)}${actor}${source}', html)
+        self.assertNotIn('Latest activity ${relativeTime(activity.at)}${actor}${source}', html)
 
     def test_snapshot_dialog_status_chips_ignore_stale_blocked_run_after_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2164,6 +2166,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('id="board-guide"', updated_html)
         self.assertIn("Inbox JSON", updated_html)
         self.assertIn('Inbox JSON · ${openMessages.length} open', updated_html)
+        self.assertIn('Latest activity ${formatTimestamp(activity.at)}${actor}${source}', updated_html)
+        self.assertNotIn('Latest activity ${relativeTime(activity.at)}${actor}${source}', updated_html)
         self.assertIn('class="text-link"', updated_html)
         self.assertIn('id="task-search"', updated_html)
         self.assertIn('id="stats"', updated_html)

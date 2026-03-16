@@ -1140,8 +1140,8 @@ __BLACKDOG_STYLES__
       lastRendered.textContent = renderedAt ? relativeTime(renderedAt) : "just now";
       lastRendered.title = formatTimestamp(renderedAt);
       document.getElementById("render-note").textContent = activity.at
-        ? `Latest activity ${relativeTime(activity.at)}${actor}${source}`
-        : formatTimestamp(renderedAt);
+        ? `Latest activity ${formatTimestamp(activity.at)}${actor}${source}`
+        : "";
 
       const contract = snapshot.workspace_contract || {};
       const headers = snapshot.headers || {};
