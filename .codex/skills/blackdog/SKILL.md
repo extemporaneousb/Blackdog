@@ -38,8 +38,8 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 ## Static Board
 
 - `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` renders a narrow three-panel board with stacked horizontal sections: hero metadata, `Backlog`, and `Completed Tasks`.
-- The hero panel shows render timing, workspace pills, board summary, and global artifact links.
-- The `Backlog` panel owns the search/status controls and the `Inbox JSON` link; that link points at `/Users/bullard/Work/Blackdog/.git/blackdog/inbox.jsonl` and shows the current open-message count when available.
+- The hero panel shows render timing, workspace key-value rows, board summary rows, and plain artifact links.
+- The `Backlog` panel owns the search/status controls and the `Inbox JSON` text link; that link points at `/Users/bullard/Work/Blackdog/.git/blackdog/inbox.jsonl` and shows the current open-message count when available.
 - The `Completed Tasks` panel is a scrollable history of finished work with result/run/task links.
 
 For Blackdog's own repo, manual-first is the default until the

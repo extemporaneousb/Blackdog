@@ -131,24 +131,44 @@ h1, h2, h3, p { margin: 0; }
   background: rgba(255, 253, 248, 0.72);
 }
 
-.meta-list {
+.meta-table {
   display: grid;
-  gap: 10px;
+  gap: 0;
 }
 
-.meta-item {
+.meta-row {
   display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.66);
+  grid-template-columns: minmax(112px, 140px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 10px 0;
+  border-top: 1px solid rgba(215, 202, 187, 0.8);
 }
 
-.meta-item strong {
+.meta-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.meta-row:last-child {
+  padding-bottom: 0;
+}
+
+.meta-label {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.25;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.meta-value {
   color: var(--ink);
-  font-size: 0.98rem;
-  line-height: 1.35;
+  font-size: 0.96rem;
+  line-height: 1.4;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .hero-copy,
@@ -173,8 +193,7 @@ h1, h2, h3, p { margin: 0; }
   font-weight: 600;
 }
 
-.tag-row,
-.link-row,
+.link-list,
 .artifact-row,
 .lane-summary,
 .reader-links,
@@ -184,22 +203,28 @@ h1, h2, h3, p { margin: 0; }
   gap: 8px;
 }
 
-.pill,
-.link-pill,
-.artifact-link,
-.reader-action,
+.link-list,
+.artifact-row,
+.reader-links {
+  gap: 10px 16px;
+}
+
+.text-link {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(31, 22, 15, 0.42);
+  text-underline-offset: 0.18em;
+}
+
+.text-link:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
+}
+
 .search-hint {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--panel-strong);
-  text-decoration: none;
   color: var(--muted);
+  font-size: 0.88rem;
 }
 
 .stats {
@@ -502,14 +527,6 @@ h1, h2, h3, p { margin: 0; }
 .tone-failed { border-left: 6px solid var(--failed-fg); }
 .tone-complete { border-left: 6px solid var(--complete-fg); }
 
-.artifact-link,
-.reader-action {
-  min-height: 32px;
-  padding: 0 11px;
-  color: var(--ink);
-  background: white;
-}
-
 .results-grid {
   grid-template-columns: 1fr;
 }
@@ -632,6 +649,7 @@ dialog::backdrop {
     padding-right: 0;
     margin-right: 0;
   }
+  .meta-row { grid-template-columns: 1fr; gap: 4px; }
   .backlog-head,
   .section-head { grid-template-columns: 1fr; }
   .wave-head,

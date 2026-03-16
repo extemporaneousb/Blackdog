@@ -399,10 +399,10 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 Layout projections:
 
 - Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, and `links`.
-- Hero workspace pills currently read `workspace_contract.target_branch`, `workspace_contract.workspace_mode`, `workspace_contract.primary_dirty`, and `workspace_contract.workspace_has_local_blackdog`.
+- Hero workspace metadata renders as key-value rows that can include `workspace_contract.target_branch`, `workspace_contract.workspace_mode`, `workspace_contract.primary_dirty`, `workspace_contract.workspace_has_local_blackdog`, `project_root`, `control_dir`, and the current target commit from `headers`.
 - The browser renders those hero, backlog, and completed-history surfaces as three top-to-bottom horizontal panels rather than desktop side columns.
 - The `Backlog` panel uses `plan.lanes`, `board_tasks`, `open_messages`, and `links.inbox`. `board_tasks` retains every lane-assigned task row in the snapshot, including completed rows.
 - The rendered browser backlog view filters out rows whose `operator_status_key` normalizes to `complete`, so search and status filters apply only to active backlog rows.
 - The `Completed Tasks` panel derives its history cards from `tasks[*]` rows whose `operator_status_key` is `complete`, ordered by `completed_at`, `latest_result_at`, or `latest_run_at`, and uses each task row's latest result/run/task links.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; it is not the sole source for the rendered completed-task history.
-- When `links.inbox` is present, the `Backlog` header renders it as the `Inbox JSON` link with the current open-message count from `open_messages`; when it is absent, the link stays hidden.
+- When `links.inbox` is present, the `Backlog` header renders it as the `Inbox JSON` text link with the current open-message count from `open_messages`; when it is absent, the link stays hidden.

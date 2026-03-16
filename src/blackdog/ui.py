@@ -806,15 +806,15 @@ __BLACKDOG_STYLES__
         <div id="hero-meta-grid" class="hero-meta-grid">
           <section id="hero-workspace-panel" class="hero-subpanel" data-hero-section="workspace">
             <span class="eyebrow">Workspace</span>
-            <div id="hero-meta" class="tag-row"></div>
+            <div id="hero-meta" class="meta-table"></div>
           </section>
           <section id="hero-summary-panel" class="hero-subpanel" data-hero-section="board-snapshot">
             <span class="eyebrow">Board Snapshot</span>
-            <div id="hero-summary" class="meta-list"></div>
+            <div id="hero-summary" class="meta-table"></div>
           </section>
           <section id="hero-artifacts-panel" class="hero-subpanel" data-hero-section="artifacts">
             <span class="eyebrow">Artifacts</span>
-            <div id="global-links" class="link-row"></div>
+            <div id="global-links" class="link-list"></div>
           </section>
         </div>
       </article>
@@ -829,7 +829,7 @@ __BLACKDOG_STYLES__
           <div id="backlog-controls" class="section-toolbar">
             <div class="toolbar-topline">
               <span id="board-summary" class="section-meta"></span>
-              <a id="inbox-link" class="link-pill" href="#" target="_blank" rel="noreferrer">Inbox JSON</a>
+              <a id="inbox-link" class="text-link" href="#">Inbox JSON</a>
             </div>
             <input id="task-search" class="search" type="search" placeholder="Search task id, title, lane, epic, or artifact status">
             <span id="filter-summary" class="search-hint"></span>
@@ -918,11 +918,26 @@ __BLACKDOG_STYLES__
       return `<span class="chip chip-${escapeHtml(normalized)}">${escapeHtml(label)}</span>`;
     }
 
-    function artifactLink(label, href) {
+    function textLink(label, href) {
       if (!href) {
         return "";
       }
-      return `<a class="artifact-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
+      return `<a class="text-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+    }
+
+    function keyValueRows(rows) {
+      if (!Array.isArray(rows) || !rows.length) {
+        return "";
+      }
+      return rows
+        .filter((row) => Array.isArray(row) && row.length >= 2 && row[1] != null && row[1] !== "")
+        .map(([label, value]) => `
+          <div class="meta-row">
+            <span class="meta-label">${escapeHtml(label)}</span>
+            <span class="meta-value">${escapeHtml(value)}</span>
+          </div>
+        `)
+        .join("");
     }
 
     function relativeTime(value) {
@@ -1085,12 +1100,7 @@ __BLACKDOG_STYLES__
         ["Inbox", `${openMessages.length} open message(s)`],
         latestSummary ? ["Latest Event", latestSummary] : null
       ].filter(Boolean);
-      return rows.map(([label, value]) => `
-        <div class="meta-item">
-          <span class="eyebrow">${escapeHtml(label)}</span>
-          <strong>${escapeHtml(value)}</strong>
-        </div>
-      `).join("");
+      return keyValueRows(rows);
     }
 
     function renderHeader() {
@@ -1110,16 +1120,20 @@ __BLACKDOG_STYLES__
         : formatTimestamp(renderedAt);
 
       const contract = snapshot.workspace_contract || {};
-      document.getElementById("hero-meta").innerHTML = [
-        contract.target_branch ? `<span class="pill">Target ${escapeHtml(contract.target_branch)}</span>` : "",
-        contract.workspace_mode ? `<span class="pill">Mode ${escapeHtml(contract.workspace_mode)}</span>` : "",
-        contract.primary_dirty === false ? `<span class="pill">Primary clean</span>` : `<span class="pill">Primary dirty</span>`,
-        contract.workspace_has_local_blackdog ? `<span class="pill">Local .VE ready</span>` : `<span class="pill">Bootstrap .VE here</span>`
-      ].filter(Boolean).join("");
+      const headers = snapshot.headers || {};
+      document.getElementById("hero-meta").innerHTML = keyValueRows([
+        ["Branch", contract.target_branch || headers["Target branch"] || ""],
+        ["Git head", headers["Target commit"] || ""],
+        ["Primary worktree", snapshot.project_root || headers["Repo root"] || ""],
+        ["Blackdog runtime", snapshot.control_dir || ""],
+        ["Workspace mode", contract.workspace_mode || ""],
+        ["Primary state", contract.primary_dirty === false ? "Clean" : "Dirty"],
+        ["Local CLI", contract.workspace_has_local_blackdog ? "Local .VE ready" : "Bootstrap .VE here"]
+      ]);
       document.getElementById("hero-summary").innerHTML = heroSummary(activity);
 
       document.getElementById("global-links").innerHTML = globalLinks()
-        .map(([label, href]) => href ? `<a class="link-pill" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : "")
+        .map(([label, href]) => textLink(label, href))
         .join("");
 
       const inboxHref = snapshot.links?.inbox || "#";
@@ -1145,7 +1159,7 @@ __BLACKDOG_STYLES__
 
     function renderTaskLinks(task) {
       const links = Array.isArray(task.links) ? task.links : [];
-      return links.map((row) => artifactLink(row.label, row.href)).join("");
+      return links.map((row) => textLink(row.label, row.href)).join("");
     }
 
     function groupStatusChips(tasks) {
@@ -1282,9 +1296,9 @@ __BLACKDOG_STYLES__
                 </div>
                 <p>${escapeHtml(task.latest_result_preview || task.operator_status_detail || task.safe_first_slice || "")}</p>
                 <div class="artifact-row">
-                  ${artifactLink("Result", task.latest_result_href)}
-                  ${artifactLink("Run", task.run_dir_href)}
-                  ${task.id ? `<a class="artifact-link" href="#${escapeHtml(task.id)}">Task</a>` : ""}
+                  ${textLink("Result", task.latest_result_href)}
+                  ${textLink("Run", task.run_dir_href)}
+                  ${task.id ? `<a class="text-link" href="#${escapeHtml(task.id)}">Task</a>` : ""}
                 </div>
               </article>
             `;
@@ -1410,7 +1424,7 @@ __BLACKDOG_STYLES__
       document.getElementById("reader-title").textContent = `${message.sender || "unknown"} -> ${message.recipient || "unknown"}`;
       document.getElementById("reader-statuses").innerHTML = "";
       document.getElementById("reader-links").innerHTML = [
-        artifactLink("Inbox JSON", snapshot.links?.inbox)
+        textLink("Inbox JSON", snapshot.links?.inbox)
       ].join("");
       document.getElementById("reader-grid").innerHTML = [
         detailBlock("Body", paragraphBlock(message.body)),

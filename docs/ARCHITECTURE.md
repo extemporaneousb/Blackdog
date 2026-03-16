@@ -184,8 +184,10 @@ metadata and global artifact links, a `Backlog` panel for lane-ordered
 active work plus the localized search/status controls and inbox link,
 and a `Completed Tasks` panel for recent finished history. The inbox
 link is local to the `Backlog` header rather than global page chrome,
-and the browser moves completed rows out of the active backlog view
-without dropping their underlying snapshot rows.
+hero metadata renders as key-value information rows, and artifact
+navigation stays as plain text links so chips remain reserved for task
+status/state. The browser moves completed rows out of the active
+backlog view without dropping their underlying snapshot rows.
 
 The current supervisor run is inbox-steerable in a narrow way: open
 `stop` messages addressed to the supervisor actor put the run into a
