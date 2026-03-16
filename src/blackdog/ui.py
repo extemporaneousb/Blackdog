@@ -364,6 +364,131 @@ def _title_label(value: Any) -> str:
     return text.replace("-", " ").replace("_", " ").title()
 
 
+def _text_label(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _count_label(count: int, singular: str) -> str:
+    return f"{count} {singular}" if count == 1 else f"{count} {singular}s"
+
+
+def _short_commit(value: Any, *, length: int = 12) -> str | None:
+    text = _text_label(value)
+    if text is None:
+        return None
+    return text[:length]
+
+
+def _latest_task_with_timestamp(
+    tasks: list[dict[str, Any]],
+    fields: tuple[str, ...],
+) -> tuple[dict[str, Any] | None, str | None]:
+    latest_task: dict[str, Any] | None = None
+    latest_field: str | None = None
+    latest_value = ""
+    for task in tasks:
+        for field in fields:
+            value = _text_label(task.get(field))
+            if not value:
+                continue
+            if value > latest_value:
+                latest_task = task
+                latest_field = field
+                latest_value = value
+            break
+    return latest_task, latest_field
+
+
+def _branch_summary(contract: dict[str, Any], tasks: list[dict[str, Any]]) -> str | None:
+    latest_task, _ = _latest_task_with_timestamp(tasks, ("latest_run_at", "latest_result_at", "completed_at", "claimed_at"))
+    branch = (
+        _text_label((latest_task or {}).get("task_branch"))
+        or _text_label(contract.get("current_branch"))
+        or _text_label(contract.get("target_branch"))
+    )
+    target = _text_label((latest_task or {}).get("target_branch")) or _text_label(contract.get("target_branch"))
+    if branch and target and branch != target:
+        return f"{branch} -> {target}"
+    return branch or target
+
+
+def _latest_run_summary(tasks: list[dict[str, Any]]) -> str:
+    latest_task, source = _latest_task_with_timestamp(
+        tasks,
+        ("latest_run_at", "latest_result_at", "completed_at", "claimed_at"),
+    )
+    if latest_task is None or source is None:
+        return "No recorded work yet"
+
+    task_id = _text_label(latest_task.get("id")) or "Unknown task"
+    actor = _text_label(latest_task.get("child_agent")) or _text_label(latest_task.get("claimed_by"))
+    elapsed = _text_label(latest_task.get("run_elapsed_label"))
+    if source == "latest_run_at":
+        parts = [
+            task_id,
+            _title_label(latest_task.get("latest_run_status") or "running"),
+            actor,
+            elapsed,
+        ]
+        return " · ".join(part for part in parts if part)
+    if source == "latest_result_at":
+        parts = [
+            task_id,
+            f"result {_title_label(latest_task.get('latest_result_status') or 'recorded').lower()}",
+            actor,
+        ]
+        return " · ".join(part for part in parts if part)
+    if source == "completed_at":
+        return " · ".join(part for part in (task_id, "completed", actor) if part)
+    return " · ".join(part for part in (task_id, "claimed", actor) if part)
+
+
+def _time_on_task_summary(tasks: list[dict[str, Any]]) -> str:
+    active_tasks = [
+        task
+        for task in tasks
+        if str(task.get("operator_status_key") or "").strip().lower() in {"running", "claimed"}
+    ]
+    touched_tasks = [
+        task
+        for task in tasks
+        if int(task.get("total_compute_seconds") or 0) > 0
+        or task.get("claimed_at")
+        or task.get("completed_at")
+        or task.get("released_at")
+    ]
+    if active_tasks:
+        active_seconds = sum(int(task.get("active_compute_seconds") or 0) for task in active_tasks)
+        total_seconds = sum(int(task.get("total_compute_seconds") or 0) for task in touched_tasks)
+        parts = [
+            _count_label(len(active_tasks), "active task"),
+            f"{_format_duration(active_seconds) or '0s'} live",
+            f"{_format_duration(total_seconds) or '0s'} total",
+        ]
+        if touched_tasks:
+            parts.append(f"across {_count_label(len(touched_tasks), 'task')}")
+        return " · ".join(parts)
+    if touched_tasks:
+        total_seconds = sum(int(task.get("total_compute_seconds") or 0) for task in touched_tasks)
+        return f"{_count_label(len(touched_tasks), 'task')} touched · {_format_duration(total_seconds) or '0s'} recorded"
+    return "No claimed work recorded"
+
+
+def _build_hero_highlights(
+    *,
+    contract: dict[str, Any],
+    headers: dict[str, Any],
+    tasks: list[dict[str, Any]],
+) -> dict[str, str]:
+    return {
+        "branch": _branch_summary(contract, tasks) or "",
+        "commit": _short_commit(headers.get("Target commit")) or "",
+        "latest_run": _latest_run_summary(tasks),
+        "time_on_task": _time_on_task_summary(tasks),
+    }
+
+
 def _actor_role(actor: Any) -> str:
     normalized = str(actor or "").strip().lower()
     if not normalized or normalized == "blackdog":
@@ -805,6 +930,8 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             str(row["id"]),
         )
     )
+    workspace_contract = worktree_contract(profile)
+    headers = dict(snapshot.headers)
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
@@ -813,7 +940,13 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "project_root": str(profile.paths.project_root),
         "control_dir": str(profile.paths.control_dir),
         "profile_file": str(profile.paths.profile_file),
-        "workspace_contract": worktree_contract(profile),
+        "workspace_contract": workspace_contract,
+        "headers": headers,
+        "hero_highlights": _build_hero_highlights(
+            contract=workspace_contract,
+            headers=headers,
+            tasks=tasks,
+        ),
         "last_activity": _latest_activity(events),
         "counts": summary["counts"],
         "total": summary["total"],
@@ -1316,15 +1449,13 @@ __BLACKDOG_STYLES__
       applyProgressBars(document.getElementById("hero-progress"));
 
       const contract = snapshot.workspace_contract || {};
+      const heroHighlights = snapshot.hero_highlights || {};
       const headers = snapshot.headers || {};
       document.getElementById("hero-meta").innerHTML = keyValueRows([
-        ["Branch", contract.target_branch || headers["Target branch"] || ""],
-        ["Git head", headers["Target commit"] || ""],
-        ["Primary worktree", snapshot.project_root || headers["Repo root"] || ""],
-        ["Blackdog runtime", snapshot.control_dir || ""],
-        ["Workspace mode", contract.workspace_mode || ""],
-        ["Primary state", contract.primary_dirty === false ? "Clean" : "Dirty"],
-        ["Local CLI", contract.workspace_has_local_blackdog ? "Local .VE ready" : "Bootstrap .VE here"]
+        ["Branch", heroHighlights.branch || contract.current_branch || contract.target_branch || headers["Target branch"] || ""],
+        ["Commit", heroHighlights.commit || headers["Target commit"] || ""],
+        ["Latest run", heroHighlights.latest_run || "No recorded work yet"],
+        ["Time on task", heroHighlights.time_on_task || "No claimed work recorded"]
       ]);
       document.getElementById("hero-summary").innerHTML = heroSummary(activity);
 

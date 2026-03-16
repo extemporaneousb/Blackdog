@@ -1462,6 +1462,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["schema_version"], 4)
         self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
         self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
+        self.assertEqual(snapshot["headers"]["Target branch"], "main")
+        self.assertRegex(snapshot["headers"]["Target commit"], r"^[0-9a-f]{40}$")
         self.assertEqual(snapshot["graph"]["edges"], [{"from": task_ids["UI slice one"], "to": task_ids["UI slice two"]}])
         self.assertEqual(snapshot["links"]["backlog"], "backlog.md")
         self.assertEqual(snapshot["links"]["results"], "task-results")
@@ -1743,6 +1745,12 @@ class BlackdogCliTests(unittest.TestCase):
 
         graph_tasks = {task["id"]: task for task in snapshot["graph"]["tasks"]}
         open_recipients = {row["recipient"] for row in snapshot["open_messages"]}
+        expected_commit = subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()[:12]
 
         self.assertEqual(open_recipients, {"supervisor", "supervisor/child-01"})
         self.assertEqual(snapshot["links"]["inbox"], "inbox.jsonl")
@@ -1750,6 +1758,13 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual({row["lane_title"] for row in snapshot["board_tasks"]}, {"Operator lane"})
         self.assertEqual(snapshot["workspace_contract"]["target_branch"], "main")
         self.assertIn(".VE is unversioned", snapshot["workspace_contract"]["ve_expectation"])
+        self.assertEqual(snapshot["hero_highlights"]["branch"], "agent/operator-slice-one-liverun1 -> main")
+        self.assertEqual(snapshot["hero_highlights"]["commit"], expected_commit)
+        self.assertIn(first_task, snapshot["hero_highlights"]["latest_run"])
+        self.assertIn("Running", snapshot["hero_highlights"]["latest_run"])
+        self.assertIn("supervisor/child-01", snapshot["hero_highlights"]["latest_run"])
+        self.assertIn("1 active task", snapshot["hero_highlights"]["time_on_task"])
+        self.assertIn("across 1 task", snapshot["hero_highlights"]["time_on_task"])
         self.assertEqual(snapshot["active_tasks"][0]["id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
@@ -1792,6 +1807,12 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("function renderLegend()", html)
         self.assertIn("function renderProgressBar(progress, className = \"\")", html)
         self.assertIn("function applyProgressBars(root = document)", html)
+        self.assertIn("const heroHighlights = snapshot.hero_highlights || {};", html)
+        self.assertIn('["Commit", heroHighlights.commit || headers["Target commit"] || ""]', html)
+        self.assertIn('["Latest run", heroHighlights.latest_run || "No recorded work yet"]', html)
+        self.assertIn('["Time on task", heroHighlights.time_on_task || "No claimed work recorded"]', html)
+        self.assertNotIn("Git head", html)
+        self.assertNotIn("Blackdog runtime", html)
         self.assertIn('document.getElementById("status-legend").innerHTML = renderLegend();', html)
         self.assertIn('document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");', html)
         self.assertIn('data-progress="${escapeHtml(progress.percent)}"', html)
@@ -2273,8 +2294,11 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Board Snapshot", updated_html)
         self.assertIn("Artifacts", updated_html)
         self.assertIn("Branch", updated_html)
-        self.assertIn("Git head", updated_html)
-        self.assertIn("Blackdog runtime", updated_html)
+        self.assertIn("Commit", updated_html)
+        self.assertIn("Latest run", updated_html)
+        self.assertIn("Time on task", updated_html)
+        self.assertNotIn("Git head", updated_html)
+        self.assertNotIn("Blackdog runtime", updated_html)
         self.assertIn('id="hero-meta-grid"', updated_html)
         self.assertIn('data-hero-section="workspace"', updated_html)
         self.assertIn('data-hero-section="board-snapshot"', updated_html)
@@ -2290,6 +2314,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('Inbox JSON · ${openMessages.length} open', updated_html)
         self.assertIn('Latest activity ${formatTimestamp(activity.at)}${actor}${source}', updated_html)
         self.assertNotIn('Latest activity ${relativeTime(activity.at)}${actor}${source}', updated_html)
+        self.assertIn("const heroHighlights = snapshot.hero_highlights || {};", updated_html)
         self.assertIn('class="text-link"', updated_html)
         self.assertIn('id="task-search"', updated_html)
         self.assertIn('id="stats"', updated_html)
