@@ -1047,6 +1047,42 @@ __BLACKDOG_STYLES__
         </div>
       </article>
 
+      <section id="objectives-panel" class="panel section-panel objectives-panel" data-panel="objectives">
+        <div class="section-head section-head-inline">
+          <div>
+            <span class="eyebrow">Objectives</span>
+            <h2>Objectives</h2>
+            <p id="objectives-copy" class="section-copy"></p>
+          </div>
+          <span id="objective-summary" class="section-meta"></span>
+        </div>
+        <div id="objective-cards" class="objectives-grid"></div>
+      </section>
+
+      <div id="surface-grid" class="surface-grid">
+        <section id="overview-panel" class="panel section-panel overview-panel" data-panel="overview">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Overview</span>
+              <h2>Overview</h2>
+              <p id="overview-copy" class="section-copy"></p>
+            </div>
+          </div>
+          <div id="overview-cards" class="overview-grid"></div>
+        </section>
+
+        <section id="domains-panel" class="panel section-panel domains-panel" data-panel="domains">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Domains</span>
+              <h2>Domains</h2>
+              <p id="domains-copy" class="section-copy"></p>
+            </div>
+          </div>
+          <div id="domain-chips" class="chips domain-chips"></div>
+        </section>
+      </div>
+
       <section id="backlog-panel" class="panel board-panel" data-panel="backlog">
         <div class="section-head backlog-head">
           <div>
@@ -1414,6 +1450,220 @@ __BLACKDOG_STYLES__
         .filter(Boolean);
     }
 
+    function objectiveTone(objective) {
+      const progress = objective.progress || { counts: {}, remaining: 0 };
+      if (!progress.remaining) {
+        return "complete";
+      }
+      if (progress.counts.failed || progress.counts.blocked) {
+        return "blocked";
+      }
+      if (progress.counts.running) {
+        return "running";
+      }
+      if (progress.counts.claimed) {
+        return "claimed";
+      }
+      if (progress.counts.waiting) {
+        return "waiting";
+      }
+      return "ready";
+    }
+
+    function objectiveStateLabel(objective) {
+      const tone = objectiveTone(objective);
+      if (tone === "complete") {
+        return "Complete";
+      }
+      return statusMeta[tone]?.label || "Ready";
+    }
+
+    function objectiveLeadTask(objective) {
+      const orderedTaskIds = [
+        ...(Array.isArray(objective.active_task_ids) ? objective.active_task_ids : []),
+        ...(Array.isArray(objective.task_ids) ? objective.task_ids : [])
+      ];
+      for (const taskId of orderedTaskIds) {
+        const task = allTasksById.get(String(taskId));
+        if (task) {
+          return task;
+        }
+      }
+      return null;
+    }
+
+    function pluralize(count, noun) {
+      return `${count} ${noun}${count === 1 ? "" : "s"}`;
+    }
+
+    function renderObjectiveCard(objective) {
+      const progress = objective.progress || progressMetrics(
+        (Array.isArray(objective.task_ids) ? objective.task_ids : [])
+          .map((taskId) => allTasksById.get(String(taskId)))
+          .filter(Boolean)
+      );
+      const tone = objectiveTone(objective);
+      const leadTask = objectiveLeadTask(objective);
+      const laneCount = Array.isArray(objective.lane_titles) ? objective.lane_titles.length : 0;
+      const waveCount = Array.isArray(objective.wave_ids) ? objective.wave_ids.length : 0;
+      const copy = leadTask
+        ? taskSummary(leadTask) || leadTask.title
+        : (progress.remaining ? progressDetail(progress) : "Complete");
+      const detailRows = [
+        laneCount ? pluralize(laneCount, "lane") : "",
+        waveCount ? pluralize(waveCount, "wave") : "",
+        leadTask ? leadTask.id : ""
+      ].filter(Boolean);
+      return `
+        <article class="objective-card" data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
+          <div class="objective-top">
+            <div class="objective-heading">
+              <span class="objective-id">${escapeHtml(objective.id || "Unassigned")}</span>
+              <h3>${escapeHtml(objective.title || objective.id || "Unassigned")}</h3>
+            </div>
+            <div class="objective-badges">
+              ${chip(objectiveStateLabel(objective), tone)}
+              <span class="objective-meta">${escapeHtml(`${progress.complete}/${progress.total}`)}</span>
+            </div>
+          </div>
+          <div class="progress-cluster">
+            <div class="progress-copy">
+              <span class="progress-label">${escapeHtml(progressLabel(progress))}</span>
+              <span class="progress-detail">${escapeHtml(progressDetail(progress))}</span>
+            </div>
+            ${renderProgressBar(progress)}
+          </div>
+          <p class="objective-copy">${escapeHtml(copy)}</p>
+          <div class="objective-summary">${detailRows.map((row) => `<span>${escapeHtml(row)}</span>`).join("")}</div>
+        </article>
+      `;
+    }
+
+    function renderObjectiveCards() {
+      const activeObjectives = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
+      document.getElementById("objectives-copy").textContent =
+        "Objective cards summarize completion, remaining work, and the next live slice before you drop into the lane-by-lane execution map.";
+      document.getElementById("objective-summary").textContent = activeObjectives.length
+        ? `${objectiveRows.length} objective row(s) · ${activeObjectives.length} with active backlog work`
+        : `${objectiveRows.length} objective row(s)`;
+      document.getElementById("objective-cards").innerHTML = objectiveRows.length
+        ? objectiveRows.map(renderObjectiveCard).join("")
+        : `<div class="empty">No objective rows tagged in the backlog yet.</div>`;
+      applyProgressBars(document.getElementById("objective-cards"));
+    }
+
+    function domainCounts(tasks) {
+      const counts = new Map();
+      for (const task of tasks) {
+        const domains = Array.isArray(task.domains) ? task.domains : [];
+        for (const rawDomain of domains) {
+          const domain = String(rawDomain || "").trim();
+          if (!domain) {
+            continue;
+          }
+          counts.set(domain, Number(counts.get(domain) || 0) + 1);
+        }
+      }
+      return Array.from(counts.entries()).sort((left, right) => {
+        if (right[1] !== left[1]) {
+          return right[1] - left[1];
+        }
+        return left[0].localeCompare(right[0]);
+      });
+    }
+
+    function nextFocusRow() {
+      const nextRows = Array.isArray(snapshot.next_rows) ? snapshot.next_rows : [];
+      if (nextRows.length) {
+        return nextRows[0];
+      }
+      const fallback = boardTasks.find((task) => normalizeStatus(task.operator_status_key) !== "complete");
+      if (!fallback) {
+        return null;
+      }
+      return {
+        id: fallback.id,
+        title: fallback.title,
+        lane: fallback.lane_title,
+        wave: fallback.wave,
+        risk: fallback.risk
+      };
+    }
+
+    function overviewCard(title, headline, copy, items = []) {
+      const filteredItems = items.filter(Boolean);
+      return `
+        <article class="compact-card">
+          <span class="eyebrow">${escapeHtml(title)}</span>
+          ${headline ? `<strong>${escapeHtml(headline)}</strong>` : ""}
+          ${copy ? `<p>${escapeHtml(copy)}</p>` : ""}
+          ${filteredItems.length ? `<ul class="compact-list">${filteredItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+        </article>
+      `;
+    }
+
+    function renderOverviewCards() {
+      const currentObjective = objectiveRows.find((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length) || objectiveRows[0] || null;
+      const currentObjectiveProgress = currentObjective?.progress || null;
+      const next = nextFocusRow();
+      const heroHighlights = snapshot.hero_highlights || {};
+      const activity = snapshot.last_activity || {};
+      const latestEventSummary = [activity.task_id, activity.summary || activity.type_label].filter(Boolean).join(" · ");
+
+      document.getElementById("overview-copy").textContent =
+        "These cards keep the current push objective, next runnable slice, and repo coordination state visible without reading the full task inventory.";
+      document.getElementById("overview-cards").innerHTML = [
+        overviewCard(
+          "What We Are Doing",
+          currentObjective ? currentObjective.title || currentObjective.id || "Unassigned" : "No objective rows yet",
+          currentObjectiveProgress ? progressDetail(currentObjectiveProgress) : "Add objective tags to make the board lead with intent.",
+          currentObjective
+            ? [
+                `${currentObjective.done}/${currentObjective.total} complete`,
+                Array.isArray(currentObjective.lane_titles) && currentObjective.lane_titles.length
+                  ? pluralize(currentObjective.lane_titles.length, "lane")
+                  : "",
+                Array.isArray(currentObjective.wave_ids) && currentObjective.wave_ids.length
+                  ? pluralize(currentObjective.wave_ids.length, "wave")
+                  : ""
+              ]
+            : []
+        ),
+        overviewCard(
+          "What's Next",
+          next ? `${next.id} ${next.title}` : "No runnable backlog task",
+          next ? "This is the next claimable slice from the current backlog ordering." : "Everything is either complete or waiting on a gate.",
+          next
+            ? [
+                next.lane ? `Lane: ${next.lane}` : "",
+                next.wave != null ? `Wave ${next.wave}` : "",
+                next.risk ? `Risk: ${next.risk}` : ""
+              ]
+            : []
+        ),
+        overviewCard(
+          "Coordination",
+          heroHighlights.latest_run || "No recorded work yet",
+          heroHighlights.time_on_task || "No claimed work recorded",
+          [
+            `${openMessages.length} open inbox message(s)`,
+            latestEventSummary ? `Latest event: ${latestEventSummary}` : "",
+            snapshot.workspace_contract?.workspace_mode ? `Workspace mode: ${snapshot.workspace_contract.workspace_mode}` : ""
+          ]
+        )
+      ].join("");
+    }
+
+    function renderDomainChips() {
+      const domains = domainCounts(allTasks);
+      document.getElementById("domains-copy").textContent = domains.length
+        ? "Domain tags show where the backlog is concentrated across the full snapshot, including completed work."
+        : "Add domain tags to tasks to surface coverage here.";
+      document.getElementById("domain-chips").innerHTML = domains.length
+        ? domains.map(([domain, count]) => `<span class="chip chip-domain">${escapeHtml(domain)} <strong>${escapeHtml(count)}</strong></span>`).join("")
+        : `<div class="empty">No domain tags yet.</div>`;
+    }
+
     function heroSummary(activity) {
       const latestSummary = [activity.task_id, activity.summary || activity.type_label].filter(Boolean).join(" · ");
       const activeObjectiveCount = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length).length;
@@ -1470,7 +1720,7 @@ __BLACKDOG_STYLES__
       inboxLink.textContent = `Inbox JSON · ${openMessages.length} open`;
 
       document.getElementById("board-guide").textContent =
-        "Search and status filters apply only to the active backlog. Objectives lead the board, lane order stays intact inside each objective row, and completed tasks move into the history panel.";
+        "Search and status filters apply only to the execution map. Objectives lead the board, lane order stays intact inside each objective row, and completed tasks move into the history panel.";
     }
 
     function renderLegend() {
@@ -1847,6 +2097,9 @@ __BLACKDOG_STYLES__
     }
 
     renderHeader();
+    renderObjectiveCards();
+    renderOverviewCards();
+    renderDomainChips();
     renderStats();
     renderBoard();
     renderRecentResults();
