@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
 import os
 import re
@@ -20,12 +21,13 @@ sys.path.insert(0, str(SRC))
 
 from blackdog import backlog as backlog_module
 from blackdog import store as store_module
-from blackdog.backlog import load_backlog
+from blackdog.backlog import load_backlog, render_backlog_plan_block, render_task_section
 from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import append_jsonl, atomic_write_text, load_events, load_inbox, load_jsonl, record_task_result, resolve_message, save_state, send_message
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_loop_status
+from blackdog.ui import build_ui_snapshot, render_static_html
 from blackdog.worktree import WorktreeSpec
 
 
@@ -146,6 +148,231 @@ def remove_task_from_backlog(root: Path, task_id: str) -> None:
     )
     updated = task_section_re.sub("", updated, count=1).rstrip() + "\n"
     profile.paths.backlog_file.write_text(updated, encoding="utf-8")
+
+
+def seed_large_runtime_fixture(root: Path, *, task_count: int = 360, lane_count: int = 30):
+    run_cli("init", "--project-root", str(root), "--project-name", "Scale Demo")
+    profile = load_profile(root)
+    paths = profile.paths
+    task_ids = [f"{profile.id_prefix}-{index:010x}" for index in range(task_count)]
+    backlog_text = paths.backlog_file.read_text(encoding="utf-8")
+    plan = {
+        "epics": [
+            {
+                "id": "epic-scale-regression",
+                "title": "Scale Regression",
+                "task_ids": list(task_ids),
+            }
+        ],
+        "lanes": [],
+    }
+    task_sections: list[str] = []
+    tasks_per_lane = max(1, (task_count + lane_count - 1) // lane_count)
+    for lane_index in range(lane_count):
+        lane_task_ids = task_ids[lane_index * tasks_per_lane : (lane_index + 1) * tasks_per_lane]
+        if not lane_task_ids:
+            break
+        plan["lanes"].append(
+            {
+                "id": f"lane-scale-{lane_index:02d}",
+                "title": f"Scale Lane {lane_index:02d}",
+                "task_ids": lane_task_ids,
+                "wave": lane_index // 6,
+            }
+        )
+    for index, task_id in enumerate(task_ids):
+        title = f"Synthetic scale task {index:03d}"
+        payload = {
+            "id": task_id,
+            "title": title,
+            "bucket": "html" if index % 3 == 0 else "core",
+            "priority": "P1" if index % 7 == 0 else "P2",
+            "risk": "medium" if index % 5 else "low",
+            "effort": "M" if index % 4 else "S",
+            "packages": [],
+            "paths": [
+                f"src/scale/module_{index % 12:02d}.py",
+                f"docs/scale/guide_{index % 8:02d}.md",
+                f"tests/fixtures/scale_{index % 5:02d}.json",
+            ],
+            "checks": ["PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'"],
+            "docs": ["AGENTS.md", "docs/CLI.md", "docs/FILE_FORMATS.md"],
+            "objective": f"OBJ-{(index % 3) + 1}",
+            "domains": ["html", "results", "events"],
+            "requires_approval": False,
+            "approval_reason": "",
+            "safe_first_slice": "Profile one narrow slice against a large synthetic backlog.",
+        }
+        why = (
+            "Synthetic scale coverage should reflect a backlog large enough to exercise parsing, plan grouping, "
+            "and UI snapshot assembly under realistic repository-sized task inventories. "
+            "This text is intentionally long enough to make the backlog markdown file meaningfully large."
+        )
+        evidence = (
+            "The benchmark fixture populates many lanes, results, events, and inbox rows so the test covers the "
+            "real code paths used by snapshot generation and runtime append handling rather than a toy shortcut."
+        )
+        task_sections.append(
+            render_task_section(
+                payload,
+                why=why,
+                evidence=evidence,
+                affected_paths=list(payload["paths"]),
+            )
+        )
+    updated = re.sub(
+        r"```json backlog-plan\n.*?\n```",
+        render_backlog_plan_block(plan).rstrip(),
+        backlog_text,
+        count=1,
+        flags=re.S,
+    )
+    paths.backlog_file.write_text(updated.rstrip() + "\n\n" + "\n\n".join(task_sections) + "\n", encoding="utf-8")
+
+    now = datetime.now().astimezone()
+    state = {"schema_version": 1, "approval_tasks": {}, "task_claims": {}}
+    events_rows: list[dict[str, object]] = []
+    inbox_rows: list[dict[str, object]] = []
+    for index, task_id in enumerate(task_ids):
+        title = f"Synthetic scale task {index:03d}"
+        claimed_at = (now - timedelta(minutes=task_count - index + 5)).isoformat(timespec="seconds")
+        completed_at = (now - timedelta(minutes=task_count - index)).isoformat(timespec="seconds")
+        released_at = (now - timedelta(minutes=task_count - index + 1)).isoformat(timespec="seconds")
+        claim_entry = {
+            "title": title,
+            "claimed_by": f"scale-bot-{index % 4}",
+            "claimed_at": claimed_at,
+            "claim_expires_at": (now + timedelta(hours=2)).isoformat(timespec="seconds"),
+            "bucket": "html" if index % 3 == 0 else "core",
+            "priority": "P1" if index % 7 == 0 else "P2",
+            "risk": "medium" if index % 5 else "low",
+            "paths": [f"src/scale/module_{index % 12:02d}.py"],
+        }
+        if index % 4 == 0:
+            claim_entry.update({"status": "done", "completed_at": completed_at, "completed_by": "scale-bot"})
+        elif index % 4 == 1:
+            claim_entry.update({"status": "claimed"})
+        elif index % 4 == 2:
+            claim_entry.update({"status": "released", "released_at": released_at})
+        else:
+            claim_entry = None
+        if claim_entry is not None:
+            state["task_claims"][task_id] = claim_entry
+
+        result_recorded_at = (now - timedelta(minutes=index)).isoformat(timespec="seconds")
+        result_payload = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "recorded_at": result_recorded_at,
+            "actor": f"scale-bot-{index % 4}",
+            "run_id": f"run-{index:06x}",
+            "status": "success" if index % 6 else "partial",
+            "what_changed": [
+                "Synthesized one representative result entry for scale coverage.",
+                "Recorded enough narrative detail to keep result payloads realistic.",
+            ],
+            "validation": [
+                "synthetic-scale-fixture",
+                "snapshot-regression",
+            ],
+            "residual": [
+                "This fixture is intentionally synthetic and should only be used for performance guardrails.",
+            ],
+            "needs_user_input": False,
+            "followup_candidates": [],
+        }
+        task_result_dir = paths.results_dir / task_id
+        task_result_dir.mkdir(parents=True, exist_ok=True)
+        result_file = task_result_dir / f"20260315-000000-{index:06x}.json"
+        result_file.write_text(json.dumps(result_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        base_at = now - timedelta(minutes=task_count - index, seconds=index % 50)
+        events_rows.append(
+            {
+                "event_id": f"evt-claim-{index:06x}",
+                "type": "claim",
+                "at": base_at.isoformat(timespec="seconds"),
+                "actor": f"scale-bot-{index % 4}",
+                "task_id": task_id,
+                "payload": {"lease": "synthetic-scale"},
+            }
+        )
+        events_rows.append(
+            {
+                "event_id": f"evt-result-{index:06x}",
+                "type": "task_result",
+                "at": (base_at + timedelta(seconds=15)).isoformat(timespec="seconds"),
+                "actor": f"scale-bot-{index % 4}",
+                "task_id": task_id,
+                "payload": {
+                    "status": result_payload["status"],
+                    "run_id": result_payload["run_id"],
+                    "result_file": str(result_file),
+                    "needs_user_input": False,
+                },
+            }
+        )
+        if index % 4 == 0:
+            events_rows.append(
+                {
+                    "event_id": f"evt-complete-{index:06x}",
+                    "type": "complete",
+                    "at": (base_at + timedelta(seconds=30)).isoformat(timespec="seconds"),
+                    "actor": "scale-bot",
+                    "task_id": task_id,
+                    "payload": {"note": "synthetic completion"},
+                }
+            )
+        elif index % 4 == 2:
+            events_rows.append(
+                {
+                    "event_id": f"evt-release-{index:06x}",
+                    "type": "release",
+                    "at": (base_at + timedelta(seconds=30)).isoformat(timespec="seconds"),
+                    "actor": "scale-bot",
+                    "task_id": task_id,
+                    "payload": {"reason": "synthetic release"},
+                }
+            )
+
+    for index in range(max(90, task_count // 3)):
+        message_id = f"msg-{index:06x}"
+        task_id = task_ids[index % task_count]
+        inbox_rows.append(
+            {
+                "action": "message",
+                "message_id": message_id,
+                "at": (now - timedelta(minutes=index)).isoformat(timespec="seconds"),
+                "sender": "user" if index % 2 == 0 else "blackdog",
+                "recipient": "supervisor" if index % 3 else "codex",
+                "kind": "instruction" if index % 4 else "warning",
+                "task_id": task_id,
+                "reply_to": None,
+                "tags": ["scale", "perf", f"lane-{index % lane_count:02d}"],
+                "body": "Synthetic inbox message used to exercise replay and filtering under load.",
+            }
+        )
+        if index % 3 == 0:
+            inbox_rows.append(
+                {
+                    "action": "resolve",
+                    "message_id": message_id,
+                    "at": (now - timedelta(minutes=index - 1)).isoformat(timespec="seconds"),
+                    "actor": "codex",
+                    "note": "Synthetic resolution for replay coverage.",
+                }
+            )
+
+    save_state(paths.state_file, state)
+    paths.events_file.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in events_rows),
+        encoding="utf-8",
+    )
+    paths.inbox_file.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in inbox_rows),
+        encoding="utf-8",
+    )
+    return profile, task_ids
 
 
 class BlackdogCliTests(unittest.TestCase):
@@ -273,6 +500,58 @@ class BlackdogCliTests(unittest.TestCase):
         with patch("blackdog.supervisor.atomic_write_text") as status_write:
             _write_loop_status(None, status_file, {"cycles": []})
         status_write.assert_called_once()
+
+    def test_scale_snapshot_render_and_atomic_event_append_stay_within_budget(self) -> None:
+        profile, task_ids = seed_large_runtime_fixture(self.root)
+        paths = profile.paths
+        backlog_size = paths.backlog_file.stat().st_size
+        events_size = paths.events_file.stat().st_size
+        result_files = sorted(paths.results_dir.glob("*/*.json"))
+
+        self.assertGreaterEqual(backlog_size, 200_000)
+        self.assertGreaterEqual(events_size, 150_000)
+        self.assertEqual(len(result_files), len(task_ids))
+
+        started = time.perf_counter()
+        snapshot = build_ui_snapshot(profile)
+        snapshot_elapsed = time.perf_counter() - started
+
+        started = time.perf_counter()
+        render_static_html(snapshot, paths.html_file)
+        render_elapsed = time.perf_counter() - started
+
+        started = time.perf_counter()
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-scale-append",
+                "type": "comment",
+                "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "actor": "benchmark",
+                "task_id": task_ids[-1],
+                "payload": {"kind": "comment", "body": "Synthetic append after scale snapshot benchmark."},
+            },
+        )
+        append_elapsed = time.perf_counter() - started
+
+        self.assertEqual(snapshot["total"], len(task_ids))
+        self.assertEqual(len(snapshot["tasks"]), len(task_ids))
+        self.assertEqual(load_jsonl(paths.events_file)[-1]["event_id"], "evt-scale-append")
+        self.assertLess(
+            snapshot_elapsed,
+            6.0,
+            f"build_ui_snapshot took {snapshot_elapsed:.3f}s for backlog={backlog_size}B events={events_size}B results={len(result_files)}",
+        )
+        self.assertLess(
+            render_elapsed,
+            4.0,
+            f"render_static_html took {render_elapsed:.3f}s for {len(task_ids)} tasks",
+        )
+        self.assertLess(
+            append_elapsed,
+            2.0,
+            f"append_jsonl took {append_elapsed:.3f}s for events={events_size}B",
+        )
 
     def test_add_task_serializes_overlapping_backlog_mutations(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
