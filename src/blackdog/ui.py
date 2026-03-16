@@ -843,11 +843,13 @@ __BLACKDOG_STYLES__
           <div>
             <span class="eyebrow">Completed Tasks</span>
             <h2>Completed Tasks</h2>
-            <p class="section-copy">Completed work stays visible here with its latest recorded outcome and artifact links.</p>
+            <p class="section-copy">Completed work stays visible here with its latest recorded outcome and artifact links in a scrollable recent-history view.</p>
           </div>
           <span id="history-summary" class="section-meta"></span>
         </div>
-        <div id="recent-results" class="results-grid"></div>
+        <div class="result-history">
+          <div id="recent-results" class="results-grid"></div>
+        </div>
       </section>
     </div>
   </div>
@@ -893,6 +895,7 @@ __BLACKDOG_STYLES__
       partial: "Partial",
       blocked: "Blocked"
     };
+    const COMPLETED_HISTORY_LIMIT = 30;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1255,12 +1258,12 @@ __BLACKDOG_STYLES__
 
     function renderRecentResults() {
       const completed = completedTasks();
-      const visibleCount = Math.min(completed.length, 8);
+      const visibleCount = Math.min(completed.length, COMPLETED_HISTORY_LIMIT);
       document.getElementById("history-summary").textContent = completed.length > visibleCount
-        ? `Showing ${visibleCount} of ${completed.length} completed`
+        ? `Showing latest ${visibleCount} of ${completed.length} completed`
         : `${completed.length} completed`;
       document.getElementById("recent-results").innerHTML = completed.length
-        ? completed.slice(0, 8).map((task) => {
+        ? completed.slice(0, COMPLETED_HISTORY_LIMIT).map((task) => {
             const statusKey = normalizeStatus(task.latest_result_status || task.operator_status_key || "complete");
             const statusLabel = task.latest_result_status
               ? (resultStatusLabels[task.latest_result_status] || task.latest_result_status)

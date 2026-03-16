@@ -316,7 +316,11 @@ h1, h2, h3, p { margin: 0; }
 .board-panel { grid-area: backlog; }
 .result-panel {
   grid-area: history;
-  height: fit-content;
+  position: sticky;
+  top: 24px;
+  max-height: calc(100vh - 48px);
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .board-panel .stats {
@@ -337,6 +341,14 @@ h1, h2, h3, p { margin: 0; }
 
 .result-panel .section-meta {
   text-align: left;
+}
+
+.result-history {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  margin-right: -6px;
+  scrollbar-gutter: stable;
 }
 
 .wave-section {
@@ -497,7 +509,6 @@ h1, h2, h3, p { margin: 0; }
 
 .results-grid {
   grid-template-columns: 1fr;
-  margin-top: 16px;
 }
 
 .result-title {
@@ -619,6 +630,17 @@ dialog::backdrop {
       "history";
   }
   .panel-hero { position: static; top: auto; }
+  .result-panel {
+    position: static;
+    top: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  .result-history {
+    overflow: visible;
+    padding-right: 0;
+    margin-right: 0;
+  }
   .backlog-head,
   .section-head { grid-template-columns: 1fr; }
   .wave-head,
