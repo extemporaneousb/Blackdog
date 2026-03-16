@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TextIO
+from typing import Any, TextIO
 import json
 import os
 import queue
@@ -20,6 +20,7 @@ from .backlog import (
     classify_task_status,
     load_backlog,
     next_runnable_tasks,
+    sweep_completed_tasks,
     sync_state_for_backlog,
     task_done,
 )
@@ -61,6 +62,7 @@ DESKTOP_CODEX_BINARY = Path("/Applications/Codex.app/Contents/Resources/codex")
 SUPERVISOR_STATUS_READY_LIMIT = 8
 SUPERVISOR_STATUS_RESULT_LIMIT = 5
 SUPERVISOR_STATUS_CONTROL_LIMIT = 8
+DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS = 1.0
 
 
 @dataclass
@@ -136,8 +138,14 @@ def _supervisor_text(view: dict[str, Any]) -> str:
         f"Supervisor run: {view['run_id']}",
         f"Launch actor: {view['actor']}",
         f"Workspace mode: {view['workspace_mode']}",
+        f"Final status: {view.get('final_status') or 'running'}",
+        f"Steps: {len(view.get('steps', []))}",
         f"Tasks launched: {len(view['children'])}",
     ]
+    if view.get("draining"):
+        lines.append("Draining: yes")
+    if view.get("status_file"):
+        lines.append(f"Status file: {view['status_file']}")
     for child in view["children"]:
         exit_text = "launch-error" if child["launch_error"] else child["exit_code"]
         if child["timed_out"]:
@@ -154,42 +162,19 @@ def render_supervisor_output(view: dict[str, Any], *, as_json: bool) -> str:
     return _supervisor_text(view)
 
 
-def _supervisor_loop_text(view: dict[str, Any]) -> str:
-    lines = [
-        f"Supervisor loop: {view['loop_id']}",
-        f"Launch actor: {view['actor']}",
-        f"Workspace mode: {view['workspace_mode']}",
-        f"Cycles: {len(view['cycles'])}",
-    ]
-    for cycle in view["cycles"]:
-        summary = f"- cycle {cycle['index']} | {cycle['status']}"
-        if cycle.get("task_ids"):
-            summary += " | tasks " + ", ".join(cycle["task_ids"])
-        if cycle.get("open_message_ids"):
-            summary += f" | open messages {len(cycle['open_message_ids'])}"
-        lines.append(summary)
-    return "\n".join(lines) + "\n"
-
-
-def render_supervisor_loop_output(view: dict[str, Any], *, as_json: bool) -> str:
-    if as_json:
-        return json.dumps(view, indent=2) + "\n"
-    return _supervisor_loop_text(view)
-
-
 def _supervisor_status_text(view: dict[str, Any]) -> str:
     lines = [f"Supervisor actor: {view['actor']}"]
-    latest_loop = view.get("latest_loop")
-    if isinstance(latest_loop, dict):
+    latest_run = view.get("latest_run")
+    if isinstance(latest_run, dict):
         lines.append(
-            f"Latest loop: {latest_loop['status']} | {latest_loop['loop_id']} | cycles {latest_loop['cycle_count']} | workspace {latest_loop['workspace_mode']}"
+            f"Latest run: {latest_run['status']} | {latest_run['run_id']} | steps {latest_run['step_count']} | workspace {latest_run['workspace_mode']}"
         )
-        lines.append(f"Status file: {latest_loop['status_file']}")
-        last_cycle = latest_loop.get("last_cycle")
-        if isinstance(last_cycle, dict):
-            lines.append(f"Last cycle: {last_cycle.get('status')} @ {last_cycle.get('at')}")
+        lines.append(f"Status file: {latest_run['status_file']}")
+        last_step = latest_run.get("last_step")
+        if isinstance(last_step, dict):
+            lines.append(f"Last step: {last_step.get('status')} @ {last_step.get('at')}")
     else:
-        lines.append("Latest loop: none")
+        lines.append("Latest run: none")
         lines.append("Status file: none")
     contract = view.get("workspace_contract")
     if isinstance(contract, dict):
@@ -206,7 +191,7 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
         lines.append(f".VE rule: {contract.get('ve_expectation') or ''}")
     control = view.get("control_action")
     if isinstance(control, dict):
-        lines.append(f"Next cycle control: {control['action']} via {control['message_id']}")
+        lines.append(f"Run control: {control['action']} via {control['message_id']}")
 
     lines.extend(["", "Open supervisor controls:"])
     if view["open_control_messages"]:
@@ -272,16 +257,11 @@ def _load_synced_runtime(profile: Profile) -> tuple[BacklogSnapshot, dict[str, A
     return snapshot, state
 
 
-def _loop_control_action(messages: list[dict[str, Any]]) -> tuple[str | None, dict[str, Any] | None]:
-    pause_message: dict[str, Any] | None = None
+def _run_control_action(messages: list[dict[str, Any]]) -> tuple[str | None, dict[str, Any] | None]:
     for message in messages:
         action = _message_control_action(message)
         if action == "stop":
             return "stop", message
-        if pause_message is None and action == "pause":
-            pause_message = message
-    if pause_message is not None:
-        return "pause", pause_message
     return None, None
 
 
@@ -290,16 +270,25 @@ def _message_control_action(message: dict[str, Any]) -> str | None:
     body = str(message.get("body") or "").strip().lower()
     if "stop" in tags or body.startswith("stop"):
         return "stop"
-    if "pause" in tags or body.startswith("pause"):
-        return "pause"
     return None
 
 
-def _latest_loop_status(profile: Profile, *, actor: str) -> dict[str, Any] | None:
-    status_files = sorted(
-        profile.paths.supervisor_runs_dir.glob("*-loop-*/status.json"),
-        reverse=True,
-    )
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid < 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _latest_run_status(profile: Profile, *, actor: str) -> dict[str, Any] | None:
+    status_files = sorted(profile.paths.supervisor_runs_dir.glob("*/status.json"), reverse=True)
     for status_file in status_files:
         try:
             payload = json.loads(status_file.read_text(encoding="utf-8"))
@@ -309,24 +298,28 @@ def _latest_loop_status(profile: Profile, *, actor: str) -> dict[str, Any] | Non
             continue
         if str(payload.get("actor") or "") != actor:
             continue
-        cycles = payload.get("cycles") if isinstance(payload.get("cycles"), list) else []
-        last_cycle = cycles[-1] if cycles and isinstance(cycles[-1], dict) else None
-        status = str(payload.get("final_status") or (last_cycle or {}).get("status") or "running")
+        if not str(payload.get("run_id") or "").strip():
+            continue
+        steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+        last_step = steps[-1] if steps and isinstance(steps[-1], dict) else None
+        status = str(payload.get("final_status") or (last_step or {}).get("status") or "running")
+        if not payload.get("final_status") and not _pid_alive(payload.get("supervisor_pid")):
+            status = "interrupted"
         return {
-            "loop_id": payload.get("loop_id"),
+            "run_id": payload.get("run_id"),
             "actor": payload.get("actor"),
             "status": status,
             "workspace_mode": payload.get("workspace_mode"),
             "poll_interval_seconds": payload.get("poll_interval_seconds"),
-            "max_cycles": payload.get("max_cycles"),
-            "stop_when_idle": payload.get("stop_when_idle"),
-            "loop_dir": payload.get("loop_dir") or str(status_file.parent),
+            "draining": bool(payload.get("draining")),
+            "run_dir": payload.get("run_dir") or str(status_file.parent),
             "status_file": str(status_file),
-            "cycle_count": len(cycles),
-            "last_cycle": last_cycle,
+            "step_count": len(steps),
+            "last_step": last_step,
             "completed_at": payload.get("completed_at"),
             "final_status": payload.get("final_status"),
             "stopped_by_message_id": payload.get("stopped_by_message_id"),
+            "supervisor_pid": payload.get("supervisor_pid"),
         }
     return None
 
@@ -339,8 +332,8 @@ def build_supervisor_status_view(
 ) -> dict[str, Any]:
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
-    latest_loop = _latest_loop_status(profile, actor=actor)
-    workspace_mode = str((latest_loop or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
+    latest_run = _latest_run_status(profile, actor=actor)
+    workspace_mode = str((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
     open_messages = load_inbox(profile.paths, recipient=actor, status="open")
     control_messages = []
     for message in open_messages:
@@ -362,7 +355,7 @@ def build_supervisor_status_view(
         )
         if len(control_messages) >= SUPERVISOR_STATUS_CONTROL_LIMIT:
             break
-    control_action, control_message = _loop_control_action(open_messages)
+    control_action, control_message = _run_control_action(open_messages)
     ready_tasks = [
         {
             "id": task.id,
@@ -403,7 +396,7 @@ def build_supervisor_status_view(
             break
     return {
         "actor": actor,
-        "latest_loop": latest_loop,
+        "latest_run": latest_run,
         "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
         "control_action": (
             {
@@ -419,7 +412,7 @@ def build_supervisor_status_view(
     }
 
 
-def _write_loop_status(paths, status_file: Path, payload: dict[str, Any]) -> None:
+def _write_run_status(status_file: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(status_file, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
@@ -907,10 +900,253 @@ def _finish_child(
     _emit_render(profile)
 
 
-def run_supervisor(
-    profile: Profile,
+def _next_run_tasks(
     snapshot: BacklogSnapshot,
     state: dict[str, Any],
+    *,
+    task_ids: list[str],
+    allow_high_risk: bool,
+    limit: int,
+    force: bool,
+    attempted_task_ids: set[str],
+    active_task_ids: set[str],
+) -> list[TaskInfo]:
+    excluded_ids = attempted_task_ids | active_task_ids
+    if task_ids:
+        remaining_ids = [task_id for task_id in task_ids if task_id not in excluded_ids]
+        if not remaining_ids:
+            return []
+        return _select_tasks(
+            snapshot,
+            state,
+            task_ids=remaining_ids,
+            allow_high_risk=allow_high_risk,
+            limit=limit,
+            force=force,
+        )
+    window = max(limit + len(excluded_ids), len(snapshot.tasks))
+    ready = next_runnable_tasks(snapshot, state, allow_high_risk=allow_high_risk, limit=max(window, limit))
+    return [task for task in ready if task.id not in excluded_ids][:limit]
+
+
+def _launch_child_run(
+    profile: Profile,
+    task: TaskInfo,
+    *,
+    actor: str,
+    child_agent: str,
+    run_id: str,
+    run_dir: Path,
+    launch_command: tuple[str, ...],
+    workspace_mode: str,
+    timeout_seconds: int,
+) -> ChildRun:
+    _claim_for_child(profile, load_backlog(profile.paths, profile), task, child_agent=child_agent)
+    child_run_dir = run_dir / task.id
+    child_run_dir.mkdir(parents=True, exist_ok=True)
+    prompt_file = child_run_dir / "prompt.txt"
+    stdout_file = child_run_dir / "stdout.log"
+    stderr_file = child_run_dir / "stderr.log"
+    workspace_path = supervisor_task_worktree_path(profile, task, run_id)
+    result_files_before = {
+        str(row["result_file"])
+        for row in load_task_results(profile.paths, task_id=task.id)
+        if row.get("result_file")
+    }
+    started_at = time.monotonic()
+    deadline = started_at + timeout_seconds
+    try:
+        prepared = _prepare_workspace(profile, task, workspace_mode=workspace_mode, run_id=run_id)
+    except SupervisorError as exc:
+        child = ChildRun(
+            task=task,
+            child_agent=child_agent,
+            launch_command=launch_command,
+            workspace=workspace_path,
+            workspace_mode=workspace_mode,
+            run_dir=child_run_dir,
+            prompt_file=prompt_file,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+            message_id=None,
+            result_files_before=result_files_before,
+            process=None,
+            stdout_handle=None,
+            stderr_handle=None,
+            started_at=started_at,
+            deadline=deadline,
+            launch_error=str(exc),
+            exit_code=None,
+        )
+        _finalize_child_run(profile, child, actor=actor)
+        append_event(
+            profile.paths,
+            event_type="child_launch_failed",
+            actor=actor,
+            task_id=task.id,
+            payload={"run_id": run_id, "child_agent": child_agent, "error": str(exc)},
+        )
+        _emit_render(profile)
+        return child
+    workspace = prepared.workspace
+    if prepared.worktree_spec is not None:
+        append_event(
+            profile.paths,
+            event_type="worktree_start",
+            actor=actor,
+            task_id=task.id,
+            payload={"run_id": run_id, "child_agent": child_agent, **prepared.worktree_spec.to_dict()},
+        )
+    prompt = _build_child_prompt(
+        profile,
+        task,
+        child_agent=child_agent,
+        workspace_mode=workspace_mode,
+        workspace=workspace,
+        worktree_spec=prepared.worktree_spec,
+    )
+    metadata_file = child_run_dir / "metadata.json"
+    prompt_file.write_text(prompt + "\n", encoding="utf-8")
+    message = send_message(
+        profile.paths,
+        sender=actor,
+        recipient=child_agent,
+        body=f"Execute {task.id} from {workspace}. The launch prompt is saved at {prompt_file}.",
+        kind="instruction",
+        task_id=task.id,
+        tags=["supervisor-run", workspace_mode],
+    )
+    metadata = {
+        "task_id": task.id,
+        "child_agent": child_agent,
+        "workspace": str(workspace),
+        "workspace_mode": workspace_mode,
+        "prompt_file": str(prompt_file),
+        "stdout_file": str(stdout_file),
+        "stderr_file": str(stderr_file),
+        "launched_at": now_iso(),
+    }
+    if prepared.worktree_spec is not None:
+        metadata["worktree_spec"] = prepared.worktree_spec.to_dict()
+    metadata_file.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    stdout_handle = stdout_file.open("w", encoding="utf-8")
+    stderr_handle = stderr_file.open("w", encoding="utf-8")
+    child = ChildRun(
+        task=task,
+        child_agent=child_agent,
+        launch_command=launch_command,
+        workspace=workspace,
+        workspace_mode=workspace_mode,
+        run_dir=child_run_dir,
+        prompt_file=prompt_file,
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
+        message_id=str(message["message_id"]),
+        result_files_before=result_files_before,
+        process=None,
+        stdout_handle=stdout_handle,
+        stderr_handle=stderr_handle,
+        started_at=started_at,
+        deadline=deadline,
+        worktree_spec=prepared.worktree_spec,
+    )
+    command = _build_launch_command(launch_command, prompt)
+    env = os.environ.copy()
+    env.update(
+        {
+            "BLACKDOG_PROJECT_ROOT": str(profile.paths.project_root),
+            "BLACKDOG_TASK_ID": task.id,
+            "BLACKDOG_AGENT_NAME": child_agent,
+            "BLACKDOG_WORKSPACE": str(workspace),
+            "BLACKDOG_WORKSPACE_MODE": workspace_mode,
+            "BLACKDOG_RUN_DIR": str(child_run_dir),
+            "BLACKDOG_PROMPT_FILE": str(prompt_file),
+        }
+    )
+    if prepared.worktree_spec is not None:
+        env.update(
+            {
+                "BLACKDOG_TASK_BRANCH": prepared.worktree_spec.branch,
+                "BLACKDOG_TARGET_BRANCH": prepared.worktree_spec.target_branch,
+                "BLACKDOG_PRIMARY_WORKTREE": prepared.worktree_spec.primary_worktree,
+            }
+        )
+    try:
+        child.process = subprocess.Popen(
+            command,
+            cwd=workspace,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=env,
+        )
+    except OSError as exc:
+        child.launch_error = str(exc)
+        child.exit_code = None
+        _finalize_child_run(profile, child, actor=actor)
+        append_event(
+            profile.paths,
+            event_type="child_launch_failed",
+            actor=actor,
+            task_id=task.id,
+            payload={"run_id": run_id, "child_agent": child_agent, "error": str(exc)},
+        )
+        _emit_render(profile)
+        return child
+    append_event(
+        profile.paths,
+        event_type="child_launch",
+        actor=actor,
+        task_id=task.id,
+        payload={
+            "run_id": run_id,
+            "child_agent": child_agent,
+            "workspace": str(workspace),
+            "workspace_mode": workspace_mode,
+            "pid": child.process.pid,
+        },
+    )
+    _emit_render(profile)
+    return child
+
+
+def _append_run_step(
+    status_payload: dict[str, Any],
+    status_file: Path,
+    *,
+    status: str,
+    ready_task_ids: list[str],
+    running_task_ids: list[str],
+    open_message_ids: list[str],
+    launched_task_ids: list[str] | None = None,
+    finished_task_ids: list[str] | None = None,
+    control_message_id: str | None = None,
+    removed_task_ids: list[str] | None = None,
+) -> None:
+    step = {
+        "index": len(status_payload["steps"]) + 1,
+        "at": now_iso(),
+        "status": status,
+        "ready_task_ids": list(ready_task_ids),
+        "running_task_ids": list(running_task_ids),
+        "open_message_ids": list(open_message_ids),
+        "draining": bool(status_payload.get("draining")),
+    }
+    if launched_task_ids:
+        step["launched_task_ids"] = list(launched_task_ids)
+    if finished_task_ids:
+        step["finished_task_ids"] = list(finished_task_ids)
+    if control_message_id:
+        step["control_message_id"] = control_message_id
+    if removed_task_ids:
+        step["removed_task_ids"] = list(removed_task_ids)
+    status_payload["steps"].append(step)
+    _write_run_status(status_file, status_payload)
+
+
+def run_supervisor(
+    profile: Profile,
     *,
     actor: str,
     task_ids: list[str],
@@ -919,29 +1155,37 @@ def run_supervisor(
     force: bool,
     workspace_mode: str | None,
     timeout_seconds: int | None,
+    poll_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
     selected_count = count or profile.supervisor_max_parallel
     resolved_workspace_mode = workspace_mode or profile.supervisor_workspace_mode
     resolved_timeout_seconds = timeout_seconds or profile.supervisor_task_timeout_seconds
+    resolved_poll_interval_seconds = (
+        DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS if poll_interval_seconds is None else poll_interval_seconds
+    )
     if resolved_workspace_mode != "git-worktree":
         raise BacklogError("workspace mode must be 'git-worktree'")
     if resolved_timeout_seconds < 1:
         raise BacklogError("timeout must be at least 1 second")
-    selected = _select_tasks(
-        snapshot,
-        state,
-        task_ids=task_ids,
-        allow_high_risk=allow_high_risk,
-        limit=selected_count,
-        force=force,
-    )
-    resolved_launch_command = tuple(_resolved_launch_command(profile))
-    if selected:
-        _preflight_launch_command(resolved_launch_command)
+    if resolved_poll_interval_seconds < 0:
+        raise BacklogError("poll interval must be at least 0 seconds")
 
+    sweep = sweep_completed_tasks(profile)
     run_id = uuid.uuid4().hex[:8]
     run_dir = profile.paths.supervisor_runs_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{run_id}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    status_file = run_dir / "status.json"
+    status_payload: dict[str, Any] = {
+        "run_id": run_id,
+        "actor": actor,
+        "workspace_mode": resolved_workspace_mode,
+        "poll_interval_seconds": resolved_poll_interval_seconds,
+        "draining": False,
+        "run_dir": str(run_dir),
+        "status_file": str(status_file),
+        "supervisor_pid": os.getpid(),
+        "steps": [],
+    }
     append_event(
         profile.paths,
         event_type="supervisor_run_started",
@@ -949,189 +1193,88 @@ def run_supervisor(
         payload={
             "run_id": run_id,
             "workspace_mode": resolved_workspace_mode,
-            "task_ids": [task.id for task in selected],
+            "task_ids": list(task_ids),
         },
     )
-
-    children: list[ChildRun] = []
-    for index, task in enumerate(selected, start=1):
-        child_agent = f"{actor}/child-{index:02d}"
-        _claim_for_child(profile, snapshot, task, child_agent=child_agent)
-        child_run_dir = run_dir / task.id
-        child_run_dir.mkdir(parents=True, exist_ok=True)
-        prompt_file = child_run_dir / "prompt.txt"
-        stdout_file = child_run_dir / "stdout.log"
-        stderr_file = child_run_dir / "stderr.log"
-        workspace_path = supervisor_task_worktree_path(profile, task, run_id)
-        result_files_before = {
-            str(row["result_file"])
-            for row in load_task_results(profile.paths, task_id=task.id)
-            if row.get("result_file")
-        }
-        started_at = time.monotonic()
-        deadline = started_at + resolved_timeout_seconds
-        try:
-            prepared = _prepare_workspace(profile, task, workspace_mode=resolved_workspace_mode, run_id=run_id)
-        except SupervisorError as exc:
-            child = ChildRun(
-                task=task,
-                child_agent=child_agent,
-                launch_command=resolved_launch_command,
-                workspace=workspace_path,
-                workspace_mode=resolved_workspace_mode,
-                run_dir=child_run_dir,
-                prompt_file=prompt_file,
-                stdout_file=stdout_file,
-                stderr_file=stderr_file,
-                message_id=None,
-                result_files_before=result_files_before,
-                process=None,
-                stdout_handle=None,
-                stderr_handle=None,
-                started_at=started_at,
-                deadline=deadline,
-                launch_error=str(exc),
-                exit_code=None,
-            )
-            _finalize_child_run(profile, child, actor=actor)
-            children.append(child)
-            append_event(
-                profile.paths,
-                event_type="child_launch_failed",
-                actor=actor,
-                task_id=task.id,
-                payload={"run_id": run_id, "child_agent": child_agent, "error": str(exc)},
-            )
-            _emit_render(profile)
-            continue
-        workspace = prepared.workspace
-        if prepared.worktree_spec is not None:
-            append_event(
-                profile.paths,
-                event_type="worktree_start",
-                actor=actor,
-                task_id=task.id,
-                payload={"run_id": run_id, "child_agent": child_agent, **prepared.worktree_spec.to_dict()},
-            )
-        prompt = _build_child_prompt(
-            profile,
-            task,
-            child_agent=child_agent,
-            workspace_mode=resolved_workspace_mode,
-            workspace=workspace,
-            worktree_spec=prepared.worktree_spec,
-        )
-        metadata_file = child_run_dir / "metadata.json"
-        prompt_file.write_text(prompt + "\n", encoding="utf-8")
-        message = send_message(
-            profile.paths,
-            sender=actor,
-            recipient=child_agent,
-            body=f"Execute {task.id} from {workspace}. The launch prompt is saved at {prompt_file}.",
-            kind="instruction",
-            task_id=task.id,
-            tags=["supervisor-run", resolved_workspace_mode],
-        )
-        metadata = {
-            "task_id": task.id,
-            "child_agent": child_agent,
-            "workspace": str(workspace),
-            "workspace_mode": resolved_workspace_mode,
-            "prompt_file": str(prompt_file),
-            "stdout_file": str(stdout_file),
-            "stderr_file": str(stderr_file),
-            "launched_at": now_iso(),
-        }
-        if prepared.worktree_spec is not None:
-            metadata["worktree_spec"] = prepared.worktree_spec.to_dict()
-        metadata_file.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        stdout_handle = stdout_file.open("w", encoding="utf-8")
-        stderr_handle = stderr_file.open("w", encoding="utf-8")
-        child = ChildRun(
-            task=task,
-            child_agent=child_agent,
-            launch_command=resolved_launch_command,
-            workspace=workspace,
-            workspace_mode=resolved_workspace_mode,
-            run_dir=child_run_dir,
-            prompt_file=prompt_file,
-            stdout_file=stdout_file,
-            stderr_file=stderr_file,
-            message_id=str(message["message_id"]),
-            result_files_before=result_files_before,
-            process=None,
-            stdout_handle=stdout_handle,
-            stderr_handle=stderr_handle,
-            started_at=started_at,
-            deadline=deadline,
-            worktree_spec=prepared.worktree_spec,
-        )
-        command = _build_launch_command(resolved_launch_command, prompt)
-        env = os.environ.copy()
-        env.update(
-            {
-                "BLACKDOG_PROJECT_ROOT": str(profile.paths.project_root),
-                "BLACKDOG_TASK_ID": task.id,
-                "BLACKDOG_AGENT_NAME": child_agent,
-                "BLACKDOG_WORKSPACE": str(workspace),
-                "BLACKDOG_WORKSPACE_MODE": resolved_workspace_mode,
-                "BLACKDOG_RUN_DIR": str(child_run_dir),
-                "BLACKDOG_PROMPT_FILE": str(prompt_file),
-            }
-        )
-        if prepared.worktree_spec is not None:
-            env.update(
-                {
-                    "BLACKDOG_TASK_BRANCH": prepared.worktree_spec.branch,
-                    "BLACKDOG_TARGET_BRANCH": prepared.worktree_spec.target_branch,
-                    "BLACKDOG_PRIMARY_WORKTREE": prepared.worktree_spec.primary_worktree,
-                }
-            )
-        try:
-            child.process = subprocess.Popen(
-                command,
-                cwd=workspace,
-                stdout=stdout_handle,
-                stderr=stderr_handle,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                env=env,
-            )
-        except OSError as exc:
-            child.launch_error = str(exc)
-            child.exit_code = None
-            _finalize_child_run(profile, child, actor=actor)
-            children.append(child)
-            append_event(
-                profile.paths,
-                event_type="child_launch_failed",
-                actor=actor,
-                task_id=task.id,
-                payload={"run_id": run_id, "child_agent": child_agent, "error": str(exc)},
-            )
-            _emit_render(profile)
-            continue
-        children.append(child)
+    if sweep["changed"]:
         append_event(
             profile.paths,
-            event_type="child_launch",
+            event_type="supervisor_run_sweep",
             actor=actor,
-            task_id=task.id,
             payload={
                 "run_id": run_id,
-                "child_agent": child_agent,
-                "workspace": str(workspace),
-                "workspace_mode": resolved_workspace_mode,
-                "pid": child.process.pid,
+                "removed_task_ids": list(sweep["removed_task_ids"]),
+                "removed_lane_ids": list(sweep["removed_lane_ids"]),
+                "removed_epic_ids": list(sweep["removed_epic_ids"]),
+                "wave_map": dict(sweep["wave_map"]),
             },
         )
         _emit_render(profile)
+    _append_run_step(
+        status_payload,
+        status_file,
+        status="swept",
+        ready_task_ids=[],
+        running_task_ids=[],
+        open_message_ids=[],
+        removed_task_ids=list(sweep["removed_task_ids"]),
+    )
 
-    active = {child.child_agent: child for child in children if child.process is not None}
+    resolved_launch_command = tuple(_resolved_launch_command(profile))
+    children: list[ChildRun] = []
+    active: dict[str, ChildRun] = {}
     completion_queue: queue.Queue[tuple[str, int | None]] = queue.Queue()
-    for child in active.values():
-        threading.Thread(target=_wait_for_child_process, args=(child, completion_queue), daemon=True).start()
-    while active:
+    attempted_task_ids: set[str] = set()
+    launched_count = 0
+    launch_command_checked = False
+
+    def start_child(task: TaskInfo) -> None:
+        nonlocal launched_count, launch_command_checked
+        if not launch_command_checked:
+            _preflight_launch_command(resolved_launch_command)
+            launch_command_checked = True
+        launched_count += 1
+        child_agent = f"{actor}/child-{launched_count:02d}"
+        child = _launch_child_run(
+            profile,
+            task,
+            actor=actor,
+            child_agent=child_agent,
+            run_id=run_id,
+            run_dir=run_dir,
+            launch_command=resolved_launch_command,
+            workspace_mode=resolved_workspace_mode,
+            timeout_seconds=resolved_timeout_seconds,
+        )
+        children.append(child)
+        attempted_task_ids.add(task.id)
+        if child.process is not None:
+            active[child.child_agent] = child
+            threading.Thread(target=_wait_for_child_process, args=(child, completion_queue), daemon=True).start()
+
+    while True:
+        snapshot, state = _load_synced_runtime(profile)
+        open_messages = load_inbox(profile.paths, recipient=actor, status="open")
+        control_action, control_message = _run_control_action(open_messages)
+        control_message_id: str | None = None
+        if control_action == "stop" and control_message is not None:
+            status_payload["draining"] = True
+            control_message_id = str(control_message["message_id"])
+            status_payload["stopped_by_message_id"] = control_message_id
+
+        finished_task_ids: list[str] = []
+        while True:
+            try:
+                child_agent, exit_code = completion_queue.get_nowait()
+            except queue.Empty:
+                break
+            child = active.pop(child_agent, None)
+            if child is None:
+                continue
+            child.exit_code = exit_code if exit_code is not None else child.process.poll() if child.process is not None else None
+            _finish_child(profile, child, actor=actor, run_id=run_id)
+            finished_task_ids.append(child.task.id)
+
         current = time.monotonic()
         timed_out_children = [
             child
@@ -1148,10 +1291,92 @@ def run_supervisor(
             child.exit_code = child.process.wait(timeout=5)
             _finish_child(profile, child, actor=actor, run_id=run_id)
             active.pop(child.child_agent, None)
+            finished_task_ids.append(child.task.id)
+
+        snapshot, state = _load_synced_runtime(profile)
+        active_task_ids = {child.task.id for child in active.values()}
+        ready_tasks = _next_run_tasks(
+            snapshot,
+            state,
+            task_ids=task_ids,
+            allow_high_risk=allow_high_risk,
+            limit=max(0, selected_count - len(active)),
+            force=force,
+            attempted_task_ids=attempted_task_ids,
+            active_task_ids=active_task_ids,
+        )
+
+        launched_task_ids: list[str] = []
+        if not status_payload["draining"]:
+            for task in ready_tasks:
+                if len(active) >= selected_count:
+                    break
+                start_child(task)
+                launched_task_ids.append(task.id)
+            if launched_task_ids:
+                snapshot, state = _load_synced_runtime(profile)
+                active_task_ids = {child.task.id for child in active.values()}
+                ready_tasks = _next_run_tasks(
+                    snapshot,
+                    state,
+                    task_ids=task_ids,
+                    allow_high_risk=allow_high_risk,
+                    limit=max(0, selected_count - len(active)),
+                    force=force,
+                    attempted_task_ids=attempted_task_ids,
+                    active_task_ids=active_task_ids,
+                )
+
+        if launched_task_ids or finished_task_ids or control_message_id:
+            _append_run_step(
+                status_payload,
+                status_file,
+                status="draining" if status_payload["draining"] else "running",
+                ready_task_ids=[task.id for task in ready_tasks],
+                running_task_ids=[child.task.id for child in active.values()],
+                open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
+                launched_task_ids=launched_task_ids,
+                finished_task_ids=finished_task_ids,
+                control_message_id=control_message_id,
+            )
+
         if not active:
-            break
+            if status_payload["draining"]:
+                status_payload["completed_at"] = now_iso()
+                status_payload["final_status"] = "stopped"
+                _append_run_step(
+                    status_payload,
+                    status_file,
+                    status="stopped",
+                    ready_task_ids=[],
+                    running_task_ids=[],
+                    open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
+                    control_message_id=str(status_payload.get("stopped_by_message_id") or "") or None,
+                )
+                if status_payload.get("stopped_by_message_id"):
+                    resolve_message(
+                        profile.paths,
+                        message_id=str(status_payload["stopped_by_message_id"]),
+                        actor=actor,
+                        note="Supervisor run stopped after draining active child work.",
+                    )
+                break
+            if not ready_tasks:
+                status_payload["completed_at"] = now_iso()
+                status_payload["final_status"] = "idle"
+                _append_run_step(
+                    status_payload,
+                    status_file,
+                    status="idle",
+                    ready_task_ids=[],
+                    running_task_ids=[],
+                    open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
+                )
+                break
+            continue
+
         next_deadline = min(child.deadline for child in active.values())
-        wait_timeout = max(0.0, next_deadline - time.monotonic())
+        wait_timeout = max(0.0, min(next_deadline - time.monotonic(), resolved_poll_interval_seconds))
         try:
             child_agent, exit_code = completion_queue.get(timeout=wait_timeout)
         except queue.Empty:
@@ -1161,6 +1386,15 @@ def run_supervisor(
             continue
         child.exit_code = exit_code if exit_code is not None else child.process.poll() if child.process is not None else None
         _finish_child(profile, child, actor=actor, run_id=run_id)
+        _append_run_step(
+            status_payload,
+            status_file,
+            status="draining" if status_payload["draining"] else "running",
+            ready_task_ids=[],
+            running_task_ids=[row.task.id for row in active.values()],
+            open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
+            finished_task_ids=[child.task.id],
+        )
 
     append_event(
         profile.paths,
@@ -1169,15 +1403,24 @@ def run_supervisor(
         payload={
             "run_id": run_id,
             "workspace_mode": resolved_workspace_mode,
-            "task_ids": [task.id for task in selected],
+            "task_ids": [child.task.id for child in children],
+            "final_status": status_payload.get("final_status") or "idle",
+            "stopped_by_message_id": status_payload.get("stopped_by_message_id"),
         },
     )
+    _write_run_status(status_file, status_payload)
     return {
         "run_id": run_id,
         "actor": actor,
         "launch_command": list(resolved_launch_command),
         "workspace_mode": resolved_workspace_mode,
+        "poll_interval_seconds": resolved_poll_interval_seconds,
+        "draining": bool(status_payload.get("draining")),
+        "final_status": status_payload.get("final_status") or "idle",
         "run_dir": str(run_dir),
+        "status_file": str(status_file),
+        "steps": list(status_payload["steps"]),
+        "stopped_by_message_id": status_payload.get("stopped_by_message_id"),
         "children": [
             {
                 "task_id": child.task.id,
@@ -1202,205 +1445,3 @@ def run_supervisor(
             for child in children
         ],
     }
-
-
-def run_supervisor_loop(
-    profile: Profile,
-    *,
-    actor: str,
-    count: int,
-    allow_high_risk: bool,
-    force: bool,
-    workspace_mode: str | None,
-    timeout_seconds: int | None,
-    poll_interval_seconds: float,
-    max_cycles: int | None,
-    stop_when_idle: bool,
-    after_cycle: Callable[[], None] | None = None,
-) -> dict[str, Any]:
-    if poll_interval_seconds < 0:
-        raise BacklogError("poll interval must be at least 0 seconds")
-    if max_cycles is not None and max_cycles < 1:
-        raise BacklogError("max cycles must be at least 1 when provided")
-
-    resolved_workspace_mode = workspace_mode or profile.supervisor_workspace_mode
-    loop_id = uuid.uuid4().hex[:8]
-    loop_dir = profile.paths.supervisor_runs_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-loop-{loop_id}"
-    loop_dir.mkdir(parents=True, exist_ok=True)
-    status_file = loop_dir / "status.json"
-    payload: dict[str, Any] = {
-        "loop_id": loop_id,
-        "actor": actor,
-        "workspace_mode": resolved_workspace_mode,
-        "poll_interval_seconds": poll_interval_seconds,
-        "max_cycles": max_cycles,
-        "stop_when_idle": stop_when_idle,
-        "loop_dir": str(loop_dir),
-        "status_file": str(status_file),
-        "cycles": [],
-    }
-    append_event(
-        profile.paths,
-        event_type="supervisor_loop_started",
-        actor=actor,
-        payload={
-            "loop_id": loop_id,
-            "workspace_mode": resolved_workspace_mode,
-            "poll_interval_seconds": poll_interval_seconds,
-            "max_cycles": max_cycles or 0,
-            "stop_when_idle": stop_when_idle,
-        },
-    )
-    _write_loop_status(profile.paths, status_file, payload)
-    if after_cycle is not None:
-        after_cycle()
-
-    while max_cycles is None or len(payload["cycles"]) < max_cycles:
-        snapshot, state = _load_synced_runtime(profile)
-        open_messages = load_inbox(profile.paths, recipient=actor, status="open")
-        control_action, control_message = _loop_control_action(open_messages)
-        ready_tasks = next_runnable_tasks(
-            snapshot,
-            state,
-            allow_high_risk=allow_high_risk,
-            limit=count or profile.supervisor_max_parallel,
-        )
-        cycle = {
-            "index": len(payload["cycles"]) + 1,
-            "at": now_iso(),
-            "status": "idle",
-            "ready_task_ids": [task.id for task in ready_tasks],
-            "open_message_ids": [str(message["message_id"]) for message in open_messages],
-        }
-        if control_message is not None:
-            cycle["control_message_id"] = str(control_message["message_id"])
-
-        if control_action == "stop" and control_message is not None:
-            cycle["status"] = "stopped"
-            payload["cycles"].append(cycle)
-            append_event(
-                profile.paths,
-                event_type="supervisor_loop_heartbeat",
-                actor=actor,
-                payload={
-                    "loop_id": loop_id,
-                    "status": "stopped",
-                    "message_id": str(control_message["message_id"]),
-                    "ready_task_ids": cycle["ready_task_ids"],
-                    "open_message_ids": cycle["open_message_ids"],
-                },
-            )
-            resolve_message(
-                profile.paths,
-                message_id=str(control_message["message_id"]),
-                actor=actor,
-                note="Supervisor loop stopped by inbox control message.",
-            )
-            payload["stopped_by_message_id"] = str(control_message["message_id"])
-            _write_loop_status(profile.paths, status_file, payload)
-            if after_cycle is not None:
-                after_cycle()
-            break
-
-        if control_action == "pause":
-            cycle["status"] = "paused"
-            payload["cycles"].append(cycle)
-            append_event(
-                profile.paths,
-                event_type="supervisor_loop_heartbeat",
-                actor=actor,
-                payload={
-                    "loop_id": loop_id,
-                    "status": "paused",
-                    "message_id": cycle.get("control_message_id"),
-                    "ready_task_ids": cycle["ready_task_ids"],
-                    "open_message_ids": cycle["open_message_ids"],
-                },
-            )
-            _write_loop_status(profile.paths, status_file, payload)
-            if after_cycle is not None:
-                after_cycle()
-            if max_cycles is not None and len(payload["cycles"]) >= max_cycles:
-                break
-            if poll_interval_seconds:
-                time.sleep(poll_interval_seconds)
-            continue
-
-        if not ready_tasks:
-            payload["cycles"].append(cycle)
-            append_event(
-                profile.paths,
-                event_type="supervisor_loop_heartbeat",
-                actor=actor,
-                payload={
-                    "loop_id": loop_id,
-                    "status": "idle",
-                    "ready_task_ids": [],
-                    "open_message_ids": cycle["open_message_ids"],
-                },
-            )
-            _write_loop_status(profile.paths, status_file, payload)
-            if after_cycle is not None:
-                after_cycle()
-            if stop_when_idle:
-                break
-            if max_cycles is not None and len(payload["cycles"]) >= max_cycles:
-                break
-            if poll_interval_seconds:
-                time.sleep(poll_interval_seconds)
-            continue
-
-        run_view = run_supervisor(
-            profile,
-            snapshot,
-            state,
-            actor=actor,
-            task_ids=[],
-            count=count,
-            allow_high_risk=allow_high_risk,
-            force=force,
-            workspace_mode=workspace_mode,
-            timeout_seconds=timeout_seconds,
-        )
-        cycle["status"] = "ran"
-        cycle["supervisor_run_id"] = str(run_view["run_id"])
-        cycle["task_ids"] = [str(child["task_id"]) for child in run_view["children"]]
-        cycle["children"] = run_view["children"]
-        payload["cycles"].append(cycle)
-        append_event(
-            profile.paths,
-            event_type="supervisor_loop_heartbeat",
-            actor=actor,
-            payload={
-                "loop_id": loop_id,
-                "status": "ran",
-                "supervisor_run_id": str(run_view["run_id"]),
-                "task_ids": cycle["task_ids"],
-                "open_message_ids": cycle["open_message_ids"],
-            },
-        )
-        _write_loop_status(profile.paths, status_file, payload)
-        if after_cycle is not None:
-            after_cycle()
-        if max_cycles is not None and len(payload["cycles"]) >= max_cycles:
-            break
-        if poll_interval_seconds:
-            time.sleep(poll_interval_seconds)
-
-    payload["completed_at"] = now_iso()
-    payload["final_status"] = payload["cycles"][-1]["status"] if payload["cycles"] else "idle"
-    append_event(
-        profile.paths,
-        event_type="supervisor_loop_finished",
-        actor=actor,
-        payload={
-            "loop_id": loop_id,
-            "cycle_count": len(payload["cycles"]),
-            "final_status": payload["final_status"],
-            "status_file": str(status_file),
-        },
-    )
-    _write_loop_status(profile.paths, status_file, payload)
-    if after_cycle is not None:
-        after_cycle()
-    return payload

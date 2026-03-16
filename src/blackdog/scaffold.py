@@ -231,9 +231,9 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 4. Before any repo edit you intend to keep, run `{cli_command} worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `{cli_command} worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
 5. Claim one task with `{cli_command} claim --agent <agent-name>`, then record structured output with `{cli_command} result record ...`.
 6. Complete or release the task through the CLI for direct work.
-7. Use `{cli_command} supervise run` or `{cli_command} supervise loop` when you want Blackdog to launch child agents instead of editing directly.
+7. Use `{cli_command} supervise run` when you want Blackdog to launch child agents instead of editing directly.
 8. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-9. Open `{profile.paths.html_file}` directly when you want the static task index; `blackdog render` refreshes it and supervisor cycles rewrite it after each loop pass.
+9. Open `{profile.paths.html_file}` directly when you want the static task index; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes.
 
 ## Docs to Review
 
@@ -247,7 +247,8 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 - The coordinating agent stays in the primary worktree.
 - Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
 - Blackdog uses branch-backed task worktrees for kept implementation changes.
-- `pause` and `stop` messages are checked between loop cycles. They do not interrupt an already-running child claim.
+- `stop` messages are checked while a supervisor run is active. They prevent new launches, but they do not interrupt an already-running child claim.
+- Tasks completed during the active run stay visible in the execution map until the next run starts and performs its opening sweep.
 
 ## Repo Contract
 

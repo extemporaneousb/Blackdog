@@ -609,7 +609,15 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     lane_positions = _lane_task_positions(snapshot.plan)
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
-    ordered_tasks = sorted(snapshot.tasks.values(), key=lambda task: ((task.wave or 9999), (task.lane_order or 9999), task.id))
+    ordered_tasks = sorted(
+        snapshot.tasks.values(),
+        key=lambda task: (
+            task.wave if task.wave is not None else 9999,
+            task.lane_order if task.lane_order is not None else 9999,
+            task.lane_position if task.lane_position is not None else 9999,
+            task.id,
+        ),
+    )
     for task in ordered_tasks:
         status, detail = classify_task_status(task, snapshot, state, allow_high_risk=False)
         activity = task_activity.get(task.id, _empty_task_activity())
@@ -695,12 +703,20 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             }
         )
     open_messages = [row for row in summary["open_messages"][:10]]
+    board_tasks = [row for row in tasks if row.get("lane_id")]
     active_tasks = [
         row
         for row in tasks
         if row["status"] == "claimed" or row.get("latest_run_status") in {"prepared", "running", "interrupted"}
     ]
-    active_tasks.sort(key=lambda row: (str(row.get("wave") or 9999), str(row["id"])))
+    active_tasks.sort(
+        key=lambda row: (
+            row.get("wave") if row.get("wave") is not None else 9999,
+            row.get("lane_plan_index") if row.get("lane_plan_index") is not None else 9999,
+            row.get("lane_position") if row.get("lane_position") is not None else 9999,
+            str(row["id"]),
+        )
+    )
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
@@ -721,6 +737,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "recent_events": summary["recent_events"],
         "plan": plan,
         "tasks": tasks,
+        "board_tasks": board_tasks,
         "graph": {
             "tasks": tasks,
             "edges": graph_edges,
@@ -741,11 +758,11 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             {"name": "epic", "meaning": "The thematic why for related tasks. Epics organize reporting, not runnable order."},
             {
                 "name": "lane",
-                "meaning": "An ordered task stream. Blackdog preserves lane order top-to-bottom and earlier lane tasks become predecessors of later ones.",
+                "meaning": "A temporary ordered slot in the active execution map. Lanes are not executable state objects; they hold task order top to bottom.",
             },
             {
                 "name": "wave",
-                "meaning": "A concurrency boundary that opens a group of lanes together after lower waves finish; a wave is a scheduler gate, not a dependency node.",
+                "meaning": "A temporary concurrency bucket for lanes. Waves are reused and compacted between runs; they are scheduler gates, not historical identities.",
             },
         ],
     }
@@ -846,6 +863,7 @@ __BLACKDOG_STYLES__
   <script>
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
+    const boardTasks = Array.isArray(snapshot.board_tasks) ? snapshot.board_tasks.slice() : allTasks.filter((task) => task.lane_id);
     const recentResults = Array.isArray(snapshot.recent_results) ? snapshot.recent_results.slice() : [];
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
@@ -1071,11 +1089,11 @@ __BLACKDOG_STYLES__
         .join("");
 
       document.getElementById("board-guide").textContent =
-        "Waves open groups of lanes for concurrent work. Lanes stay in top-to-bottom execution order. Tasks remain the only claimable and dependency-tracked unit.";
+        "Waves open concurrent lane groups. Tasks stay ordered top to bottom inside each lane. Tasks remain the only claimable and result-bearing unit.";
     }
 
     function renderStats() {
-      const counts = countStatuses(allTasks);
+      const counts = countStatuses(boardTasks);
       const order = ["total", "ready", "running", "claimed", "waiting", "blocked", "failed", "complete"];
       document.getElementById("stats").innerHTML = order.map((key) => `
         <button class="stat-card ${filterState.status === key ? "active" : ""}" type="button" data-status-filter="${escapeHtml(key)}">
@@ -1164,7 +1182,6 @@ __BLACKDOG_STYLES__
           <p class="task-route">${escapeHtml(taskSequence(task))}</p>
           <div class="task-meta">
             <span>${escapeHtml(task.epic_title || "No epic")}</span>
-            <span>Wave ${escapeHtml(task.wave ?? "unplanned")}</span>
             ${showOwner ? `<span>Owner ${escapeHtml(task.claimed_by)}</span>` : ""}
           </div>
           <p class="task-summary">${escapeHtml(taskSummary(task))}</p>
@@ -1174,28 +1191,18 @@ __BLACKDOG_STYLES__
     }
 
     function renderLaneColumn(lane) {
-      const laneChips = groupStatusChips(lane.tasks);
-      const taskLabel = lane.tasks.length === 1 ? "task" : "tasks";
       return `
         <section class="lane-column">
           <div class="lane-head">
-            <div>
-              <span class="lane-phase">Wave ${escapeHtml(lane.wave ?? "unplanned")}</span>
-              <h3>${escapeHtml(lane.title)}</h3>
-            </div>
-            <div class="lane-meta">
-              <span>${lane.tasks.length} ${taskLabel}</span>
-              <span>Top to bottom lane order</span>
-            </div>
+            <h3>${escapeHtml(lane.title)}</h3>
           </div>
-          <div class="lane-summary">${laneChips}</div>
           <div class="lane-stack">${lane.tasks.map(taskCard).join("")}</div>
         </section>
       `;
     }
 
     function renderBoard() {
-      const visibleTasks = allTasks.filter(taskMatches);
+      const visibleTasks = boardTasks.filter(taskMatches);
       const lanes = laneRows(visibleTasks);
       const waves = waveRows(lanes);
       document.getElementById("filter-summary").textContent =
@@ -1204,29 +1211,20 @@ __BLACKDOG_STYLES__
         `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave(s)`;
       document.getElementById("lane-board").innerHTML = waves.length
         ? waves.map((wave) => {
-            const waveTasks = wave.lanes.flatMap((lane) => lane.tasks);
-            const laneLabel = wave.lanes.length === 1 ? "lane" : "lanes";
-            const taskLabel = waveTasks.length === 1 ? "task" : "tasks";
-            const waveChips = groupStatusChips(waveTasks);
             return `
               <section class="wave-section">
                 <div class="wave-head">
                   <div>
-                    <span class="eyebrow">Wave Boundary</span>
+                    <span class="eyebrow">Wave</span>
                     <h3>Wave ${escapeHtml(wave.wave ?? "unplanned")}</h3>
-                    <p class="wave-copy">Lanes in this wave can advance concurrently once lower waves are complete.</p>
-                  </div>
-                  <div class="wave-meta">
-                    <span>${wave.lanes.length} ${laneLabel}</span>
-                    <span>${waveTasks.length} ${taskLabel}</span>
+                    <p class="wave-copy">Lanes in this wave can run concurrently. Tasks inside each lane advance top to bottom.</p>
                   </div>
                 </div>
-                <div class="lane-summary">${waveChips}</div>
                 <div class="wave-grid">${wave.lanes.map(renderLaneColumn).join("")}</div>
               </section>
             `;
           }).join("")
-        : `<div class="empty">No tasks match the current status/search filter.</div>`;
+        : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Execution map empty." : "No tasks match the current status/search filter."}</div>`;
     }
 
     function renderRecentResults() {
@@ -1323,7 +1321,7 @@ __BLACKDOG_STYLES__
         return;
       }
       document.getElementById("reader-eyebrow").textContent =
-        `Wave ${task.wave ?? "unplanned"} · ${task.lane_title || "No lane"} · ${task.epic_title || "No epic"}`;
+        `${task.lane_title || "No lane"} · ${task.epic_title || "No epic"}`;
       document.getElementById("reader-title").textContent = `${task.id} ${task.title}`;
       document.getElementById("reader-statuses").innerHTML = renderStatusChipRows(task.dialog_status_chips);
       document.getElementById("reader-links").innerHTML = renderTaskLinks(task);

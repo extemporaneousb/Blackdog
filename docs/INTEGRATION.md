@@ -11,13 +11,13 @@ This document describes the current integration path for adopting Blackdog in an
 - a branch-backed `blackdog worktree` lifecycle for implementation tasks
 - CLI support for task intake, claims, approvals, comments, inbox messaging, task results, and HTML rendering
 - an initial supervisor runner that can launch child commands against runnable tasks, with a default preference for the desktop Codex exec runtime
-- an initial persistent supervisor loop that refreshes repo-local status views and honors inbox `pause` or `stop` messages
+- a supervisor run that drains active work, refreshes repo-local status views, and honors inbox `stop` messages
 - a static backlog index that embeds the current snapshot JSON and links directly to artifact files on disk
 
 ## What does not exist yet
 
 - a single command that both installs Blackdog into a host environment and bootstraps the repo from scratch
-- richer active-run steering beyond simple pause or stop control messages
+- richer active-run steering beyond simple stop control messages
 - a write-enabled runtime UI for approvals or steering from the browser
 
 ## Current setup flow
@@ -68,7 +68,7 @@ Blackdog does not currently shell out to an external skill-authoring workflow at
 
 ## Expected operator model today
 
-Today, Blackdog works best as a coordinating contract used by a foreground agent or an initial supervisor loop. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the static HTML index surfaces task state and artifact links without becoming a second source of truth.
+Today, Blackdog works best as a coordinating contract used by a foreground agent or a supervisor run. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the static HTML index surfaces task state and artifact links without becoming a second source of truth.
 
 For implementation tasks, the intended operator model is now explicit and hard-gated: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
 
@@ -78,6 +78,6 @@ Delegated child runs use the same lifecycle: the coordinating supervisor stays i
 
 Each worktree should also carry its own repo-local `.VE/` when the host repo uses one. Blackdog will prefer `./.VE/bin/blackdog`, but operators must create that environment per worktree rather than copying it across checkouts.
 
-Version 0 supervisor steering is intentionally narrow. `pause` and `stop` are boundary controls checked between loop cycles, while active child claims continue until the child exits or times out. The loop rereads backlog and state on each cycle, so newly added tasks can become eligible on a later cycle once the graph allows them.
+Version 0 supervisor steering is intentionally narrow. `stop` is a boundary control checked while the run is active; it prevents new launches while already-running child claims continue until the child exits or times out. The run rereads backlog and state while it is active, so newly added or newly unblocked tasks can become eligible before the run drains to idle. Tasks completed during that run stay visible in the execution map until the next run starts and performs its cleanup sweep.
 
-As the supervisor grows beyond the current runner and loop, this guide should expand to cover agent pools, richer steering, launch configuration, and run monitoring.
+As the supervisor grows beyond the current runner, this guide should expand to cover agent pools, richer steering, launch configuration, and run monitoring.

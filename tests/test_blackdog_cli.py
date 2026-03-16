@@ -26,7 +26,7 @@ from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import append_jsonl, atomic_write_text, load_events, load_inbox, load_jsonl, record_task_result, resolve_message, save_state, send_message
-from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_loop_status
+from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
 from blackdog.ui import build_ui_snapshot, render_static_html
 from blackdog.worktree import WorktreeSpec
 
@@ -490,7 +490,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(load_jsonl(log_file), [{"event_id": "evt-1"}, {"event_id": "evt-2"}])
 
-    def test_save_state_and_loop_status_use_atomic_writes(self) -> None:
+    def test_save_state_and_run_status_use_atomic_writes(self) -> None:
         state_file = self.root / "state.json"
         with patch("blackdog.store.atomic_write_text") as state_write:
             save_state(state_file, {"schema_version": 1, "approval_tasks": {}, "task_claims": {}})
@@ -498,7 +498,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         status_file = self.root / "status.json"
         with patch("blackdog.supervisor.atomic_write_text") as status_write:
-            _write_loop_status(None, status_file, {"cycles": []})
+            _write_run_status(status_file, {"steps": []})
         status_write.assert_called_once()
 
     def test_scale_snapshot_render_and_atomic_event_append_stay_within_budget(self) -> None:
@@ -1724,7 +1724,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(chip_keys, ["complete", "subtle"])
         self.assertEqual(task["latest_run_status"], "blocked")
 
-    def test_supervise_status_reports_loop_controls_ready_tasks_and_recent_results(self) -> None:
+    def test_supervise_status_reports_run_controls_ready_tasks_and_recent_results(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         for title in ("Status task one", "Status task two"):
             run_cli(
@@ -1738,7 +1738,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "--why",
                 "Need a compact supervisor inspection surface.",
                 "--evidence",
-                "Chat needs loop state, controls, ready tasks, and recent child results.",
+                "Chat needs run state, controls, ready tasks, and recent child results.",
                 "--safe-first-slice",
                 "Print a readonly supervisor status summary.",
                 "--path",
@@ -1751,7 +1751,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "0",
             )
         task_ids = task_ids_by_title(self.root)
-        pause_message = json.loads(
+        stop_message = json.loads(
             subprocess.run(
                 [
                     sys.executable,
@@ -1768,9 +1768,9 @@ class BlackdogCliTests(unittest.TestCase):
                     "--kind",
                     "instruction",
                     "--tag",
-                    "pause",
+                    "stop",
                     "--body",
-                    "pause loop before the next cycle",
+                    "stop after the current child work drains",
                 ],
                 check=True,
                 capture_output=True,
@@ -1803,31 +1803,34 @@ class BlackdogCliTests(unittest.TestCase):
             env=cli_env(),
             cwd=self.root,
         )
-        loop_dir = self.runtime_paths().supervisor_runs_dir / "20260313-120000-loop-abcd1234"
-        loop_dir.mkdir(parents=True)
-        status_file = loop_dir / "status.json"
+        run_dir = self.runtime_paths().supervisor_runs_dir / "20260313-120000-abcd1234"
+        run_dir.mkdir(parents=True)
+        status_file = run_dir / "status.json"
         status_file.write_text(
             json.dumps(
                 {
-                    "loop_id": "abcd1234",
+                    "run_id": "abcd1234",
                     "actor": "supervisor",
                     "workspace_mode": "git-worktree",
-                    "poll_interval_seconds": 5.0,
-                    "max_cycles": None,
-                    "stop_when_idle": False,
-                    "loop_dir": str(loop_dir),
+                    "poll_interval_seconds": 1.0,
+                    "draining": True,
+                    "run_dir": str(run_dir),
                     "status_file": str(status_file),
-                    "cycles": [
+                    "supervisor_pid": os.getpid(),
+                    "steps": [
                         {
                             "index": 1,
                             "at": "2026-03-13T12:00:00-07:00",
-                            "status": "paused",
+                            "status": "draining",
                             "ready_task_ids": [task_ids["Status task one"], task_ids["Status task two"]],
-                            "open_message_ids": [pause_message["message_id"]],
+                            "running_task_ids": [task_ids["Status task one"]],
+                            "open_message_ids": [stop_message["message_id"]],
+                            "control_message_id": stop_message["message_id"],
                         }
                     ],
                     "completed_at": "2026-03-13T12:00:05-07:00",
-                    "final_status": "paused",
+                    "final_status": "stopped",
+                    "stopped_by_message_id": stop_message["message_id"],
                 },
                 indent=2,
             )
@@ -1911,15 +1914,15 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["actor"], "supervisor")
-        self.assertEqual(payload["latest_loop"]["loop_id"], "abcd1234")
-        self.assertEqual(payload["latest_loop"]["status_file"], str(status_file))
-        self.assertEqual(payload["latest_loop"]["status"], "paused")
+        self.assertEqual(payload["latest_run"]["run_id"], "abcd1234")
+        self.assertEqual(payload["latest_run"]["status_file"], str(status_file))
+        self.assertEqual(payload["latest_run"]["status"], "stopped")
         self.assertEqual(payload["workspace_contract"]["workspace_mode"], "git-worktree")
         self.assertEqual(payload["workspace_contract"]["target_branch"], "main")
         self.assertIsInstance(payload["workspace_contract"]["primary_dirty"], bool)
         self.assertIn(".VE is unversioned", payload["workspace_contract"]["ve_expectation"])
-        self.assertEqual(payload["control_action"], {"action": "pause", "message_id": pause_message["message_id"]})
-        self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [pause_message["message_id"]])
+        self.assertEqual(payload["control_action"], {"action": "stop", "message_id": stop_message["message_id"]})
+        self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [stop_message["message_id"]])
         self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Status task one"])
         self.assertEqual(len(payload["recent_results"]), 1)
         self.assertEqual(payload["recent_results"][0]["task_id"], task_ids["Status task one"])
@@ -1943,11 +1946,114 @@ class BlackdogCliTests(unittest.TestCase):
             env=cli_env(),
             cwd=self.root,
         ).stdout
-        self.assertIn("Latest loop: paused | abcd1234 | cycles 1 | workspace git-worktree", text_output)
+        self.assertIn("Latest run: stopped | abcd1234 | steps 1 | workspace git-worktree", text_output)
         self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
         self.assertIn(".VE rule: .VE is unversioned", text_output)
-        self.assertIn(f"Next cycle control: pause via {pause_message['message_id']}", text_output)
+        self.assertIn(f"Run control: stop via {stop_message['message_id']}", text_output)
         self.assertIn("Recent child-run results:", text_output)
+
+    def test_supervise_run_sweeps_completed_tasks_and_compacts_waves(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Completed task from prior run",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to verify that a new run cleans old completed work out of the execution map.",
+            "--evidence",
+            "Completed tasks should leave the active plan when the next supervisor run starts.",
+            "--safe-first-slice",
+            "Mark one task complete, then start another run and check the compacted plan.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Sweep done lane",
+            "--wave",
+            "0",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Approval-gated remaining task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need one unfinished task that remains in the plan after the sweep.",
+            "--evidence",
+            "The run should compact its wave to zero after the completed lane is removed.",
+            "--safe-first-slice",
+            "Leave one approval-gated task unfinished and start the run.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Sweep waiting lane",
+            "--wave",
+            "1",
+            "--requires-approval",
+            "--approval-reason",
+            "Hold this task for a later run.",
+        )
+        ids = task_ids_by_title(self.root)
+        completed_task_id = ids["Completed task from prior run"]
+        waiting_task_id = ids["Approval-gated remaining task"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", completed_task_id)
+        record_task_result(
+            self.runtime_paths(),
+            task_id=completed_task_id,
+            actor="agent/a",
+            status="success",
+            what_changed=["Completed the first lane before the next supervisor run."],
+            validation=["sweep-smoke"],
+            residual=[],
+            needs_user_input=False,
+            followup_candidates=[],
+        )
+        run_cli("complete", "--project-root", str(self.root), "--agent", "agent/a", "--id", completed_task_id, "--note", "done")
+
+        before_snapshot = build_ui_snapshot(load_profile(self.root))
+        self.assertEqual([row["id"] for row in before_snapshot["board_tasks"]], [completed_task_id, waiting_task_id])
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--poll-interval-seconds",
+                    "0",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(payload["final_status"], "idle")
+        plan_snapshot = load_backlog(load_profile(self.root).paths, load_profile(self.root))
+        self.assertEqual(len(plan_snapshot.plan["lanes"]), 1)
+        self.assertEqual(plan_snapshot.plan["lanes"][0]["task_ids"], [waiting_task_id])
+        self.assertEqual(plan_snapshot.plan["lanes"][0]["wave"], 0)
+        after_snapshot = build_ui_snapshot(load_profile(self.root))
+        self.assertEqual([row["id"] for row in after_snapshot["board_tasks"]], [waiting_task_id])
+        self.assertEqual(after_snapshot["board_tasks"][0]["wave"], 0)
 
     def test_render_writes_static_html_with_embedded_snapshot(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1993,6 +2099,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(".tone-complete { border-left: 6px solid var(--complete-fg); }", updated_html)
         self.assertIn('document.getElementById("reader-links").innerHTML = renderTaskLinks(task);', updated_html)
         self.assertNotIn('artifact-row">${renderTaskLinks(task)}</div>', updated_html)
+        self.assertNotIn("Top to bottom lane order", updated_html)
+        self.assertNotIn("Wave Boundary", updated_html)
 
     def test_build_child_prompt_prefers_repo_local_ve_blackdog(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2346,6 +2454,7 @@ if __name__ == "__main__":
 
     def test_supervise_run_times_out_child_and_releases_task(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
         install_exec_launcher(
             self.root,
             """
@@ -2428,14 +2537,26 @@ if __name__ == "__main__":
         self.assertIsNone(child["land_error"])
         self.assertTrue(Path(child["workspace"]).exists())
 
-        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        state = json.loads(paths.state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][task_id]["status"], "released")
 
-        result_files = sorted((self.runtime_paths().results_dir / task_id).glob("*.json"))
+        result_files = sorted((paths.results_dir / task_id).glob("*.json"))
         self.assertTrue(result_files)
         result_payload = json.loads(result_files[-1].read_text(encoding="utf-8"))
         self.assertEqual(result_payload["status"], "blocked")
         self.assertIn("Timed out before the supervisor deadline", result_payload["validation"])
+        rendered_snapshot = wait_for_html_snapshot(
+            paths.html_file,
+            lambda payload: any(
+                row.get("id") == task_id and row.get("latest_run_status") == "timed-out"
+                for row in payload.get("tasks", [])
+            ),
+            timeout=5,
+        )
+        rendered_task = next(row for row in rendered_snapshot["tasks"] if row["id"] == task_id)
+        self.assertEqual(rendered_task["operator_status"], "Failed")
+        self.assertNotIn(task_id, [row["id"] for row in rendered_snapshot["active_tasks"]])
+        self.assertIn(task_id, [row["id"] for row in rendered_snapshot["board_tasks"]])
 
     def test_supervise_run_releases_task_after_clean_child_exit_without_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2706,7 +2827,7 @@ if __name__ == "__main__":
             any("Blackdog will not auto-stash the primary checkout." in row["body"] for row in open_messages)
         )
 
-    def test_supervise_loop_runs_multiple_cycles(self) -> None:
+    def test_supervise_run_drains_multiple_tasks(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         launcher_script = self.root / "codex"
         launcher_script.write_text(
@@ -2731,10 +2852,10 @@ def main() -> int:
     project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
-    file_name = f"loop-{task_id}.txt"
+    file_name = f"run-{task_id}.txt"
     Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
     subprocess.run(["git", "add", file_name], check=True)
-    subprocess.run(["git", "commit", "-m", f"Commit {task_id} from loop child"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} from run child"], check=True)
     env = os.environ.copy()
     subprocess.run(
         [
@@ -2752,9 +2873,9 @@ def main() -> int:
             "--status",
             "success",
             "--what-changed",
-            f"loop child completed {task_id}",
+            f"run child completed {task_id}",
             "--validation",
-            "fake-loop-child",
+            "fake-run-child",
         ],
         check=True,
         env=env,
@@ -2769,7 +2890,7 @@ if __name__ == "__main__":
             encoding="utf-8",
         )
         launcher_script.chmod(0o755)
-        for title in ("Loop task one", "Loop task two"):
+        for title in ("Run task one", "Run task two"):
             run_cli(
                 "add",
                 "--project-root",
@@ -2779,17 +2900,17 @@ if __name__ == "__main__":
                 "--bucket",
                 "core",
                 "--why",
-                "Need a persistent supervisor loop.",
+                "Need the supervisor run to keep draining work until idle.",
                 "--evidence",
-                "The loop should keep claiming work across cycles.",
+                "One run should pick up later-ready work without requiring another command.",
                 "--safe-first-slice",
-                "Run one child per cycle until both tasks are done.",
+                "Run one child at a time until both tasks are done.",
                 "--path",
                 "README.md",
                 "--epic-title",
                 "Supervisor",
                 "--lane-title",
-                "Loop lane",
+                "Run lane",
                 "--wave",
                 "0",
             )
@@ -2801,7 +2922,7 @@ if __name__ == "__main__":
         (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
         subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
         subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint loop launcher for supervisor landing test"],
+            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint run launcher for supervisor landing test"],
             check=True,
             capture_output=True,
             text=True,
@@ -2814,15 +2935,13 @@ if __name__ == "__main__":
                     "-m",
                     "blackdog.cli",
                     "supervise",
-                    "loop",
+                    "run",
                     "--project-root",
                     str(self.root),
                     "--count",
                     "1",
                     "--poll-interval-seconds",
                     "0",
-                    "--max-cycles",
-                    "2",
                     "--format",
                     "json",
                 ],
@@ -2834,102 +2953,52 @@ if __name__ == "__main__":
             ).stdout
         )
 
-        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "ran"])
-        for cycle in payload["cycles"]:
-            self.assertIsNotNone(cycle["children"][0]["land_result"])
-            self.assertIsNone(cycle["children"][0]["land_error"])
+        self.assertEqual(payload["final_status"], "idle")
+        expected_ids = task_ids_by_title(self.root)
+        self.assertEqual([child["task_id"] for child in payload["children"]], [expected_ids["Run task one"], expected_ids["Run task two"]])
+        self.assertGreaterEqual(len(payload["steps"]), 3)
+        for child in payload["children"]:
+            self.assertIsNotNone(child["land_result"])
+            self.assertIsNone(child["land_error"])
         status_file = Path(payload["status_file"])
         self.assertTrue(status_file.exists())
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
         self.assertEqual(done_count, 2)
 
-    def test_supervise_loop_pauses_on_inbox_message(self) -> None:
+    def test_supervise_run_drains_after_stop_message(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        run_cli(
-            "add",
-            "--project-root",
-            str(self.root),
-            "--title",
-            "Loop task",
-            "--bucket",
-            "core",
-            "--why",
-            "Need to test inbox steering.",
-            "--evidence",
-            "The loop should honor pause instructions.",
-            "--safe-first-slice",
-            "Pause the loop before it launches work.",
-            "--path",
-            "README.md",
-            "--epic-title",
-            "Supervisor",
-            "--lane-title",
-            "Loop lane",
-            "--wave",
-            "0",
-        )
-        run_cli(
-            "inbox",
-            "send",
-            "--project-root",
-            str(self.root),
-            "--sender",
-            "user",
-            "--recipient",
-            "supervisor",
-            "--kind",
-            "instruction",
-            "--tag",
-            "pause",
-            "--body",
-            "pause loop",
-        )
-
-        payload = json.loads(
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "blackdog.cli",
-                    "supervise",
-                    "loop",
-                    "--project-root",
-                    str(self.root),
-                    "--actor",
-                    "supervisor",
-                    "--poll-interval-seconds",
-                    "0",
-                    "--max-cycles",
-                    "1",
-                    "--format",
-                    "json",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=cli_env(),
-                cwd=self.root,
-            ).stdout
-        )
-
-        self.assertEqual(payload["cycles"][0]["status"], "paused")
-        ready_rows = json.loads(
-            subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=cli_env(),
-                cwd=self.root,
-            ).stdout
-        )
-        self.assertEqual(len(ready_rows), 1)
-
-    def test_supervise_loop_stops_at_cycle_boundary_on_inbox_message(self) -> None:
-        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        launcher_script = self.root / "codex"
-        launcher_script.write_text(
+        for title in ("Boundary task one", "Boundary task two"):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                "Need to test stop semantics while a run is active.",
+                "--evidence",
+                "The supervisor run should drain active work and avoid launching the next task after stop.",
+                "--safe-first-slice",
+                "Hold the first child open, send stop, then release it.",
+                "--path",
+                "README.md",
+                "--epic-title",
+                "Supervisor",
+                "--lane-title",
+                "Boundary lane",
+                "--wave",
+                "0",
+            )
+        task_ids = task_ids_by_title(self.root)
+        first_task_id = task_ids["Boundary task one"]
+        sync_dir = self.runtime_paths().control_dir / "run-stop-sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        (sync_dir / f"gate-{first_task_id}.txt").write_text("hold\n", encoding="utf-8")
+        install_exec_launcher(
+            self.root,
             """
 #!/usr/bin/env python3
 from __future__ import annotations
@@ -2937,6 +3006,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -2951,6 +3021,19 @@ def main() -> int:
     project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
+    sync_dir = project_root / ".git" / "blackdog" / "run-stop-sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    started_file = sync_dir / f"started-{task_id}.txt"
+    gate_file = sync_dir / f"gate-{task_id}.txt"
+    release_file = sync_dir / f"release-{task_id}.txt"
+    started_file.write_text("started\\n", encoding="utf-8")
+    if gate_file.exists():
+        deadline = time.time() + 10
+        while time.time() < deadline and not release_file.exists():
+            time.sleep(0.05)
+        if not release_file.exists():
+            print(f"timed out waiting for release of {task_id}", file=sys.stderr)
+            return 3
     file_name = f"boundary-{task_id}.txt"
     Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
     subprocess.run(["git", "add", file_name], check=True)
@@ -2983,47 +3066,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        launcher_script.chmod(0o755)
-        for title in ("Boundary task one", "Boundary task two"):
-            run_cli(
-                "add",
-                "--project-root",
-                str(self.root),
-                "--title",
-                title,
-                "--bucket",
-                "core",
-                "--why",
-                "Need to test boundary stop semantics.",
-                "--evidence",
-                "The supervisor loop should stop before starting another cycle.",
-                "--safe-first-slice",
-                "Run one child, then stop before the next claim.",
-                "--path",
-                "README.md",
-                "--epic-title",
-                "Supervisor",
-                "--lane-title",
-                "Boundary lane",
-                "--wave",
-                "0",
+""",
+            commit_message="Checkpoint gated launcher for stop test",
             )
-        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
-            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-            f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-        )
-        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint boundary launcher for supervisor stop test"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
 
         process = subprocess.Popen(
             [
@@ -3031,7 +3076,7 @@ if __name__ == "__main__":
                 "-m",
                 "blackdog.cli",
                 "supervise",
-                "loop",
+                "run",
                 "--project-root",
                 str(self.root),
                 "--actor",
@@ -3040,8 +3085,6 @@ if __name__ == "__main__":
                 "1",
                 "--poll-interval-seconds",
                 "0.2",
-                "--max-cycles",
-                "3",
                 "--format",
                 "json",
             ],
@@ -3052,12 +3095,7 @@ if __name__ == "__main__":
             cwd=self.root,
         )
         try:
-            status_file = wait_for_glob(self.runtime_paths().supervisor_runs_dir, "*-loop-*/status.json")
-            wait_for_json(
-                status_file,
-                lambda payload: len(payload.get("cycles", [])) >= 1 and payload["cycles"][0]["status"] == "ran",
-                timeout=10.0,
-            )
+            wait_for_file(sync_dir / f"started-{first_task_id}.txt", timeout=10)
             run_cli(
                 "inbox",
                 "send",
@@ -3072,8 +3110,9 @@ if __name__ == "__main__":
                 "--tag",
                 "stop",
                 "--body",
-                "stop after this cycle",
+                "stop after the current task drains",
             )
+            (sync_dir / f"release-{first_task_id}.txt").write_text("release\n", encoding="utf-8")
             stdout, stderr = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, stderr)
         finally:
@@ -3081,8 +3120,10 @@ if __name__ == "__main__":
                 process.send_signal(signal.SIGINT)
                 process.wait(timeout=5)
         payload = json.loads(stdout)
-        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "stopped"])
+        self.assertEqual(payload["final_status"], "stopped")
         self.assertIn("stopped_by_message_id", payload)
+        self.assertEqual(len(payload["children"]), 1)
+        self.assertEqual(payload["children"][0]["task_id"], first_task_id)
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
         self.assertEqual(done_count, 1)
@@ -3098,150 +3139,7 @@ if __name__ == "__main__":
         )
         self.assertEqual(len(ready_rows), 1)
 
-    def test_supervise_loop_picks_up_task_added_between_cycles(self) -> None:
-        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        launcher_script = self.root / "codex"
-        launcher_script.write_text(
-            """
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-
-def main() -> int:
-    args = sys.argv[1:]
-    if args == ["--help"]:
-        print("Commands:\\n  exec")
-        return 0
-    if not args or args[0] != "exec":
-        print("expected exec launcher", file=sys.stderr)
-        return 2
-    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
-    task_id = os.environ["BLACKDOG_TASK_ID"]
-    actor = os.environ["BLACKDOG_AGENT_NAME"]
-    file_name = f"picked-up-{task_id}.txt"
-    Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
-    subprocess.run(["git", "add", file_name], check=True)
-    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after backlog pickup"], check=True)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "blackdog.cli",
-            "result",
-            "record",
-            "--project-root",
-            str(project_root),
-            "--id",
-            task_id,
-            "--actor",
-            actor,
-            "--status",
-            "success",
-            "--what-changed",
-            f"picked up task {task_id} after loop restart",
-            "--validation",
-            "fake-pickup-child",
-        ],
-        check=True,
-        env=os.environ.copy(),
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-""".strip()
-            + "\n",
-            encoding="utf-8",
-        )
-        launcher_script.chmod(0o755)
-        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
-            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-            f'launch_command = ["{launcher_script}", "exec", "--dangerously-bypass-approvals-and-sandbox"]',
-        )
-        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml", "codex"], check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-m", "Checkpoint pickup launcher for supervisor loop test"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "blackdog.cli",
-                "supervise",
-                "loop",
-                "--project-root",
-                str(self.root),
-                "--actor",
-                "supervisor",
-                "--count",
-                "1",
-                "--poll-interval-seconds",
-                "0.5",
-                "--max-cycles",
-                "2",
-                "--format",
-                "json",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=cli_env(),
-            cwd=self.root,
-        )
-        try:
-            status_file = wait_for_glob(self.runtime_paths().supervisor_runs_dir, "*-loop-*/status.json")
-            wait_for_json(
-                status_file,
-                lambda payload: len(payload.get("cycles", [])) >= 1 and payload["cycles"][0]["status"] == "idle",
-                timeout=10.0,
-            )
-            run_cli(
-                "add",
-                "--project-root",
-                str(self.root),
-                "--title",
-                "Task added during loop",
-                "--bucket",
-                "core",
-                "--why",
-                "Need to prove the loop rereads backlog state between cycles.",
-                "--evidence",
-                "A task added after an idle cycle should be claimed on the next pass.",
-                "--safe-first-slice",
-                "Add one task while the loop is sleeping between cycles.",
-                "--path",
-                "README.md",
-                "--epic-title",
-                "Supervisor",
-                "--lane-title",
-                "Boundary lane",
-                "--wave",
-                "0",
-            )
-            stdout, stderr = process.communicate(timeout=10)
-            self.assertEqual(process.returncode, 0, stderr)
-        finally:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
-                process.wait(timeout=5)
-        payload = json.loads(stdout)
-        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["idle", "ran"])
-        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
-        done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
-        self.assertEqual(done_count, 1)
-
-    def test_supervise_loop_picks_up_task_added_while_current_task_runs(self) -> None:
+    def test_supervise_run_picks_up_task_added_while_current_task_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         run_cli(
             "add",
@@ -3252,9 +3150,9 @@ if __name__ == "__main__":
             "--bucket",
             "core",
             "--why",
-            "Need to prove the loop rereads backlog state after a running task finishes.",
+            "Need to prove the run rereads backlog state after a running task finishes.",
             "--evidence",
-            "A downstream task added during the active child run should be claimed on the next cycle.",
+            "A downstream task added during the active child run should be claimed before the run exits.",
             "--safe-first-slice",
             "Hold one child run open, add a downstream task, then release the child.",
             "--path",
@@ -3267,7 +3165,7 @@ if __name__ == "__main__":
             "0",
         )
         current_task_id = task_ids_by_title(self.root)["Current running task"]
-        sync_dir = self.runtime_paths().control_dir / "loop-sync"
+        sync_dir = self.runtime_paths().control_dir / "run-sync"
         sync_dir.mkdir(parents=True, exist_ok=True)
         (sync_dir / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
         install_exec_launcher(
@@ -3294,7 +3192,7 @@ def main() -> int:
     project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
-    sync_dir = project_root / ".git" / "blackdog" / "loop-sync"
+    sync_dir = project_root / ".git" / "blackdog" / "run-sync"
     sync_dir.mkdir(parents=True, exist_ok=True)
     started_file = sync_dir / f"started-{task_id}.txt"
     gate_file = sync_dir / f"gate-{task_id}.txt"
@@ -3349,7 +3247,7 @@ if __name__ == "__main__":
                 "-m",
                 "blackdog.cli",
                 "supervise",
-                "loop",
+                "run",
                 "--project-root",
                 str(self.root),
                 "--actor",
@@ -3358,8 +3256,6 @@ if __name__ == "__main__":
                 "1",
                 "--poll-interval-seconds",
                 "0",
-                "--max-cycles",
-                "2",
                 "--format",
                 "json",
             ],
@@ -3380,9 +3276,9 @@ if __name__ == "__main__":
                 "--bucket",
                 "core",
                 "--why",
-                "Need to prove the loop does not stop after the current child finishes.",
+                "Need to prove the run does not stop after the current child finishes.",
                 "--evidence",
-                "A downstream task added during execution should be launched on the next cycle.",
+                "A downstream task added during execution should be launched before the run drains.",
                 "--safe-first-slice",
                 "Append one task to the current lane while the first child is still running.",
                 "--path",
@@ -3404,14 +3300,206 @@ if __name__ == "__main__":
                 process.wait(timeout=5)
 
         payload = json.loads(stdout)
-        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "ran"])
-        self.assertEqual(payload["cycles"][0]["task_ids"], [current_task_id])
-        self.assertEqual(payload["cycles"][1]["task_ids"], [downstream_task_id])
+        self.assertEqual(payload["final_status"], "idle")
+        self.assertEqual([child["task_id"] for child in payload["children"]], [current_task_id, downstream_task_id])
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][current_task_id]["status"], "done")
         self.assertEqual(state["task_claims"][downstream_task_id]["status"], "done")
 
-    def test_supervise_loop_refreshes_static_html_while_child_is_running(self) -> None:
+    def test_supervise_run_picks_up_task_approved_while_current_task_runs(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Current running task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove an active run notices approval decisions before it drains.",
+            "--evidence",
+            "A task approved while another child is running should launch before the run exits.",
+            "--safe-first-slice",
+            "Hold one child run open, approve the downstream task, then release the child.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Approval lane",
+            "--wave",
+            "0",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Approval-gated downstream task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove approval decisions unblock queued work during an active run.",
+            "--evidence",
+            "The supervisor should pick up the task after approval instead of returning idle first.",
+            "--safe-first-slice",
+            "Approve the queued task while the first child is still running.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Approval lane",
+            "--wave",
+            "0",
+            "--requires-approval",
+            "--approval-reason",
+            "Explicit operator approval is required before this task can start.",
+        )
+        ids = task_ids_by_title(self.root)
+        current_task_id = ids["Current running task"]
+        downstream_task_id = ids["Approval-gated downstream task"]
+        paths = self.runtime_paths()
+        sync_dir = paths.control_dir / "run-approval-sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
+        (sync_dir / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    sync_dir = project_root / ".git" / "blackdog" / "run-approval-sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    started_file = sync_dir / f"started-{task_id}.txt"
+    gate_file = sync_dir / f"gate-{task_id}.txt"
+    release_file = sync_dir / f"release-{task_id}.txt"
+    started_file.write_text("started\\n", encoding="utf-8")
+    if gate_file.exists():
+        deadline = time.time() + 10
+        while time.time() < deadline and not release_file.exists():
+            time.sleep(0.05)
+        if not release_file.exists():
+            print(f"timed out waiting for release of {task_id}", file=sys.stderr)
+            return 3
+    file_name = f"approval-{task_id}.txt"
+    Path(file_name).write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", file_name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after approval update"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"completed {task_id} after approval update",
+            "--validation",
+            "fake-approval-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint gated launcher for approval test",
+        )
+
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--count",
+                "1",
+                "--poll-interval-seconds",
+                "0",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            wait_for_file(sync_dir / f"started-{current_task_id}.txt", timeout=10)
+            run_cli(
+                "decide",
+                "--project-root",
+                str(self.root),
+                "--id",
+                downstream_task_id,
+                "--agent",
+                "operator",
+                "--decision",
+                "approved",
+                "--note",
+                "Approved while the current child run is still active.",
+            )
+            (sync_dir / f"release-{current_task_id}.txt").write_text("release\n", encoding="utf-8")
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+
+        payload = json.loads(stdout)
+        self.assertEqual(payload["final_status"], "idle")
+        self.assertEqual([child["task_id"] for child in payload["children"]], [current_task_id, downstream_task_id])
+        state = json.loads(paths.state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][current_task_id]["status"], "done")
+        self.assertEqual(state["task_claims"][downstream_task_id]["status"], "done")
+        self.assertEqual(state["approval_tasks"][downstream_task_id]["status"], "done")
+
+        rendered_snapshot = html_snapshot(paths.html_file)
+        board_ids = [row["id"] for row in rendered_snapshot["board_tasks"]]
+        self.assertEqual(board_ids, [current_task_id, downstream_task_id])
+        rendered_tasks = {row["id"]: row for row in rendered_snapshot["tasks"]}
+        self.assertEqual(rendered_tasks[current_task_id]["operator_status"], "Complete")
+        self.assertEqual(rendered_tasks[downstream_task_id]["operator_status"], "Complete")
+
+    def test_supervise_run_refreshes_static_html_while_child_is_running(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         run_cli(
             "add",
@@ -3517,7 +3605,7 @@ if __name__ == "__main__":
                 "-m",
                 "blackdog.cli",
                 "supervise",
-                "loop",
+                "run",
                 "--project-root",
                 str(self.root),
                 "--actor",
@@ -3526,8 +3614,6 @@ if __name__ == "__main__":
                 "1",
                 "--poll-interval-seconds",
                 "0",
-                "--max-cycles",
-                "1",
                 "--format",
                 "json",
             ],
@@ -3560,10 +3646,10 @@ if __name__ == "__main__":
                 process.wait(timeout=5)
 
         payload = json.loads(stdout)
-        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran"])
-        self.assertEqual(payload["cycles"][0]["task_ids"], [task_id])
+        self.assertEqual(payload["final_status"], "idle")
+        self.assertEqual([child["task_id"] for child in payload["children"]], [task_id])
 
-    def test_supervise_loop_skips_removed_downstream_task_and_runs_next_available(self) -> None:
+    def test_supervise_run_skips_removed_downstream_task_and_runs_next_available(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         for title in ("Current running task", "Removed downstream task", "Remaining downstream task"):
             run_cli(
@@ -3575,7 +3661,7 @@ if __name__ == "__main__":
                 "--bucket",
                 "core",
                 "--why",
-                "Need to prove the loop rereads backlog state after downstream removal.",
+                "Need to prove the run rereads backlog state after downstream removal.",
                 "--evidence",
                 "A removed task should disappear from the next runnable selection.",
                 "--safe-first-slice",
@@ -3593,7 +3679,7 @@ if __name__ == "__main__":
         current_task_id = ids["Current running task"]
         removed_task_id = ids["Removed downstream task"]
         remaining_task_id = ids["Remaining downstream task"]
-        sync_dir = self.runtime_paths().control_dir / "loop-sync"
+        sync_dir = self.runtime_paths().control_dir / "run-sync"
         sync_dir.mkdir(parents=True, exist_ok=True)
         (sync_dir / f"gate-{current_task_id}.txt").write_text("hold\n", encoding="utf-8")
         install_exec_launcher(
@@ -3620,7 +3706,7 @@ def main() -> int:
     project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
-    sync_dir = project_root / ".git" / "blackdog" / "loop-sync"
+    sync_dir = project_root / ".git" / "blackdog" / "run-sync"
     sync_dir.mkdir(parents=True, exist_ok=True)
     started_file = sync_dir / f"started-{task_id}.txt"
     gate_file = sync_dir / f"gate-{task_id}.txt"
@@ -3675,7 +3761,7 @@ if __name__ == "__main__":
                 "-m",
                 "blackdog.cli",
                 "supervise",
-                "loop",
+                "run",
                 "--project-root",
                 str(self.root),
                 "--actor",
@@ -3684,8 +3770,6 @@ if __name__ == "__main__":
                 "1",
                 "--poll-interval-seconds",
                 "0",
-                "--max-cycles",
-                "2",
                 "--format",
                 "json",
             ],
@@ -3708,10 +3792,9 @@ if __name__ == "__main__":
                 process.wait(timeout=5)
 
         payload = json.loads(stdout)
-        self.assertEqual([cycle["status"] for cycle in payload["cycles"]], ["ran", "ran"])
-        self.assertEqual(payload["cycles"][0]["task_ids"], [current_task_id])
-        self.assertEqual(payload["cycles"][1]["task_ids"], [remaining_task_id])
-        executed_task_ids = [task_id for cycle in payload["cycles"] for task_id in cycle.get("task_ids", [])]
+        self.assertEqual(payload["final_status"], "idle")
+        self.assertEqual([child["task_id"] for child in payload["children"]], [current_task_id, remaining_task_id])
+        executed_task_ids = [child["task_id"] for child in payload["children"]]
         self.assertNotIn(removed_task_id, executed_task_ids)
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][current_task_id]["status"], "done")

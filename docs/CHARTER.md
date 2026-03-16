@@ -49,7 +49,7 @@ Partially encoded today:
 
 - multi-agent coordination primitives exist, but only as building blocks
 - the worktree model is now explicit, mutable runtime state is shared from one control root, and delegated child runs land through the same WTAM lifecycle as direct work
-- a persistent supervisor loop can cycle work, reread backlog state between cycles, refresh repo-local status views, and honor simple inbox control messages
+- a supervisor run can drain work, reread backlog/state while active, refresh repo-local status views, and honor simple inbox stop control messages
 - child-agent launch, monitoring, and worktree lifecycle exist, but still require better active-run steering and cleanup ergonomics
 - backlog planning exists in the file format, but management UX is still task-by-task
 - host-repo installation works, but it is not yet a one-command experience
@@ -58,11 +58,11 @@ Not yet encoded in runtime behavior:
 
 - interactive drift assessment and redirection workflows
 - a rollout playbook based on real host-repo adoption
-- richer supervisor steering than boundary pause/stop controls plus next-cycle backlog rereads
+- richer supervisor steering than boundary stop controls plus active-run backlog rereads
 
 ## Success criteria
 
-Blackdog should eventually support a development loop where a user can:
+Blackdog should eventually support a development run model where a user can:
 
 1. define or revise a project goal at a high level
 2. have Blackdog convert that into a structured backlog with parallel work lanes

@@ -47,11 +47,9 @@ from .store import (
 from .supervisor import (
     SupervisorError,
     build_supervisor_status_view,
-    render_supervisor_loop_output,
     render_supervisor_output,
     render_supervisor_status_output,
     run_supervisor,
-    run_supervisor_loop,
 )
 from .ui import UIError, build_ui_snapshot
 from .worktree import (
@@ -230,11 +228,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_supervise_run(args: argparse.Namespace) -> int:
-    profile, snapshot, state = _load_runtime(Path(args.project_root) if args.project_root else None)
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
     payload = run_supervisor(
         profile,
-        snapshot,
-        state,
         actor=args.actor,
         task_ids=args.id,
         count=args.count,
@@ -242,28 +238,10 @@ def cmd_supervise_run(args: argparse.Namespace) -> int:
         force=args.force,
         workspace_mode=None,
         timeout_seconds=args.timeout_seconds,
+        poll_interval_seconds=args.poll_interval_seconds,
     )
     _emit_render(profile)
     print(render_supervisor_output(payload, as_json=args.format == "json"), end="")
-    return 0
-
-
-def cmd_supervise_loop(args: argparse.Namespace) -> int:
-    profile = load_profile(Path(args.project_root) if args.project_root else None)
-    payload = run_supervisor_loop(
-        profile,
-        actor=args.actor,
-        count=args.count,
-        allow_high_risk=args.allow_high_risk,
-        force=args.force,
-        workspace_mode=None,
-        timeout_seconds=args.timeout_seconds or None,
-        poll_interval_seconds=args.poll_interval_seconds,
-        max_cycles=args.max_cycles or None,
-        stop_when_idle=args.stop_when_idle,
-        after_cycle=lambda: _emit_render(profile),
-    )
-    print(render_supervisor_loop_output(payload, as_json=args.format == "json"), end="")
     return 0
 
 
@@ -692,7 +670,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_supervise = subparsers.add_parser("supervise", help="Launch child agents against runnable backlog tasks")
     supervise_subparsers = p_supervise.add_subparsers(dest="supervise_command", required=True)
-    p_supervise_run = supervise_subparsers.add_parser("run", help="Run one supervisor pass and wait for child runs")
+    p_supervise_run = supervise_subparsers.add_parser("run", help="Drain runnable work with one supervisor run")
     p_supervise_run.add_argument("--project-root", default=None)
     p_supervise_run.add_argument("--actor", default="supervisor")
     p_supervise_run.add_argument("--id", action="append", default=[])
@@ -700,21 +678,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_run.add_argument("--allow-high-risk", action="store_true")
     p_supervise_run.add_argument("--force", action="store_true")
     p_supervise_run.add_argument("--timeout-seconds", type=int, default=0)
+    p_supervise_run.add_argument("--poll-interval-seconds", type=float, default=1.0)
     p_supervise_run.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_run.set_defaults(func=cmd_supervise_run)
-    p_supervise_loop = supervise_subparsers.add_parser("loop", help="Keep a supervisor session alive across multiple cycles")
-    p_supervise_loop.add_argument("--project-root", default=None)
-    p_supervise_loop.add_argument("--actor", default="supervisor")
-    p_supervise_loop.add_argument("--count", type=int, default=0)
-    p_supervise_loop.add_argument("--allow-high-risk", action="store_true")
-    p_supervise_loop.add_argument("--force", action="store_true")
-    p_supervise_loop.add_argument("--timeout-seconds", type=int, default=0)
-    p_supervise_loop.add_argument("--poll-interval-seconds", type=float, default=5.0)
-    p_supervise_loop.add_argument("--max-cycles", type=int, default=0)
-    p_supervise_loop.add_argument("--stop-when-idle", action="store_true")
-    p_supervise_loop.add_argument("--format", choices=("text", "json"), default="text")
-    p_supervise_loop.set_defaults(func=cmd_supervise_loop)
-    p_supervise_status = supervise_subparsers.add_parser("status", help="Report loop state, open controls, ready tasks, and recent child results")
+    p_supervise_status = supervise_subparsers.add_parser("status", help="Report latest run state, open controls, ready tasks, and recent child results")
     p_supervise_status.add_argument("--project-root", default=None)
     p_supervise_status.add_argument("--actor", default="supervisor")
     p_supervise_status.add_argument("--allow-high-risk", action="store_true")

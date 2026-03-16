@@ -1,6 +1,6 @@
 # CLI Reference
 
-The current CLI covers the backlog runtime, a one-shot supervisor runner, an initial long-lived supervisor loop, and a static task index renderer.
+The current CLI covers the backlog runtime, a draining supervisor runner, and a static task index renderer.
 
 When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
 
@@ -32,7 +32,7 @@ For Blackdog's own repo, manual-first is the default operating mode
 until the runtime-hardening tasks land. Prefer the direct `blackdog
 claim` -> `blackdog worktree preflight|start` -> `blackdog result
 record` -> land/`blackdog complete` flow for normal Blackdog-on-
-Blackdog work. Use `blackdog supervise run|loop` when you are
+Blackdog work. Use `blackdog supervise run` when you are
 explicitly exercising delegated execution or supervisor behavior, not
 as the required path to continue product development.
 
@@ -46,7 +46,6 @@ as the required path to continue product development.
 - `blackdog summary`
 - `blackdog next`
 - `blackdog supervise run`
-- `blackdog supervise loop`
 - `blackdog supervise status`
 - `blackdog claim --agent NAME`
 - `blackdog release --id TASK --agent NAME`
@@ -69,13 +68,13 @@ Blackdog creates branch-backed child worktrees from the primary worktree branch 
 
 The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state. It also surfaces the run workspace mode, the task branch to target-branch landing path, the primary-worktree cleanliness gate, and the per-worktree `.VE` rule. When the current workspace contains `.VE/bin/blackdog`, the prompt points child agents at that workspace-local CLI; otherwise it falls back to `blackdog` from the active environment and tells the agent to bootstrap `./.VE` in that worktree rather than reusing another worktree's environment.
 
-`blackdog supervise loop` keeps a supervisor session alive across multiple cycles, writes loop status under the configured control root `supervisor-runs/` directory, refreshes the HTML control page after each cycle, and can be steered through inbox messages sent to the supervisor actor. `pause` messages prevent new launches while they remain open, and `stop` messages end the loop before the next cycle starts. These are boundary controls; they do not interrupt a child task that is already running.
+`blackdog supervise run` is the only supervisor mode. It performs one cleanup sweep at the start of the run, removes already-completed tasks from the execution map, drops empty lanes and waves, compacts remaining waves back to small integers, then keeps rereading backlog/state while the run is active. Tasks completed during that active run stay visible in place on the execution map until the next run starts and sweeps them away. The run exits only when it reaches idle or when a `stop` inbox message puts it into draining mode. `stop` prevents new launches but does not interrupt already-running child tasks.
 
-`blackdog supervise status` is the chat-native inspection surface for that loop. It reports the latest saved loop status for a supervisor actor, the currently open `pause`/`stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
+`blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the currently open `stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
 
 `blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, the latest recorded activity actor/timestamp, backlog counts, objectives, graph nodes and dependency edges, per-task compute/result metadata, operator-facing task status chips, direct artifact links, active-task summaries, recent task results, and grouping guidance.
 
-`blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and supervisor loop cycles rerender that page as part of normal state changes. The page embeds the current snapshot JSON directly, renders a full-width lane board with clickable status counters, keeps the inbox compact in the top-right corner, and links to filesystem artifacts like result JSON files, prompt/stdout/stderr logs, metadata, and captured child diffs. Reload the file when you want the latest state.
+`blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and active supervisor runs rerender that page as part of normal state changes. The page embeds the current snapshot JSON directly, renders the current execution map from planned lane tasks only, keeps the inbox compact in the top-right corner, and links to filesystem artifacts like result JSON files, prompt/stdout/stderr logs, metadata, and captured child diffs. Reload the file when you want the latest state.
 
 ### Structured results
 

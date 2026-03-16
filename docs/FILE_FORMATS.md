@@ -111,18 +111,19 @@ Each task block requires:
 
 - `task`: the executable unit. Claims, results, completion, and dependencies are tracked at task level.
 - `epic`: a thematic grouping for related tasks. Epics organize reporting and intent; they do not control runnable order.
-- `lane`: an ordered task stream inside an epic or work area. Lane order is preserved top-to-bottom in the plan and UI, and earlier tasks in a lane become predecessor tasks for later tasks in that same lane.
-- `wave`: a concurrency boundary that opens a group of lanes together. Blackdog only considers the lowest unfinished wave runnable, so wave `1` waits for unfinished work in wave `0`.
+- `lane`: a temporary ordered slot inside the execution map. Lane order is preserved top-to-bottom in the plan and UI, and the current scheduler advances lane tasks in that order.
+- `wave`: a temporary concurrency boundary that opens a group of lanes together. Blackdog only considers the lowest unfinished wave runnable, so wave `1` waits for unfinished work in wave `0`, then compacts active waves back to small integers between runs.
 
 Clarifications:
 
 - lanes and waves are planning/scheduling structures, not executable objects
 - only tasks are claimable, completable, and result-bearing
-- lanes capture serial order inside a concurrent work area
+- lanes capture execution-map order inside a concurrent work area
 - waves capture which set of lanes is currently open for concurrent progress
 - a wave is a scheduler gate, not a dependency node; task-to-task predecessor relationships still drive runnable checks inside an open wave
+- completed tasks stay in the current execution map for the rest of that active supervisor run, then disappear on the next run's opening sweep if they are still done
 
-In practice: `epic` answers "why this cluster exists", `lane` answers "what happens in sequence inside a concurrent stream", `wave` answers "which group of lanes is currently open", and `task` is the unit an agent actually executes.
+In practice: `epic` answers "why this cluster exists", `lane` answers "which ordered slot the task is currently in", `wave` answers "which concurrent lane group is currently open", and `task` is the unit an agent actually executes.
 
 ## `<control_dir>/backlog-state.json`
 
@@ -159,13 +160,11 @@ Canonical event types include:
 - `worktree_land`
 - `worktree_cleanup`
 - `supervisor_run_started`
+- `supervisor_run_sweep`
 - `child_launch`
 - `child_launch_failed`
 - `child_finish`
 - `supervisor_run_finished`
-- `supervisor_loop_started`
-- `supervisor_loop_heartbeat`
-- `supervisor_loop_finished`
 
 ## `<control_dir>/inbox.jsonl`
 
@@ -199,21 +198,22 @@ Required keys:
 
 ## `<control_dir>/supervisor-runs/*/status.json`
 
-Loop status snapshot written by `blackdog supervise loop`.
+Run status snapshot written by `blackdog supervise run`.
 
 Current keys:
 
-- `loop_id`
+- `run_id`
 - `actor`
 - `workspace_mode`
 - `poll_interval_seconds`
-- `max_cycles`
-- `stop_when_idle`
-- `loop_dir`
+- `draining`
+- `run_dir`
 - `status_file`
-- `cycles`
+- `supervisor_pid`
+- `steps`
 - `completed_at`
 - `final_status`
+- `stopped_by_message_id`
 
 ## `blackdog snapshot`
 
@@ -225,6 +225,7 @@ Current top-level identity keys:
 - `project_root`
 - `control_dir`
 - `profile_file`
+- `board_tasks`
 
 ## `blackdog worktree preflight --format json`
 
@@ -265,7 +266,7 @@ Canonical chat-native supervisor inspection payload.
 Current keys include:
 
 - `actor`
-- `latest_loop`
+- `latest_run`
 - `workspace_contract`
 - `control_action`
 - `open_control_messages`

@@ -19,12 +19,11 @@ The backlog system should live in the repo that depends on it. Skills should exp
 
 Today Blackdog implements the durable backlog runtime, the
 coordination primitives, a WTAM branch-backed worktree lifecycle
-for implementation tasks, an initial supervisor runner, an initial
-persistent supervisor loop, and a static HTML index that embeds its
-own snapshot data. Claims, inbox messages, structured results, HTML
-rendering, a canonical snapshot contract, per-task workspaces, and
-one-shot child-agent launches exist. Richer active-run steering and
-drift-management workflows still do not.
+for implementation tasks, a draining supervisor runner, and a static
+HTML index that embeds its own snapshot data. Claims, inbox messages,
+structured results, HTML rendering, a canonical snapshot contract,
+per-task workspaces, and child-agent launches exist. Richer
+write-enabled runtime steering still does not.
 
 
 ## Main layers
@@ -84,11 +83,12 @@ drift-management workflows still do not.
    current implementation-work lifecycle: start from the primary
    worktree branch, develop in a branch-backed task worktree, and land
    with fast-forward semantics.
-7. `blackdog supervise run` claims runnable tasks, allocates
-   workspaces, launches child agents, and captures their run
-   artifacts.
-8. `blackdog supervise loop` repeats that cycle over time, records
-   loop heartbeats, and refreshes the repo-local control surface.
+7. `blackdog supervise run` starts with a cleanup sweep, compacts the
+   active execution map, claims runnable tasks, allocates workspaces,
+   launches child agents, rereads backlog and state while it is
+   active, leaves newly completed tasks visible in place until the
+   next run's opening sweep, and captures run artifacts until the run
+   drains to idle or is stopped.
 9. `blackdog snapshot` builds the canonical readonly monitor
    contract from backlog, state, inbox, events, results, and
    supervisor artifacts.
@@ -144,19 +144,19 @@ grouping:
 
 - tasks are the only executable unit; claims, completion, results, and
   dependency checks all happen at task level
-- lanes are ordered task streams; lane order is preserved in the plan
-  and UI, and earlier lane tasks become predecessor tasks for later
-  lane tasks
+- lanes are temporary ordered slots in the execution map; lane order
+  is preserved in the plan and UI, and the current scheduler advances
+  lane tasks top-to-bottom
 - waves group lanes that can open together for concurrent progress
-  once every lower wave is finished
+  once every lower wave is finished, but they are reused and compacted
+  between runs
 - waves are scheduler gates, not dependency nodes; they describe when a
   set of lanes becomes eligible, while task-to-task predecessors still
   explain why one task is waiting on another
 
 This distinction matters in the static control surface: the board
 should show lane order explicitly, use waves as concurrency boundaries,
-and avoid mixing historical child-run states into the current task
-status.
+and avoid treating lanes or waves as completion-bearing objects.
 
 ## Static control surface
 
@@ -164,7 +164,7 @@ Blackdog's browser surface is now a rendered artifact, not a runtime
 service:
 
 - CLI commands write backlog/state/events/inbox/task-result artifacts
-- supervisor cycles write run artifacts and rerender the static HTML
+- supervisor runs write run artifacts and rerender the static HTML
 - `blackdog render` rebuilds `backlog-index.html` by embedding the
   current snapshot JSON directly in the file
 - the page runs only local filtering and dialog behavior in the
@@ -176,12 +176,13 @@ That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
 
-The initial supervisor loop is inbox-steerable in a narrow way: open
-`pause` messages addressed to the supervisor actor prevent new
-launches, and `stop` messages terminate the loop while preserving
-repo-local events and status files. The static HTML index is readonly:
-it surfaces tasks, results, and artifact links, but intervention still
-flows back through chat and Blackdog CLI writes.
+The current supervisor run is inbox-steerable in a narrow way: open
+`stop` messages addressed to the supervisor actor put the run into a
+draining state, which prevents new launches while preserving repo-local
+events and status files until already-running children finish. The
+static HTML index is readonly: it surfaces tasks, results, and artifact
+links, but intervention still flows back through chat and Blackdog CLI
+writes.
 
 
 ## WTAM audit

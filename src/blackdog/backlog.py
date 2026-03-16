@@ -11,7 +11,7 @@ import subprocess
 import textwrap
 
 from .config import Profile, ProjectPaths, slugify
-from .store import atomic_write_text, claim_is_active, locked_path, parse_datetime
+from .store import atomic_write_text, claim_is_active, load_state, locked_path, save_state
 
 
 TASK_BLOCK_RE = re.compile(r"```json backlog-task\n(.*?)\n```", re.S)
@@ -54,6 +54,7 @@ class TaskInfo:
     lane_title: str | None
     wave: int | None
     lane_order: int | None
+    lane_position: int | None
     predecessor_ids: tuple[str, ...]
 
     @property
@@ -301,7 +302,7 @@ def load_backlog(paths: ProjectPaths, profile: Profile) -> BacklogSnapshot:
     plan = plan_blocks[0] if plan_blocks else {"epics": [], "lanes": []}
     narratives = _parse_narratives(text)
     epics = {str(task_id): str(epic.get("title") or "") for epic in plan.get("epics", []) for task_id in epic.get("task_ids", [])}
-    lane_positions: dict[str, tuple[str, str, int, int, tuple[str, ...]]] = {}
+    lane_positions: dict[str, tuple[str, str, int, int, int, tuple[str, ...]]] = {}
     lane_order_by_id = {str(lane.get("id")): idx for idx, lane in enumerate(plan.get("lanes", []))}
     for lane in sorted(
         plan.get("lanes", []),
@@ -312,12 +313,22 @@ def load_backlog(paths: ProjectPaths, profile: Profile) -> BacklogSnapshot:
         wave = int(lane.get("wave", 0))
         task_ids = tuple(str(task_id) for task_id in lane.get("task_ids", []))
         for index, task_id in enumerate(task_ids):
-            lane_positions[task_id] = (lane_id, lane_title, wave, lane_order_by_id.get(lane_id, 0), task_ids[:index])
+            lane_positions[task_id] = (
+                lane_id,
+                lane_title,
+                wave,
+                lane_order_by_id.get(lane_id, 0),
+                index,
+                task_ids[:index],
+            )
     tasks: dict[str, TaskInfo] = {}
     for payload in _extract_json_blocks(text, "backlog-task"):
         validate_task_payload(payload, profile)
         task_id = str(payload["id"])
-        lane_id, lane_title, wave, lane_order, predecessors = lane_positions.get(task_id, (None, None, None, None, ()))
+        lane_id, lane_title, wave, lane_order, lane_position, predecessors = lane_positions.get(
+            task_id,
+            (None, None, None, None, None, ()),
+        )
         tasks[task_id] = TaskInfo(
             payload=payload,
             narrative=narratives.get(task_id, TaskNarrative("", "", ())),
@@ -326,6 +337,7 @@ def load_backlog(paths: ProjectPaths, profile: Profile) -> BacklogSnapshot:
             lane_title=lane_title,
             wave=wave,
             lane_order=lane_order,
+            lane_position=lane_position,
             predecessor_ids=tuple(predecessors),
         )
     validate_plan_payload(plan, task_ids=set(tasks))
@@ -498,7 +510,15 @@ def build_view_model(
     counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
     objective_rows: dict[str, dict[str, Any]] = {row["id"]: {"id": row["id"], "title": row["title"], "total": 0, "done": 0} for row in _parse_objectives(snapshot)}
     tasks_by_lane: list[dict[str, Any]] = []
-    tasks_sorted = sorted(snapshot.tasks.values(), key=lambda task: ((task.wave or 9999), (task.lane_order or 9999), task.id))
+    tasks_sorted = sorted(
+        snapshot.tasks.values(),
+        key=lambda task: (
+            task.wave if task.wave is not None else 9999,
+            task.lane_order if task.lane_order is not None else 9999,
+            task.lane_position if task.lane_position is not None else 9999,
+            task.id,
+        ),
+    )
     for task in tasks_sorted:
         status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
         counts[status] += 1
@@ -762,6 +782,86 @@ def refresh_backlog_headers(profile: Profile) -> None:
         updated = _apply_runtime_headers(text, profile)
         if updated != text:
             atomic_write_text(profile.paths.backlog_file, updated)
+
+
+def compact_active_plan(snapshot: BacklogSnapshot, state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    original_plan = snapshot.plan if isinstance(snapshot.plan, dict) else {"epics": [], "lanes": []}
+    active_task_ids = {task_id for task_id in snapshot.tasks if not task_done(task_id, state)}
+    removed_task_ids: list[str] = []
+    removed_lane_ids: list[str] = []
+    removed_epic_ids: list[str] = []
+    seen_removed_tasks: set[str] = set()
+
+    lanes: list[dict[str, Any]] = []
+    for lane in original_plan.get("lanes", []):
+        if not isinstance(lane, dict):
+            continue
+        lane_task_ids = [str(task_id) for task_id in lane.get("task_ids", [])]
+        kept_task_ids = [task_id for task_id in lane_task_ids if task_id in active_task_ids]
+        for task_id in lane_task_ids:
+            if task_id in active_task_ids or task_id in seen_removed_tasks:
+                continue
+            seen_removed_tasks.add(task_id)
+            removed_task_ids.append(task_id)
+        if not kept_task_ids:
+            lane_id = str(lane.get("id") or "").strip()
+            if lane_id:
+                removed_lane_ids.append(lane_id)
+            continue
+        updated_lane = dict(lane)
+        updated_lane["task_ids"] = kept_task_ids
+        lanes.append(updated_lane)
+
+    wave_values = sorted({int(lane.get("wave", 0)) for lane in lanes})
+    wave_map = {wave: index for index, wave in enumerate(wave_values)}
+    for lane in lanes:
+        lane["wave"] = wave_map[int(lane.get("wave", 0))]
+
+    epics: list[dict[str, Any]] = []
+    for epic in original_plan.get("epics", []):
+        if not isinstance(epic, dict):
+            continue
+        task_ids = [str(task_id) for task_id in epic.get("task_ids", []) if str(task_id) in active_task_ids]
+        if not task_ids:
+            epic_id = str(epic.get("id") or "").strip()
+            if epic_id:
+                removed_epic_ids.append(epic_id)
+            continue
+        updated_epic = dict(epic)
+        updated_epic["task_ids"] = task_ids
+        epics.append(updated_epic)
+
+    plan = {"epics": epics, "lanes": lanes}
+    validate_plan_payload(plan, task_ids=active_task_ids)
+    return plan, {
+        "changed": plan != original_plan,
+        "active_task_ids": sorted(active_task_ids),
+        "removed_task_ids": removed_task_ids,
+        "removed_lane_ids": removed_lane_ids,
+        "removed_epic_ids": removed_epic_ids,
+        "wave_map": {str(source): target for source, target in wave_map.items()},
+    }
+
+
+def sweep_completed_tasks(profile: Profile) -> dict[str, Any]:
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+        state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+        save_state(profile.paths.state_file, state)
+        plan, meta = compact_active_plan(snapshot, state)
+        if meta["changed"]:
+            updated = _apply_runtime_headers(snapshot.raw_text, profile)
+            updated = _replace_plan_block(updated, plan)
+            atomic_write_text(profile.paths.backlog_file, updated)
+        return {
+            "changed": bool(meta["changed"]),
+            "plan": plan,
+            "active_task_ids": meta["active_task_ids"],
+            "removed_task_ids": meta["removed_task_ids"],
+            "removed_lane_ids": meta["removed_lane_ids"],
+            "removed_epic_ids": meta["removed_epic_ids"],
+            "wave_map": meta["wave_map"],
+        }
 
 
 def _replace_plan_block(text: str, plan: dict[str, Any]) -> str:
