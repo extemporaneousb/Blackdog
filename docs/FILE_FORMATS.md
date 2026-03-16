@@ -308,11 +308,14 @@ Top-level keys:
 - `control_dir`
 - `profile_file`
 - `workspace_contract`
+- `headers`
+- `hero_highlights`
 - `last_activity`
 - `counts`
 - `total`
 - `push_objective`
 - `objectives`
+- `objective_rows`
 - `next_rows`
 - `open_messages`
 - `recent_results`
@@ -396,13 +399,53 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `stderr_href`
 - `run_dir_href`
 
+Current `hero_highlights` keys summarize the hero's workspace/activity strip:
+
+- `branch`
+- `commit`
+- `latest_run`
+- `time_on_task`
+
+Current `objective_rows[*]` keys summarize the objective-first board contract:
+
+- `key`
+- `id`
+- `title`
+- `task_ids`
+- `active_task_ids`
+- `lane_ids`
+- `lane_titles`
+- `wave_ids`
+- `total`
+- `done`
+- `remaining`
+- `progress`
+
+`objective_rows[*].progress` carries:
+
+- `counts`
+- `total`
+- `complete`
+- `remaining`
+- `percent`
+
+Current `next_rows[*]` keys summarize the "what's next" queue projection:
+
+- `id`
+- `title`
+- `lane`
+- `wave`
+- `risk`
+
 Layout projections:
 
-- Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, and `links`.
+- Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
 - Hero workspace metadata renders as key-value rows that can include `workspace_contract.target_branch`, `workspace_contract.workspace_mode`, `workspace_contract.primary_dirty`, `workspace_contract.workspace_has_local_blackdog`, `project_root`, `control_dir`, and the current target commit from `headers`.
-- The browser renders those hero, backlog, and completed-history surfaces as three top-to-bottom horizontal panels rather than desktop side columns.
-- The `Backlog` panel uses `plan.lanes`, `board_tasks`, `open_messages`, and `links.inbox`. `board_tasks` retains every lane-assigned task row in the snapshot, including completed rows.
-- The rendered browser backlog view filters out rows whose `operator_status_key` normalizes to `complete`, so search and status filters apply only to active backlog rows.
-- The `Completed Tasks` panel derives its history cards from `tasks[*]` rows whose `operator_status_key` is `complete`, ordered by `completed_at`, `latest_result_at`, or `latest_run_at`, and uses each task row's latest result/run/task links.
-- `recent_results` remains a compact recent-result feed in the snapshot for other consumers; it is not the sole source for the rendered completed-task history.
+- Objective cards use `objective_rows` and open the task reader through the lead task for each objective row.
+- Overview cards use `objective_rows`, `next_rows`, `hero_highlights`, `last_activity`, `open_messages`, and `workspace_contract` to keep the current push, next slice, and coordination state visible.
+- Domain chips aggregate `tasks[*].domains` across the full snapshot, including completed work.
+- The browser renders a hero panel, an objective-card section, overview/domain panels, and one active-work `Backlog` execution map rather than a backlog/history split.
+- The `Backlog` execution map uses `plan.lanes`, `board_tasks`, `objective_rows`, `open_messages`, and `links.inbox`. `board_tasks` retains every lane-assigned or objective-tagged task row in the snapshot, including completed rows.
+- The rendered browser execution map filters out rows whose `operator_status_key` normalizes to `complete`, so the visible backlog stays focused on active work while completed rows still feed progress, domain, and reader surfaces.
+- `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
 - When `links.inbox` is present, the `Backlog` header renders it as the `Inbox JSON` text link with the current open-message count from `open_messages`; when it is absent, the link stays hidden.

@@ -1585,7 +1585,14 @@ class BlackdogCliTests(unittest.TestCase):
 
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         html = paths.html_file.read_text(encoding="utf-8")
+        self.assertIn('id="objectives-panel"', html)
+        self.assertIn('id="objective-cards"', html)
         self.assertIn("function objectiveSections(tasks)", html)
+        self.assertIn(
+            "Objective cards summarize completion, remaining work, and the next live slice before you drop into the lane-by-lane execution map.",
+            html,
+        )
+        self.assertIn('document.getElementById("objective-cards").innerHTML = objectiveRows.length', html)
         self.assertIn('data-objective-row="${escapeHtml(objective.key || objective.id || "objective")}"', html)
         self.assertIn("Objective and overview cards open the task reader", html)
 
@@ -1800,6 +1807,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('id="board-summary"', html)
         self.assertNotIn('id="backlog-controls"', html)
         self.assertIn('id="status-legend"', html)
+        self.assertIn('id="overview-panel"', html)
+        self.assertIn('id="overview-cards"', html)
+        self.assertIn('id="domains-panel"', html)
+        self.assertIn('id="domain-chips"', html)
         self.assertIn('id="hero-progress"', html)
         self.assertNotIn('id="completed-history-panel"', html)
         self.assertNotIn('id="completed-history-scroll"', html)
@@ -1810,6 +1821,16 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("function renderProgressBar(progress, className = \"\")", html)
         self.assertIn("function applyProgressBars(root = document)", html)
         self.assertIn("function interactiveCardAttributes(taskId)", html)
+        self.assertIn("function renderOverviewCards()", html)
+        self.assertIn("function renderDomainChips()", html)
+        self.assertIn(
+            "These cards keep the current push objective, next runnable slice, and repo coordination state visible without reading the full task inventory.",
+            html,
+        )
+        self.assertIn(
+            "Domain tags show where the backlog is concentrated across the full snapshot, including completed work.",
+            html,
+        )
         self.assertIn('class="objective-card"${interactiveCardAttributes(leadTaskId)}', html)
         self.assertIn('class="compact-card"${interactiveCardAttributes(taskId)}', html)
         self.assertIn('role="button" tabindex="0"', html)
@@ -2276,6 +2297,12 @@ class BlackdogCliTests(unittest.TestCase):
             "Static UI task",
             "--bucket",
             "html",
+            "--objective",
+            "OBJ-1",
+            "--domain",
+            "html",
+            "--domain",
+            "docs",
             "--why",
             "Need one task to prove render writes a static HTML page.",
             "--evidence",
@@ -2293,10 +2320,13 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         updated_html = html_path.read_text(encoding="utf-8")
+        rendered_snapshot = html_snapshot(html_path)
         self.assertIn("Static UI task", updated_html)
         self.assertIn("blackdog-snapshot", updated_html)
         self.assertIn("backlog.md", updated_html)
         self.assertIn("task-results", updated_html)
+        self.assertEqual([row["id"] for row in rendered_snapshot["objective_rows"]], ["OBJ-1"])
+        self.assertEqual(rendered_snapshot["tasks"][0]["domains"], ["html", "docs"])
         self.assertIn('id="hero-panel"', updated_html)
         self.assertIn('id="hero-head"', updated_html)
         self.assertIn("Workspace", updated_html)
@@ -2314,6 +2344,12 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('data-hero-section="artifacts"', updated_html)
         self.assertIn('class="meta-table"', updated_html)
         self.assertIn('class="meta-row"', updated_html)
+        self.assertIn('id="objectives-panel"', updated_html)
+        self.assertIn('id="objective-cards"', updated_html)
+        self.assertIn('id="overview-panel"', updated_html)
+        self.assertIn('id="overview-cards"', updated_html)
+        self.assertIn('id="domains-panel"', updated_html)
+        self.assertIn('id="domain-chips"', updated_html)
         self.assertIn('id="backlog-panel"', updated_html)
         self.assertIn("<h2>Backlog</h2>", updated_html)
         self.assertIn('id="board-summary"', updated_html)
@@ -2324,6 +2360,21 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('Inbox JSON · ${openMessages.length} open', updated_html)
         self.assertIn('Latest activity ${formatTimestamp(activity.at)}${actor}${source}', updated_html)
         self.assertNotIn('Latest activity ${relativeTime(activity.at)}${actor}${source}', updated_html)
+        self.assertIn(
+            "Objective cards summarize completion, remaining work, and the next live slice before you drop into the lane-by-lane execution map.",
+            updated_html,
+        )
+        self.assertIn(
+            "These cards keep the current push objective, next runnable slice, and repo coordination state visible without reading the full task inventory.",
+            updated_html,
+        )
+        self.assertIn(
+            "Domain tags show where the backlog is concentrated across the full snapshot, including completed work.",
+            updated_html,
+        )
+        self.assertIn("What We Are Doing", updated_html)
+        self.assertIn("What's Next", updated_html)
+        self.assertIn("Coordination", updated_html)
         self.assertIn("Objective and overview cards open the task reader", updated_html)
         self.assertNotIn("Search and status filters apply only to the execution map.", updated_html)
         self.assertIn("const heroHighlights = snapshot.hero_highlights || {};", updated_html)
@@ -2338,11 +2389,16 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("function renderProgressBar(progress, className = \"\")", updated_html)
         self.assertIn("function applyProgressBars(root = document)", updated_html)
         self.assertIn("function interactiveCardAttributes(taskId)", updated_html)
+        self.assertIn("function renderOverviewCards()", updated_html)
+        self.assertIn("function renderDomainChips()", updated_html)
         self.assertIn('class="objective-card"${interactiveCardAttributes(leadTaskId)}', updated_html)
         self.assertIn('class="compact-card"${interactiveCardAttributes(taskId)}', updated_html)
         self.assertIn('role="button" tabindex="0"', updated_html)
         self.assertIn('document.addEventListener("keydown", (event) => {', updated_html)
         self.assertIn('document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");', updated_html)
+        self.assertIn('document.getElementById("objective-cards").innerHTML = objectiveRows.length', updated_html)
+        self.assertIn('document.getElementById("overview-cards").innerHTML = [', updated_html)
+        self.assertIn('document.getElementById("domain-chips").innerHTML = domains.length', updated_html)
         self.assertIn('document.getElementById("status-legend").innerHTML = renderLegend();', updated_html)
         self.assertIn('data-progress="${escapeHtml(progress.percent)}"', updated_html)
         self.assertIn('class="progress-cluster hero-progress-cluster"', updated_html)

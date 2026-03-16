@@ -20,7 +20,7 @@ The backlog system should live in the repo that depends on it. Skills should exp
 Today Blackdog implements the durable backlog runtime, the
 coordination primitives, a WTAM branch-backed worktree lifecycle
 for implementation tasks, a draining supervisor runner, and a static
-three-panel HTML board that embeds its own snapshot data. Claims,
+objective-first HTML board that embeds its own snapshot data. Claims,
 inbox messages, structured results, HTML rendering, a canonical
 snapshot contract, per-task workspaces, and child-agent launches
 exist. Richer write-enabled runtime steering still does not.
@@ -154,11 +154,12 @@ grouping:
   set of lanes becomes eligible, while task-to-task predecessors still
   explain why one task is waiting on another
 
-This distinction matters in the static control surface: the `Backlog`
-panel should show lane order explicitly, use waves as concurrency
-boundaries, and avoid treating lanes or waves as completion-bearing
-objects. Completed work belongs in the separate `Completed Tasks`
-history surface.
+This distinction matters in the static control surface: the active-work
+board should lead with objective rows, preserve lane order inside each
+objective row, use waves as concurrency boundaries, and avoid treating
+lanes or waves as completion-bearing objects. Completed work stays in
+the snapshot for progress rollups, domain coverage, and reader access,
+but the browser filters it out of the active execution map.
 
 ## Static control surface
 
@@ -178,16 +179,19 @@ That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
 
-The rendered page is intentionally narrow and panelized as three
-horizontal sections: a hero panel for objective/render/workspace
-metadata and global artifact links, a `Backlog` panel for lane-ordered
-active work plus the localized search/status controls and inbox link,
-and a `Completed Tasks` panel for recent finished history. The inbox
-link is local to the `Backlog` header rather than global page chrome,
-hero metadata renders as key-value information rows, and artifact
-navigation stays as plain text links so chips remain reserved for task
-status/state. The browser moves completed rows out of the active
-backlog view without dropping their underlying snapshot rows.
+The rendered page is intentionally narrow but no longer split into
+backlog and completed-history panels. It opens with a hero panel for
+objective/render/workspace metadata and global artifact links, follows
+with objective cards plus overview and domain surfaces, and ends with
+the `Backlog` execution map grouped by objective row and lane column.
+The inbox link is local to the `Backlog` header rather than global page
+chrome, hero metadata renders as key-value information rows, overview
+cards keep the current objective, next runnable slice, and coordination
+state visible, domain chips summarize full-snapshot coverage, and
+artifact navigation stays as plain text links so chips remain reserved
+for task status/state. The browser moves completed rows out of the
+active backlog view without dropping their underlying snapshot rows or
+reader access.
 
 The current supervisor run is inbox-steerable in a narrow way: open
 `stop` messages addressed to the supervisor actor put the run into a
