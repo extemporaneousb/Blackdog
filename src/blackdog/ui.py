@@ -788,59 +788,76 @@ __BLACKDOG_STYLES__
 <body>
   <script id="blackdog-snapshot" type="application/json">__BLACKDOG_SNAPSHOT__</script>
   <div class="page">
-    <section class="topbar">
+    <div class="page-shell">
       <article class="panel hero">
-        <span class="eyebrow">Blackdog board</span>
-        <h1 id="project-name">Backlog</h1>
-        <p id="last-updated" class="last-updated"></p>
-        <p id="hero-copy" class="hero-copy"></p>
-        <div id="hero-meta" class="tag-row"></div>
-        <div id="global-links" class="link-row"></div>
-      </article>
-      <aside class="panel side-panel">
-        <div class="side-head">
-          <div>
-            <span class="eyebrow">Inbox</span>
-            <h2 id="inbox-title">Open Messages</h2>
+        <div class="hero-head">
+          <div class="hero-title-block">
+            <span class="eyebrow">Blackdog Backlog</span>
+            <h1 id="project-name">Backlog</h1>
+            <p id="hero-copy" class="hero-copy"></p>
           </div>
-          <a id="inbox-link" class="link-pill" href="#" target="_blank" rel="noreferrer">Inbox JSON</a>
+          <div class="hero-render-block">
+            <span class="eyebrow">Last Rendered</span>
+            <p id="last-rendered" class="last-rendered"></p>
+            <p id="render-note" class="hero-activity"></p>
+          </div>
         </div>
-        <div id="inbox-list" class="mini-stack"></div>
-      </aside>
-    </section>
-
-    <section class="panel top-stats">
-      <div id="stats" class="stats"></div>
-    </section>
-
-    <section class="panel controls">
-      <input id="task-search" class="search" type="search" placeholder="Search task id, title, lane, epic, or artifact status">
-      <div class="tag-row">
-        <span id="filter-summary" class="search-hint"></span>
-      </div>
-    </section>
-
-    <section class="panel board-panel">
-      <div class="section-head">
-        <div>
-          <span class="eyebrow">Lane View</span>
-          <h2>Execution Map</h2>
-          <p id="board-guide" class="section-copy"></p>
+        <div class="hero-stats">
+          <div id="stats" class="stats"></div>
         </div>
-        <span id="board-summary" class="section-meta"></span>
-      </div>
-      <div id="lane-board" class="lane-board"></div>
-    </section>
-
-    <section class="panel result-panel">
-      <div class="section-head">
-        <div>
-          <span class="eyebrow">Recent Output</span>
-          <h2>Results</h2>
+        <div class="hero-foot">
+          <section class="hero-subpanel">
+            <span class="eyebrow">Workspace</span>
+            <div id="hero-meta" class="tag-row"></div>
+          </section>
+          <section class="hero-subpanel">
+            <span class="eyebrow">Artifacts</span>
+            <div id="global-links" class="link-row"></div>
+          </section>
         </div>
+      </article>
+
+      <div class="board-shell">
+        <section class="panel board-panel">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Lane View</span>
+              <h2>Execution Map</h2>
+              <p id="board-guide" class="section-copy"></p>
+            </div>
+            <div class="section-toolbar">
+              <span id="board-summary" class="section-meta"></span>
+              <input id="task-search" class="search" type="search" placeholder="Search task id, title, lane, epic, or artifact status">
+              <span id="filter-summary" class="search-hint"></span>
+            </div>
+          </div>
+          <div id="lane-board" class="lane-board"></div>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">Completed Tasks</span>
+              <h2>History</h2>
+              <p class="section-copy">Completed work stays visible here with its latest recorded outcome and artifact links.</p>
+            </div>
+            <span id="history-summary" class="section-meta"></span>
+          </div>
+          <div id="recent-results" class="results-grid"></div>
+        </section>
+
+        <aside class="panel side-panel">
+          <div class="side-head">
+            <div>
+              <span class="eyebrow">Inbox</span>
+              <h2 id="inbox-title">Open Messages</h2>
+            </div>
+            <a id="inbox-link" class="link-pill" href="#" target="_blank" rel="noreferrer">Inbox JSON</a>
+          </div>
+          <div id="inbox-list" class="mini-stack"></div>
+        </aside>
       </div>
-      <div id="recent-results" class="results-grid"></div>
-    </section>
+    </div>
   </div>
 
   <dialog id="reader-dialog">
@@ -864,7 +881,6 @@ __BLACKDOG_STYLES__
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
     const boardTasks = Array.isArray(snapshot.board_tasks) ? snapshot.board_tasks.slice() : allTasks.filter((task) => task.lane_id);
-    const recentResults = Array.isArray(snapshot.recent_results) ? snapshot.recent_results.slice() : [];
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
     const filterState = { search: "", status: "total" };
@@ -1071,17 +1087,21 @@ __BLACKDOG_STYLES__
         objective || "Static backlog board with lane-ordered task stacks, task detail dialogs, and direct artifact links.";
       const activity = snapshot.last_activity || {};
       const actor = activity.actor ? ` by ${activity.actor}` : "";
-      const role = activity.actor_role ? ` (${activity.actor_role})` : "";
       const source = activity.type_label ? ` via ${activity.type_label.toLowerCase()}` : "";
-      document.getElementById("last-updated").textContent =
-        `Last updated ${relativeTime(activity.at || snapshot.generated_at)}${actor}${role}${source}`;
+      const renderedAt = snapshot.generated_at || activity.at || "";
+      const lastRendered = document.getElementById("last-rendered");
+      lastRendered.textContent = renderedAt ? relativeTime(renderedAt) : "just now";
+      lastRendered.title = formatTimestamp(renderedAt);
+      document.getElementById("render-note").textContent = activity.at
+        ? `Latest activity ${relativeTime(activity.at)}${actor}${source}`
+        : formatTimestamp(renderedAt);
 
       const contract = snapshot.workspace_contract || {};
       document.getElementById("hero-meta").innerHTML = [
         contract.target_branch ? `<span class="pill">Target ${escapeHtml(contract.target_branch)}</span>` : "",
+        contract.workspace_mode ? `<span class="pill">Mode ${escapeHtml(contract.workspace_mode)}</span>` : "",
         contract.primary_dirty === false ? `<span class="pill">Primary clean</span>` : `<span class="pill">Primary dirty</span>`,
-        contract.workspace_has_local_blackdog ? `<span class="pill">Local .VE ready</span>` : `<span class="pill">Bootstrap .VE here</span>`,
-        snapshot.generated_at ? `<span class="pill">Rendered ${escapeHtml(relativeTime(snapshot.generated_at))}</span>` : ""
+        contract.workspace_has_local_blackdog ? `<span class="pill">Local .VE ready</span>` : `<span class="pill">Bootstrap .VE here</span>`
       ].filter(Boolean).join("");
 
       document.getElementById("global-links").innerHTML = globalLinks()
@@ -1227,26 +1247,49 @@ __BLACKDOG_STYLES__
         : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Execution map empty." : "No tasks match the current status/search filter."}</div>`;
     }
 
+    function completedTasks() {
+      return allTasks
+        .filter((task) => normalizeStatus(task.operator_status_key) === "complete")
+        .sort((left, right) => {
+          const leftTime = Date.parse(String(left.completed_at || left.latest_result_at || left.latest_run_at || ""));
+          const rightTime = Date.parse(String(right.completed_at || right.latest_result_at || right.latest_run_at || ""));
+          if (!Number.isNaN(leftTime) || !Number.isNaN(rightTime)) {
+            return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+          }
+          return String(left.id).localeCompare(String(right.id));
+        });
+    }
+
     function renderRecentResults() {
-      document.getElementById("recent-results").innerHTML = recentResults.length
-        ? recentResults.slice(0, 8).map((row) => `
-            <article class="result-card" data-result-task="${escapeHtml(row.task_id || "")}">
-              <div class="result-top">
-                <strong>${escapeHtml(row.task_id || "?")}</strong>
-                <div class="chips">${chip(resultStatusLabels[row.status] || row.status, row.status)}</div>
-              </div>
-              <div class="result-meta">
-                <span>${escapeHtml(row.actor || "")}</span>
-                <span>${escapeHtml(relativeTime(row.recorded_at))}</span>
-              </div>
-              <p>${escapeHtml(row.preview || "")}</p>
-              <div class="artifact-row">
-                ${artifactLink("Result", row.result_href)}
-                ${row.task_id ? `<a class="artifact-link" href="#${escapeHtml(row.task_id)}">Task</a>` : ""}
-              </div>
-            </article>
-          `).join("")
-        : `<div class="empty">No task results recorded yet.</div>`;
+      const completed = completedTasks();
+      document.getElementById("history-summary").textContent = `${completed.length} completed`;
+      document.getElementById("recent-results").innerHTML = completed.length
+        ? completed.slice(0, 8).map((task) => {
+            const statusKey = normalizeStatus(task.latest_result_status || task.operator_status_key || "complete");
+            const statusLabel = task.latest_result_status
+              ? (resultStatusLabels[task.latest_result_status] || task.latest_result_status)
+              : "Complete";
+            return `
+              <article class="result-card" data-result-task="${escapeHtml(task.id || "")}">
+                <div class="result-top">
+                  <strong>${escapeHtml(task.id || "?")}</strong>
+                  <div class="chips">${chip(statusLabel, statusKey)}</div>
+                </div>
+                <h3 class="result-title">${escapeHtml(task.title || "")}</h3>
+                <div class="result-meta">
+                  <span>${escapeHtml(relativeTime(task.completed_at || task.latest_result_at || task.latest_run_at))}</span>
+                  ${task.total_compute_label ? `<span>Compute ${escapeHtml(task.total_compute_label)}</span>` : ""}
+                </div>
+                <p>${escapeHtml(task.latest_result_preview || task.operator_status_detail || task.safe_first_slice || "")}</p>
+                <div class="artifact-row">
+                  ${artifactLink("Result", task.latest_result_href)}
+                  ${artifactLink("Run", task.run_dir_href)}
+                  ${task.id ? `<a class="artifact-link" href="#${escapeHtml(task.id)}">Task</a>` : ""}
+                </div>
+              </article>
+            `;
+          }).join("")
+        : `<div class="empty">No completed tasks recorded yet.</div>`;
     }
 
     function detailBlock(label, content, options = {}) {
