@@ -219,13 +219,18 @@ Current keys:
 
 Canonical static-page snapshot payload.
 
-Current top-level identity keys:
+This is the same JSON payload embedded into `backlog-index.html`.
+Representative top-level keys include:
 
 - `project_name`
 - `project_root`
 - `control_dir`
 - `profile_file`
+- `workspace_contract`
 - `board_tasks`
+- `tasks`
+- `recent_results`
+- `links`
 
 ## `blackdog worktree preflight --format json`
 
@@ -314,10 +319,19 @@ Top-level keys:
 - `recent_events`
 - `plan`
 - `tasks`
+- `board_tasks`
 - `graph`
 - `active_tasks`
 - `links`
 - `grouping_guide`
+
+Current `links` keys:
+
+- `backlog`
+- `html`
+- `events`
+- `inbox`
+- `results`
 
 Current `graph` keys:
 
@@ -381,3 +395,13 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `stdout_href`
 - `stderr_href`
 - `run_dir_href`
+
+Layout projections:
+
+- Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, and `links`.
+- Hero workspace pills currently read `workspace_contract.target_branch`, `workspace_contract.workspace_mode`, `workspace_contract.primary_dirty`, and `workspace_contract.workspace_has_local_blackdog`.
+- The `Backlog` panel uses `plan.lanes`, `board_tasks`, `open_messages`, and `links.inbox`. `board_tasks` retains every lane-assigned task row in the snapshot, including completed rows.
+- The rendered browser backlog view filters out rows whose `operator_status_key` normalizes to `complete`, so search and status filters apply only to active backlog rows.
+- The `Completed Tasks` panel derives its history cards from `tasks[*]` rows whose `operator_status_key` is `complete`, ordered by `completed_at`, `latest_result_at`, or `latest_run_at`, and uses each task row's latest result/run/task links.
+- `recent_results` remains a compact recent-result feed in the snapshot for other consumers; it is not the sole source for the rendered completed-task history.
+- When `links.inbox` is present, the `Backlog` header renders it as the `Inbox JSON` link with the current open-message count from `open_messages`; when it is absent, the link stays hidden.

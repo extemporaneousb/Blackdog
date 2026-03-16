@@ -20,10 +20,10 @@ The backlog system should live in the repo that depends on it. Skills should exp
 Today Blackdog implements the durable backlog runtime, the
 coordination primitives, a WTAM branch-backed worktree lifecycle
 for implementation tasks, a draining supervisor runner, and a static
-HTML index that embeds its own snapshot data. Claims, inbox messages,
-structured results, HTML rendering, a canonical snapshot contract,
-per-task workspaces, and child-agent launches exist. Richer
-write-enabled runtime steering still does not.
+three-panel HTML board that embeds its own snapshot data. Claims,
+inbox messages, structured results, HTML rendering, a canonical
+snapshot contract, per-task workspaces, and child-agent launches
+exist. Richer write-enabled runtime steering still does not.
 
 
 ## Main layers
@@ -154,9 +154,11 @@ grouping:
   set of lanes becomes eligible, while task-to-task predecessors still
   explain why one task is waiting on another
 
-This distinction matters in the static control surface: the board
-should show lane order explicitly, use waves as concurrency boundaries,
-and avoid treating lanes or waves as completion-bearing objects.
+This distinction matters in the static control surface: the `Backlog`
+panel should show lane order explicitly, use waves as concurrency
+boundaries, and avoid treating lanes or waves as completion-bearing
+objects. Completed work belongs in the separate `Completed Tasks`
+history surface.
 
 ## Static control surface
 
@@ -175,6 +177,15 @@ service:
 That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
+
+The rendered page is intentionally narrow and panelized: a hero panel
+for objective/render/workspace metadata and global artifact links, a
+`Backlog` panel for lane-ordered active work plus the localized
+search/status controls and inbox link, and a `Completed Tasks` panel
+for recent finished history. The inbox link is local to the `Backlog`
+header rather than global page chrome, and the browser moves completed
+rows out of the active backlog view without dropping their underlying
+snapshot rows.
 
 The current supervisor run is inbox-steerable in a narrow way: open
 `stop` messages addressed to the supervisor actor put the run into a
