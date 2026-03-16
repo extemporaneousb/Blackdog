@@ -131,9 +131,12 @@ def claim_is_active(entry: dict[str, Any]) -> bool:
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    row = json.dumps(payload, sort_keys=True) + "\n"
+    with locked_path(path):
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        atomic_write_text(path, existing + row)
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:

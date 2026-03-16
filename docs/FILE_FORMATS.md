@@ -130,6 +130,10 @@ Top-level keys:
 
 Append-only event log.
 
+Writers serialize updates with a sibling lock file and rewrite the
+file via atomic replace, so readers observe the last complete JSONL
+snapshot instead of partial appended rows.
+
 Canonical event types include:
 
 - `init`
@@ -158,6 +162,9 @@ Canonical event types include:
 ## `<control_dir>/inbox.jsonl`
 
 Append-only message channel.
+
+Writers serialize updates with a sibling lock file and rewrite the
+file via atomic replace while preserving append-order row semantics.
 
 Rows use:
 

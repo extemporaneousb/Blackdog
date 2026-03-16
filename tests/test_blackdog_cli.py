@@ -19,11 +19,12 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from blackdog import backlog as backlog_module
+from blackdog import store as store_module
 from blackdog.backlog import load_backlog
 from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
-from blackdog.store import append_jsonl, atomic_write_text, record_task_result, save_state, send_message
+from blackdog.store import append_jsonl, atomic_write_text, load_events, load_inbox, load_jsonl, record_task_result, resolve_message, save_state, send_message
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_loop_status
 from blackdog.worktree import WorktreeSpec
 
@@ -233,6 +234,35 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(json.loads(state_file.read_text(encoding="utf-8"))["version"], 2)
 
+    def test_append_jsonl_preserves_last_complete_rows_until_replace(self) -> None:
+        log_file = self.root / "events.jsonl"
+        append_jsonl(log_file, {"event_id": "evt-1"})
+        replace_ready = threading.Event()
+        allow_replace = threading.Event()
+        original_atomic_write = store_module.atomic_write_text
+
+        def gated_atomic_write(path: Path, text: str, *, before_replace=None) -> None:
+            def combined_before_replace(temp_path: Path) -> None:
+                replace_ready.set()
+                allow_replace.wait(timeout=5)
+                if before_replace is not None:
+                    before_replace(temp_path)
+
+            original_atomic_write(path, text, before_replace=combined_before_replace)
+
+        def writer() -> None:
+            with patch("blackdog.store.atomic_write_text", side_effect=gated_atomic_write):
+                append_jsonl(log_file, {"event_id": "evt-2"})
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        self.assertTrue(replace_ready.wait(timeout=5))
+        self.assertEqual(load_jsonl(log_file), [{"event_id": "evt-1"}])
+        allow_replace.set()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(load_jsonl(log_file), [{"event_id": "evt-1"}, {"event_id": "evt-2"}])
+
     def test_save_state_and_loop_status_use_atomic_writes(self) -> None:
         state_file = self.root / "state.json"
         with patch("blackdog.store.atomic_write_text") as state_write:
@@ -313,6 +343,85 @@ class BlackdogCliTests(unittest.TestCase):
         titles = {task.title for task in snapshot.tasks.values()}
         self.assertIn("Overlap one", titles)
         self.assertIn("Overlap two", titles)
+
+    def test_inbox_and_event_jsonl_writes_serialize_overlapping_updates(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        original_message = send_message(
+            paths,
+            sender="blackdog",
+            recipient="supervisor",
+            body="Initial message.",
+            kind="instruction",
+        )
+
+        replace_ready = threading.Event()
+        allow_replace = threading.Event()
+        first_inbox_append_seen = threading.Event()
+        errors: list[BaseException] = []
+        original_append = store_module.append_jsonl
+
+        def gated_append(path: Path, payload: dict[str, object]) -> None:
+            if path == paths.inbox_file and not first_inbox_append_seen.is_set():
+                first_inbox_append_seen.set()
+                original_atomic_write = store_module.atomic_write_text
+
+                def gated_atomic_write(target: Path, text: str, *, before_replace=None) -> None:
+                    def combined_before_replace(temp_path: Path) -> None:
+                        replace_ready.set()
+                        allow_replace.wait(timeout=5)
+                        if before_replace is not None:
+                            before_replace(temp_path)
+
+                    original_atomic_write(target, text, before_replace=combined_before_replace)
+
+                with patch("blackdog.store.atomic_write_text", side_effect=gated_atomic_write):
+                    original_append(path, payload)
+                return
+            original_append(path, payload)
+
+        def send_followup() -> None:
+            try:
+                send_message(
+                    paths,
+                    sender="supervisor",
+                    recipient="codex",
+                    body="Follow-up message.",
+                    kind="warning",
+                )
+            except BaseException as exc:  # pragma: no cover - surfaced via assertion below
+                errors.append(exc)
+
+        def resolve_original() -> None:
+            try:
+                resolve_message(paths, message_id=original_message["message_id"], actor="codex", note="Handled.")
+            except BaseException as exc:  # pragma: no cover - surfaced via assertion below
+                errors.append(exc)
+
+        with patch("blackdog.store.append_jsonl", side_effect=gated_append):
+            sender_thread = threading.Thread(target=send_followup)
+            resolve_thread = threading.Thread(target=resolve_original)
+            sender_thread.start()
+            self.assertTrue(replace_ready.wait(timeout=5))
+            resolve_thread.start()
+            time.sleep(0.1)
+            allow_replace.set()
+            sender_thread.join(timeout=5)
+            resolve_thread.join(timeout=5)
+
+        self.assertFalse(sender_thread.is_alive())
+        self.assertFalse(resolve_thread.is_alive())
+        self.assertFalse(errors, errors)
+
+        inbox_rows = load_inbox(paths)
+        self.assertEqual(len(inbox_rows), 2)
+        status_by_id = {row["message_id"]: row["status"] for row in inbox_rows}
+        self.assertEqual(status_by_id[original_message["message_id"]], "resolved")
+        self.assertIn("open", status_by_id.values())
+
+        event_types = [row["type"] for row in load_events(paths)]
+        self.assertEqual(event_types.count("message"), 2)
+        self.assertEqual(event_types.count("message_resolved"), 1)
 
     def test_bootstrap_creates_skill_and_is_idempotent(self) -> None:
         payload = json.loads(
