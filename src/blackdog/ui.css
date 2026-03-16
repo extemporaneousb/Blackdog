@@ -46,11 +46,14 @@ h1, h2, h3, p { margin: 0; }
 }
 
 .page-shell {
-  width: min(1560px, 100%);
+  width: min(1280px, 100%);
   margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.8fr) minmax(300px, 1fr);
-  grid-template-areas: "hero backlog history";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "hero"
+    "backlog"
+    "history";
   gap: 18px;
   align-items: start;
 }
@@ -64,8 +67,6 @@ h1, h2, h3, p { margin: 0; }
 
 .panel-hero {
   grid-area: hero;
-  position: sticky;
-  top: 24px;
   padding: 24px;
   display: grid;
   gap: 18px;
@@ -80,6 +81,7 @@ h1, h2, h3, p { margin: 0; }
 
 .hero-head {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
   gap: 18px;
   align-items: start;
 }
@@ -114,7 +116,11 @@ h1, h2, h3, p { margin: 0; }
   max-width: 28ch;
 }
 
-.hero-meta-grid { display: grid; gap: 12px; }
+.hero-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
 
 .hero-subpanel {
   display: grid;
@@ -316,11 +322,7 @@ h1, h2, h3, p { margin: 0; }
 .board-panel { grid-area: backlog; }
 .result-panel {
   grid-area: history;
-  position: sticky;
-  top: 24px;
-  max-height: calc(100vh - 48px);
   grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
 }
 
 .board-panel .stats {
@@ -345,6 +347,7 @@ h1, h2, h3, p { margin: 0; }
 
 .result-history {
   min-height: 0;
+  max-height: min(32rem, 70vh);
   overflow-y: auto;
   padding-right: 6px;
   margin-right: -6px;
@@ -609,16 +612,6 @@ dialog::backdrop {
   word-break: break-word;
 }
 
-@media (max-width: 1280px) {
-  .page-shell {
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.92fr);
-    grid-template-areas:
-      "hero hero"
-      "backlog history";
-  }
-  .panel-hero { position: static; }
-}
-
 @media (max-width: 980px) {
   .page { padding: 16px; }
   .page-shell {
@@ -629,14 +622,12 @@ dialog::backdrop {
       "backlog"
       "history";
   }
-  .panel-hero { position: static; top: auto; }
-  .result-panel {
-    position: static;
-    top: auto;
-    max-height: none;
-    overflow: visible;
-  }
+  .hero-head,
+  .hero-meta-grid,
+  .result-panel,
+  .panel-hero { grid-template-columns: 1fr; }
   .result-history {
+    max-height: none;
     overflow: visible;
     padding-right: 0;
     margin-right: 0;

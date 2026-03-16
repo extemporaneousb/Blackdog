@@ -400,6 +400,7 @@ Layout projections:
 
 - Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, and `links`.
 - Hero workspace pills currently read `workspace_contract.target_branch`, `workspace_contract.workspace_mode`, `workspace_contract.primary_dirty`, and `workspace_contract.workspace_has_local_blackdog`.
+- The browser renders those hero, backlog, and completed-history surfaces as three top-to-bottom horizontal panels rather than desktop side columns.
 - The `Backlog` panel uses `plan.lanes`, `board_tasks`, `open_messages`, and `links.inbox`. `board_tasks` retains every lane-assigned task row in the snapshot, including completed rows.
 - The rendered browser backlog view filters out rows whose `operator_status_key` normalizes to `complete`, so search and status filters apply only to active backlog rows.
 - The `Completed Tasks` panel derives its history cards from `tasks[*]` rows whose `operator_status_key` is `complete`, ordered by `completed_at`, `latest_result_at`, or `latest_run_at`, and uses each task row's latest result/run/task links.

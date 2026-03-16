@@ -178,14 +178,14 @@ That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
 
-The rendered page is intentionally narrow and panelized: a hero panel
-for objective/render/workspace metadata and global artifact links, a
-`Backlog` panel for lane-ordered active work plus the localized
-search/status controls and inbox link, and a `Completed Tasks` panel
-for recent finished history. The inbox link is local to the `Backlog`
-header rather than global page chrome, and the browser moves completed
-rows out of the active backlog view without dropping their underlying
-snapshot rows.
+The rendered page is intentionally narrow and panelized as three
+horizontal sections: a hero panel for objective/render/workspace
+metadata and global artifact links, a `Backlog` panel for lane-ordered
+active work plus the localized search/status controls and inbox link,
+and a `Completed Tasks` panel for recent finished history. The inbox
+link is local to the `Backlog` header rather than global page chrome,
+and the browser moves completed rows out of the active backlog view
+without dropping their underlying snapshot rows.
 
 The current supervisor run is inbox-steerable in a narrow way: open
 `stop` messages addressed to the supervisor actor put the run into a
