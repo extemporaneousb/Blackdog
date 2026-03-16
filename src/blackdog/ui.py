@@ -825,6 +825,13 @@ __BLACKDOG_STYLES__
             <span class="eyebrow">Last Rendered</span>
             <p id="last-rendered" class="last-rendered"></p>
             <p id="render-note" class="hero-activity"></p>
+            <div class="progress-cluster hero-progress-cluster">
+              <div class="progress-copy">
+                <span id="hero-progress-label" class="progress-label"></span>
+                <span id="hero-progress-detail" class="progress-detail"></span>
+              </div>
+              <div id="hero-progress" class="progress-slot"></div>
+            </div>
           </div>
         </div>
         <div id="hero-meta-grid" class="hero-meta-grid">
@@ -860,6 +867,7 @@ __BLACKDOG_STYLES__
             <div id="stats" class="stats"></div>
           </div>
         </div>
+        <div id="status-legend" class="legend"></div>
         <div id="lane-board" class="lane-board"></div>
       </section>
 
@@ -920,6 +928,7 @@ __BLACKDOG_STYLES__
       partial: "Partial",
       blocked: "Blocked"
     };
+    const legendOrder = ["complete", "running", "claimed", "ready", "waiting", "blocked", "failed"];
     const COMPLETED_HISTORY_LIMIT = __BLACKDOG_HISTORY_LIMIT__;
 
     function escapeHtml(value) {
@@ -1017,6 +1026,82 @@ __BLACKDOG_STYLES__
       }
       return counts;
     }
+
+    function progressMetrics(tasks) {
+      const counts = countStatuses(tasks);
+      const total = Number(counts.total || 0);
+      const complete = Number(counts.complete || 0);
+      const remaining = Math.max(0, total - complete);
+      const percent = total ? Math.max(0, Math.min(100, Math.round((complete / total) * 100))) : 0;
+      return { counts, total, complete, remaining, percent };
+    }
+
+    function progressLabel(progress) {
+      if (!progress.total) {
+        return "No tasks yet";
+      }
+      return `${progress.complete} of ${progress.total} complete`;
+    }
+
+    function progressDetail(progress) {
+      if (!progress.total) {
+        return "Backlog is empty.";
+      }
+      if (!progress.remaining) {
+        return "All tracked work is complete.";
+      }
+      const details = [];
+      if (progress.counts.running) {
+        details.push(`${progress.counts.running} running`);
+      }
+      if (progress.counts.claimed) {
+        details.push(`${progress.counts.claimed} claimed`);
+      }
+      if (progress.counts.ready) {
+        details.push(`${progress.counts.ready} ready`);
+      }
+      if (progress.counts.waiting) {
+        details.push(`${progress.counts.waiting} waiting`);
+      }
+      if (progress.counts.blocked) {
+        details.push(`${progress.counts.blocked} blocked`);
+      }
+      if (progress.counts.failed) {
+        details.push(`${progress.counts.failed} failed`);
+      }
+      return details.length ? details.join(" · ") : `${progress.remaining} remaining`;
+    }
+
+    function renderProgressBar(progress, className = "") {
+      const safeClassName = className ? ` ${escapeHtml(className)}` : "";
+      return `
+        <div class="progress-bar${safeClassName}" aria-hidden="true">
+          <span class="progress-fill" data-progress="${escapeHtml(progress.percent)}"></span>
+        </div>
+      `;
+    }
+
+    function applyProgressBars(root = document) {
+      root.querySelectorAll(".progress-fill[data-progress]").forEach((node) => {
+        const value = Number(node.getAttribute("data-progress") || "0");
+        const clamped = Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
+        node.style.width = `${clamped}%`;
+      });
+    }
+
+    function laneTaskInventory() {
+      const rows = new Map();
+      for (const task of allTasks) {
+        const key = String(task.lane_id || `lane:${task.id}`);
+        if (!rows.has(key)) {
+          rows.set(key, []);
+        }
+        rows.get(key).push(task);
+      }
+      return rows;
+    }
+
+    const laneTasksById = laneTaskInventory();
 
     function taskSummary(task) {
       return task.latest_result_preview || task.operator_status_detail || task.detail || task.safe_first_slice || "";
@@ -1142,6 +1227,11 @@ __BLACKDOG_STYLES__
       document.getElementById("render-note").textContent = activity.at
         ? `Latest activity ${formatTimestamp(activity.at)}${actor}${source}`
         : "";
+      const overallProgress = progressMetrics(allTasks);
+      document.getElementById("hero-progress-label").textContent = progressLabel(overallProgress);
+      document.getElementById("hero-progress-detail").textContent = progressDetail(overallProgress);
+      document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");
+      applyProgressBars(document.getElementById("hero-progress"));
 
       const contract = snapshot.workspace_contract || {};
       const headers = snapshot.headers || {};
@@ -1168,6 +1258,15 @@ __BLACKDOG_STYLES__
 
       document.getElementById("board-guide").textContent =
         "Search and status filters apply only to the active backlog. Waves open concurrent lane groups, and completed tasks move into the history panel.";
+    }
+
+    function renderLegend() {
+      return legendOrder.map((key) => `
+        <span class="legend-item">
+          <span class="legend-dot tone-${escapeHtml(key)}"></span>
+          <span>${escapeHtml(statusMeta[key].label)}</span>
+        </span>
+      `).join("");
     }
 
     function renderStats() {
@@ -1249,10 +1348,18 @@ __BLACKDOG_STYLES__
     }
 
     function renderLaneColumn(lane) {
+      const laneProgress = progressMetrics(laneTasksById.get(String(lane.id)) || lane.tasks);
       return `
         <section class="lane-column">
           <div class="lane-head">
             <h3>${escapeHtml(lane.title)}</h3>
+            <div class="lane-progress">
+              <div class="progress-copy">
+                <span class="progress-label">${escapeHtml(progressLabel(laneProgress))}</span>
+                <span class="progress-detail">${escapeHtml(progressDetail(laneProgress))}</span>
+              </div>
+              ${renderProgressBar(laneProgress, "progress-lane")}
+            </div>
           </div>
           <div class="lane-stack">${lane.tasks.map(taskCard).join("")}</div>
         </section>
@@ -1267,6 +1374,7 @@ __BLACKDOG_STYLES__
         filterState.status === "total" ? "Filter: all backlog tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
       document.getElementById("board-summary").textContent =
         `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave(s)`;
+      document.getElementById("status-legend").innerHTML = renderLegend();
       document.getElementById("lane-board").innerHTML = waves.length
         ? waves.map((wave) => {
             return `
@@ -1283,6 +1391,7 @@ __BLACKDOG_STYLES__
             `;
           }).join("")
         : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Backlog empty." : "No backlog tasks match the current status/search filter."}</div>`;
+      applyProgressBars(document.getElementById("lane-board"));
     }
 
     function completedTasks() {
