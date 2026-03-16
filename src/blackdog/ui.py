@@ -22,6 +22,7 @@ from .worktree import worktree_contract
 
 
 UI_SNAPSHOT_SCHEMA_VERSION = 3
+UI_COMPLETED_HISTORY_LIMIT = 30
 
 
 class UIError(RuntimeError):
@@ -789,8 +790,8 @@ __BLACKDOG_STYLES__
   <script id="blackdog-snapshot" type="application/json">__BLACKDOG_SNAPSHOT__</script>
   <div class="page">
     <div class="page-shell">
-      <article class="panel panel-hero">
-        <div class="hero-head">
+      <article id="hero-panel" class="panel panel-hero" data-panel="hero">
+        <div id="hero-head" class="hero-head">
           <div class="hero-title-block">
             <span class="eyebrow">Blackdog Backlog</span>
             <h1 id="project-name">Backlog</h1>
@@ -802,30 +803,30 @@ __BLACKDOG_STYLES__
             <p id="render-note" class="hero-activity"></p>
           </div>
         </div>
-        <div class="hero-meta-grid">
-          <section class="hero-subpanel">
+        <div id="hero-meta-grid" class="hero-meta-grid">
+          <section id="hero-workspace-panel" class="hero-subpanel" data-hero-section="workspace">
             <span class="eyebrow">Workspace</span>
             <div id="hero-meta" class="tag-row"></div>
           </section>
-          <section class="hero-subpanel">
+          <section id="hero-summary-panel" class="hero-subpanel" data-hero-section="board-snapshot">
             <span class="eyebrow">Board Snapshot</span>
             <div id="hero-summary" class="meta-list"></div>
           </section>
-          <section class="hero-subpanel">
+          <section id="hero-artifacts-panel" class="hero-subpanel" data-hero-section="artifacts">
             <span class="eyebrow">Artifacts</span>
             <div id="global-links" class="link-row"></div>
           </section>
         </div>
       </article>
 
-      <section class="panel board-panel" data-legacy-title="Execution Map">
+      <section id="backlog-panel" class="panel board-panel" data-panel="backlog">
         <div class="section-head backlog-head">
           <div>
             <span class="eyebrow">Active Work</span>
             <h2>Backlog</h2>
             <p id="board-guide" class="section-copy"></p>
           </div>
-          <div class="section-toolbar">
+          <div id="backlog-controls" class="section-toolbar">
             <div class="toolbar-topline">
               <span id="board-summary" class="section-meta"></span>
               <a id="inbox-link" class="link-pill" href="#" target="_blank" rel="noreferrer">Inbox JSON</a>
@@ -838,7 +839,7 @@ __BLACKDOG_STYLES__
         <div id="lane-board" class="lane-board"></div>
       </section>
 
-      <section class="panel result-panel">
+      <section id="completed-history-panel" class="panel result-panel" data-panel="history">
         <div class="section-head">
           <div>
             <span class="eyebrow">Completed Tasks</span>
@@ -847,7 +848,7 @@ __BLACKDOG_STYLES__
           </div>
           <span id="history-summary" class="section-meta"></span>
         </div>
-        <div class="result-history">
+        <div id="completed-history-scroll" class="result-history" data-history-limit="__BLACKDOG_HISTORY_LIMIT__">
           <div id="recent-results" class="results-grid"></div>
         </div>
       </section>
@@ -895,7 +896,7 @@ __BLACKDOG_STYLES__
       partial: "Partial",
       blocked: "Blocked"
     };
-    const COMPLETED_HISTORY_LIMIT = 30;
+    const COMPLETED_HISTORY_LIMIT = __BLACKDOG_HISTORY_LIMIT__;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1467,6 +1468,7 @@ __BLACKDOG_STYLES__
     html = (
         template.replace("__BLACKDOG_TITLE__", title)
         .replace("__BLACKDOG_STYLES__", stylesheet)
+        .replace("__BLACKDOG_HISTORY_LIMIT__", str(UI_COMPLETED_HISTORY_LIMIT))
         .replace("__BLACKDOG_SNAPSHOT__", _snapshot_json(snapshot))
     )
     output_path.write_text(html, encoding="utf-8")
