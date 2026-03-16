@@ -32,6 +32,8 @@ VALID_EFFORTS = {"S", "M", "L"}
 PRIORITY_ORDER = {"P1": 0, "P2": 1, "P3": 2}
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 EFFORT_ORDER = {"S": 0, "M": 1, "L": 2}
+UNASSIGNED_OBJECTIVE_KEY = "__unassigned__"
+UNASSIGNED_OBJECTIVE_TITLE = "Unassigned"
 
 
 class BacklogError(RuntimeError):
@@ -497,6 +499,11 @@ def _parse_objectives(snapshot: BacklogSnapshot) -> list[dict[str, str]]:
     return output
 
 
+def _objective_row_key(objective_id: str) -> str:
+    normalized = objective_id.strip()
+    return normalized or UNASSIGNED_OBJECTIVE_KEY
+
+
 def build_view_model(
     profile: Profile,
     snapshot: BacklogSnapshot,
@@ -508,7 +515,21 @@ def build_view_model(
     allow_high_risk: bool = False,
 ) -> dict[str, Any]:
     counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
-    objective_rows: dict[str, dict[str, Any]] = {row["id"]: {"id": row["id"], "title": row["title"], "total": 0, "done": 0} for row in _parse_objectives(snapshot)}
+    objective_rows: dict[str, dict[str, Any]] = {
+        _objective_row_key(row["id"]): {
+            "key": _objective_row_key(row["id"]),
+            "id": row["id"],
+            "title": row["title"],
+            "task_ids": [],
+            "lane_ids": [],
+            "lane_titles": [],
+            "wave_ids": [],
+            "total": 0,
+            "done": 0,
+            "sort_order": index,
+        }
+        for index, row in enumerate(_parse_objectives(snapshot))
+    }
     tasks_by_lane: list[dict[str, Any]] = []
     tasks_sorted = sorted(
         snapshot.tasks.values(),
@@ -522,12 +543,34 @@ def build_view_model(
     for task in tasks_sorted:
         status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
         counts[status] += 1
-        objective_id = str(task.payload.get("objective") or "")
-        if objective_id:
-            objective_rows.setdefault(objective_id, {"id": objective_id, "title": objective_id, "total": 0, "done": 0})
-            objective_rows[objective_id]["total"] += 1
-            if status == "done":
-                objective_rows[objective_id]["done"] += 1
+        objective_id = str(task.payload.get("objective") or "").strip()
+        objective_key = _objective_row_key(objective_id)
+        objective_row = objective_rows.setdefault(
+            objective_key,
+            {
+                "key": objective_key,
+                "id": objective_id,
+                "title": objective_id or UNASSIGNED_OBJECTIVE_TITLE,
+                "task_ids": [],
+                "lane_ids": [],
+                "lane_titles": [],
+                "wave_ids": [],
+                "total": 0,
+                "done": 0,
+                "sort_order": len(objective_rows),
+            },
+        )
+        objective_row["task_ids"].append(task.id)
+        objective_row["total"] += 1
+        if status == "done":
+            objective_row["done"] += 1
+        lane_title = task.lane_title or "Unplanned"
+        if task.lane_id and task.lane_id not in objective_row["lane_ids"]:
+            objective_row["lane_ids"].append(task.lane_id)
+        if lane_title not in objective_row["lane_titles"]:
+            objective_row["lane_titles"].append(lane_title)
+        if task.wave is not None and task.wave not in objective_row["wave_ids"]:
+            objective_row["wave_ids"].append(task.wave)
         tasks_by_lane.append(
             {
                 "id": task.id,
@@ -552,6 +595,23 @@ def build_view_model(
         )
         lane["tasks"].append(row)
     ordered_lanes = sorted(lanes.values(), key=lambda row: ((row["wave"] if row["wave"] is not None else 9999), row["title"]))
+    ordered_objective_rows = []
+    for row in sorted(objective_rows.values(), key=lambda value: (int(value["sort_order"]), str(value["title"]))):
+        remaining = max(0, int(row["total"]) - int(row["done"]))
+        objective_row = {
+            "key": row["key"],
+            "id": row["id"],
+            "title": row["title"],
+            "task_ids": list(row["task_ids"]),
+            "lane_ids": list(row["lane_ids"]),
+            "lane_titles": list(row["lane_titles"]),
+            "wave_ids": list(row["wave_ids"]),
+            "total": int(row["total"]),
+            "done": int(row["done"]),
+            "remaining": remaining,
+        }
+        if objective_row["task_ids"]:
+            ordered_objective_rows.append(objective_row)
     next_rows = [
         {"id": task.id, "title": task.title, "lane": task.lane_title, "wave": task.wave, "risk": task.payload["risk"]}
         for task in next_runnable_tasks(snapshot, state, allow_high_risk=allow_high_risk, limit=8)
@@ -563,7 +623,11 @@ def build_view_model(
         "total": len(snapshot.tasks),
         "next_rows": next_rows,
         "lanes": ordered_lanes,
-        "objectives": list(objective_rows.values()),
+        "objectives": [
+            {"id": row["id"], "title": row["title"], "total": row["total"], "done": row["done"]}
+            for row in ordered_objective_rows
+        ],
+        "objective_rows": ordered_objective_rows,
         "open_messages": [row for row in messages if row.get("status") == "open"],
         "recent_events": events[-10:],
         "recent_results": results[:5],

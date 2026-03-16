@@ -1459,7 +1459,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         task_ids = {task["title"]: task["id"] for task in snapshot["graph"]["tasks"]}
-        self.assertEqual(snapshot["schema_version"], 3)
+        self.assertEqual(snapshot["schema_version"], 4)
         self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
         self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
         self.assertEqual(snapshot["graph"]["edges"], [{"from": task_ids["UI slice one"], "to": task_ids["UI slice two"]}])
@@ -1473,6 +1473,119 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["graph"]["tasks"][1]["lane_position"], 2)
         self.assertEqual(snapshot["graph"]["tasks"][0]["lane_task_count"], 2)
         self.assertIn("scheduler gate", snapshot["grouping_guide"][-1]["meaning"])
+
+    def test_snapshot_models_objective_rows_with_progress_summaries(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Objective slice one",
+            "--bucket",
+            "html",
+            "--objective",
+            "OBJ-1",
+            "--why",
+            "The board should lead with objectives instead of only lane groupings.",
+            "--evidence",
+            "Objective-tagged task rows need stable snapshot data before the renderer can pivot.",
+            "--safe-first-slice",
+            "Model one objective row with active and waiting work.",
+            "--path",
+            "src/blackdog/ui.py",
+            "--epic-title",
+            "Objective board",
+            "--lane-title",
+            "Objective lane",
+            "--wave",
+            "0",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Objective slice two",
+            "--bucket",
+            "html",
+            "--objective",
+            "OBJ-1",
+            "--why",
+            "The row needs more than one task to expose progress detail.",
+            "--evidence",
+            "A second task creates the waiting state inside the same objective.",
+            "--safe-first-slice",
+            "Keep the second objective task in the same lane for deterministic ordering.",
+            "--path",
+            "src/blackdog/ui.py",
+            "--epic-title",
+            "Objective board",
+            "--lane-title",
+            "Objective lane",
+            "--wave",
+            "0",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Second objective slice",
+            "--bucket",
+            "html",
+            "--objective",
+            "OBJ-2",
+            "--why",
+            "A completed objective verifies the summary counts.",
+            "--evidence",
+            "The snapshot should surface completed objective progress separately from active work.",
+            "--safe-first-slice",
+            "Complete one task in a second objective.",
+            "--path",
+            "src/blackdog/ui.py",
+            "--epic-title",
+            "Objective board",
+            "--lane-title",
+            "Objective lane two",
+            "--wave",
+            "0",
+        )
+
+        task_ids = task_ids_by_title(self.root)
+        first_task = task_ids["Objective slice one"]
+        second_task = task_ids["Objective slice two"]
+        completed_task = task_ids["Second objective slice"]
+
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", first_task)
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/b", "--id", completed_task)
+        run_cli("complete", "--project-root", str(self.root), "--agent", "agent/b", "--id", completed_task, "--note", "done")
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        objective_rows = {row["id"]: row for row in snapshot["objective_rows"]}
+        task_rows = {row["id"]: row for row in snapshot["tasks"]}
+
+        self.assertEqual(list(objective_rows), ["OBJ-1", "OBJ-2"])
+        self.assertEqual(task_rows[first_task]["objective_title"], "Maintain a repo-scoped backlog core")
+        self.assertEqual(task_rows[completed_task]["objective_title"], "Keep AI-agent interaction structured and local")
+        self.assertEqual(objective_rows["OBJ-1"]["task_ids"], [first_task, second_task])
+        self.assertEqual(objective_rows["OBJ-1"]["active_task_ids"], [first_task, second_task])
+        self.assertEqual(objective_rows["OBJ-1"]["lane_titles"], ["Objective lane"])
+        self.assertEqual(objective_rows["OBJ-1"]["progress"]["counts"]["claimed"], 1)
+        self.assertEqual(objective_rows["OBJ-1"]["progress"]["counts"]["waiting"], 1)
+        self.assertEqual(objective_rows["OBJ-1"]["remaining"], 2)
+        self.assertEqual(objective_rows["OBJ-2"]["task_ids"], [completed_task])
+        self.assertEqual(objective_rows["OBJ-2"]["active_task_ids"], [])
+        self.assertEqual(objective_rows["OBJ-2"]["done"], 1)
+        self.assertEqual(objective_rows["OBJ-2"]["progress"]["counts"]["complete"], 1)
+        self.assertEqual(objective_rows["OBJ-2"]["remaining"], 0)
+
+        run_cli("render", "--project-root", str(self.root), "--actor", "tester")
+        html = paths.html_file.read_text(encoding="utf-8")
+        self.assertIn("function objectiveSections(tasks)", html)
+        self.assertIn('data-objective-row="${escapeHtml(objective.key || objective.id || "objective")}"', html)
+        self.assertIn("Objectives lead the board", html)
 
     def test_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

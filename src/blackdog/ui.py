@@ -21,8 +21,9 @@ from .store import load_events, load_inbox, load_state, load_task_results, now_i
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 3
+UI_SNAPSHOT_SCHEMA_VERSION = 4
 UI_COMPLETED_HISTORY_LIMIT = 30
+PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
 
 class UIError(RuntimeError):
@@ -611,6 +612,59 @@ def _lane_task_positions(plan: dict[str, Any]) -> dict[str, dict[str, int]]:
     return positions
 
 
+def _progress_for_task_rows(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {key: 0 for key in PROGRESS_STATUS_KEYS}
+    for task in tasks:
+        status_key = str(task.get("operator_status_key") or "ready").strip().lower() or "ready"
+        if status_key not in counts:
+            status_key = "ready"
+        counts[status_key] += 1
+    total = len(tasks)
+    complete = counts["complete"]
+    remaining = max(0, total - complete)
+    percent = round((complete / total) * 100) if total else 0
+    return {
+        "counts": counts,
+        "total": total,
+        "complete": complete,
+        "remaining": remaining,
+        "percent": percent,
+    }
+
+
+def _build_objective_snapshot_rows(
+    tasks: list[dict[str, Any]],
+    base_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    tasks_by_id = {str(task["id"]): task for task in tasks}
+    objective_rows: list[dict[str, Any]] = []
+    for row in base_rows:
+        task_ids = [str(task_id) for task_id in row.get("task_ids", []) if str(task_id) in tasks_by_id]
+        objective_tasks = [tasks_by_id[task_id] for task_id in task_ids]
+        if not objective_tasks:
+            continue
+        progress = _progress_for_task_rows(objective_tasks)
+        objective_rows.append(
+            {
+                "key": row.get("key"),
+                "id": row.get("id"),
+                "title": row.get("title"),
+                "task_ids": task_ids,
+                "active_task_ids": [
+                    str(task["id"]) for task in objective_tasks if str(task.get("operator_status_key") or "") != "complete"
+                ],
+                "lane_ids": list(row.get("lane_ids") or []),
+                "lane_titles": list(row.get("lane_titles") or []),
+                "wave_ids": list(row.get("wave_ids") or []),
+                "total": progress["total"],
+                "done": progress["complete"],
+                "remaining": progress["remaining"],
+                "progress": progress,
+            }
+        )
+    return objective_rows
+
+
 def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
@@ -631,6 +685,11 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     )
     plan = build_plan_view(profile, snapshot, state)
     lane_positions = _lane_task_positions(snapshot.plan)
+    objective_titles = {
+        str(row.get("id") or ""): str(row.get("title") or "")
+        for row in summary.get("objective_rows", [])
+        if row.get("id") is not None
+    }
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
     ordered_tasks = sorted(
@@ -660,6 +719,9 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "priority": task.payload["priority"],
             "risk": task.payload["risk"],
             "objective": task.payload.get("objective") or "",
+            "objective_title": objective_titles.get(str(task.payload.get("objective") or "").strip())
+            or str(task.payload.get("objective") or "").strip()
+            or "Unassigned",
             "domains": list(task.payload.get("domains", [])),
             "safe_first_slice": task.payload["safe_first_slice"],
             "why": task.payload.get("why") or "",
@@ -714,6 +776,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         for predecessor_id in task.predecessor_ids:
             graph_edges.append({"from": predecessor_id, "to": task.id})
 
+    objective_rows = _build_objective_snapshot_rows(tasks, list(summary.get("objective_rows") or []))
     recent_results = []
     for row in results[:10]:
         recent_results.append(
@@ -728,7 +791,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             }
         )
     open_messages = [row for row in summary["open_messages"][:10]]
-    board_tasks = [row for row in tasks if row.get("lane_id")]
+    board_tasks = [row for row in tasks if row.get("lane_id") or row.get("objective")]
     active_tasks = [
         row
         for row in tasks
@@ -756,6 +819,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "total": summary["total"],
         "push_objective": summary["push_objective"],
         "objectives": summary["objectives"],
+        "objective_rows": objective_rows,
         "next_rows": summary["next_rows"],
         "open_messages": open_messages,
         "recent_results": recent_results,
@@ -907,9 +971,11 @@ __BLACKDOG_STYLES__
   <script>
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
+    const allTasksById = new Map(allTasks.map((task) => [String(task.id), task]));
     const boardTasks = Array.isArray(snapshot.board_tasks)
       ? snapshot.board_tasks.filter((task) => normalizeStatus(task.operator_status_key) !== "complete")
-      : allTasks.filter((task) => task.lane_id && normalizeStatus(task.operator_status_key) !== "complete");
+      : allTasks.filter((task) => (task.objective || task.lane_id) && normalizeStatus(task.operator_status_key) !== "complete");
+    const objectiveRows = Array.isArray(snapshot.objective_rows) ? snapshot.objective_rows.slice() : [];
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
     const filterState = { search: "", status: "total" };
@@ -1089,9 +1155,9 @@ __BLACKDOG_STYLES__
       });
     }
 
-    function laneTaskInventory() {
+    function taskInventory(tasks) {
       const rows = new Map();
-      for (const task of allTasks) {
+      for (const task of tasks) {
         const key = String(task.lane_id || `lane:${task.id}`);
         if (!rows.has(key)) {
           rows.set(key, []);
@@ -1101,7 +1167,7 @@ __BLACKDOG_STYLES__
       return rows;
     }
 
-    const laneTasksById = laneTaskInventory();
+    const laneTasksById = taskInventory(allTasks);
 
     function taskSummary(task) {
       return task.latest_result_preview || task.operator_status_detail || task.detail || task.safe_first_slice || "";
@@ -1117,6 +1183,8 @@ __BLACKDOG_STYLES__
       const haystack = [
         task.id,
         task.title,
+        task.objective,
+        task.objective_title,
         task.lane_title,
         task.epic_title,
         task.operator_status,
@@ -1129,7 +1197,7 @@ __BLACKDOG_STYLES__
       return haystack.includes(filterState.search);
     }
 
-    function laneRows(tasks) {
+    function laneRows(tasks, progressInventory = null) {
       const rows = new Map();
       lanePlan.forEach((lane, index) => {
         rows.set(String(lane.id), {
@@ -1137,6 +1205,7 @@ __BLACKDOG_STYLES__
           title: lane.title || "Unplanned",
           wave: lane.wave,
           plan_index: index,
+          progress_tasks: progressInventory?.get(String(lane.id)) || [],
           tasks: []
         });
       });
@@ -1148,24 +1217,32 @@ __BLACKDOG_STYLES__
             title: task.lane_title || "Unplanned",
             wave: task.wave,
             plan_index: Number(task.lane_plan_index ?? 9999),
+            progress_tasks: progressInventory?.get(key) || [],
             tasks: []
           });
         }
         rows.get(key).tasks.push(task);
+        if (!progressInventory) {
+          rows.get(key).progress_tasks.push(task);
+        }
       }
       return Array.from(rows.values())
         .filter((lane) => lane.tasks.length)
-        .map((lane) => ({
-          ...lane,
-          tasks: lane.tasks.sort((left, right) => {
+        .map((lane) => {
+          const sortedTasks = lane.tasks.sort((left, right) => {
             const leftPosition = left.lane_position == null ? 9999 : Number(left.lane_position);
             const rightPosition = right.lane_position == null ? 9999 : Number(right.lane_position);
             if (leftPosition !== rightPosition) {
               return leftPosition - rightPosition;
             }
             return String(left.id).localeCompare(String(right.id));
-          })
-        }))
+          });
+          return {
+            ...lane,
+            progress_tasks: lane.progress_tasks.length ? lane.progress_tasks : sortedTasks,
+            tasks: sortedTasks
+          };
+        })
         .sort((left, right) => {
           const leftWave = left.wave == null ? 9999 : Number(left.wave);
           const rightWave = right.wave == null ? 9999 : Number(right.wave);
@@ -1201,10 +1278,35 @@ __BLACKDOG_STYLES__
       });
     }
 
+    function objectiveSections(tasks) {
+      if (!objectiveRows.length) {
+        return [];
+      }
+      const visibleTaskIds = new Set(tasks.map((task) => String(task.id)));
+      return objectiveRows
+        .map((objective) => {
+          const allObjectiveTasks = (Array.isArray(objective.task_ids) ? objective.task_ids : [])
+            .map((taskId) => allTasksById.get(String(taskId)))
+            .filter(Boolean);
+          const visibleObjectiveTasks = allObjectiveTasks.filter((task) => visibleTaskIds.has(String(task.id)));
+          if (!visibleObjectiveTasks.length) {
+            return null;
+          }
+          const objectiveLaneInventory = taskInventory(allObjectiveTasks);
+          return {
+            ...objective,
+            lanes: laneRows(visibleObjectiveTasks, objectiveLaneInventory)
+          };
+        })
+        .filter(Boolean);
+    }
+
     function heroSummary(activity) {
       const latestSummary = [activity.task_id, activity.summary || activity.type_label].filter(Boolean).join(" · ");
+      const activeObjectiveCount = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length).length;
       const rows = [
         ["Backlog", `${boardTasks.length} active task(s)`],
+        ["Objectives", `${activeObjectiveCount} active objective row(s)`],
         ["Completed", `${completedTasks().length} task(s)`],
         ["Inbox", `${openMessages.length} open message(s)`],
         latestSummary ? ["Latest Event", latestSummary] : null
@@ -1216,7 +1318,7 @@ __BLACKDOG_STYLES__
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
       document.getElementById("hero-copy").textContent =
-        objective || "Static backlog board with lane-ordered task stacks, task detail dialogs, and direct artifact links.";
+        objective || "Static backlog board with objective-led rows, lane-ordered task stacks, task detail dialogs, and direct artifact links.";
       const activity = snapshot.last_activity || {};
       const actor = activity.actor ? ` by ${activity.actor}` : "";
       const source = activity.type_label ? ` via ${activity.type_label.toLowerCase()}` : "";
@@ -1257,7 +1359,7 @@ __BLACKDOG_STYLES__
       inboxLink.textContent = `Inbox JSON · ${openMessages.length} open`;
 
       document.getElementById("board-guide").textContent =
-        "Search and status filters apply only to the active backlog. Waves open concurrent lane groups, and completed tasks move into the history panel.";
+        "Search and status filters apply only to the active backlog. Objectives lead the board, lane order stays intact inside each objective row, and completed tasks move into the history panel.";
     }
 
     function renderLegend() {
@@ -1348,7 +1450,7 @@ __BLACKDOG_STYLES__
     }
 
     function renderLaneColumn(lane) {
-      const laneProgress = progressMetrics(laneTasksById.get(String(lane.id)) || lane.tasks);
+      const laneProgress = progressMetrics(Array.isArray(lane.progress_tasks) && lane.progress_tasks.length ? lane.progress_tasks : (laneTasksById.get(String(lane.id)) || lane.tasks));
       return `
         <section class="lane-column">
           <div class="lane-head">
@@ -1366,30 +1468,58 @@ __BLACKDOG_STYLES__
       `;
     }
 
+    function objectiveSummary(objective) {
+      const activeCount = Array.isArray(objective.active_task_ids)
+        ? objective.active_task_ids.length
+        : objective.lanes.reduce((total, lane) => total + lane.tasks.length, 0);
+      const laneCount = Array.isArray(objective.lane_titles) ? objective.lane_titles.length : objective.lanes.length;
+      const waveCount = Array.isArray(objective.wave_ids) ? objective.wave_ids.length : 0;
+      const parts = [`${activeCount} active backlog task(s)`];
+      if (laneCount) {
+        parts.push(`${laneCount} lane(s)`);
+      }
+      if (waveCount) {
+        parts.push(`${waveCount} wave(s)`);
+      }
+      return parts.join(" · ");
+    }
+
+    function renderObjectiveSection(objective) {
+      const visibleObjectiveTasks = objective.lanes.reduce((items, lane) => items.concat(lane.tasks), []);
+      const progress = objective.progress || progressMetrics(visibleObjectiveTasks);
+      const objectiveLabel = objective.id ? `Objective ${objective.id}` : "Objective";
+      return `
+        <section class="wave-section" data-objective-row="${escapeHtml(objective.key || objective.id || "objective")}">
+          <div class="wave-head">
+            <div>
+              <span class="eyebrow">${escapeHtml(objectiveLabel)}</span>
+              <h3>${escapeHtml(objective.title || objective.id || "Unassigned")}</h3>
+              <p class="wave-copy">${escapeHtml(objectiveSummary(objective))}</p>
+            </div>
+            <div class="lane-progress">
+              <div class="progress-copy">
+                <span class="progress-label">${escapeHtml(progressLabel(progress))}</span>
+                <span class="progress-detail">${escapeHtml(progressDetail(progress))}</span>
+              </div>
+              ${renderProgressBar(progress, "progress-lane")}
+            </div>
+          </div>
+          <div class="wave-grid">${objective.lanes.map(renderLaneColumn).join("")}</div>
+        </section>
+      `;
+    }
+
     function renderBoard() {
       const visibleTasks = boardTasks.filter(taskMatches);
+      const objectives = objectiveSections(visibleTasks);
       const lanes = laneRows(visibleTasks);
-      const waves = waveRows(lanes);
       document.getElementById("filter-summary").textContent =
         filterState.status === "total" ? "Filter: all backlog tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
       document.getElementById("board-summary").textContent =
-        `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave(s)`;
+        `${visibleTasks.length} visible task(s) across ${objectives.length} objective row(s) in ${lanes.length} lane(s)`;
       document.getElementById("status-legend").innerHTML = renderLegend();
-      document.getElementById("lane-board").innerHTML = waves.length
-        ? waves.map((wave) => {
-            return `
-              <section class="wave-section">
-                <div class="wave-head">
-                  <div>
-                    <span class="eyebrow">Wave</span>
-                    <h3>Wave ${escapeHtml(wave.wave ?? "unplanned")}</h3>
-                    <p class="wave-copy">Lanes in this wave can run concurrently. Tasks inside each lane advance top to bottom.</p>
-                  </div>
-                </div>
-                <div class="wave-grid">${wave.lanes.map(renderLaneColumn).join("")}</div>
-              </section>
-            `;
-          }).join("")
+      document.getElementById("lane-board").innerHTML = objectives.length
+        ? objectives.map(renderObjectiveSection).join("")
         : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Backlog empty." : "No backlog tasks match the current status/search filter."}</div>`;
       applyProgressBars(document.getElementById("lane-board"));
     }
