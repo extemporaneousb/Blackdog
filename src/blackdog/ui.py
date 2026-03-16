@@ -482,16 +482,24 @@ def _operator_status(task_row: dict[str, Any]) -> dict[str, str]:
 
 
 def _dialog_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
-    rows = [
-        {
-            "label": str(task_row.get("operator_status") or "Ready"),
-            "key": str(task_row.get("operator_status_key") or "ready"),
-        }
-    ]
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add_chip(label: str, key: str) -> None:
+        normalized = str(key or "").strip().lower() or str(label or "").strip().lower()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        rows.append({"label": label, "key": key})
+
     current = str(task_row.get("operator_status_key") or "ready").strip().lower()
+    task_status = str(task_row.get("status") or "").strip().lower()
+    if current == "running" and (task_status == "claimed" or task_row.get("claimed_by")):
+        add_chip("Claimed", "claimed")
+    add_chip(str(task_row.get("operator_status") or "Ready"), str(task_row.get("operator_status_key") or "ready"))
     if current != "complete":
         covered = {
-            "running": {"running"},
+            "running": {"running", "claimed"},
             "claimed": {"prepared"},
             "blocked": {"blocked"},
             "failed": {"failed", "launch-failed", "timed-out", "interrupted"},
@@ -499,13 +507,28 @@ def _dialog_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
         }.get(current, set())
         run_status = str(task_row.get("latest_run_status") or "").strip()
         if run_status and run_status not in covered:
-            rows.append({"label": _title_label(run_status), "key": run_status})
+            add_chip(_title_label(run_status), run_status)
         result_status = str(task_row.get("latest_result_status") or "").strip()
         if result_status and not (result_status == "blocked" and current == "blocked"):
-            rows.append({"label": _title_label(result_status), "key": result_status})
+            add_chip(_title_label(result_status), result_status)
     priority = str(task_row.get("priority") or "").strip()
     if priority:
-        rows.append({"label": priority, "key": "subtle"})
+        add_chip(priority, "subtle")
+    return rows
+
+
+def _card_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
+    current = str(task_row.get("operator_status_key") or "ready").strip().lower()
+    task_status = str(task_row.get("status") or "").strip().lower()
+    rows: list[dict[str, str]] = []
+    if current == "running" and (task_status == "claimed" or task_row.get("claimed_by")):
+        rows.append({"label": "Claimed", "key": "claimed"})
+    rows.append(
+        {
+            "label": str(task_row.get("operator_status") or "Ready"),
+            "key": str(task_row.get("operator_status_key") or "ready"),
+        }
+    )
     return rows
 
 
@@ -684,6 +707,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "run_elapsed_label": run_info.get("elapsed_label"),
         }
         task_row.update(_operator_status(task_row))
+        task_row["card_status_chips"] = _card_status_chips(task_row)
         task_row["dialog_status_chips"] = _dialog_status_chips(task_row)
         task_row["links"] = _task_links(task_row)
         tasks.append(task_row)
@@ -1200,6 +1224,9 @@ __BLACKDOG_STYLES__
     function taskCard(task) {
       const tone = normalizeStatus(task.operator_status_key || "ready");
       const showOwner = ["claimed", "running"].includes(tone) && task.claimed_by;
+      const statusChips = Array.isArray(task.card_status_chips) && task.card_status_chips.length
+        ? renderStatusChipRows(task.card_status_chips)
+        : chip(task.operator_status || "Ready", tone);
       return `
         <article class="task-card tone-${escapeHtml(tone)}" id="${escapeHtml(task.id)}" data-task-id="${escapeHtml(task.id)}">
           <div class="task-card-top">
@@ -1207,7 +1234,7 @@ __BLACKDOG_STYLES__
               <span class="task-code">${escapeHtml(task.id)}</span>
               ${task.priority ? `<span class="mini-chip">${escapeHtml(task.priority)}</span>` : ""}
             </div>
-            <span class="status-pill tone-${escapeHtml(tone)}">${escapeHtml(task.operator_status || "Ready")}</span>
+            <div class="chips">${statusChips}</div>
           </div>
           <h3 class="task-title">${escapeHtml(task.title)}</h3>
           <p class="task-route">${escapeHtml(taskSequence(task))}</p>

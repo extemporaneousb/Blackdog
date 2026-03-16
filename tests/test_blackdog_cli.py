@@ -1643,6 +1643,14 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["active_tasks"][0]["latest_run_status"], "running")
         self.assertEqual(graph_tasks[first_task]["latest_result_status"], "success")
         self.assertEqual(graph_tasks[first_task]["operator_status"], "Running")
+        self.assertEqual(
+            [row["key"] for row in graph_tasks[first_task]["card_status_chips"]],
+            ["claimed", "running"],
+        )
+        self.assertEqual(
+            [row["key"] for row in graph_tasks[first_task]["dialog_status_chips"][:2]],
+            ["claimed", "running"],
+        )
         self.assertEqual(graph_tasks[second_task]["operator_status"], "Waiting")
         self.assertTrue(any(row["message"] == "claimed" for row in graph_tasks[first_task]["activity"]))
         self.assertTrue(any(row["message"] == "result success" for row in graph_tasks[first_task]["activity"]))
