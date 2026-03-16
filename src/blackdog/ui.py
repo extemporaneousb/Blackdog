@@ -789,7 +789,7 @@ __BLACKDOG_STYLES__
   <script id="blackdog-snapshot" type="application/json">__BLACKDOG_SNAPSHOT__</script>
   <div class="page">
     <div class="page-shell">
-      <article class="panel hero">
+      <article class="panel panel-hero">
         <div class="hero-head">
           <div class="hero-title-block">
             <span class="eyebrow">Blackdog Backlog</span>
@@ -802,13 +802,14 @@ __BLACKDOG_STYLES__
             <p id="render-note" class="hero-activity"></p>
           </div>
         </div>
-        <div class="hero-stats">
-          <div id="stats" class="stats"></div>
-        </div>
-        <div class="hero-foot">
+        <div class="hero-meta-grid">
           <section class="hero-subpanel">
             <span class="eyebrow">Workspace</span>
             <div id="hero-meta" class="tag-row"></div>
+          </section>
+          <section class="hero-subpanel">
+            <span class="eyebrow">Board Snapshot</span>
+            <div id="hero-summary" class="meta-list"></div>
           </section>
           <section class="hero-subpanel">
             <span class="eyebrow">Artifacts</span>
@@ -817,46 +818,37 @@ __BLACKDOG_STYLES__
         </div>
       </article>
 
-      <div class="board-shell">
-        <section class="panel board-panel">
-          <div class="section-head">
-            <div>
-              <span class="eyebrow">Lane View</span>
-              <h2>Execution Map</h2>
-              <p id="board-guide" class="section-copy"></p>
-            </div>
-            <div class="section-toolbar">
+      <section class="panel board-panel" data-legacy-title="Execution Map">
+        <div class="section-head backlog-head">
+          <div>
+            <span class="eyebrow">Active Work</span>
+            <h2>Backlog</h2>
+            <p id="board-guide" class="section-copy"></p>
+          </div>
+          <div class="section-toolbar">
+            <div class="toolbar-topline">
               <span id="board-summary" class="section-meta"></span>
-              <input id="task-search" class="search" type="search" placeholder="Search task id, title, lane, epic, or artifact status">
-              <span id="filter-summary" class="search-hint"></span>
+              <a id="inbox-link" class="link-pill" href="#" target="_blank" rel="noreferrer">Inbox JSON</a>
             </div>
+            <input id="task-search" class="search" type="search" placeholder="Search task id, title, lane, epic, or artifact status">
+            <span id="filter-summary" class="search-hint"></span>
+            <div id="stats" class="stats"></div>
           </div>
-          <div id="lane-board" class="lane-board"></div>
-        </section>
+        </div>
+        <div id="lane-board" class="lane-board"></div>
+      </section>
 
-        <section class="panel result-panel">
-          <div class="section-head">
-            <div>
-              <span class="eyebrow">Completed Tasks</span>
-              <h2>History</h2>
-              <p class="section-copy">Completed work stays visible here with its latest recorded outcome and artifact links.</p>
-            </div>
-            <span id="history-summary" class="section-meta"></span>
+      <section class="panel result-panel">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Completed Tasks</span>
+            <h2>Completed Tasks</h2>
+            <p class="section-copy">Completed work stays visible here with its latest recorded outcome and artifact links.</p>
           </div>
-          <div id="recent-results" class="results-grid"></div>
-        </section>
-
-        <aside class="panel side-panel">
-          <div class="side-head">
-            <div>
-              <span class="eyebrow">Inbox</span>
-              <h2 id="inbox-title">Open Messages</h2>
-            </div>
-            <a id="inbox-link" class="link-pill" href="#" target="_blank" rel="noreferrer">Inbox JSON</a>
-          </div>
-          <div id="inbox-list" class="mini-stack"></div>
-        </aside>
-      </div>
+          <span id="history-summary" class="section-meta"></span>
+        </div>
+        <div id="recent-results" class="results-grid"></div>
+      </section>
     </div>
   </div>
 
@@ -880,7 +872,9 @@ __BLACKDOG_STYLES__
   <script>
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
-    const boardTasks = Array.isArray(snapshot.board_tasks) ? snapshot.board_tasks.slice() : allTasks.filter((task) => task.lane_id);
+    const boardTasks = Array.isArray(snapshot.board_tasks)
+      ? snapshot.board_tasks.filter((task) => normalizeStatus(task.operator_status_key) !== "complete")
+      : allTasks.filter((task) => task.lane_id && normalizeStatus(task.operator_status_key) !== "complete");
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
     const filterState = { search: "", status: "total" };
@@ -968,7 +962,6 @@ __BLACKDOG_STYLES__
         ["Backlog", links.backlog],
         ["Events", links.events],
         ["Results", links.results],
-        ["Inbox", links.inbox],
         ["HTML", links.html]
       ];
     }
@@ -1080,6 +1073,22 @@ __BLACKDOG_STYLES__
       });
     }
 
+    function heroSummary(activity) {
+      const latestSummary = [activity.task_id, activity.summary || activity.type_label].filter(Boolean).join(" · ");
+      const rows = [
+        ["Backlog", `${boardTasks.length} active task(s)`],
+        ["Completed", `${completedTasks().length} task(s)`],
+        ["Inbox", `${openMessages.length} open message(s)`],
+        latestSummary ? ["Latest Event", latestSummary] : null
+      ].filter(Boolean);
+      return rows.map(([label, value]) => `
+        <div class="meta-item">
+          <span class="eyebrow">${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("");
+    }
+
     function renderHeader() {
       document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
@@ -1103,47 +1112,31 @@ __BLACKDOG_STYLES__
         contract.primary_dirty === false ? `<span class="pill">Primary clean</span>` : `<span class="pill">Primary dirty</span>`,
         contract.workspace_has_local_blackdog ? `<span class="pill">Local .VE ready</span>` : `<span class="pill">Bootstrap .VE here</span>`
       ].filter(Boolean).join("");
+      document.getElementById("hero-summary").innerHTML = heroSummary(activity);
 
       document.getElementById("global-links").innerHTML = globalLinks()
         .map(([label, href]) => href ? `<a class="link-pill" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>` : "")
         .join("");
 
+      const inboxHref = snapshot.links?.inbox || "#";
+      const inboxLink = document.getElementById("inbox-link");
+      inboxLink.href = inboxHref;
+      inboxLink.style.visibility = inboxHref ? "visible" : "hidden";
+      inboxLink.textContent = `Inbox JSON · ${openMessages.length} open`;
+
       document.getElementById("board-guide").textContent =
-        "Waves open concurrent lane groups. Tasks stay ordered top to bottom inside each lane. Tasks remain the only claimable and result-bearing unit.";
+        "Search and status filters apply only to the active backlog. Waves open concurrent lane groups, and completed tasks move into the history panel.";
     }
 
     function renderStats() {
       const counts = countStatuses(boardTasks);
-      const order = ["total", "ready", "running", "claimed", "waiting", "blocked", "failed", "complete"];
+      const order = ["total", "ready", "running", "claimed", "waiting", "blocked", "failed"];
       document.getElementById("stats").innerHTML = order.map((key) => `
         <button class="stat-card ${filterState.status === key ? "active" : ""}" type="button" data-status-filter="${escapeHtml(key)}">
           <span class="eyebrow">${escapeHtml(statusMeta[key].label)}</span>
           <strong>${escapeHtml(counts[key] || 0)}</strong>
         </button>
       `).join("");
-    }
-
-    function renderInbox() {
-      document.getElementById("inbox-title").textContent = `${openMessages.length} open`;
-      const inboxHref = snapshot.links?.inbox || "#";
-      const inboxLink = document.getElementById("inbox-link");
-      inboxLink.href = inboxHref;
-      inboxLink.style.visibility = inboxHref ? "visible" : "hidden";
-      document.getElementById("inbox-list").innerHTML = openMessages.length
-        ? openMessages.slice(0, 3).map((message) => `
-            <article class="mini-card" data-message-id="${escapeHtml(message.message_id)}">
-              <div class="mini-top">
-                <strong>${escapeHtml(message.sender || "unknown")}</strong>
-                <span class="eyebrow">${escapeHtml(relativeTime(message.at))}</span>
-              </div>
-              <div class="mini-meta">
-                <span>${escapeHtml(message.recipient || "")}</span>
-                ${message.task_id ? `<span>${escapeHtml(message.task_id)}</span>` : ""}
-              </div>
-              <p>${escapeHtml(message.body || "")}</p>
-            </article>
-          `).join("")
-        : `<div class="empty">No open inbox items.</div>`;
     }
 
     function renderTaskLinks(task) {
@@ -1226,7 +1219,7 @@ __BLACKDOG_STYLES__
       const lanes = laneRows(visibleTasks);
       const waves = waveRows(lanes);
       document.getElementById("filter-summary").textContent =
-        filterState.status === "total" ? "Filter: all tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
+        filterState.status === "total" ? "Filter: all backlog tasks" : `Filter: ${statusMeta[filterState.status]?.label || filterState.status}`;
       document.getElementById("board-summary").textContent =
         `${visibleTasks.length} visible task(s) across ${lanes.length} lane(s) in ${waves.length} wave(s)`;
       document.getElementById("lane-board").innerHTML = waves.length
@@ -1244,7 +1237,7 @@ __BLACKDOG_STYLES__
               </section>
             `;
           }).join("")
-        : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Execution map empty." : "No tasks match the current status/search filter."}</div>`;
+        : `<div class="empty">${filterState.status === "total" && !filterState.search ? "Backlog empty." : "No backlog tasks match the current status/search filter."}</div>`;
     }
 
     function completedTasks() {
@@ -1262,7 +1255,10 @@ __BLACKDOG_STYLES__
 
     function renderRecentResults() {
       const completed = completedTasks();
-      document.getElementById("history-summary").textContent = `${completed.length} completed`;
+      const visibleCount = Math.min(completed.length, 8);
+      document.getElementById("history-summary").textContent = completed.length > visibleCount
+        ? `Showing ${visibleCount} of ${completed.length} completed`
+        : `${completed.length} completed`;
       document.getElementById("recent-results").innerHTML = completed.length
         ? completed.slice(0, 8).map((task) => {
             const statusKey = normalizeStatus(task.latest_result_status || task.operator_status_key || "complete");
@@ -1442,12 +1438,6 @@ __BLACKDOG_STYLES__
           return;
         }
 
-        const messageCard = event.target.closest("[data-message-id]");
-        if (messageCard && !event.target.closest("a, button")) {
-          openMessageReader(messageCard.getAttribute("data-message-id"));
-          return;
-        }
-
         const resultCard = event.target.closest("[data-result-task]");
         if (resultCard && !event.target.closest("a, button")) {
           openTaskReader(resultCard.getAttribute("data-result-task"));
@@ -1463,7 +1453,6 @@ __BLACKDOG_STYLES__
 
     renderHeader();
     renderStats();
-    renderInbox();
     renderBoard();
     renderRecentResults();
     wireStaticEvents();
