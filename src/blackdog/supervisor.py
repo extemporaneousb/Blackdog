@@ -1360,6 +1360,7 @@ def run_supervisor(
                         actor=actor,
                         note="Supervisor run stopped after draining active child work.",
                     )
+                _emit_render(profile)
                 break
             if not ready_tasks:
                 status_payload["completed_at"] = now_iso()
@@ -1372,6 +1373,7 @@ def run_supervisor(
                     running_task_ids=[],
                     open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
                 )
+                _emit_render(profile)
                 break
             continue
 

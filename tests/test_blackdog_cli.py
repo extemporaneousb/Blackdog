@@ -3420,6 +3420,8 @@ if __name__ == "__main__":
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         done_count = sum(1 for entry in state["task_claims"].values() if entry.get("status") == "done")
         self.assertEqual(done_count, 1)
+        rendered_snapshot = html_snapshot(self.runtime_paths().html_file)
+        self.assertEqual(rendered_snapshot["open_messages"], [])
         ready_rows = json.loads(
             subprocess.run(
                 [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
