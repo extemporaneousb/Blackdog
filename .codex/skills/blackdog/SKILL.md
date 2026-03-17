@@ -37,9 +37,10 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Static Board
 
-- `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, scrollable objective table, `Execution Map`, and `Completed Tasks`.
+- `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
 - The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
-- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link plus release gates, and removes search/filter chrome.
+- The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
+- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
 - Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
 
 ## Docs to Review

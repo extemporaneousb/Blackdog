@@ -1022,7 +1022,7 @@ __BLACKDOG_STYLES__
   <script id="blackdog-snapshot" type="application/json">__BLACKDOG_SNAPSHOT__</script>
   <div class="page">
     <div class="page-shell">
-      <section id="top-band" class="top-band" data-panel="hero">
+      <section id="top-band" class="panel-row panel-row-top" data-panel="hero">
         <article id="hero-panel" class="panel control-panel">
           <span class="eyebrow">Backlog Control</span>
           <h1 id="project-name">Blackdog Backlog</h1>
@@ -1048,29 +1048,52 @@ __BLACKDOG_STYLES__
         </aside>
       </section>
 
-      <section id="objectives-panel" class="panel objectives-panel" data-panel="objectives">
-        <div class="section-head section-head-inline">
-          <div>
-            <span class="eyebrow">Objectives</span>
-            <h2>Objectives</h2>
+      <section id="middle-band" class="panel-row panel-row-middle">
+        <section id="objectives-panel" class="panel objectives-panel" data-panel="objectives">
+          <div class="section-head section-head-inline">
+            <div>
+              <span class="eyebrow">Objectives</span>
+              <h2>Objectives</h2>
+            </div>
+            <span id="objective-summary" class="section-meta"></span>
           </div>
-          <span id="objective-summary" class="section-meta"></span>
-        </div>
-        <div class="objective-table-shell">
-          <table class="objective-table">
-            <thead>
-              <tr>
-                <th scope="col">Objective</th>
-                <th scope="col">Outcome</th>
-                <th scope="col">Progress</th>
-              </tr>
-            </thead>
-            <tbody id="objectives-table-body"></tbody>
-          </table>
-        </div>
+          <div class="objective-table-shell">
+            <table class="objective-table">
+              <thead>
+                <tr>
+                  <th scope="col">Objective</th>
+                  <th scope="col">Outcome</th>
+                  <th scope="col">Progress</th>
+                </tr>
+              </thead>
+              <tbody id="objectives-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="release-gates-panel" class="panel gates-panel" data-panel="release-gates">
+          <div class="section-head section-head-inline">
+            <div>
+              <span class="eyebrow">Release Gates</span>
+              <h2>Release Gates</h2>
+            </div>
+            <span id="release-gates-summary" class="section-meta"></span>
+          </div>
+          <div class="gate-table-shell">
+            <table class="gate-table">
+              <thead>
+                <tr>
+                  <th scope="col">Gate</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody id="release-gates-table-body"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
 
-      <div id="surface-grid" class="surface-grid">
+      <section id="surface-grid" class="panel-row panel-row-bottom">
         <section id="execution-panel" class="panel board-panel" data-panel="execution">
           <div class="section-head backlog-head">
             <div>
@@ -1084,13 +1107,6 @@ __BLACKDOG_STYLES__
             </div>
           </div>
           <div id="lane-board" class="lane-board"></div>
-          <section class="board-rail">
-            <div class="board-rail-head">
-              <span class="eyebrow">Release Gates</span>
-              <span id="release-gates-summary" class="section-meta"></span>
-            </div>
-            <ul id="release-gates-list" class="gate-list"></ul>
-          </section>
         </section>
 
         <section id="completed-panel" class="panel result-panel" data-panel="completed">
@@ -1104,7 +1120,7 @@ __BLACKDOG_STYLES__
           </div>
           <div id="completed-history-scroll" class="result-history"></div>
         </section>
-      </div>
+      </section>
     </div>
   </div>
 
@@ -1147,17 +1163,6 @@ __BLACKDOG_STYLES__
       .filter((task) => normalizeStatus(task.operator_status_key) === "complete")
       .sort((left, right) => completionEpoch(right) - completionEpoch(left));
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
-    const statusMeta = {
-      total: { label: "Total" },
-      ready: { label: "Ready" },
-      running: { label: "Running" },
-      claimed: { label: "Claimed" },
-      waiting: { label: "Waiting" },
-      blocked: { label: "Blocked" },
-      failed: { label: "Failed" },
-      complete: { label: "Complete" }
-    };
-
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -1288,18 +1293,6 @@ __BLACKDOG_STYLES__
       return task.latest_result_preview || task.operator_status_detail || task.detail || task.safe_first_slice || "";
     }
 
-    function taskInventory(tasks) {
-      const rows = new Map();
-      for (const task of tasks) {
-        const key = String(task.lane_id || `lane:${task.id}`);
-        if (!rows.has(key)) {
-          rows.set(key, []);
-        }
-        rows.get(key).push(task);
-      }
-      return rows;
-    }
-
     function laneRows(tasks) {
       const rows = new Map();
       lanePlan.forEach((lane, index) => {
@@ -1368,34 +1361,6 @@ __BLACKDOG_STYLES__
       });
     }
 
-    function objectiveTone(objective) {
-      const progress = objective.progress || { counts: {}, remaining: 0 };
-      if (!progress.remaining) {
-        return "complete";
-      }
-      if (progress.counts.failed || progress.counts.blocked) {
-        return "blocked";
-      }
-      if (progress.counts.running) {
-        return "running";
-      }
-      if (progress.counts.claimed) {
-        return "claimed";
-      }
-      if (progress.counts.waiting) {
-        return "waiting";
-      }
-      return "ready";
-    }
-
-    function objectiveStateLabel(objective) {
-      const tone = objectiveTone(objective);
-      if (tone === "complete") {
-        return "Complete";
-      }
-      return statusMeta[tone]?.label || "Ready";
-    }
-
     function objectiveLeadTask(objective) {
       const orderedTaskIds = [
         ...(Array.isArray(objective.active_task_ids) ? objective.active_task_ids : []),
@@ -1459,24 +1424,6 @@ __BLACKDOG_STYLES__
           </td>
         </tr>
       `;
-    }
-
-    function nextFocusRow() {
-      const nextRows = Array.isArray(snapshot.next_rows) ? snapshot.next_rows : [];
-      if (nextRows.length) {
-        return nextRows[0];
-      }
-      const fallback = trackedTasks.find((task) => normalizeStatus(task.operator_status_key) !== "complete");
-      if (!fallback) {
-        return null;
-      }
-      return {
-        id: fallback.id,
-        title: fallback.title,
-        lane: fallback.lane_title,
-        wave: fallback.wave,
-        risk: fallback.risk
-      };
     }
 
     function nextRows() {
@@ -1587,6 +1534,52 @@ __BLACKDOG_STYLES__
       document.getElementById("status-next-lines").innerHTML = lines.length
         ? lines.map(nextLine).join("")
         : `<div class="status-next-line"><strong>No queued work</strong><span>The tracked objective work is complete.</span></div>`;
+    }
+
+    function parseReleaseGate(entry, fallbackLabel) {
+      const raw = String(entry || "").trim();
+      const explicit = raw.match(/^\\[(x|X| )\\]\\s*(.*)$/);
+      if (explicit) {
+        return {
+          label: explicit[2] || fallbackLabel,
+          passed: explicit[1].toLowerCase() === "x",
+          explicit: true,
+        };
+      }
+      const trackedProgress = progressMetrics(trackedTasks);
+      return {
+        label: raw || fallbackLabel,
+        passed: trackedProgress.total > 0 && trackedProgress.remaining === 0,
+        explicit: false,
+      };
+    }
+
+    function releaseGateRows() {
+      const releaseGates = Array.isArray(snapshot.release_gates) ? snapshot.release_gates : [];
+      return releaseGates.map((entry, index) => parseReleaseGate(entry, `Gate ${index + 1}`));
+    }
+
+    function renderReleaseGateRow(row) {
+      const gateState = row.passed
+        ? `<span class="gate-status gate-status-passed"><span class="gate-mark" aria-hidden="true">&#10003;</span>Passed</span>`
+        : `<span class="gate-status gate-status-open"><span class="gate-mark" aria-hidden="true">&#9711;</span>Open</span>`;
+      return `
+        <tr>
+          <td class="gate-copy">${escapeHtml(row.label)}</td>
+          <td class="gate-status-cell">${gateState}</td>
+        </tr>
+      `;
+    }
+
+    function renderReleaseGatesPanel() {
+      const gateRows = releaseGateRows();
+      const passedCount = gateRows.filter((row) => row.passed).length;
+      document.getElementById("release-gates-summary").textContent = gateRows.length
+        ? `${passedCount}/${gateRows.length} passed`
+        : "No gates";
+      document.getElementById("release-gates-table-body").innerHTML = gateRows.length
+        ? gateRows.map(renderReleaseGateRow).join("")
+        : `<tr><td colspan="2"><div class="empty">Add release gates to the backlog header to track them here.</div></td></tr>`;
     }
 
     function detailBlock(label, content, options = {}) {
@@ -1725,13 +1718,6 @@ __BLACKDOG_STYLES__
             </section>
           `).join("")
         : `<div class="empty">No active lanes remain in the current execution map.</div>`;
-      const releaseGates = Array.isArray(snapshot.release_gates) ? snapshot.release_gates : [];
-      document.getElementById("release-gates-summary").textContent = releaseGates.length
-        ? `${pluralize(releaseGates.length, "gate")}`
-        : "No gates";
-      document.getElementById("release-gates-list").innerHTML = releaseGates.length
-        ? releaseGates.map((row) => `<li>${escapeHtml(row)}</li>`).join("")
-        : `<li>Add release gates to the backlog header to surface them here.</li>`;
       document.getElementById("inbox-link").href = snapshot.links?.inbox || "#";
     }
 
@@ -1882,6 +1868,7 @@ __BLACKDOG_STYLES__
     renderHeader();
     renderStatusPanel();
     renderObjectivesTable();
+    renderReleaseGatesPanel();
     renderExecutionMap();
     renderCompletedPanel();
     wireStaticEvents();

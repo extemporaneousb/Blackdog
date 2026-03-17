@@ -93,29 +93,23 @@ h3 {
   font-weight: 700;
 }
 
-.top-band,
-.surface-grid {
+.panel-row {
   display: grid;
   gap: 18px;
-  align-items: start;
-}
-
-.top-band {
   grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
-}
-
-.surface-grid {
-  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
+  align-items: stretch;
 }
 
 .control-panel,
 .status-panel,
 .objectives-panel,
+.gates-panel,
 .board-panel,
 .result-panel {
   padding: 22px;
   display: grid;
   gap: 16px;
+  min-height: 0;
 }
 
 .subhead,
@@ -321,7 +315,12 @@ h3 {
   gap: 14px;
 }
 
-.objective-table-shell {
+.gates-panel {
+  gap: 14px;
+}
+
+.objective-table-shell,
+.gate-table-shell {
   max-height: 20rem;
   overflow-y: auto;
   padding-right: 4px;
@@ -329,12 +328,14 @@ h3 {
   scrollbar-gutter: stable;
 }
 
-.objective-table {
+.objective-table,
+.gate-table {
   width: 100%;
   border-collapse: collapse;
 }
 
-.objective-table thead th {
+.objective-table thead th,
+.gate-table thead th {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -348,15 +349,18 @@ h3 {
   text-transform: uppercase;
 }
 
-.objective-table tbody tr {
+.objective-table tbody tr,
+.gate-table tbody tr {
   border-bottom: 1px solid rgba(23, 26, 25, 0.08);
 }
 
-.objective-table tbody tr:last-child {
+.objective-table tbody tr:last-child,
+.gate-table tbody tr:last-child {
   border-bottom: 0;
 }
 
-.objective-table td {
+.objective-table td,
+.gate-table td {
   padding: 16px 0;
   vertical-align: top;
 }
@@ -384,6 +388,46 @@ h3 {
 
 .objective-progress-cell {
   min-width: 260px;
+}
+
+.gate-copy {
+  color: var(--ink);
+  padding-right: 18px;
+}
+
+.gate-status-cell {
+  width: 128px;
+}
+
+.gate-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.gate-status-passed {
+  background: var(--complete-bg);
+  border-color: #a4c6a8;
+  color: var(--complete-fg);
+}
+
+.gate-status-open {
+  background: rgba(238, 236, 231, 0.9);
+  border-color: #d4cdc2;
+  color: var(--waiting-fg);
+}
+
+.gate-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0.9rem;
 }
 
 .objective-progress-copy {
@@ -428,30 +472,6 @@ h3 {
 
 .board-panel {
   gap: 18px;
-}
-
-.board-rail {
-  display: grid;
-  gap: 12px;
-  padding: 16px 18px;
-  border: 1px solid rgba(155, 91, 29, 0.16);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.38);
-}
-
-.board-rail-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-
-.gate-list {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--muted);
-  display: grid;
-  gap: 8px;
 }
 
 .wave-section {
@@ -720,8 +740,7 @@ dialog::backdrop {
 }
 
 @media (max-width: 1180px) {
-  .top-band,
-  .surface-grid,
+  .panel-row,
   .backlog-head,
   .section-head-inline,
   .stats,
@@ -744,17 +763,26 @@ dialog::backdrop {
   .objective-table,
   .objective-table tbody,
   .objective-table tr,
-  .objective-table td {
+  .objective-table td,
+  .gate-table,
+  .gate-table tbody,
+  .gate-table tr,
+  .gate-table td {
     display: block;
     width: 100%;
   }
 
-  .objective-table td {
+  .objective-table td,
+  .gate-table td {
     padding: 10px 0;
   }
 
   .objective-key {
     padding-right: 0;
+  }
+
+  .gate-status-cell {
+    width: auto;
   }
 }
 

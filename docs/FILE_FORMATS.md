@@ -443,11 +443,10 @@ Layout projections:
 - The control panel renders a compact branch/commit/run/time-on-task line, a progress bar, and artifact links.
 - The objective table uses `objective_rows` as non-clickable summary rows with progress bars and quantized task-state indicators.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
+- The release-gates table uses `release_gates`; explicit `[x]`/`[ ]` markers are honored, and otherwise the board infers passed checks from the tracked push being complete.
 - The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
 - `Completed Tasks` groups finished task rows by available run/sweep metadata derived from task completion, result, and run fields.
-- Overview cards use `objective_rows`, `next_rows`, `hero_highlights`, `last_activity`, `open_messages`, and `release_gates` to keep the current push, next slice, and release checks visible.
-- Domain chips aggregate `tasks[*].domains` across the full snapshot, including completed work.
-- The browser renders a hero panel, a queue-health panel, objective cards, overview cards, and a domains panel. It no longer exposes a visible backlog execution map or dedicated completed-history panel.
+- The browser renders a split `Backlog Control`/`Status` top row, a split objective/release-gates row, then a split `Execution Map`/`Completed Tasks` row. Objective and release-gate rows are summary-only, while execution-map and completed-task cards stay clickable.
 - Focused task rows still derive from objective-tagged and lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
 - When `links.inbox` is present, inbox artifacts remain available to the task reader and other snapshot consumers even though the main board no longer renders a dedicated inbox header link.
