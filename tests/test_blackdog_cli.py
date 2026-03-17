@@ -242,7 +242,6 @@ def seed_large_runtime_fixture(root: Path, *, task_count: int = 360, lane_count:
             "title": title,
             "claimed_by": f"scale-bot-{index % 4}",
             "claimed_at": claimed_at,
-            "claim_expires_at": (now + timedelta(hours=2)).isoformat(timespec="seconds"),
             "bucket": "html" if index % 3 == 0 else "core",
             "priority": "P1" if index % 7 == 0 else "P2",
             "risk": "medium" if index % 5 else "low",
@@ -901,6 +900,9 @@ class BlackdogCliTests(unittest.TestCase):
         first_id = rows[0]["id"]
 
         run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", first_id)
+        state = json.loads(paths.state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][first_id]["status"], "claimed")
+        self.assertNotIn("claim_expires_at", state["task_claims"][first_id])
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/a", "--id", first_id, "--note", "done")
         run_cli(
             "result",
@@ -942,6 +944,69 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(first_id, rendered)
         self.assertIn("Added the first slice.", rendered)
         self.assertIn('id="release-gates-panel"', rendered)
+
+    def test_claim_records_reported_pid_without_a_lease_timeout(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Pid claim task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove direct claims can report a long-lived process without a lease timeout.",
+            "--evidence",
+            "The claim state and claim event should store the pid and omit any expiry timestamp.",
+            "--safe-first-slice",
+            "Claim one task with a pid and inspect state plus events.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Claims",
+            "--lane-title",
+            "Pid reports",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Pid claim task"]
+
+        claimed = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "claim",
+                    "--project-root",
+                    str(self.root),
+                    "--agent",
+                    "agent/a",
+                    "--id",
+                    task_id,
+                    "--pid",
+                    "4242",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(claimed, [{"id": task_id, "title": "Pid claim task", "claimed_pid": 4242}])
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        claim_entry = state["task_claims"][task_id]
+        self.assertEqual(claim_entry["status"], "claimed")
+        self.assertEqual(claim_entry["claimed_pid"], 4242)
+        self.assertEqual(claim_entry["claimed_process_missing_scans"], 0)
+        self.assertNotIn("claim_expires_at", claim_entry)
+
+        claim_events = [row for row in load_events(self.runtime_paths(), task_id=task_id) if row.get("type") == "claim"]
+        self.assertEqual(len(claim_events), 1)
+        self.assertEqual(claim_events[0]["payload"], {"claimed_pid": 4242})
 
     def test_inbox_and_skill_generation(self) -> None:
         run_skill_cli("new", "backlog", "--project-root", str(self.root), "--project-name", "Inbox Demo")
@@ -2826,7 +2891,7 @@ if __name__ == "__main__":
         payload = json.loads(run_result.stdout)
         self.assertEqual(payload["children"][0]["task_id"], task_id)
         self.assertEqual(payload["children"][0]["exit_code"], 0)
-        self.assertFalse(payload["children"][0]["timed_out"])
+        self.assertFalse(payload["children"][0]["missing_process"])
         self.assertEqual(payload["children"][0]["workspace_mode"], "git-worktree")
         self.assertEqual(payload["children"][0]["launch_command"][0], str(launcher_script))
         workspace = Path(payload["children"][0]["workspace"])
@@ -2882,15 +2947,20 @@ if __name__ == "__main__":
         )
         self.assertEqual(len(resolved_messages), 1)
 
-    def test_supervise_run_times_out_child_and_releases_task(self) -> None:
+    def test_supervise_run_keeps_live_child_claimed_until_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
+        sync_dir = paths.control_dir / "live-claim-sync"
+        sync_dir.mkdir(parents=True, exist_ok=True)
         install_exec_launcher(
             self.root,
             """
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -2903,40 +2973,79 @@ def main() -> int:
     if not args or args[0] != "exec":
         print("expected exec launcher", file=sys.stderr)
         return 2
-    time.sleep(10)
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    sync_dir = project_root / ".git" / "blackdog" / "live-claim-sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    started_file = sync_dir / f"started-{task_id}.txt"
+    release_file = sync_dir / f"release-{task_id}.txt"
+    started_file.write_text(str(os.getpid()), encoding="utf-8")
+    deadline = time.time() + 10
+    while time.time() < deadline and not release_file.exists():
+        time.sleep(0.05)
+    if not release_file.exists():
+        print(f"timed out waiting for release of {task_id}", file=sys.stderr)
+        return 3
+    Path("live-claim.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "live-claim.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} after live claim hold"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"live claim child completed {task_id}",
+            "--validation",
+            "live-claim-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 """,
-            commit_message="Checkpoint launcher for supervisor timeout test",
+            commit_message="Checkpoint launcher for live claim supervisor test",
         )
         run_cli(
             "add",
             "--project-root",
             str(self.root),
             "--title",
-            "Timed out child task",
+            "Live child task",
             "--bucket",
             "core",
             "--why",
-            "Need to prove timed out child runs release their claims and record evidence.",
+            "Need to prove the supervisor leaves a live child claimed until it actually finishes.",
             "--evidence",
-            "A child that exceeds the supervisor deadline should be blocked and released.",
+            "A live child should remain running with a non-expiring supervisor claim instead of being killed by a wall-clock deadline.",
             "--safe-first-slice",
-            "Run one child longer than the timeout window.",
+            "Hold one child open long enough to inspect the claim state, then let it finish normally.",
             "--path",
             "README.md",
             "--epic-title",
             "Supervisor",
             "--lane-title",
-            "Timeouts",
+            "Live claims",
             "--wave",
             "0",
         )
-        task_id = task_ids_by_title(self.root)["Timed out child task"]
-        result = subprocess.run(
+        task_id = task_ids_by_title(self.root)["Live child task"]
+        process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
@@ -2947,8 +3056,120 @@ if __name__ == "__main__":
                 str(self.root),
                 "--id",
                 task_id,
-                "--timeout-seconds",
-                "1",
+                "--poll-interval-seconds",
+                "0",
+                "--format",
+                "json",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        try:
+            started_file = wait_for_file(sync_dir / f"started-{task_id}.txt", timeout=10)
+            child_pid = int(started_file.read_text(encoding="utf-8").strip())
+            time.sleep(2)
+
+            state = json.loads(paths.state_file.read_text(encoding="utf-8"))
+            claim_entry = state["task_claims"][task_id]
+            self.assertEqual(claim_entry["status"], "claimed")
+            self.assertNotIn("claim_expires_at", claim_entry)
+            self.assertEqual(claim_entry["claimed_pid"], child_pid)
+
+            refreshed_snapshot = wait_for_html_snapshot(
+                paths.html_file,
+                lambda payload: any(
+                    row.get("id") == task_id and row.get("latest_run_status") == "running"
+                    for row in payload.get("active_tasks", [])
+                ),
+                timeout=10,
+            )
+            self.assertIn(task_id, [row["id"] for row in refreshed_snapshot["active_tasks"]])
+            os.kill(child_pid, 0)
+
+            (sync_dir / f"release-{task_id}.txt").write_text("release\n", encoding="utf-8")
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, stderr)
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                process.wait(timeout=5)
+
+        payload = json.loads(stdout)
+        child = payload["children"][0]
+        self.assertEqual(child["task_id"], task_id)
+        self.assertFalse(child["missing_process"])
+        self.assertEqual(child["exit_code"], 0)
+        self.assertEqual(child["final_task_status"], "done")
+        self.assertIsNotNone(child["land_result"])
+        self.assertIsNone(child["land_error"])
+        self.assertFalse(Path(child["workspace"]).exists())
+
+        state = json.loads(paths.state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][task_id]["status"], "done")
+
+    def test_supervise_run_releases_orphaned_claim_after_two_liveness_scans(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Orphaned claimed task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to prove the supervisor recovers a claim whose reported process is gone.",
+            "--evidence",
+            "A claimed task with a missing reported pid should survive one scan and be released on the second successive scan.",
+            "--safe-first-slice",
+            "Seed one claimed task with a fake pid, run two supervisor scans, and check that the second run releases it.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Live claims",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Orphaned claimed task"]
+        save_state(
+            paths.state_file,
+            {
+                "schema_version": 1,
+                "approval_tasks": {},
+                "task_claims": {
+                    task_id: {
+                        "status": "claimed",
+                        "title": "Orphaned claimed task",
+                        "claimed_by": "agent/a",
+                        "claimed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "claimed_pid": 999999,
+                        "claimed_process_missing_scans": 0,
+                        "bucket": "core",
+                        "paths": ["README.md"],
+                        "priority": "P1",
+                        "risk": "medium",
+                    }
+                },
+            },
+        )
+
+        first = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--poll-interval-seconds",
+                "0",
                 "--format",
                 "json",
             ],
@@ -2958,35 +3179,58 @@ if __name__ == "__main__":
             env=cli_env(),
             cwd=self.root,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
-        child = payload["children"][0]
-        self.assertTrue(child["timed_out"])
-        self.assertEqual(child["final_task_status"], "released")
-        self.assertIsNone(child["land_result"])
-        self.assertIsNone(child["land_error"])
-        self.assertTrue(Path(child["workspace"]).exists())
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_state = json.loads(paths.state_file.read_text(encoding="utf-8"))
+        first_claim = first_state["task_claims"][task_id]
+        self.assertEqual(first_claim["status"], "claimed")
+        self.assertEqual(first_claim["claimed_process_missing_scans"], 1)
 
-        state = json.loads(paths.state_file.read_text(encoding="utf-8"))
-        self.assertEqual(state["task_claims"][task_id]["status"], "released")
-
-        result_files = sorted((paths.results_dir / task_id).glob("*.json"))
-        self.assertTrue(result_files)
-        result_payload = json.loads(result_files[-1].read_text(encoding="utf-8"))
-        self.assertEqual(result_payload["status"], "blocked")
-        self.assertIn("Timed out before the supervisor deadline", result_payload["validation"])
-        rendered_snapshot = wait_for_html_snapshot(
-            paths.html_file,
-            lambda payload: any(
-                row.get("id") == task_id and row.get("latest_run_status") == "timed-out"
-                for row in payload.get("tasks", [])
-            ),
-            timeout=5,
+        send_message(
+            paths,
+            sender="tester",
+            recipient="supervisor",
+            body="stop",
+            kind="control",
+            tags=["stop"],
         )
-        rendered_task = next(row for row in rendered_snapshot["tasks"] if row["id"] == task_id)
-        self.assertEqual(rendered_task["operator_status"], "Failed")
-        self.assertNotIn(task_id, [row["id"] for row in rendered_snapshot["active_tasks"]])
-        self.assertIn(task_id, [row["id"] for row in rendered_snapshot["board_tasks"]])
+        second = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--poll-interval-seconds",
+                "0",
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        second_payload = json.loads(second.stdout)
+        self.assertEqual(second_payload["final_status"], "stopped")
+        self.assertEqual(second_payload["children"], [])
+
+        released_state = json.loads(paths.state_file.read_text(encoding="utf-8"))
+        released_claim = released_state["task_claims"][task_id]
+        self.assertEqual(released_claim["status"], "released")
+        self.assertIn("missing in 2 successive liveness scans", released_claim["release_note"])
+        self.assertNotIn("claimed_pid", released_claim)
+
+        release_events = [
+            row
+            for row in load_events(paths, limit=20)
+            if row.get("task_id") == task_id and row.get("type") == "release"
+        ]
+        self.assertTrue(release_events)
+        self.assertIn("missing in 2 successive liveness scans", release_events[0]["payload"]["note"])
 
     def test_supervise_run_releases_task_after_clean_child_exit_without_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3062,7 +3306,7 @@ if __name__ == "__main__":
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
         child = payload["children"][0]
-        self.assertFalse(child["timed_out"])
+        self.assertFalse(child["missing_process"])
         self.assertEqual(child["exit_code"], 0)
         self.assertEqual(child["final_task_status"], "released")
         self.assertIsNone(child["land_result"])

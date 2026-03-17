@@ -402,8 +402,7 @@ def classify_task_status(task: TaskInfo, snapshot: BacklogSnapshot, state: dict[
         return "done", f"{detail} @ {completed_at}"
     owner = active_claim_owner(task.id, state)
     if owner:
-        entry = state.get("task_claims", {}).get(task.id) or {}
-        return "claimed", f"{owner} until {entry.get('claim_expires_at') or '?'}"
+        return "claimed", f"{owner} claimed the task"
     blocker = blocking_reason(task, snapshot, state, allow_high_risk=allow_high_risk)
     if blocker == "approval required":
         return "approval", blocker

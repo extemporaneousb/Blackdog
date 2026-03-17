@@ -40,13 +40,11 @@ Current keys:
   - `prefix`
   - `digest_length`
 - `[rules]`
-  - `default_claim_lease_hours`
   - `require_claim_for_completion`
   - `auto_render_html`
 - `[supervisor]`
   - `launch_command`
   - `max_parallel`
-  - `task_timeout_seconds`
 - `[taxonomy]`
   - `buckets`
   - `domains`
@@ -61,6 +59,7 @@ Current supervisor launcher contract:
 - The default value is `["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]`.
 - Blackdog prefers the desktop Codex.app runtime when the default launcher is configured and that binary is installed.
 - Prompt-style Codex launchers are no longer supported by the supervisor.
+- Supervisor child runs do not have a wall-clock task timeout; they stay claimed until they finish the protocol or the supervisor recovers an orphaned claimed pid after repeated failed liveness scans.
 - `control_dir` accepts the special prefix `@git-common`, which resolves against `git rev-parse --git-common-dir`.
 - The default `worktrees_dir` value is `../.worktrees`, which places branch-backed task worktrees beside the primary checkout by default.
 - Child workspaces are branch-backed task worktrees created from the primary worktree branch.
@@ -134,6 +133,15 @@ Top-level keys:
 - `schema_version`
 - `approval_tasks`
 - `task_claims`
+
+Claim entries are authoritative when `status = "claimed"`; they no longer expire by lease time. Optional process-tracking fields may be present:
+
+- `claimed_pid`
+- `claimed_process_missing_scans`
+- `claimed_process_last_seen_at`
+- `claimed_process_last_checked_at`
+
+Legacy `claim_expires_at` values may still exist in older state files, but the runtime no longer uses them to expire claims.
 
 ## `<control_dir>/events.jsonl`
 

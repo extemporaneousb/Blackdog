@@ -53,7 +53,6 @@ Blackdog does not currently shell out to an external skill-authoring workflow at
 - `[taxonomy].domains`: reflect the host repo's meaningful system boundaries
 - `[taxonomy].validation_commands`: set the narrowest standard checks an agent should run by default
 - `[taxonomy].doc_routing_defaults`: point at the docs an agent must review before changing code; Blackdog emits this list into the generated skill, so keep it limited to the required review set
-- `[rules].default_claim_lease_hours`: match expected task duration
 - `[rules].require_claim_for_completion`: keep this enabled unless the repo intentionally allows ad hoc completions
 - `[paths].control_dir`: keep the git-common default unless the host repo has a strong reason to relocate mutable runtime state
 - `[paths].worktrees_dir`: prefer a sibling worktree base or an explicit `.worktrees` symlink target over an in-repo runtime directory
@@ -78,6 +77,6 @@ Delegated child runs use the same lifecycle: the coordinating supervisor stays i
 
 Each worktree should also carry its own repo-local `.VE/` when the host repo uses one. Blackdog will prefer `./.VE/bin/blackdog`, but operators must create that environment per worktree rather than copying it across checkouts.
 
-Version 0 supervisor steering is intentionally narrow. `stop` is a boundary control checked while the run is active; it prevents new launches while already-running child claims continue until the child exits or times out. The run rereads backlog and state while it is active, so newly added or newly unblocked tasks can become eligible before the run drains to idle. Tasks completed during that run stay visible in the execution map until the next run starts and performs its cleanup sweep.
+Version 0 supervisor steering is intentionally narrow. `stop` is a boundary control checked while the run is active; it prevents new launches while already-running child claims continue until the child exits or the supervisor later recovers an orphaned claimed pid after repeated failed liveness scans. The run rereads backlog and state while it is active, so newly added or newly unblocked tasks can become eligible before the run drains to idle. Tasks completed during that run stay visible in the execution map until the next run starts and performs its cleanup sweep.
 
 As the supervisor grows beyond the current runner, this guide should expand to cover agent pools, richer steering, launch configuration, and run monitoring.

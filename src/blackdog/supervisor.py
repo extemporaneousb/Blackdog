@@ -63,6 +63,8 @@ SUPERVISOR_STATUS_READY_LIMIT = 8
 SUPERVISOR_STATUS_RESULT_LIMIT = 5
 SUPERVISOR_STATUS_CONTROL_LIMIT = 8
 DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS = 1.0
+CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS = 60.0
+CLAIM_LIVENESS_MISSING_SCAN_LIMIT = 2
 
 
 @dataclass
@@ -82,11 +84,10 @@ class ChildRun:
     stdout_handle: TextIO | None
     stderr_handle: TextIO | None
     started_at: float
-    deadline: float
     worktree_spec: WorktreeSpec | None = None
     launch_error: str | None = None
     exit_code: int | None = None
-    timed_out: bool = False
+    missing_process: bool = False
     result_recorded: bool = False
     final_task_status: str | None = None
     land_result: dict[str, Any] | None = None
@@ -148,8 +149,8 @@ def _supervisor_text(view: dict[str, Any]) -> str:
         lines.append(f"Status file: {view['status_file']}")
     for child in view["children"]:
         exit_text = "launch-error" if child["launch_error"] else child["exit_code"]
-        if child["timed_out"]:
-            exit_text = "timed-out"
+        if child["missing_process"]:
+            exit_text = "interrupted"
         lines.append(
             f"- {child['task_id']} -> {child['child_agent']} | {child['workspace_mode']} | exit {exit_text} | final {child['final_task_status']}"
         )
@@ -422,7 +423,6 @@ def _claim_for_child(profile: Profile, snapshot: BacklogSnapshot, task: TaskInfo
         claim_task_entry(
             entry,
             agent=child_agent,
-            lease_hours=profile.default_claim_lease_hours,
             title=task.title,
             summary={
                 "bucket": task.payload["bucket"],
@@ -437,8 +437,80 @@ def _claim_for_child(profile: Profile, snapshot: BacklogSnapshot, task: TaskInfo
         event_type="claim",
         actor=child_agent,
         task_id=task.id,
-        payload={"claim_expires_at": entry["claim_expires_at"], "via": "supervisor"},
+        payload={"via": "supervisor"},
     )
+
+
+def _record_child_claim_process(profile: Profile, task_id: str, *, child_agent: str, pid: int) -> None:
+    if pid < 1:
+        return
+    with locked_state(profile.paths.state_file) as state:
+        entry = state.setdefault("task_claims", {}).get(task_id) or {}
+        if entry.get("status") != "claimed" or entry.get("claimed_by") != child_agent:
+            return
+        entry["claimed_pid"] = pid
+        entry["claimed_process_missing_scans"] = 0
+        entry["claimed_process_last_seen_at"] = now_iso()
+        entry.pop("claim_expires_at", None)
+        state["task_claims"][task_id] = entry
+
+
+def _scan_claim_process_liveness(
+    profile: Profile,
+    *,
+    actor: str,
+    skip_task_ids: set[str],
+) -> list[str]:
+    released: list[str] = []
+    release_events: list[tuple[str, str]] = []
+    with locked_state(profile.paths.state_file) as state:
+        claims = state.setdefault("task_claims", {})
+        for task_id, entry in claims.items():
+            if task_id in skip_task_ids:
+                continue
+            if not isinstance(entry, dict) or entry.get("status") != "claimed":
+                continue
+            pid = entry.get("claimed_pid")
+            if not isinstance(pid, int) or pid < 1:
+                continue
+            if _pid_alive(pid):
+                entry["claimed_process_missing_scans"] = 0
+                entry["claimed_process_last_seen_at"] = now_iso()
+                claims[task_id] = entry
+                continue
+            missing_scans = int(entry.get("claimed_process_missing_scans") or 0) + 1
+            entry["claimed_process_missing_scans"] = missing_scans
+            entry["claimed_process_last_checked_at"] = now_iso()
+            if missing_scans < CLAIM_LIVENESS_MISSING_SCAN_LIMIT:
+                claims[task_id] = entry
+                continue
+            note = (
+                f"Supervisor released orphaned claim after process {pid} was missing in "
+                f"{CLAIM_LIVENESS_MISSING_SCAN_LIMIT} successive liveness scans."
+            )
+            entry["status"] = "released"
+            entry["released_by"] = actor
+            entry["released_at"] = now_iso()
+            entry["release_note"] = note
+            entry.pop("claim_expires_at", None)
+            entry.pop("claimed_pid", None)
+            entry.pop("claimed_process_missing_scans", None)
+            entry.pop("claimed_process_last_seen_at", None)
+            entry.pop("claimed_process_last_checked_at", None)
+            claims[task_id] = entry
+            released.append(task_id)
+            release_events.append((task_id, note))
+    for task_id, note in release_events:
+        append_event(
+            profile.paths,
+            event_type="release",
+            actor=actor,
+            task_id=task_id,
+            payload={"note": note},
+        )
+    if release_events:
+        _emit_render(profile)
+    return released
 
 
 def _release_if_still_claimed(profile: Profile, task_id: str, *, child_agent: str, note: str) -> None:
@@ -451,6 +523,10 @@ def _release_if_still_claimed(profile: Profile, task_id: str, *, child_agent: st
         entry["released_at"] = now_iso()
         entry["release_note"] = note
         entry.pop("claim_expires_at", None)
+        entry.pop("claimed_pid", None)
+        entry.pop("claimed_process_missing_scans", None)
+        entry.pop("claimed_process_last_seen_at", None)
+        entry.pop("claimed_process_last_checked_at", None)
         state["task_claims"][task_id] = entry
     append_event(
         profile.paths,
@@ -472,6 +548,11 @@ def _complete_if_still_claimed(profile: Profile, task_id: str, *, child_agent: s
         entry["completed_by"] = child_agent
         entry["completed_at"] = now_iso()
         entry["completion_note"] = note
+        entry.pop("claim_expires_at", None)
+        entry.pop("claimed_pid", None)
+        entry.pop("claimed_process_missing_scans", None)
+        entry.pop("claimed_process_last_seen_at", None)
+        entry.pop("claimed_process_last_checked_at", None)
         state["task_claims"][task_id] = entry
         approvals = state.setdefault("approval_tasks", {})
         if task_id in approvals and isinstance(approvals[task_id], dict):
@@ -700,7 +781,7 @@ def _capture_child_diff_artifacts(child: ChildRun) -> None:
 
 def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: str, run_id: str) -> None:
     spec = child.worktree_spec
-    if spec is None or child.launch_error or child.timed_out or child.exit_code not in {0, None}:
+    if spec is None or child.launch_error or child.missing_process or child.exit_code not in {0, None}:
         return
     try:
         branch_ready = branch_ahead_of_target(profile, branch=spec.branch, target_branch=spec.target_branch)
@@ -790,8 +871,10 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
     validation = [f"Child launch command: {' '.join(child.launch_command)}"]
     if child.launch_error:
         validation.append(f"Launch error: {child.launch_error}")
-    elif child.timed_out:
-        validation.append("Timed out before the supervisor deadline")
+    elif child.missing_process:
+        validation.append(
+            f"Claiming process disappeared before task completion after {CLAIM_LIVENESS_MISSING_SCAN_LIMIT} missed liveness scans"
+        )
     else:
         validation.append(f"Exit code: {child.exit_code}")
     if child.land_result is not None:
@@ -809,9 +892,9 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         if child.land_error:
             status = "blocked"
             residual = ["Task state is done, but the supervisor could not land the child branch through the primary worktree."]
-    elif child.timed_out or child.launch_error or child.exit_code not in {0, None}:
+    elif child.missing_process or child.launch_error or child.exit_code not in {0, None}:
         status = "blocked"
-        residual = ["Child run failed or timed out before completing the task."]
+        residual = ["Child run failed or disappeared before completing the task protocol."]
         if child.land_error:
             residual.append("The supervisor also failed to land the branch-backed child worktree.")
     else:
@@ -890,7 +973,7 @@ def _finish_child(
             "run_id": run_id,
             "child_agent": child.child_agent,
             "exit_code": child.exit_code,
-            "timed_out": child.timed_out,
+            "missing_process": child.missing_process,
             "result_recorded": child.result_recorded,
             "final_task_status": child.final_task_status,
             "land_error": child.land_error,
@@ -939,7 +1022,6 @@ def _launch_child_run(
     run_dir: Path,
     launch_command: tuple[str, ...],
     workspace_mode: str,
-    timeout_seconds: int,
 ) -> ChildRun:
     _claim_for_child(profile, load_backlog(profile.paths, profile), task, child_agent=child_agent)
     child_run_dir = run_dir / task.id
@@ -954,7 +1036,6 @@ def _launch_child_run(
         if row.get("result_file")
     }
     started_at = time.monotonic()
-    deadline = started_at + timeout_seconds
     try:
         prepared = _prepare_workspace(profile, task, workspace_mode=workspace_mode, run_id=run_id)
     except SupervisorError as exc:
@@ -974,7 +1055,6 @@ def _launch_child_run(
             stdout_handle=None,
             stderr_handle=None,
             started_at=started_at,
-            deadline=deadline,
             launch_error=str(exc),
             exit_code=None,
         )
@@ -1047,7 +1127,6 @@ def _launch_child_run(
         stdout_handle=stdout_handle,
         stderr_handle=stderr_handle,
         started_at=started_at,
-        deadline=deadline,
         worktree_spec=prepared.worktree_spec,
     )
     command = _build_launch_command(launch_command, prompt)
@@ -1107,6 +1186,7 @@ def _launch_child_run(
             "pid": child.process.pid,
         },
     )
+    _record_child_claim_process(profile, task.id, child_agent=child_agent, pid=child.process.pid)
     _emit_render(profile)
     return child
 
@@ -1123,6 +1203,7 @@ def _append_run_step(
     finished_task_ids: list[str] | None = None,
     control_message_id: str | None = None,
     removed_task_ids: list[str] | None = None,
+    released_task_ids: list[str] | None = None,
 ) -> None:
     step = {
         "index": len(status_payload["steps"]) + 1,
@@ -1141,6 +1222,8 @@ def _append_run_step(
         step["control_message_id"] = control_message_id
     if removed_task_ids:
         step["removed_task_ids"] = list(removed_task_ids)
+    if released_task_ids:
+        step["released_task_ids"] = list(released_task_ids)
     status_payload["steps"].append(step)
     _write_run_status(status_file, status_payload)
 
@@ -1154,19 +1237,15 @@ def run_supervisor(
     allow_high_risk: bool,
     force: bool,
     workspace_mode: str | None,
-    timeout_seconds: int | None,
     poll_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
     selected_count = count or profile.supervisor_max_parallel
     resolved_workspace_mode = workspace_mode or profile.supervisor_workspace_mode
-    resolved_timeout_seconds = timeout_seconds or profile.supervisor_task_timeout_seconds
     resolved_poll_interval_seconds = (
         DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS if poll_interval_seconds is None else poll_interval_seconds
     )
     if resolved_workspace_mode != "git-worktree":
         raise BacklogError("workspace mode must be 'git-worktree'")
-    if resolved_timeout_seconds < 1:
-        raise BacklogError("timeout must be at least 1 second")
     if resolved_poll_interval_seconds < 0:
         raise BacklogError("poll interval must be at least 0 seconds")
 
@@ -1227,6 +1306,7 @@ def run_supervisor(
     attempted_task_ids: set[str] = set()
     launched_count = 0
     launch_command_checked = False
+    next_claim_liveness_scan_at = 0.0
 
     def start_child(task: TaskInfo) -> None:
         nonlocal launched_count, launch_command_checked
@@ -1244,7 +1324,6 @@ def run_supervisor(
             run_dir=run_dir,
             launch_command=resolved_launch_command,
             workspace_mode=resolved_workspace_mode,
-            timeout_seconds=resolved_timeout_seconds,
         )
         children.append(child)
         attempted_task_ids.add(task.id)
@@ -1275,26 +1354,19 @@ def run_supervisor(
             _finish_child(profile, child, actor=actor, run_id=run_id)
             finished_task_ids.append(child.task.id)
 
-        current = time.monotonic()
-        timed_out_children = [
-            child
-            for child in active.values()
-            if child.process is not None and child.process.poll() is None and current >= child.deadline
-        ]
-        for child in timed_out_children:
-            assert child.process is not None
-            child.timed_out = True
-            try:
-                child.process.kill()
-            except OSError:
-                pass
-            child.exit_code = child.process.wait(timeout=5)
-            _finish_child(profile, child, actor=actor, run_id=run_id)
-            active.pop(child.child_agent, None)
-            finished_task_ids.append(child.task.id)
-
         snapshot, state = _load_synced_runtime(profile)
         active_task_ids = {child.task.id for child in active.values()}
+        current = time.monotonic()
+        released_task_ids: list[str] = []
+        if current >= next_claim_liveness_scan_at:
+            released_task_ids = _scan_claim_process_liveness(
+                profile,
+                actor=actor,
+                skip_task_ids=active_task_ids,
+            )
+            next_claim_liveness_scan_at = current + CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS
+            if released_task_ids:
+                snapshot, state = _load_synced_runtime(profile)
         ready_tasks = _next_run_tasks(
             snapshot,
             state,
@@ -1327,7 +1399,7 @@ def run_supervisor(
                     active_task_ids=active_task_ids,
                 )
 
-        if launched_task_ids or finished_task_ids or control_message_id:
+        if launched_task_ids or finished_task_ids or released_task_ids or control_message_id:
             _append_run_step(
                 status_payload,
                 status_file,
@@ -1338,6 +1410,7 @@ def run_supervisor(
                 launched_task_ids=launched_task_ids,
                 finished_task_ids=finished_task_ids,
                 control_message_id=control_message_id,
+                released_task_ids=released_task_ids,
             )
 
         if not active:
@@ -1377,10 +1450,8 @@ def run_supervisor(
                 break
             continue
 
-        next_deadline = min(child.deadline for child in active.values())
-        wait_timeout = max(0.0, min(next_deadline - time.monotonic(), resolved_poll_interval_seconds))
         try:
-            child_agent, exit_code = completion_queue.get(timeout=wait_timeout)
+            child_agent, exit_code = completion_queue.get(timeout=resolved_poll_interval_seconds)
         except queue.Empty:
             continue
         child = active.pop(child_agent, None)
@@ -1436,7 +1507,7 @@ def run_supervisor(
                 "stderr_file": str(child.stderr_file),
                 "launch_error": child.launch_error,
                 "exit_code": child.exit_code,
-                "timed_out": child.timed_out,
+                "missing_process": child.missing_process,
                 "result_recorded": child.result_recorded,
                 "final_task_status": child.final_task_status,
                 "task_branch": child.worktree_spec.branch if child.worktree_spec is not None else None,

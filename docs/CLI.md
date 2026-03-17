@@ -47,7 +47,7 @@ as the required path to continue product development.
 - `blackdog next`
 - `blackdog supervise run`
 - `blackdog supervise status`
-- `blackdog claim --agent NAME`
+- `blackdog claim --agent NAME [--pid PID]`
 - `blackdog release --id TASK --agent NAME`
 - `blackdog complete --id TASK --agent NAME`
 - `blackdog decide --id TASK --agent NAME --decision approved|denied|deferred|done`
@@ -69,6 +69,8 @@ Blackdog creates branch-backed child worktrees from the primary worktree branch 
 The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state. It also surfaces the run workspace mode, the task branch to target-branch landing path, the primary-worktree cleanliness gate, and the per-worktree `.VE` rule. When the current workspace contains `.VE/bin/blackdog`, the prompt points child agents at that workspace-local CLI; otherwise it falls back to `blackdog` from the active environment and tells the agent to bootstrap `./.VE` in that worktree rather than reusing another worktree's environment.
 
 `blackdog supervise run` is the only supervisor mode. It performs one cleanup sweep at the start of the run, removes already-completed tasks from the execution map, drops empty lanes and waves, compacts remaining waves back to small integers, then keeps rereading backlog/state while the run is active. Tasks completed during that active run stay visible in place on the execution map until the next run starts and sweeps them away. If there is no runnable or running work after that opening sweep, the command returns `idle` immediately instead of waiting for future tasks. Otherwise the run exits only when it reaches idle or when a `stop` inbox message puts it into draining mode. `stop` prevents new launches but does not interrupt already-running child tasks.
+
+Claimed tasks no longer have a lease timeout. `blackdog claim` can record the long-lived claiming process with `--pid PID`, and supervisor child claims record that pid automatically. A live claimed process can run indefinitely; the supervisor only recovers a claim when the reported claiming pid is missing on repeated liveness scans, and even then it releases the claim instead of killing a still-live task.
 
 `blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the currently open `stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
 

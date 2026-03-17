@@ -399,8 +399,8 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             entry["run_status"] = "launch-failed"
             entry["finished_at"] = str(event.get("at") or "")
         elif event_type == "child_finish":
-            if payload.get("timed_out"):
-                entry["run_status"] = "timed-out"
+            if payload.get("missing_process"):
+                entry["run_status"] = "interrupted"
             elif payload.get("land_error"):
                 entry["run_status"] = "blocked"
             elif payload.get("exit_code") not in {0, None}:
@@ -618,11 +618,10 @@ def _operator_status(task_row: dict[str, Any]) -> dict[str, str]:
             "operator_status_detail": run_detail,
         }
 
-    if run_status in {"failed", "launch-failed", "timed-out", "interrupted"}:
+    if run_status in {"failed", "launch-failed", "interrupted"}:
         run_detail = {
             "failed": "Child run failed",
             "launch-failed": "Child launch failed",
-            "timed-out": "Child run timed out",
             "interrupted": "Child run interrupted",
         }[run_status]
         return {
@@ -703,7 +702,7 @@ def _dialog_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
             "running": {"running", "claimed"},
             "claimed": {"prepared"},
             "blocked": {"blocked"},
-            "failed": {"failed", "launch-failed", "timed-out", "interrupted"},
+            "failed": {"failed", "launch-failed", "interrupted"},
             "complete": {"finished", "done"},
         }.get(current, set())
         run_status = str(task_row.get("latest_run_status") or "").strip()
@@ -747,8 +746,8 @@ def _activity_message(event: dict[str, Any]) -> str:
     if event_type == "child_launch":
         return "run started"
     if event_type == "child_finish":
-        if payload.get("timed_out"):
-            return "run timed out"
+        if payload.get("missing_process"):
+            return "run interrupted"
         if payload.get("land_error"):
             return "run blocked"
         if payload.get("exit_code") not in {0, None}:

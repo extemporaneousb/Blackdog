@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 import fcntl
@@ -19,18 +19,6 @@ class StoreError(RuntimeError):
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def parse_datetime(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.astimezone()
-    return parsed
 
 
 def default_state() -> dict[str, Any]:
@@ -122,12 +110,7 @@ def locked_state(state_file: Path) -> Iterator[dict[str, Any]]:
 
 
 def claim_is_active(entry: dict[str, Any]) -> bool:
-    if not isinstance(entry, dict) or entry.get("status") != "claimed":
-        return False
-    expires = parse_datetime(entry.get("claim_expires_at"))
-    if expires is None:
-        return True
-    return expires > datetime.now().astimezone()
+    return isinstance(entry, dict) and entry.get("status") == "claimed"
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -374,16 +357,32 @@ def load_task_results(paths: ProjectPaths, *, task_id: str | None = None) -> lis
     return results
 
 
-def claim_task_entry(entry: dict[str, Any], *, agent: str, lease_hours: int, title: str, summary: dict[str, Any]) -> None:
+def claim_task_entry(
+    entry: dict[str, Any],
+    *,
+    agent: str,
+    title: str,
+    summary: dict[str, Any],
+    claimed_pid: int | None = None,
+) -> None:
     claimed_at = now_iso()
-    claim_expires_at = (datetime.now().astimezone() + timedelta(hours=lease_hours)).isoformat(timespec="seconds")
     entry.update(
         {
             "status": "claimed",
             "title": title,
             "claimed_by": agent,
             "claimed_at": claimed_at,
-            "claim_expires_at": claim_expires_at,
             **summary,
         }
     )
+    entry.pop("claim_expires_at", None)
+    if claimed_pid is None:
+        entry.pop("claimed_pid", None)
+        entry.pop("claimed_process_missing_scans", None)
+        entry.pop("claimed_process_last_seen_at", None)
+        entry.pop("claimed_process_last_checked_at", None)
+        return
+    entry["claimed_pid"] = claimed_pid
+    entry["claimed_process_missing_scans"] = 0
+    entry["claimed_process_last_seen_at"] = claimed_at
+    entry.pop("claimed_process_last_checked_at", None)

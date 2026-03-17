@@ -12,14 +12,12 @@ prefix = "BLACK"
 digest_length = 10
 
 [rules]
-default_claim_lease_hours = 4
 require_claim_for_completion = true
 auto_render_html = true
 
 [supervisor]
 launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
 max_parallel = 2
-task_timeout_seconds = 1200
 
 [taxonomy]
 buckets = ["core", "cli", "html", "skills", "docs", "testing", "integration"]

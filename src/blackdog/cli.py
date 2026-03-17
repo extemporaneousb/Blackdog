@@ -237,7 +237,6 @@ def cmd_supervise_run(args: argparse.Namespace) -> int:
         allow_high_risk=args.allow_high_risk,
         force=args.force,
         workspace_mode=None,
-        timeout_seconds=args.timeout_seconds,
         poll_interval_seconds=args.poll_interval_seconds,
     )
     _emit_render(profile)
@@ -378,10 +377,11 @@ def cmd_claim(args: argparse.Namespace) -> int:
         claimed = []
         for task in selected:
             entry = state.setdefault("task_claims", {}).get(task.id) or {}
+            if args.pid is not None and args.pid < 1:
+                raise BacklogError("--pid must be a positive integer")
             claim_task_entry(
                 entry,
                 agent=args.agent,
-                lease_hours=args.lease_hours or profile.default_claim_lease_hours,
                 title=task.title,
                 summary={
                     "bucket": task.payload["bucket"],
@@ -389,16 +389,23 @@ def cmd_claim(args: argparse.Namespace) -> int:
                     "priority": task.payload["priority"],
                     "risk": task.payload["risk"],
                 },
+                claimed_pid=args.pid,
             )
             state["task_claims"][task.id] = entry
+            event_payload: dict[str, Any] = {}
+            if isinstance(entry.get("claimed_pid"), int):
+                event_payload["claimed_pid"] = entry["claimed_pid"]
             append_event(
                 profile.paths,
                 event_type="claim",
                 actor=args.agent,
                 task_id=task.id,
-                payload={"claim_expires_at": entry["claim_expires_at"]},
+                payload=event_payload,
             )
-            claimed.append({"id": task.id, "title": task.title, "claim_expires_at": entry["claim_expires_at"]})
+            row: dict[str, Any] = {"id": task.id, "title": task.title}
+            if isinstance(entry.get("claimed_pid"), int):
+                row["claimed_pid"] = entry["claimed_pid"]
+            claimed.append(row)
     _emit_render(profile)
     print(json.dumps(claimed, indent=2))
     return 0
@@ -416,6 +423,10 @@ def cmd_release(args: argparse.Namespace) -> int:
         if args.note:
             entry["release_note"] = args.note
         entry.pop("claim_expires_at", None)
+        entry.pop("claimed_pid", None)
+        entry.pop("claimed_process_missing_scans", None)
+        entry.pop("claimed_process_last_seen_at", None)
+        entry.pop("claimed_process_last_checked_at", None)
         state["task_claims"][args.id] = entry
     append_event(profile.paths, event_type="release", actor=args.agent, task_id=args.id, payload={"note": args.note or ""})
     _emit_render(profile)
@@ -435,6 +446,11 @@ def cmd_complete(args: argparse.Namespace) -> int:
         entry["completed_at"] = now_iso()
         if args.note:
             entry["completion_note"] = args.note
+        entry.pop("claim_expires_at", None)
+        entry.pop("claimed_pid", None)
+        entry.pop("claimed_process_missing_scans", None)
+        entry.pop("claimed_process_last_seen_at", None)
+        entry.pop("claimed_process_last_checked_at", None)
         state["task_claims"][args.id] = entry
         approvals = state.setdefault("approval_tasks", {})
         if args.id in approvals and isinstance(approvals[args.id], dict):
@@ -677,7 +693,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_run.add_argument("--count", type=int, default=0)
     p_supervise_run.add_argument("--allow-high-risk", action="store_true")
     p_supervise_run.add_argument("--force", action="store_true")
-    p_supervise_run.add_argument("--timeout-seconds", type=int, default=0)
     p_supervise_run.add_argument("--poll-interval-seconds", type=float, default=1.0)
     p_supervise_run.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_run.set_defaults(func=cmd_supervise_run)
@@ -693,7 +708,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_claim.add_argument("--agent", required=True)
     p_claim.add_argument("--id", action="append", default=[])
     p_claim.add_argument("--count", type=int, default=1)
-    p_claim.add_argument("--lease-hours", type=int, default=0)
+    p_claim.add_argument("--pid", type=int, default=None)
     p_claim.add_argument("--allow-high-risk", action="store_true")
     p_claim.add_argument("--force", action="store_true")
     p_claim.set_defaults(func=cmd_claim)

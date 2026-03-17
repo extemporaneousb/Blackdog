@@ -89,7 +89,6 @@ class Profile:
     profile_version: int
     id_prefix: str
     id_digest_length: int
-    default_claim_lease_hours: int
     require_claim_for_completion: bool
     auto_render_html: bool
     buckets: tuple[str, ...]
@@ -98,7 +97,6 @@ class Profile:
     doc_routing_defaults: tuple[str, ...]
     supervisor_launch_command: tuple[str, ...]
     supervisor_max_parallel: int
-    supervisor_task_timeout_seconds: int
     supervisor_workspace_mode: str
     pm_heuristics: dict[str, str]
     paths: ProjectPaths
@@ -279,15 +277,11 @@ def load_profile(project_root: Path | None = None) -> Profile:
     max_parallel = int(supervisor.get("max_parallel") or 2)
     if max_parallel < 1:
         raise ConfigError("supervisor.max_parallel must be at least 1")
-    timeout_seconds = int(supervisor.get("task_timeout_seconds") or 1200)
-    if timeout_seconds < 1:
-        raise ConfigError("supervisor.task_timeout_seconds must be at least 1")
     return Profile(
         project_name=str(project.get("name") or root.name),
         profile_version=int(project.get("profile_version") or 1),
         id_prefix=str(ids.get("prefix") or default_id_prefix(str(project.get("name") or root.name))),
         id_digest_length=int(ids.get("digest_length") or 10),
-        default_claim_lease_hours=int(rules.get("default_claim_lease_hours") or 4),
         require_claim_for_completion=bool(rules.get("require_claim_for_completion", True)),
         auto_render_html=bool(rules.get("auto_render_html", True)),
         buckets=tuple(str(item) for item in taxonomy.get("buckets") or DEFAULT_BUCKETS),
@@ -300,7 +294,6 @@ def load_profile(project_root: Path | None = None) -> Profile:
         ),
         supervisor_launch_command=launch_command,
         supervisor_max_parallel=max_parallel,
-        supervisor_task_timeout_seconds=timeout_seconds,
         supervisor_workspace_mode=workspace_mode,
         pm_heuristics={str(key): str(value) for key, value in heuristics.items()},
         paths=paths,
@@ -326,13 +319,12 @@ def render_default_profile(project_name: str) -> str:
         f'prefix = "{prefix}"\n'
         f"digest_length = 10\n\n"
         f'[rules]\n'
-        f"default_claim_lease_hours = 4\n"
         f"require_claim_for_completion = true\n"
         f"auto_render_html = true\n\n"
         f'[supervisor]\n'
         f'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]\n'
         f"max_parallel = 2\n"
-        f"task_timeout_seconds = 1200\n\n"
+        f"\n"
         f'[taxonomy]\n'
         f"buckets = [{buckets}]\n"
         f"domains = [{domains}]\n"
