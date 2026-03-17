@@ -772,6 +772,17 @@ dialog::backdrop {
   word-break: break-word;
 }
 
+.detail-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  font: inherit;
+}
+
+.detail-pre-compact {
+  font-size: 0.92rem;
+}
+
 .activity-row {
   display: grid;
   grid-template-columns: 160px 180px minmax(0, 1fr);

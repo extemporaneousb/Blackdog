@@ -370,6 +370,12 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `task_branch`
 - `target_branch`
 - `child_agent`
+- `model_response`
+- `model_response_truncated`
+- `landed_commit`
+- `landed_commit_short`
+- `landed_commit_url`
+- `landed_commit_message`
 - `operator_status`
 - `operator_status_key`
 - `operator_status_detail`
@@ -449,4 +455,5 @@ Layout projections:
 - The browser renders a split `Backlog Control`/`Status` top row, a split objective/release-gates row, then a split `Execution Map`/`Completed Tasks` row. Objective and release-gate rows are summary-only, while execution-map and completed-task cards stay clickable.
 - Focused task rows still derive from objective-tagged and lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
+- When supervisor run artifacts exist, the task reader can render a capped stdout-derived model response inline and expose landed-commit metadata, including a GitHub commit URL when the repo origin resolves to GitHub.
 - When `links.inbox` is present, inbox artifacts remain available to the task reader and other snapshot consumers even though the main board no longer renders a dedicated inbox header link.

@@ -8,6 +8,8 @@ from urllib.parse import quote
 import html as html_lib
 import json
 import os
+import re
+import subprocess
 
 from .backlog import (
     build_plan_view,
@@ -21,7 +23,8 @@ from .store import load_events, load_inbox, load_state, load_task_results, now_i
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 4
+UI_SNAPSHOT_SCHEMA_VERSION = 5
+EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
 
@@ -94,6 +97,52 @@ def _artifact_href(paths: ProjectPaths, path: str | Path | None, *, must_exist: 
     return quote(relative.as_posix(), safe="/")
 
 
+def _run_git_capture(repo_root: Path, *args: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    text = completed.stdout.strip()
+    return text or None
+
+
+def _github_repo_url(repo_root: Path) -> str | None:
+    remote_url = _run_git_capture(repo_root, "remote", "get-url", "origin")
+    if not remote_url:
+        return None
+    patterns = (
+        r"^(?:https?://)?github\.com/(?P<path>[^?#]+?)(?:\.git)?/?$",
+        r"^(?:ssh://)?git@github\.com[:/](?P<path>[^?#]+?)(?:\.git)?/?$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, remote_url)
+        if match is None:
+            continue
+        repo_path = match.group("path").strip("/")
+        if repo_path:
+            return f"https://github.com/{repo_path}"
+    return None
+
+
+def _read_artifact_text(path: Path | None, *, char_limit: int = EMBEDDED_RESPONSE_CHAR_LIMIT) -> tuple[str | None, bool]:
+    if path is None or not path.is_file():
+        return None, False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None, False
+    if not text:
+        return None, False
+    truncated = len(text) > char_limit
+    if truncated:
+        text = text[:char_limit].rstrip() + "\n\n[truncated in reader; open Stdout for the full response]"
+    return text, truncated
+
+
 def _find_run_dir(paths: ProjectPaths, run_id: str) -> Path | None:
     matches = sorted(paths.supervisor_runs_dir.glob(f"*-{run_id}"))
     return matches[0].resolve() if matches else None
@@ -109,16 +158,22 @@ def _child_artifacts(paths: ProjectPaths, run_dir: Path | None, task_id: str) ->
             "metadata_href": None,
             "diff_href": None,
             "diffstat_href": None,
+            "model_response": None,
+            "model_response_truncated": False,
         }
     child_dir = run_dir / task_id
+    stdout_path = child_dir / "stdout.log"
+    model_response, model_response_truncated = _read_artifact_text(stdout_path)
     return {
         "run_dir_href": _artifact_href(paths, child_dir, must_exist=True),
         "prompt_href": _artifact_href(paths, child_dir / "prompt.txt", must_exist=True),
-        "stdout_href": _artifact_href(paths, child_dir / "stdout.log", must_exist=True),
+        "stdout_href": _artifact_href(paths, stdout_path, must_exist=True),
         "stderr_href": _artifact_href(paths, child_dir / "stderr.log", must_exist=True),
         "metadata_href": _artifact_href(paths, child_dir / "metadata.json", must_exist=True),
         "diff_href": _artifact_href(paths, child_dir / "changes.diff", must_exist=True),
         "diffstat_href": _artifact_href(paths, child_dir / "changes.stat.txt", must_exist=True),
+        "model_response": model_response,
+        "model_response_truncated": model_response_truncated,
     }
 
 
@@ -314,6 +369,12 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
                 "metadata_href": None,
                 "diff_href": None,
                 "diffstat_href": None,
+                "model_response": None,
+                "model_response_truncated": False,
+                "landed_commit": None,
+                "landed_commit_short": None,
+                "landed_commit_url": None,
+                "landed_commit_message": None,
             },
         )
         entry["last_event_at"] = str(event.get("at") or entry["last_event_at"])
@@ -347,14 +408,25 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             else:
                 entry["run_status"] = str(payload.get("final_task_status") or "finished")
             entry["finished_at"] = str(event.get("at") or "")
+            if payload.get("landed_commit"):
+                entry["landed_commit"] = str(payload.get("landed_commit"))
 
         run_dir = _find_run_dir(paths, run_id)
         entry.update(_child_artifacts(paths, run_dir, task_id))
 
+    github_repo_url = _github_repo_url(paths.project_root)
+    commit_messages: dict[str, str | None] = {}
     for entry in rows.values():
         if entry.get("run_status") == "running" and not _pid_alive(entry.get("pid")):
             entry["run_status"] = "interrupted"
             entry["finished_at"] = entry.get("finished_at") or entry.get("last_event_at")
+        landed_commit = _text_label(entry.get("landed_commit"))
+        if landed_commit:
+            entry["landed_commit_short"] = _short_commit(landed_commit)
+            entry["landed_commit_url"] = f"{github_repo_url}/commit/{landed_commit}" if github_repo_url else None
+            if landed_commit not in commit_messages:
+                commit_messages[landed_commit] = _run_git_capture(paths.project_root, "show", "-s", "--format=%B", landed_commit)
+            entry["landed_commit_message"] = commit_messages[landed_commit]
         entry["elapsed_seconds"] = _duration_seconds(_parse_iso(entry.get("started_at")), _parse_iso(entry.get("finished_at")))
         entry["elapsed_label"] = _format_duration(entry.get("elapsed_seconds"))
     return rows
@@ -709,6 +781,7 @@ def _build_task_timeline(events: list[dict[str, Any]]) -> dict[str, list[dict[st
 
 def _task_links(task_row: dict[str, Any]) -> list[dict[str, str]]:
     ordered = [
+        ("Commit", task_row.get("landed_commit_url")),
         ("Prompt", task_row.get("prompt_href")),
         ("Stdout", task_row.get("stdout_href")),
         ("Stderr", task_row.get("stderr_href")),
@@ -898,6 +971,12 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "child_agent": run_info.get("child_agent"),
             "run_elapsed_seconds": run_info.get("elapsed_seconds"),
             "run_elapsed_label": run_info.get("elapsed_label"),
+            "model_response": run_info.get("model_response"),
+            "model_response_truncated": bool(run_info.get("model_response_truncated")),
+            "landed_commit": run_info.get("landed_commit"),
+            "landed_commit_short": run_info.get("landed_commit_short"),
+            "landed_commit_url": run_info.get("landed_commit_url"),
+            "landed_commit_message": run_info.get("landed_commit_message"),
         }
         task_row.update(_operator_status(task_row))
         task_row["card_status_chips"] = _card_status_chips(task_row)
@@ -1647,6 +1726,13 @@ __BLACKDOG_STYLES__
       return `<p>${escapeHtml(text)}</p>`;
     }
 
+    function preBlock(text, className = "detail-pre") {
+      if (!text) {
+        return "";
+      }
+      return `<pre class="${escapeHtml(className)}">${escapeHtml(text)}</pre>`;
+    }
+
     function formatActivityTimestamp(value) {
       if (!value) {
         return "";
@@ -1666,6 +1752,23 @@ __BLACKDOG_STYLES__
         return "";
       }
       return `<ul>${rows.map((row) => `<li>${escapeHtml(row)}</li>`).join("")}</ul>`;
+    }
+
+    function commitBlock(task) {
+      if (!task.landed_commit && !task.landed_commit_message) {
+        return "";
+      }
+      const parts = [];
+      const commitLabel = task.landed_commit_short || task.landed_commit || "";
+      if (task.landed_commit_url) {
+        parts.push(`<a class="text-link mono" href="${escapeHtml(task.landed_commit_url)}">${escapeHtml(commitLabel ? `Commit ${commitLabel}` : "Commit")}</a>`);
+      } else if (task.landed_commit) {
+        parts.push(`<p class="mono">${escapeHtml(commitLabel ? `Commit ${commitLabel}` : task.landed_commit)}</p>`);
+      }
+      if (task.landed_commit_message) {
+        parts.push(preBlock(task.landed_commit_message, "detail-pre detail-pre-compact"));
+      }
+      return parts.join("");
     }
 
     function activityList(entries) {
@@ -1864,6 +1967,8 @@ __BLACKDOG_STYLES__
         detailBlock("Sequence", detailList(sequenceRows)),
         detailBlock("Safe First Slice", paragraphBlock(task.safe_first_slice)),
         detailBlock("Runtime", detailList(runtimeRows)),
+        detailBlock("Model Response", preBlock(task.model_response), { wide: true }),
+        detailBlock("Landed Commit", commitBlock(task), { wide: true }),
         detailBlock("Why", paragraphBlock(task.why)),
         detailBlock("Evidence", paragraphBlock(task.evidence)),
         detailBlock("Paths", listBlock(task.paths)),

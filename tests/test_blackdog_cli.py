@@ -27,7 +27,7 @@ from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import append_jsonl, atomic_write_text, load_events, load_inbox, load_jsonl, record_task_result, resolve_message, save_state, send_message
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
-from blackdog.ui import build_ui_snapshot, render_static_html
+from blackdog.ui import UI_SNAPSHOT_SCHEMA_VERSION, build_ui_snapshot, render_static_html
 from blackdog.worktree import WorktreeSpec
 
 
@@ -1465,7 +1465,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         task_ids = {task["title"]: task["id"] for task in snapshot["graph"]["tasks"]}
-        self.assertEqual(snapshot["schema_version"], 4)
+        self.assertEqual(snapshot["schema_version"], UI_SNAPSHOT_SCHEMA_VERSION)
         self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
         self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
         self.assertEqual(snapshot["headers"]["Target branch"], "main")
@@ -1872,6 +1872,118 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('renderMetaItem("Active Branch"', html)
         self.assertNotIn('id="release-gates-list"', html)
         self.assertNotIn('class="eyebrow"', html)
+
+    def test_completed_task_reader_exposes_model_response_and_commit_details(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        subprocess.run(
+            ["git", "-C", str(self.root), "remote", "add", "origin", "https://github.com/example/blackdog-demo.git"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Completed reader slice",
+            "--bucket",
+            "html",
+            "--why",
+            "Completed-task drill-in should show the recorded model response and landed commit metadata.",
+            "--evidence",
+            "Operators should not need to open stdout logs or resolve commit SHAs by hand.",
+            "--safe-first-slice",
+            "Render the completed-task reader from existing supervisor artifacts.",
+            "--path",
+            "src/blackdog/ui.py",
+            "--epic-title",
+            "Reader detail",
+            "--lane-title",
+            "Completed history",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Completed reader slice"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "supervisor/child-01", "--id", task_id)
+
+        commit_subject = "Record landed change for reader test"
+        commit_body = "Expose landed commit metadata to the completed-task reader."
+        landing_file = self.root / "reader-detail.txt"
+        landing_file.write_text("landed change\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "reader-detail.txt"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", commit_subject, "-m", commit_body],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        landed_commit = subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        paths = self.runtime_paths()
+        run_id = "readerdemo"
+        run_dir = paths.supervisor_runs_dir / f"20260317-120000-{run_id}" / task_id
+        run_dir.mkdir(parents=True)
+        model_response = (
+            "1. What changed: threaded the completed-task reader through the child stdout artifact.\n"
+            "2. Why: operators need the actual model response without leaving the board."
+        )
+        (run_dir / "stdout.log").write_text(model_response, encoding="utf-8")
+        record_task_result(
+            paths,
+            task_id=task_id,
+            actor="supervisor/child-01",
+            status="success",
+            what_changed=["Recorded completed-task reader output."],
+            validation=["reader-detail-test"],
+            residual=[],
+            needs_user_input=False,
+            followup_candidates=[],
+            run_id=run_id,
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-reader-child-finish",
+                "type": "child_finish",
+                "at": "2026-03-17T12:00:00-07:00",
+                "actor": "supervisor",
+                "task_id": task_id,
+                "payload": {
+                    "run_id": run_id,
+                    "child_agent": "supervisor/child-01",
+                    "branch": "agent/completed-reader-slice",
+                    "target_branch": "main",
+                    "final_task_status": "done",
+                    "landed_commit": landed_commit,
+                },
+            },
+        )
+        run_cli("complete", "--project-root", str(self.root), "--agent", "supervisor/child-01", "--id", task_id, "--note", "done")
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
+
+        self.assertEqual(task["model_response"], model_response)
+        self.assertFalse(task["model_response_truncated"])
+        self.assertEqual(task["landed_commit"], landed_commit)
+        self.assertEqual(task["landed_commit_short"], landed_commit[:12])
+        self.assertEqual(task["landed_commit_url"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")
+        self.assertIn(commit_subject, task["landed_commit_message"])
+        self.assertIn(commit_body, task["landed_commit_message"])
+        self.assertTrue(any(row["label"] == "Commit" for row in task["links"]))
+
+        run_cli("render", "--project-root", str(self.root), "--actor", "tester")
+        html = paths.html_file.read_text(encoding="utf-8")
+        self.assertIn("function preBlock(text, className = \"detail-pre\")", html)
+        self.assertIn("function commitBlock(task)", html)
+        self.assertIn('detailBlock("Model Response", preBlock(task.model_response), { wide: true })', html)
+        self.assertIn('detailBlock("Landed Commit", commitBlock(task), { wide: true })', html)
 
     def test_snapshot_dialog_status_chips_ignore_stale_blocked_run_after_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
