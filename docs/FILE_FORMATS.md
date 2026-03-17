@@ -440,12 +440,12 @@ Current `next_rows[*]` keys summarize the "what's next" queue projection:
 Layout projections:
 
 - Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
-- Hero workspace metadata renders as key-value rows that can include `workspace_contract.target_branch`, `workspace_contract.workspace_mode`, `workspace_contract.primary_dirty`, `workspace_contract.workspace_has_local_blackdog`, `project_root`, `control_dir`, and the current target commit from `headers`.
+- Hero metadata renders as a compact summary line and artifact links that can include the current target branch and commit, latest run label, time-on-task label, backlog path, and state path.
 - Objective cards use `objective_rows` and open the task reader through the lead task for each objective row.
-- Overview cards use `objective_rows`, `next_rows`, `hero_highlights`, `last_activity`, `open_messages`, and `workspace_contract` to keep the current push, next slice, and coordination state visible.
+- Queue-health cards use focus-task status counts to surface finished, running, next, waiting, and blocked work.
+- Overview cards use `objective_rows`, `next_rows`, `hero_highlights`, `last_activity`, `open_messages`, and `release_gates` to keep the current push, next slice, and release checks visible.
 - Domain chips aggregate `tasks[*].domains` across the full snapshot, including completed work.
-- The browser renders a hero panel, an objective-card section, overview/domain panels, and one active-work `Backlog` execution map rather than a backlog/history split.
-- The `Backlog` execution map uses `plan.lanes`, `board_tasks`, `objective_rows`, `open_messages`, and `links.inbox`. `board_tasks` retains every lane-assigned or objective-tagged task row in the snapshot, including completed rows.
-- The rendered browser execution map filters out rows whose `operator_status_key` normalizes to `complete`, so the visible backlog stays focused on active work while completed rows still feed progress, domain, and reader surfaces.
+- The browser renders a hero panel, a queue-health panel, objective cards, overview cards, and a domains panel. It no longer exposes a visible backlog execution map or dedicated completed-history panel.
+- Focused task rows still derive from objective-tagged and lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
-- When `links.inbox` is present, the `Backlog` header renders it as the `Inbox JSON` text link with the current open-message count from `open_messages`; when it is absent, the link stays hidden.
+- When `links.inbox` is present, inbox artifacts remain available to the task reader and other snapshot consumers even though the main board no longer renders a dedicated inbox header link.

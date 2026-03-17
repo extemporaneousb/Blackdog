@@ -812,7 +812,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     objective_titles = {
         str(row.get("id") or ""): str(row.get("title") or "")
         for row in summary.get("objective_rows", [])
-        if row.get("id") is not None
+        if str(row.get("id") or "").strip()
     }
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
@@ -901,6 +901,12 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             graph_edges.append({"from": predecessor_id, "to": task.id})
 
     objective_rows = _build_objective_snapshot_rows(tasks, list(summary.get("objective_rows") or []))
+    focus_task_ids = {
+        str(task_id)
+        for row in objective_rows
+        for task_id in row.get("task_ids", [])
+    }
+    focus_tasks = [task for task in tasks if str(task.get("id") or "") in focus_task_ids] or tasks
     recent_results = []
     for row in results[:10]:
         recent_results.append(
@@ -941,18 +947,16 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "profile_file": str(profile.paths.profile_file),
         "workspace_contract": workspace_contract,
         "headers": headers,
-        "hero_highlights": _build_hero_highlights(
-            contract=workspace_contract,
-            headers=headers,
-            tasks=tasks,
-        ),
+        "hero_highlights": _build_hero_highlights(contract=workspace_contract, headers=headers, tasks=focus_tasks),
         "last_activity": _latest_activity(events),
         "counts": summary["counts"],
         "total": summary["total"],
         "push_objective": summary["push_objective"],
         "objectives": summary["objectives"],
         "objective_rows": objective_rows,
+        "focus_task_ids": sorted(focus_task_ids),
         "next_rows": summary["next_rows"],
+        "release_gates": summary.get("release_gates", []),
         "open_messages": open_messages,
         "recent_results": recent_results,
         "recent_events": summary["recent_events"],
@@ -966,6 +970,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "active_tasks": active_tasks,
         "links": {
             "backlog": _artifact_href(profile.paths, profile.paths.backlog_file, must_exist=True),
+            "state": _artifact_href(profile.paths, profile.paths.state_file, must_exist=True),
             "html": _artifact_href(profile.paths, profile.paths.html_file),
             "events": _artifact_href(profile.paths, profile.paths.events_file, must_exist=True),
             "inbox": _artifact_href(profile.paths, profile.paths.inbox_file, must_exist=True),
@@ -1010,92 +1015,31 @@ __BLACKDOG_STYLES__
   <script id="blackdog-snapshot" type="application/json">__BLACKDOG_SNAPSHOT__</script>
   <div class="page">
     <div class="page-shell">
-      <article id="hero-panel" class="panel panel-hero" data-panel="hero">
-        <div id="hero-head" class="hero-head">
-          <div class="hero-title-block">
-            <span class="eyebrow">Blackdog Backlog</span>
-            <h1 id="project-name">Backlog</h1>
-            <p id="hero-copy" class="hero-copy"></p>
-          </div>
-          <div class="hero-render-block">
-            <span class="eyebrow">Last Rendered</span>
-            <p id="last-rendered" class="last-rendered"></p>
-            <p id="render-note" class="hero-activity"></p>
-            <div class="progress-cluster hero-progress-cluster">
-              <div class="progress-copy">
-                <span id="hero-progress-label" class="progress-label"></span>
-                <span id="hero-progress-detail" class="progress-detail"></span>
-              </div>
-              <div id="hero-progress" class="progress-slot"></div>
-            </div>
-          </div>
-        </div>
-        <div id="hero-meta-grid" class="hero-meta-grid">
-          <section id="hero-workspace-panel" class="hero-subpanel" data-hero-section="workspace">
-            <span class="eyebrow">Workspace</span>
-            <div id="hero-meta" class="meta-table"></div>
-          </section>
-          <section id="hero-summary-panel" class="hero-subpanel" data-hero-section="board-snapshot">
-            <span class="eyebrow">Board Snapshot</span>
-            <div id="hero-summary" class="meta-table"></div>
-          </section>
-          <section id="hero-artifacts-panel" class="hero-subpanel" data-hero-section="artifacts">
-            <span class="eyebrow">Artifacts</span>
-            <div id="global-links" class="link-list"></div>
-          </section>
-        </div>
-      </article>
+      <section id="hero-panel" class="hero" data-panel="hero">
+        <article class="panel hero-main">
+          <h1>Backlog Control</h1>
+          <p id="hero-copy" class="subhead"></p>
+          <div id="hero-meta-line" class="meta"></div>
+          <div id="hero-progress" class="progress-slot"></div>
+          <div id="hero-links" class="nav"></div>
+        </article>
+        <aside class="panel hero-side">
+          <h2>Queue Health</h2>
+          <div id="queue-stats" class="stats"></div>
+        </aside>
+      </section>
 
-      <section id="objectives-panel" class="panel section-panel objectives-panel" data-panel="objectives">
-        <div class="section-head section-head-inline">
-          <div>
-            <span class="eyebrow">Objectives</span>
-            <h2>Objectives</h2>
-            <p id="objectives-copy" class="section-copy"></p>
-          </div>
-          <span id="objective-summary" class="section-meta"></span>
-        </div>
+      <section id="objectives-panel" class="objectives" data-panel="objectives">
         <div id="objective-cards" class="objectives-grid"></div>
       </section>
 
-      <div id="surface-grid" class="surface-grid">
-        <section id="overview-panel" class="panel section-panel overview-panel" data-panel="overview">
-          <div class="section-head">
-            <div>
-              <span class="eyebrow">Overview</span>
-              <h2>Overview</h2>
-              <p id="overview-copy" class="section-copy"></p>
-            </div>
-          </div>
-          <div id="overview-cards" class="overview-grid"></div>
-        </section>
+      <section id="overview-panel" class="overview" data-panel="overview">
+        <div id="overview-cards" class="overview-grid"></div>
+      </section>
 
-        <section id="domains-panel" class="panel section-panel domains-panel" data-panel="domains">
-          <div class="section-head">
-            <div>
-              <span class="eyebrow">Domains</span>
-              <h2>Domains</h2>
-              <p id="domains-copy" class="section-copy"></p>
-            </div>
-          </div>
-          <div id="domain-chips" class="chips domain-chips"></div>
-        </section>
-      </div>
-
-      <section id="backlog-panel" class="panel board-panel" data-panel="backlog">
-        <div class="section-head backlog-head">
-          <div>
-            <span class="eyebrow">Active Work</span>
-            <h2>Backlog</h2>
-            <p id="board-guide" class="section-copy"></p>
-          </div>
-          <div class="toolbar-topline">
-            <span id="board-summary" class="section-meta"></span>
-            <a id="inbox-link" class="text-link" href="#">Inbox JSON</a>
-          </div>
-        </div>
-        <div id="status-legend" class="legend"></div>
-        <div id="lane-board" class="lane-board"></div>
+      <section id="domains-panel" class="panel domains-panel" data-panel="domains">
+        <h2>Domains</h2>
+        <div id="domain-chips" class="chips domain-chips"></div>
       </section>
     </div>
   </div>
@@ -1121,12 +1065,14 @@ __BLACKDOG_STYLES__
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
     const allTasksById = new Map(allTasks.map((task) => [String(task.id), task]));
-    const boardTasks = Array.isArray(snapshot.board_tasks)
-      ? snapshot.board_tasks.filter((task) => normalizeStatus(task.operator_status_key) !== "complete")
-      : allTasks.filter((task) => (task.objective || task.lane_id) && normalizeStatus(task.operator_status_key) !== "complete");
     const objectiveRows = Array.isArray(snapshot.objective_rows) ? snapshot.objective_rows.slice() : [];
+    const focusTaskIds = new Set(
+      Array.isArray(snapshot.focus_task_ids) ? snapshot.focus_task_ids.map((taskId) => String(taskId)) : []
+    );
+    const focusTasks = focusTaskIds.size
+      ? allTasks.filter((task) => focusTaskIds.has(String(task.id)))
+      : allTasks.filter((task) => (task.objective || task.lane_id) && normalizeStatus(task.operator_status_key) !== "complete");
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
-    const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
     const statusMeta = {
       total: { label: "Total" },
       ready: { label: "Ready" },
@@ -1137,7 +1083,6 @@ __BLACKDOG_STYLES__
       failed: { label: "Failed" },
       complete: { label: "Complete" }
     };
-    const legendOrder = ["complete", "running", "claimed", "ready", "waiting", "blocked", "failed"];
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -1173,45 +1118,6 @@ __BLACKDOG_STYLES__
       return ` data-task-id="${escapeHtml(taskId)}" role="button" tabindex="0"`;
     }
 
-    function keyValueRows(rows) {
-      if (!Array.isArray(rows) || !rows.length) {
-        return "";
-      }
-      return rows
-        .filter((row) => Array.isArray(row) && row.length >= 2 && row[1] != null && row[1] !== "")
-        .map(([label, value]) => `
-          <div class="meta-row">
-            <span class="meta-label">${escapeHtml(label)}</span>
-            <span class="meta-value">${escapeHtml(value)}</span>
-          </div>
-        `)
-        .join("");
-    }
-
-    function relativeTime(value) {
-      if (!value) {
-        return "just now";
-      }
-      const then = Date.parse(String(value));
-      if (Number.isNaN(then)) {
-        return String(value);
-      }
-      const delta = Math.max(0, Math.floor((Date.now() - then) / 1000));
-      if (delta < 60) {
-        return `${delta}s ago`;
-      }
-      const minutes = Math.floor(delta / 60);
-      if (minutes < 60) {
-        return `${minutes}m ago`;
-      }
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) {
-        return `${hours}h ago`;
-      }
-      const days = Math.floor(hours / 24);
-      return `${days}d ago`;
-    }
-
     function formatTimestamp(value) {
       if (!value) {
         return "";
@@ -1226,10 +1132,8 @@ __BLACKDOG_STYLES__
     function globalLinks() {
       const links = snapshot.links || {};
       return [
-        ["Backlog", links.backlog],
-        ["Events", links.events],
-        ["Results", links.results],
-        ["HTML", links.html]
+        ["Backlog Source", links.backlog],
+        ["State", links.state]
       ];
     }
 
@@ -1304,106 +1208,8 @@ __BLACKDOG_STYLES__
       });
     }
 
-    function taskInventory(tasks) {
-      const rows = new Map();
-      for (const task of tasks) {
-        const key = String(task.lane_id || `lane:${task.id}`);
-        if (!rows.has(key)) {
-          rows.set(key, []);
-        }
-        rows.get(key).push(task);
-      }
-      return rows;
-    }
-
-    const laneTasksById = taskInventory(allTasks);
-
     function taskSummary(task) {
       return task.latest_result_preview || task.operator_status_detail || task.detail || task.safe_first_slice || "";
-    }
-
-    function laneRows(tasks, progressInventory = null) {
-      const rows = new Map();
-      lanePlan.forEach((lane, index) => {
-        rows.set(String(lane.id), {
-          id: String(lane.id),
-          title: lane.title || "Unplanned",
-          wave: lane.wave,
-          plan_index: index,
-          progress_tasks: progressInventory?.get(String(lane.id)) || [],
-          tasks: []
-        });
-      });
-      for (const task of tasks) {
-        const key = String(task.lane_id || `lane:${task.id}`);
-        if (!rows.has(key)) {
-          rows.set(key, {
-            id: key,
-            title: task.lane_title || "Unplanned",
-            wave: task.wave,
-            plan_index: Number(task.lane_plan_index ?? 9999),
-            progress_tasks: progressInventory?.get(key) || [],
-            tasks: []
-          });
-        }
-        rows.get(key).tasks.push(task);
-        if (!progressInventory) {
-          rows.get(key).progress_tasks.push(task);
-        }
-      }
-      return Array.from(rows.values())
-        .filter((lane) => lane.tasks.length)
-        .map((lane) => {
-          const sortedTasks = lane.tasks.sort((left, right) => {
-            const leftPosition = left.lane_position == null ? 9999 : Number(left.lane_position);
-            const rightPosition = right.lane_position == null ? 9999 : Number(right.lane_position);
-            if (leftPosition !== rightPosition) {
-              return leftPosition - rightPosition;
-            }
-            return String(left.id).localeCompare(String(right.id));
-          });
-          return {
-            ...lane,
-            progress_tasks: lane.progress_tasks.length ? lane.progress_tasks : sortedTasks,
-            tasks: sortedTasks
-          };
-        })
-        .sort((left, right) => {
-          const leftWave = left.wave == null ? 9999 : Number(left.wave);
-          const rightWave = right.wave == null ? 9999 : Number(right.wave);
-          if (leftWave !== rightWave) {
-            return leftWave - rightWave;
-          }
-          const leftPlan = left.plan_index == null ? 9999 : Number(left.plan_index);
-          const rightPlan = right.plan_index == null ? 9999 : Number(right.plan_index);
-          if (leftPlan !== rightPlan) {
-            return leftPlan - rightPlan;
-          }
-          return String(left.title).localeCompare(String(right.title));
-        });
-    }
-
-    function objectiveSections(tasks) {
-      if (!objectiveRows.length) {
-        return [];
-      }
-      const visibleTaskIds = new Set(tasks.map((task) => String(task.id)));
-      return objectiveRows
-        .map((objective) => {
-          const allObjectiveTasks = (Array.isArray(objective.task_ids) ? objective.task_ids : [])
-            .map((taskId) => allTasksById.get(String(taskId)))
-            .filter(Boolean);
-          const visibleObjectiveTasks = allObjectiveTasks.filter((task) => visibleTaskIds.has(String(task.id)));
-          if (!visibleObjectiveTasks.length) {
-            return null;
-          }
-          const objectiveLaneInventory = taskInventory(allObjectiveTasks);
-          return {
-            ...objective,
-            lanes: laneRows(visibleObjectiveTasks, objectiveLaneInventory)
-          };
-        })
-        .filter(Boolean);
     }
 
     function objectiveTone(objective) {
@@ -1458,51 +1264,27 @@ __BLACKDOG_STYLES__
           .map((taskId) => allTasksById.get(String(taskId)))
           .filter(Boolean)
       );
-      const tone = objectiveTone(objective);
       const leadTask = objectiveLeadTask(objective);
       const leadTaskId = leadTask ? String(leadTask.id || "") : "";
-      const laneCount = Array.isArray(objective.lane_titles) ? objective.lane_titles.length : 0;
-      const waveCount = Array.isArray(objective.wave_ids) ? objective.wave_ids.length : 0;
       const copy = leadTask
         ? taskSummary(leadTask) || leadTask.title
         : (progress.remaining ? progressDetail(progress) : "Complete");
-      const detailRows = [
-        laneCount ? pluralize(laneCount, "lane") : "",
-        waveCount ? pluralize(waveCount, "wave") : "",
-        leadTask ? leadTask.id : ""
-      ].filter(Boolean);
       return `
         <article class="objective-card"${interactiveCardAttributes(leadTaskId)} data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
           <div class="objective-top">
-            <div class="objective-heading">
-              <span class="objective-id">${escapeHtml(objective.id || "Unassigned")}</span>
-              <h3>${escapeHtml(objective.title || objective.id || "Unassigned")}</h3>
-            </div>
-            <div class="objective-badges">
-              ${chip(objectiveStateLabel(objective), tone)}
-              <span class="objective-meta">${escapeHtml(`${progress.complete}/${progress.total}`)}</span>
-            </div>
+            <span class="objective-id">${escapeHtml(objective.id || "Unassigned")}</span>
+            <span class="objective-meta">${escapeHtml(`${progress.complete}/${progress.total}`)}</span>
           </div>
+          <h3>${escapeHtml(objective.title || objective.id || "Unassigned")}</h3>
           <div class="progress-cluster">
-            <div class="progress-copy">
-              <span class="progress-label">${escapeHtml(progressLabel(progress))}</span>
-              <span class="progress-detail">${escapeHtml(progressDetail(progress))}</span>
-            </div>
             ${renderProgressBar(progress)}
           </div>
           <p class="objective-copy">${escapeHtml(copy)}</p>
-          <div class="objective-summary">${detailRows.map((row) => `<span>${escapeHtml(row)}</span>`).join("")}</div>
         </article>
       `;
     }
 
     function renderObjectiveCards() {
-      const activeObjectives = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
-      document.getElementById("objectives-copy").textContent =
-        "Objective cards summarize completion, remaining work, and the next live slice before you drop into the lane-by-lane execution map.";
-      document.getElementById("objective-summary").textContent = activeObjectives.length
-        ? `${objectiveRows.length} objective row(s) · ${activeObjectives.length} with active backlog work`
-        : `${objectiveRows.length} objective row(s)`;
       document.getElementById("objective-cards").innerHTML = objectiveRows.length
         ? objectiveRows.map(renderObjectiveCard).join("")
         : `<div class="empty">No objective rows tagged in the backlog yet.</div>`;
@@ -1534,7 +1316,7 @@ __BLACKDOG_STYLES__
       if (nextRows.length) {
         return nextRows[0];
       }
-      const fallback = boardTasks.find((task) => normalizeStatus(task.operator_status_key) !== "complete");
+      const fallback = focusTasks.find((task) => normalizeStatus(task.operator_status_key) !== "complete");
       if (!fallback) {
         return null;
       }
@@ -1565,17 +1347,13 @@ __BLACKDOG_STYLES__
       const currentObjectiveProgress = currentObjective?.progress || null;
       const currentObjectiveLeadTask = currentObjective ? objectiveLeadTask(currentObjective) : null;
       const next = nextFocusRow();
-      const heroHighlights = snapshot.hero_highlights || {};
-      const activity = snapshot.last_activity || {};
-      const latestEventSummary = [activity.task_id, activity.summary || activity.type_label].filter(Boolean).join(" · ");
+      const releaseGates = Array.isArray(snapshot.release_gates) ? snapshot.release_gates.slice(0, 4) : [];
 
-      document.getElementById("overview-copy").textContent =
-        "These cards keep the current push objective, next runnable slice, and repo coordination state visible without reading the full task inventory.";
       document.getElementById("overview-cards").innerHTML = [
         overviewCard(
           "What We Are Doing",
           currentObjective ? currentObjective.title || currentObjective.id || "Unassigned" : "No objective rows yet",
-          currentObjectiveProgress ? progressDetail(currentObjectiveProgress) : "Add objective tags to make the board lead with intent.",
+          currentObjectiveProgress ? objectiveStateLabel(currentObjective) : "Add objective tags to make the board lead with intent.",
           currentObjective
             ? [
                 `${currentObjective.done}/${currentObjective.total} complete`,
@@ -1592,7 +1370,7 @@ __BLACKDOG_STYLES__
         overviewCard(
           "What's Next",
           next ? `${next.id} ${next.title}` : "No runnable backlog task",
-          next ? "This is the next claimable slice from the current backlog ordering." : "Everything is either complete or waiting on a gate.",
+          next ? "This is the next claimable slice from the current backlog ordering." : "The tracked objective work is complete.",
           next
             ? [
                 next.lane ? `Lane: ${next.lane}` : "",
@@ -1603,93 +1381,59 @@ __BLACKDOG_STYLES__
           { taskId: next?.id }
         ),
         overviewCard(
-          "Coordination",
-          heroHighlights.latest_run || "No recorded work yet",
-          heroHighlights.time_on_task || "No claimed work recorded",
-          [
-            `${openMessages.length} open inbox message(s)`,
-            latestEventSummary ? `Latest event: ${latestEventSummary}` : "",
-            snapshot.workspace_contract?.workspace_mode ? `Workspace mode: ${snapshot.workspace_contract.workspace_mode}` : ""
-          ]
+          "Release Gates",
+          "",
+          "",
+          releaseGates.length ? releaseGates : ["Add release gates to the backlog header to surface them here."]
         )
       ].join("");
     }
 
     function renderDomainChips() {
-      const domains = domainCounts(allTasks);
-      document.getElementById("domains-copy").textContent = domains.length
-        ? "Domain tags show where the backlog is concentrated across the full snapshot, including completed work."
-        : "Add domain tags to tasks to surface coverage here.";
+      const domains = domainCounts(focusTasks);
       document.getElementById("domain-chips").innerHTML = domains.length
         ? domains.map(([domain, count]) => `<span class="chip chip-domain">${escapeHtml(domain)} <strong>${escapeHtml(count)}</strong></span>`).join("")
         : `<div class="empty">No domain tags yet.</div>`;
     }
 
-    function heroSummary(activity) {
-      const latestSummary = [activity.task_id, activity.summary || activity.type_label].filter(Boolean).join(" · ");
-      const activeObjectiveCount = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length).length;
-      const rows = [
-        ["Backlog", `${boardTasks.length} active task(s)`],
-        ["Objectives", `${activeObjectiveCount} active objective row(s)`],
-        ["Completed", `${completedTasks().length} task(s)`],
-        ["Inbox", `${openMessages.length} open message(s)`],
-        latestSummary ? ["Latest Event", latestSummary] : null
-      ].filter(Boolean);
-      return keyValueRows(rows);
-    }
-
     function renderHeader() {
-      document.getElementById("project-name").textContent = snapshot.project_name || "Blackdog";
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
       document.getElementById("hero-copy").textContent =
-        objective || "Static backlog board with objective-led rows, lane-ordered task stacks, task detail dialogs, and direct artifact links.";
-      const activity = snapshot.last_activity || {};
-      const actor = activity.actor ? ` by ${activity.actor}` : "";
-      const source = activity.type_label ? ` via ${activity.type_label.toLowerCase()}` : "";
-      const renderedAt = snapshot.generated_at || activity.at || "";
-      const lastRendered = document.getElementById("last-rendered");
-      lastRendered.textContent = renderedAt ? relativeTime(renderedAt) : "just now";
-      lastRendered.title = formatTimestamp(renderedAt);
-      document.getElementById("render-note").textContent = activity.at
-        ? `Latest activity ${formatTimestamp(activity.at)}${actor}${source}`
-        : "";
-      const overallProgress = progressMetrics(allTasks);
-      document.getElementById("hero-progress-label").textContent = progressLabel(overallProgress);
-      document.getElementById("hero-progress-detail").textContent = progressDetail(overallProgress);
-      document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");
-      applyProgressBars(document.getElementById("hero-progress"));
-
-      const contract = snapshot.workspace_contract || {};
+        objective || "Objective-first backlog control for the current push.";
       const heroHighlights = snapshot.hero_highlights || {};
       const headers = snapshot.headers || {};
-      document.getElementById("hero-meta").innerHTML = keyValueRows([
-        ["Branch", heroHighlights.branch || contract.current_branch || contract.target_branch || headers["Target branch"] || ""],
-        ["Commit", heroHighlights.commit || headers["Target commit"] || ""],
-        ["Latest run", heroHighlights.latest_run || "No recorded work yet"],
-        ["Time on task", heroHighlights.time_on_task || "No claimed work recorded"]
-      ]);
-      document.getElementById("hero-summary").innerHTML = heroSummary(activity);
-
-      document.getElementById("global-links").innerHTML = globalLinks()
+      const overallProgress = progressMetrics(focusTasks);
+      const metaItems = [
+        heroHighlights.branch ? `Branch ${heroHighlights.branch}` : headers["Target branch"] ? `Branch ${headers["Target branch"]}` : "",
+        heroHighlights.commit ? `Commit ${heroHighlights.commit}` : headers["Target commit"] ? `Commit ${headers["Target commit"]}` : "",
+        overallProgress.total ? `${overallProgress.complete}/${overallProgress.total} finished` : "",
+        heroHighlights.latest_run ? `Latest run ${heroHighlights.latest_run}` : "",
+        heroHighlights.time_on_task ? `Time on task ${heroHighlights.time_on_task}` : ""
+      ].filter(Boolean);
+      document.getElementById("hero-meta-line").innerHTML = metaItems
+        .map((item) => `<span>${escapeHtml(item)}</span>`)
+        .join("");
+      document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");
+      applyProgressBars(document.getElementById("hero-progress"));
+      document.getElementById("hero-links").innerHTML = globalLinks()
         .map(([label, href]) => textLink(label, href))
         .join("");
-
-      const inboxHref = snapshot.links?.inbox || "#";
-      const inboxLink = document.getElementById("inbox-link");
-      inboxLink.href = inboxHref;
-      inboxLink.style.visibility = inboxHref ? "visible" : "hidden";
-      inboxLink.textContent = `Inbox JSON · ${openMessages.length} open`;
-
-      document.getElementById("board-guide").textContent =
-        "Objective and overview cards open the task reader, lane order stays intact inside each objective row, and the inbox artifact remains one click away.";
     }
 
-    function renderLegend() {
-      return legendOrder.map((key) => `
-        <span class="legend-item">
-          <span class="legend-dot tone-${escapeHtml(key)}"></span>
-          <span>${escapeHtml(statusMeta[key].label)}</span>
-        </span>
+    function renderQueueHealth() {
+      const counts = countStatuses(focusTasks);
+      const stats = [
+        ["Finished", counts.complete || 0],
+        ["Running", (counts.running || 0) + (counts.claimed || 0)],
+        ["Next", counts.ready || 0],
+        ["Waiting", counts.waiting || 0],
+        ["Blocked", (counts.blocked || 0) + (counts.failed || 0)],
+      ];
+      document.getElementById("queue-stats").innerHTML = stats.map(([label, value]) => `
+        <div class="stat-card">
+          <span class="eyebrow">${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
       `).join("");
     }
 
@@ -1698,152 +1442,11 @@ __BLACKDOG_STYLES__
       return links.map((row) => textLink(row.label, row.href)).join("");
     }
 
-    function groupStatusChips(tasks) {
-      const keys = [];
-      const seen = new Set();
-      for (const key of ["running", "claimed", "blocked", "failed", "waiting", "ready", "complete"]) {
-        if (tasks.some((task) => normalizeStatus(task.operator_status_key) === key) && !seen.has(key)) {
-          seen.add(key);
-          keys.push(key);
-        }
-      }
-      return keys.map((key) => chip(statusMeta[key].label, key)).join("");
-    }
-
-    function taskSequence(task) {
-      if (task.lane_position && task.lane_task_count) {
-        return `Step ${task.lane_position} of ${task.lane_task_count} in ${task.lane_title || "lane"}`;
-      }
-      if (task.lane_title) {
-        return `Single task in ${task.lane_title}`;
-      }
-      return "Unplanned task";
-    }
-
-    function dependencyLabel(task) {
-      return Array.isArray(task.predecessor_ids) && task.predecessor_ids.length
-        ? `After ${task.predecessor_ids.join(", ")}`
-        : "Lane opener";
-    }
-
     function renderStatusChipRows(rows) {
       if (!Array.isArray(rows) || !rows.length) {
         return "";
       }
       return rows.map((row) => chip(row.label, row.key)).join("");
-    }
-
-    function taskCard(task) {
-      const tone = normalizeStatus(task.operator_status_key || "ready");
-      const showOwner = ["claimed", "running"].includes(tone) && task.claimed_by;
-      const statusChips = Array.isArray(task.card_status_chips) && task.card_status_chips.length
-        ? renderStatusChipRows(task.card_status_chips)
-        : chip(task.operator_status || "Ready", tone);
-      return `
-        <article class="task-card tone-${escapeHtml(tone)}" id="${escapeHtml(task.id)}"${interactiveCardAttributes(task.id)}>
-          <div class="task-card-top">
-            <div class="task-id-group">
-              <span class="task-code">${escapeHtml(task.id)}</span>
-              ${task.priority ? `<span class="mini-chip">${escapeHtml(task.priority)}</span>` : ""}
-            </div>
-            <div class="chips">${statusChips}</div>
-          </div>
-          <h3 class="task-title">${escapeHtml(task.title)}</h3>
-          <p class="task-route">${escapeHtml(taskSequence(task))}</p>
-          <div class="task-meta">
-            <span>${escapeHtml(task.epic_title || "No epic")}</span>
-            ${showOwner ? `<span>Owner ${escapeHtml(task.claimed_by)}</span>` : ""}
-          </div>
-          <p class="task-summary">${escapeHtml(taskSummary(task))}</p>
-          <p class="task-dependency">${escapeHtml(dependencyLabel(task))}</p>
-        </article>
-      `;
-    }
-
-    function renderLaneColumn(lane) {
-      const laneProgress = progressMetrics(Array.isArray(lane.progress_tasks) && lane.progress_tasks.length ? lane.progress_tasks : (laneTasksById.get(String(lane.id)) || lane.tasks));
-      return `
-        <section class="lane-column">
-          <div class="lane-head">
-            <h3>${escapeHtml(lane.title)}</h3>
-            <div class="lane-progress">
-              <div class="progress-copy">
-                <span class="progress-label">${escapeHtml(progressLabel(laneProgress))}</span>
-                <span class="progress-detail">${escapeHtml(progressDetail(laneProgress))}</span>
-              </div>
-              ${renderProgressBar(laneProgress, "progress-lane")}
-            </div>
-          </div>
-          <div class="lane-stack">${lane.tasks.map(taskCard).join("")}</div>
-        </section>
-      `;
-    }
-
-    function objectiveSummary(objective) {
-      const activeCount = Array.isArray(objective.active_task_ids)
-        ? objective.active_task_ids.length
-        : objective.lanes.reduce((total, lane) => total + lane.tasks.length, 0);
-      const laneCount = Array.isArray(objective.lane_titles) ? objective.lane_titles.length : objective.lanes.length;
-      const waveCount = Array.isArray(objective.wave_ids) ? objective.wave_ids.length : 0;
-      const parts = [`${activeCount} active backlog task(s)`];
-      if (laneCount) {
-        parts.push(`${laneCount} lane(s)`);
-      }
-      if (waveCount) {
-        parts.push(`${waveCount} wave(s)`);
-      }
-      return parts.join(" · ");
-    }
-
-    function renderObjectiveSection(objective) {
-      const visibleObjectiveTasks = objective.lanes.reduce((items, lane) => items.concat(lane.tasks), []);
-      const progress = objective.progress || progressMetrics(visibleObjectiveTasks);
-      const objectiveLabel = objective.id ? `Objective ${objective.id}` : "Objective";
-      return `
-        <section class="wave-section" data-objective-row="${escapeHtml(objective.key || objective.id || "objective")}">
-          <div class="wave-head">
-            <div>
-              <span class="eyebrow">${escapeHtml(objectiveLabel)}</span>
-              <h3>${escapeHtml(objective.title || objective.id || "Unassigned")}</h3>
-              <p class="wave-copy">${escapeHtml(objectiveSummary(objective))}</p>
-            </div>
-            <div class="lane-progress">
-              <div class="progress-copy">
-                <span class="progress-label">${escapeHtml(progressLabel(progress))}</span>
-                <span class="progress-detail">${escapeHtml(progressDetail(progress))}</span>
-              </div>
-              ${renderProgressBar(progress, "progress-lane")}
-            </div>
-          </div>
-          <div class="wave-grid">${objective.lanes.map(renderLaneColumn).join("")}</div>
-        </section>
-      `;
-    }
-
-    function renderBoard() {
-      const visibleTasks = boardTasks.slice();
-      const objectives = objectiveSections(visibleTasks);
-      const lanes = laneRows(visibleTasks);
-      document.getElementById("board-summary").textContent =
-        `${visibleTasks.length} visible task(s) across ${objectives.length} objective row(s) in ${lanes.length} lane(s)`;
-      document.getElementById("status-legend").innerHTML = renderLegend();
-      document.getElementById("lane-board").innerHTML = objectives.length
-        ? objectives.map(renderObjectiveSection).join("")
-        : `<div class="empty">Backlog empty.</div>`;
-      applyProgressBars(document.getElementById("lane-board"));
-    }
-
-    function completedTasks() {
-      return allTasks
-        .filter((task) => normalizeStatus(task.operator_status_key) === "complete")
-        .sort((left, right) => {
-          const leftTime = Date.parse(String(left.completed_at || left.latest_result_at || left.latest_run_at || ""));
-          const rightTime = Date.parse(String(right.completed_at || right.latest_result_at || right.latest_run_at || ""));
-          if (!Number.isNaN(leftTime) || !Number.isNaN(rightTime)) {
-            return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
-          }
-          return String(left.id).localeCompare(String(right.id));
-        });
     }
 
     function detailBlock(label, content, options = {}) {
@@ -2002,12 +1605,15 @@ __BLACKDOG_STYLES__
     }
 
     renderHeader();
+    renderQueueHealth();
     renderObjectiveCards();
     renderOverviewCards();
     renderDomainChips();
-    renderBoard();
     wireStaticEvents();
-    window.setInterval(renderHeader, 30000);
+    window.setInterval(() => {
+      renderHeader();
+      renderQueueHealth();
+    }, 30000);
   </script>
 </body>
 </html>

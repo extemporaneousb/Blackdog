@@ -515,6 +515,7 @@ def build_view_model(
     allow_high_risk: bool = False,
 ) -> dict[str, Any]:
     counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
+    defined_objectives = _parse_objectives(snapshot)
     objective_rows: dict[str, dict[str, Any]] = {
         _objective_row_key(row["id"]): {
             "key": _objective_row_key(row["id"]),
@@ -528,8 +529,9 @@ def build_view_model(
             "done": 0,
             "sort_order": index,
         }
-        for index, row in enumerate(_parse_objectives(snapshot))
+        for index, row in enumerate(defined_objectives)
     }
+    include_unlisted_objectives = not objective_rows
     tasks_by_lane: list[dict[str, Any]] = []
     tasks_sorted = sorted(
         snapshot.tasks.values(),
@@ -545,32 +547,35 @@ def build_view_model(
         counts[status] += 1
         objective_id = str(task.payload.get("objective") or "").strip()
         objective_key = _objective_row_key(objective_id)
-        objective_row = objective_rows.setdefault(
-            objective_key,
-            {
-                "key": objective_key,
-                "id": objective_id,
-                "title": objective_id or UNASSIGNED_OBJECTIVE_TITLE,
-                "task_ids": [],
-                "lane_ids": [],
-                "lane_titles": [],
-                "wave_ids": [],
-                "total": 0,
-                "done": 0,
-                "sort_order": len(objective_rows),
-            },
-        )
-        objective_row["task_ids"].append(task.id)
-        objective_row["total"] += 1
-        if status == "done":
-            objective_row["done"] += 1
-        lane_title = task.lane_title or "Unplanned"
-        if task.lane_id and task.lane_id not in objective_row["lane_ids"]:
-            objective_row["lane_ids"].append(task.lane_id)
-        if lane_title not in objective_row["lane_titles"]:
-            objective_row["lane_titles"].append(lane_title)
-        if task.wave is not None and task.wave not in objective_row["wave_ids"]:
-            objective_row["wave_ids"].append(task.wave)
+        objective_row = objective_rows.get(objective_key)
+        if objective_row is None and include_unlisted_objectives and objective_id:
+            objective_row = objective_rows.setdefault(
+                objective_key,
+                {
+                    "key": objective_key,
+                    "id": objective_id,
+                    "title": objective_id,
+                    "task_ids": [],
+                    "lane_ids": [],
+                    "lane_titles": [],
+                    "wave_ids": [],
+                    "total": 0,
+                    "done": 0,
+                    "sort_order": len(objective_rows),
+                },
+            )
+        if objective_row is not None:
+            objective_row["task_ids"].append(task.id)
+            objective_row["total"] += 1
+            if status == "done":
+                objective_row["done"] += 1
+            lane_title = task.lane_title or "Unplanned"
+            if task.lane_id and task.lane_id not in objective_row["lane_ids"]:
+                objective_row["lane_ids"].append(task.lane_id)
+            if lane_title not in objective_row["lane_titles"]:
+                objective_row["lane_titles"].append(lane_title)
+            if task.wave is not None and task.wave not in objective_row["wave_ids"]:
+                objective_row["wave_ids"].append(task.wave)
         tasks_by_lane.append(
             {
                 "id": task.id,
@@ -632,6 +637,7 @@ def build_view_model(
         "recent_events": events[-10:],
         "recent_results": results[:5],
         "push_objective": _section_items(snapshot.sections.get("Push Objective", [])),
+        "release_gates": _section_items(snapshot.sections.get("Release Gates", [])),
     }
 
 

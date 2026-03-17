@@ -154,12 +154,14 @@ grouping:
   set of lanes becomes eligible, while task-to-task predecessors still
   explain why one task is waiting on another
 
-This distinction matters in the static control surface: the active-work
-board should lead with objective rows, preserve lane order inside each
-objective row, use waves as concurrency boundaries, and avoid treating
-lanes or waves as completion-bearing objects. Completed work stays in
-the snapshot for progress rollups, domain coverage, and reader access,
-but the browser filters it out of the active execution map.
+This distinction matters in the static control surface: the board
+should lead with objective rows and summarize their completion state
+without promoting lanes or waves into first-class UI objects. Lane
+order and wave boundaries still matter inside the snapshot because they
+drive progress rollups, next-focus selection, and scheduler semantics,
+but the browser now presents those details through objective progress,
+queue-health counts, and the task reader instead of a visible execution
+map.
 
 ## Static control surface
 
@@ -179,17 +181,15 @@ That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
 
-The rendered page is intentionally narrow but no longer split into
-backlog and completed-history panels. It opens with a hero panel for
-objective/render/workspace metadata and global artifact links, follows
-with objective cards plus overview and domain surfaces, and ends with
-the `Backlog` execution map grouped by objective row and lane column.
-The inbox link is local to the `Backlog` header rather than global page
-chrome, hero metadata renders as key-value information rows, overview
-cards keep the current objective, next runnable slice, and coordination
-state visible, domain chips summarize full-snapshot coverage, and
-artifact navigation stays as plain text links so chips remain reserved
-for task status/state. The browser moves completed rows out of the
+The rendered page is intentionally narrow and objective-first. It
+opens with a hero panel for the current push, artifact links, and queue
+health, then follows with objective cards plus overview and domain
+surfaces. Objective and overview cards open the task reader, hero
+metadata is condensed into a single summary line, overview cards keep
+the current objective, next runnable slice, and release gates visible,
+domain chips summarize full-snapshot coverage, and artifact navigation
+stays as plain text links so chips remain reserved for task
+status/state. The browser moves completed rows out of the visible
 active backlog view without dropping their underlying snapshot rows or
 reader access.
 
