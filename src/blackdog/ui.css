@@ -85,14 +85,6 @@ h3 {
   backdrop-filter: blur(16px);
 }
 
-.eyebrow {
-  color: #74552d;
-  text-transform: uppercase;
-  letter-spacing: 0.11em;
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-
 .panel-row {
   display: grid;
   gap: 18px;
@@ -112,10 +104,9 @@ h3 {
   min-height: 0;
 }
 
-.subhead,
 .hero-note,
 .section-copy,
-.objective-outcome p,
+.reader-context,
 .task-summary,
 .result-card p {
   color: var(--muted);
@@ -141,11 +132,36 @@ h3 {
 .meta-line {
   font-size: 0.94rem;
   color: var(--muted);
+  gap: 10px 18px;
 }
 
 .link-row,
 .reader-links {
   gap: 10px 16px;
+}
+
+.meta-item {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.meta-label {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.meta-value {
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.meta-value-mono {
+  font-family: "SF Mono", "Menlo", monospace;
+  letter-spacing: -0.01em;
 }
 
 .text-link {
@@ -174,15 +190,14 @@ h3 {
   align-items: baseline;
 }
 
-.progress-label {
-  color: var(--ink);
-  font-size: 0.9rem;
-  font-weight: 700;
+.progress-copy-hero {
+  justify-content: flex-start;
 }
 
 .progress-detail {
-  color: var(--muted);
-  font-size: 0.82rem;
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .progress-slot {
@@ -209,10 +224,6 @@ h3 {
   background: linear-gradient(90deg, #4a5550 0%, var(--running-fg) 42%, var(--complete-fg) 100%);
 }
 
-.progress-compact {
-  min-height: 10px;
-}
-
 .status-panel h2 {
   margin-bottom: 2px;
 }
@@ -232,6 +243,12 @@ h3 {
   gap: 8px;
 }
 
+.stat-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .stat-card strong {
   font-size: 1.95rem;
   line-height: 1;
@@ -240,6 +257,12 @@ h3 {
 .status-next {
   display: grid;
   gap: 10px;
+}
+
+.status-next-head {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
 .status-next-lines {
@@ -321,7 +344,7 @@ h3 {
 
 .objective-table-shell,
 .gate-table-shell {
-  max-height: 20rem;
+  max-height: 18rem;
   overflow-y: auto;
   padding-right: 4px;
   margin-right: -4px;
@@ -354,12 +377,25 @@ h3 {
   border-bottom: 1px solid rgba(23, 26, 25, 0.08);
 }
 
+.objective-table tbody tr[data-task-id] {
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.objective-table tbody tr[data-task-id]:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
 .objective-table tbody tr:last-child,
 .gate-table tbody tr:last-child {
   border-bottom: 0;
 }
 
-.objective-table td,
+.objective-table td {
+  padding: 12px 0;
+  vertical-align: middle;
+}
+
 .gate-table td {
   padding: 16px 0;
   vertical-align: top;
@@ -376,18 +412,24 @@ h3 {
 }
 
 .objective-outcome {
-  width: 52%;
+  width: 56%;
   padding-right: 22px;
 }
 
-.objective-outcome strong {
+.objective-title {
   display: block;
-  margin-bottom: 6px;
-  font-size: 1.02rem;
+  color: var(--ink);
+  font-size: 0.96rem;
+  font-weight: 600;
+  line-height: 1.28;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .objective-progress-cell {
-  min-width: 260px;
+  min-width: 220px;
 }
 
 .gate-copy {
@@ -433,9 +475,9 @@ h3 {
 .objective-progress-copy {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 600;
 }
 
@@ -444,11 +486,11 @@ h3 {
   grid-auto-flow: column;
   grid-auto-columns: minmax(8px, 1fr);
   gap: 5px;
-  margin-top: 10px;
+  margin-top: 7px;
 }
 
 .quantum {
-  min-height: 8px;
+  min-height: 7px;
   border-radius: 999px;
   background: rgba(23, 26, 25, 0.1);
 }
@@ -622,6 +664,12 @@ h3 {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.completed-group-label {
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
 .result-history {
   min-height: 0;
   max-height: min(44rem, 74vh);
@@ -671,6 +719,11 @@ dialog::backdrop {
   padding: 22px;
   display: grid;
   gap: 16px;
+}
+
+.reader-context {
+  margin-bottom: 4px;
+  font-size: 0.84rem;
 }
 
 .close-button {
@@ -783,6 +836,10 @@ dialog::backdrop {
 
   .gate-status-cell {
     width: auto;
+  }
+
+  .meta-item {
+    width: 100%;
   }
 }
 

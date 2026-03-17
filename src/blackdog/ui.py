@@ -1024,14 +1024,11 @@ __BLACKDOG_STYLES__
     <div class="page-shell">
       <section id="top-band" class="panel-row panel-row-top" data-panel="hero">
         <article id="hero-panel" class="panel control-panel">
-          <span class="eyebrow">Backlog Control</span>
           <h1 id="project-name">Blackdog Backlog</h1>
-          <p id="hero-copy" class="subhead"></p>
           <div id="hero-meta-line" class="meta-line"></div>
           <p id="hero-note" class="hero-note"></p>
           <div class="progress-cluster progress-cluster-hero">
-            <div class="progress-copy">
-              <span id="hero-progress-label" class="progress-label"></span>
+            <div class="progress-copy progress-copy-hero">
               <span id="hero-progress-detail" class="progress-detail"></span>
             </div>
             <div id="hero-progress" class="progress-slot"></div>
@@ -1042,7 +1039,7 @@ __BLACKDOG_STYLES__
           <h2>Status</h2>
           <div id="queue-stats" class="stats"></div>
           <div class="status-next">
-            <span class="eyebrow">Next In Line</span>
+            <p class="status-next-head">Next in line</p>
             <div id="status-next-lines" class="status-next-lines"></div>
           </div>
         </aside>
@@ -1052,8 +1049,8 @@ __BLACKDOG_STYLES__
         <section id="objectives-panel" class="panel objectives-panel" data-panel="objectives">
           <div class="section-head section-head-inline">
             <div>
-              <span class="eyebrow">Objectives</span>
               <h2>Objectives</h2>
+              <p id="objective-intro" class="section-copy"></p>
             </div>
             <span id="objective-summary" class="section-meta"></span>
           </div>
@@ -1074,7 +1071,6 @@ __BLACKDOG_STYLES__
         <section id="release-gates-panel" class="panel gates-panel" data-panel="release-gates">
           <div class="section-head section-head-inline">
             <div>
-              <span class="eyebrow">Release Gates</span>
               <h2>Release Gates</h2>
             </div>
             <span id="release-gates-summary" class="section-meta"></span>
@@ -1097,9 +1093,7 @@ __BLACKDOG_STYLES__
         <section id="execution-panel" class="panel board-panel" data-panel="execution">
           <div class="section-head backlog-head">
             <div>
-              <span class="eyebrow">Execution</span>
               <h2>Execution Map</h2>
-              <p id="board-guide" class="section-copy"></p>
             </div>
             <div class="toolbar-topline">
               <span id="board-summary" class="section-meta"></span>
@@ -1112,7 +1106,6 @@ __BLACKDOG_STYLES__
         <section id="completed-panel" class="panel result-panel" data-panel="completed">
           <div class="section-head">
             <div>
-              <span class="eyebrow">History</span>
               <h2>Completed Tasks</h2>
               <p id="completed-copy" class="section-copy"></p>
             </div>
@@ -1128,7 +1121,7 @@ __BLACKDOG_STYLES__
     <article class="reader">
       <div class="reader-head">
         <div>
-          <span id="reader-eyebrow" class="eyebrow"></span>
+          <p id="reader-context" class="reader-context"></p>
           <h2 id="reader-title"></h2>
         </div>
         <form method="dialog">
@@ -1234,42 +1227,6 @@ __BLACKDOG_STYLES__
       const remaining = Math.max(0, total - complete);
       const percent = total ? Math.max(0, Math.min(100, Math.round((complete / total) * 100))) : 0;
       return { counts, total, complete, remaining, percent };
-    }
-
-    function progressLabel(progress) {
-      if (!progress.total) {
-        return "No tasks yet";
-      }
-      return `${progress.complete} of ${progress.total} complete`;
-    }
-
-    function progressDetail(progress) {
-      if (!progress.total) {
-        return "Backlog is empty.";
-      }
-      if (!progress.remaining) {
-        return "All tracked work is complete.";
-      }
-      const details = [];
-      if (progress.counts.running) {
-        details.push(`${progress.counts.running} running`);
-      }
-      if (progress.counts.claimed) {
-        details.push(`${progress.counts.claimed} claimed`);
-      }
-      if (progress.counts.ready) {
-        details.push(`${progress.counts.ready} ready`);
-      }
-      if (progress.counts.waiting) {
-        details.push(`${progress.counts.waiting} waiting`);
-      }
-      if (progress.counts.blocked) {
-        details.push(`${progress.counts.blocked} blocked`);
-      }
-      if (progress.counts.failed) {
-        details.push(`${progress.counts.failed} failed`);
-      }
-      return details.length ? details.join(" · ") : `${progress.remaining} remaining`;
     }
 
     function renderProgressBar(progress, className = "") {
@@ -1396,6 +1353,38 @@ __BLACKDOG_STYLES__
       `;
     }
 
+    function objectiveProgressSummary(progress) {
+      if (!progress.total) {
+        return "No tasks";
+      }
+      return `${progress.complete}/${progress.total}`;
+    }
+
+    function objectiveProgressState(progress) {
+      if (!progress.total) {
+        return "No tracked work";
+      }
+      if (!progress.remaining) {
+        return "Complete";
+      }
+      if (progress.counts.running) {
+        return `${progress.counts.running} running`;
+      }
+      if (progress.counts.claimed) {
+        return `${progress.counts.claimed} claimed`;
+      }
+      if (progress.counts.ready) {
+        return `${progress.counts.ready} ready`;
+      }
+      if (progress.counts.waiting) {
+        return `${progress.counts.waiting} waiting`;
+      }
+      if (progress.counts.blocked || progress.counts.failed) {
+        return `${(progress.counts.blocked || 0) + (progress.counts.failed || 0)} blocked`;
+      }
+      return `${progress.remaining} remaining`;
+    }
+
     function renderObjectiveRow(objective) {
       const taskRows = objectiveTaskRows(objective);
       const progress = objective.progress || progressMetrics(
@@ -1404,22 +1393,17 @@ __BLACKDOG_STYLES__
           .filter(Boolean)
       );
       const leadTask = objectiveLeadTask(objective);
-      const description = leadTask
-        ? taskSummary(leadTask) || `${progressDetail(progress)} across ${pluralize(progress.total, "task")}`
-        : (progress.remaining ? progressDetail(progress) : "Complete");
       return `
-        <tr data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
+        <tr data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}"${interactiveCardAttributes(leadTask?.id)}>
           <td class="objective-key">${escapeHtml(objective.id || "Unassigned")}</td>
           <td class="objective-outcome">
-            <strong>${escapeHtml(objective.title || objective.id || "Unassigned")}</strong>
-            <p>${escapeHtml(description)}</p>
+            <span class="objective-title">${escapeHtml(objective.title || objective.id || "Unassigned")}</span>
           </td>
           <td class="objective-progress-cell">
             <div class="objective-progress-copy">
-              <span>${escapeHtml(`${progress.complete}/${progress.total}`)}</span>
-              <span>${escapeHtml(progressDetail(progress))}</span>
+              <span>${escapeHtml(objectiveProgressSummary(progress))}</span>
+              <span>${escapeHtml(objectiveProgressState(progress))}</span>
             </div>
-            ${renderProgressBar(progress, "progress-compact")}
             ${renderObjectiveQuanta(taskRows)}
           </td>
         </tr>
@@ -1459,7 +1443,10 @@ __BLACKDOG_STYLES__
     }
 
     function renderObjectivesTable() {
+      const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
       const activeObjectives = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
+      document.getElementById("objective-intro").textContent =
+        objective || "Tracked outcomes for the current push.";
       document.getElementById("objective-summary").textContent = objectiveRows.length
         ? `${objectiveRows.length} objective row(s) · ${activeObjectives.length} active`
         : "No objective rows";
@@ -1485,29 +1472,80 @@ __BLACKDOG_STYLES__
       return links.map((row) => textLink(row.label, row.href)).join("");
     }
 
+    function relativeTimeFromNow(value) {
+      if (!value) {
+        return "just now";
+      }
+      const parsed = Date.parse(String(value));
+      if (Number.isNaN(parsed)) {
+        return String(value);
+      }
+      const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
+      if (seconds < 10) {
+        return "just now";
+      }
+      if (seconds < 60) {
+        return `${seconds}s ago`;
+      }
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) {
+        return `${minutes}m ago`;
+      }
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) {
+        return `${hours}h ago`;
+      }
+      const days = Math.round(hours / 24);
+      return `${days}d ago`;
+    }
+
+    function renderMetaItem(label, value, options = {}) {
+      if (!value) {
+        return "";
+      }
+      const valueClass = options.mono ? "meta-value meta-value-mono" : "meta-value";
+      return `
+        <span class="meta-item">
+          <span class="meta-label">${escapeHtml(label)}:</span>
+          <span class="${valueClass}">${escapeHtml(value)}</span>
+        </span>
+      `;
+    }
+
+    function summarizeTimeOnTask(value) {
+      const raw = String(value || "").trim();
+      if (!raw) {
+        return "";
+      }
+      const parts = raw.split("·").map((part) => part.trim()).filter(Boolean);
+      return parts.find((part) => part.includes("recorded") || part.includes("total")) || raw;
+    }
+
+    function heroProgressSummary(progress) {
+      if (!progress.total) {
+        return "No tracked tasks";
+      }
+      const noun = progress.total === 1 ? "task" : "tasks";
+      return `${progress.complete}/${progress.total} ${noun} complete`;
+    }
+
     function renderHeader() {
-      const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
-      document.getElementById("hero-copy").textContent =
-        objective || "Direct backlog control for the current push.";
       const heroHighlights = snapshot.hero_highlights || {};
       const headers = snapshot.headers || {};
       const activity = snapshot.last_activity || {};
       const overallProgress = progressMetrics(trackedTasks);
       const metaItems = [
-        heroHighlights.branch ? `Branch ${heroHighlights.branch}` : headers["Target branch"] ? `Branch ${headers["Target branch"]}` : "",
-        heroHighlights.commit ? `Commit ${heroHighlights.commit}` : headers["Target commit"] ? `Commit ${headers["Target commit"]}` : "",
-        overallProgress.total ? `${overallProgress.complete}/${overallProgress.total} finished` : "",
-        heroHighlights.latest_run ? `Latest run ${heroHighlights.latest_run}` : "",
-        heroHighlights.time_on_task ? `Time on task ${heroHighlights.time_on_task}` : ""
+        renderMetaItem("Active Branch", heroHighlights.branch || headers["Target branch"] || "", { mono: true }),
+        renderMetaItem("Commit", heroHighlights.commit || headers["Target commit"] || "", { mono: true }),
+        renderMetaItem("Time on task", summarizeTimeOnTask(heroHighlights.time_on_task || "")),
+        renderMetaItem("Last updated", relativeTimeFromNow(snapshot.generated_at || activity.at || ""))
       ].filter(Boolean);
       document.getElementById("hero-meta-line").innerHTML = metaItems
-        .map((item) => `<span>${escapeHtml(item)}</span>`)
         .join("");
       document.getElementById("hero-note").textContent = activity.summary
         ? `Latest activity: ${activity.task_id ? `${activity.task_id} ` : ""}${activity.summary}`
         : "Snapshot follows committed backlog state and recorded task results.";
-      document.getElementById("hero-progress-label").textContent = progressLabel(overallProgress);
-      document.getElementById("hero-progress-detail").textContent = progressDetail(overallProgress);
+      document.getElementById("hero-progress-detail").textContent = heroProgressSummary(overallProgress);
       document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");
       applyProgressBars(document.getElementById("hero-progress"));
       document.getElementById("hero-links").innerHTML = globalLinks()
@@ -1526,7 +1564,7 @@ __BLACKDOG_STYLES__
       ];
       document.getElementById("queue-stats").innerHTML = stats.map(([label, value]) => `
         <div class="stat-card">
-          <span class="eyebrow">${escapeHtml(label)}</span>
+          <span class="stat-label">${escapeHtml(label)}</span>
           <strong>${escapeHtml(value)}</strong>
         </div>
       `).join("");
@@ -1693,8 +1731,6 @@ __BLACKDOG_STYLES__
     }
 
     function renderExecutionMap() {
-      document.getElementById("board-guide").textContent =
-        "The execution map stays focused on live lanes and waves. Search and filter chrome is gone; click a task card when you need the full reader.";
       const waveRows = groupedWaveRows(boardTasks);
       document.getElementById("board-summary").textContent = boardTasks.length
         ? `${pluralize(waveRows.length, "wave")} · ${pluralize(laneRows(boardTasks).length, "lane")} · ${pluralize(boardTasks.length, "task")}`
@@ -1703,10 +1739,7 @@ __BLACKDOG_STYLES__
         ? waveRows.map((waveRow) => `
             <section class="wave-section">
               <div class="wave-head">
-                <div>
-                  <span class="eyebrow">Execution sweep</span>
-                  <h3>${escapeHtml(waveRow.id)}</h3>
-                </div>
+                <h3>${escapeHtml(waveRow.id)}</h3>
                 <div class="wave-meta">
                   <span>${escapeHtml(pluralize(waveRow.lanes.length, "lane"))}</span>
                   <span>${escapeHtml(pluralize(waveRow.lanes.reduce((count, lane) => count + lane.tasks.length, 0), "task"))}</span>
@@ -1789,7 +1822,7 @@ __BLACKDOG_STYLES__
         ? grouped.map((group) => `
             <section class="completed-group" data-sweep="${escapeHtml(group.key)}">
               <div class="completed-group-head">
-                <span class="eyebrow">${escapeHtml(group.label)}</span>
+                <span class="completed-group-label">${escapeHtml(group.label)}</span>
                 <span class="section-meta">${escapeHtml(pluralize(group.tasks.length, "task"))}</span>
               </div>
               <div class="results-grid">
@@ -1805,7 +1838,7 @@ __BLACKDOG_STYLES__
       if (!task) {
         return;
       }
-      document.getElementById("reader-eyebrow").textContent =
+      document.getElementById("reader-context").textContent =
         `${task.lane_title || "No lane"} · ${task.epic_title || "No epic"}`;
       document.getElementById("reader-title").textContent = `${task.id} ${task.title}`;
       document.getElementById("reader-statuses").innerHTML = renderStatusChipRows(task.dialog_status_chips);
