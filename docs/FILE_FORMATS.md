@@ -406,7 +406,7 @@ Current `hero_highlights` keys summarize the hero's workspace/activity strip:
 - `latest_run`
 - `time_on_task`
 
-Current `objective_rows[*]` keys summarize the objective-first board contract:
+Current `objective_rows[*]` keys summarize the board's objective-table contract:
 
 - `key`
 - `id`
@@ -429,7 +429,7 @@ Current `objective_rows[*]` keys summarize the objective-first board contract:
 - `remaining`
 - `percent`
 
-Current `next_rows[*]` keys summarize the "what's next" queue projection:
+Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projection:
 
 - `id`
 - `title`
@@ -439,10 +439,12 @@ Current `next_rows[*]` keys summarize the "what's next" queue projection:
 
 Layout projections:
 
-- Hero metadata uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
-- Hero metadata renders as a compact summary line and artifact links that can include the current target branch and commit, latest run label, time-on-task label, backlog path, and state path.
-- Objective cards use `objective_rows` and open the task reader through the lead task for each objective row.
-- Queue-health cards use focus-task status counts to surface finished, running, next, waiting, and blocked work.
+- `Backlog Control` uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
+- The control panel renders a compact branch/commit/run/time-on-task line, a progress bar, and artifact links.
+- The objective table uses `objective_rows` as non-clickable summary rows with progress bars and quantized task-state indicators.
+- The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
+- The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
+- `Completed Tasks` groups finished task rows by available run/sweep metadata derived from task completion, result, and run fields.
 - Overview cards use `objective_rows`, `next_rows`, `hero_highlights`, `last_activity`, `open_messages`, and `release_gates` to keep the current push, next slice, and release checks visible.
 - Domain chips aggregate `tasks[*].domains` across the full snapshot, including completed work.
 - The browser renders a hero panel, a queue-health panel, objective cards, overview cards, and a domains panel. It no longer exposes a visible backlog execution map or dedicated completed-history panel.

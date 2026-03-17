@@ -1,6 +1,6 @@
 # CLI Reference
 
-The current CLI covers the backlog runtime, a draining supervisor runner, and a static objective-first task index renderer.
+The current CLI covers the backlog runtime, a draining supervisor runner, and a static backlog board renderer.
 
 When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
 
@@ -72,9 +72,9 @@ The generated child prompt tells the agent that committed repo state is the base
 
 `blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the currently open `stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
 
-`blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. That payload drives the current objective-first board: hero highlights, queue health counts, objective rows and objective cards, overview cards, domain chips, and the task reader popout. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, objective rows with progress summaries, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, open inbox messages, direct artifact links, focus-task summaries, recent task-result summaries, release gates, and grouping guidance.
+`blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. That payload drives the current board: the `Backlog Control` hero, `Status` counts plus next-in-line rows, objective-table summaries, the live `Execution Map`, grouped `Completed Tasks`, release gates, and the task reader popout. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, objective rows with progress summaries, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, open inbox messages, direct artifact links, focus-task summaries, recent task-result summaries, release gates, and grouping guidance.
 
-`blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and active supervisor runs rerender that page as part of normal state changes, including supervisor exit after landed task-state updates. The page embeds the current snapshot JSON directly, renders a hero card plus queue-health, objectives, overview, and domains sections, keeps artifact navigation as plain links, and opens objective and overview cards in the task reader. Reload the file when you want the latest state.
+`blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and active supervisor runs rerender that page as part of normal state changes, including supervisor exit after landed task-state updates. The page embeds the current snapshot JSON directly, renders a wider control/status top band, a scrollable objective table, the live execution map, and grouped completed-task history, keeps artifact navigation as plain links, and opens execution/history cards in the task reader. Reload the file when you want the latest state.
 
 ### Structured results
 

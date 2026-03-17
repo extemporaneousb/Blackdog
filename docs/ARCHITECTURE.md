@@ -181,17 +181,14 @@ That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
 
-The rendered page is intentionally narrow and objective-first. It
-opens with a hero panel for the current push, artifact links, and queue
-health, then follows with objective cards plus overview and domain
-surfaces. Objective and overview cards open the task reader, hero
-metadata is condensed into a single summary line, overview cards keep
-the current objective, next runnable slice, and release gates visible,
-domain chips summarize full-snapshot coverage, and artifact navigation
-stays as plain text links so chips remain reserved for task
-status/state. The browser moves completed rows out of the visible
-active backlog view without dropping their underlying snapshot rows or
-reader access.
+The rendered page now uses a wider control-board layout. It opens with
+`Backlog Control` and `Status` in a split top band, follows with a
+scrollable objective table, then ends with a split `Execution Map` and
+`Completed Tasks` history. Objective rows are summary-only; the live
+execution map and completed-task cards open the task reader. Artifact
+navigation stays as plain text links, release gates stay attached to
+the execution surface, and completed history keeps sweep boundaries
+visible when run metadata exists.
 
 The current supervisor run is inbox-steerable in a narrow way: open
 `stop` messages addressed to the supervisor actor put the run into a
@@ -204,7 +201,7 @@ writes.
 
 ## WTAM audit
 
-Against the Utter WTAM baseline, Blackdog's current contract splits
+Against the WTAM baseline, Blackdog's current contract splits
 into enforced surfaces, documented guidance, and open gaps.
 
 

@@ -250,6 +250,8 @@ def _build_result_index(paths: ProjectPaths, results: list[dict[str, Any]]) -> d
             "latest_result_dir_href": _artifact_href(paths, result_dir, must_exist=result_dir.exists()),
             "latest_result_status": row.get("status"),
             "latest_result_at": row.get("recorded_at"),
+            "latest_result_run_id": row.get("run_id"),
+            "latest_result_actor": row.get("actor"),
             "latest_result_preview": _result_preview(row),
             "latest_result_what_changed": list(row.get("what_changed") or []),
             "latest_result_validation": list(row.get("validation") or []),
@@ -266,6 +268,8 @@ def _build_result_index(paths: ProjectPaths, results: list[dict[str, Any]]) -> d
                 "latest_result_dir_href": _artifact_href(paths, paths.results_dir / task_id, must_exist=True),
                 "latest_result_status": None,
                 "latest_result_at": None,
+                "latest_result_run_id": None,
+                "latest_result_actor": None,
                 "latest_result_preview": None,
                 "latest_result_what_changed": [],
                 "latest_result_validation": [],
@@ -868,6 +872,8 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "total_compute_label": activity.get("total_compute_label"),
             "latest_result_status": result_info.get("latest_result_status") or activity.get("latest_result_status"),
             "latest_result_at": result_info.get("latest_result_at") or activity.get("latest_result_at"),
+            "latest_result_run_id": result_info.get("latest_result_run_id"),
+            "latest_result_actor": result_info.get("latest_result_actor"),
             "latest_result_href": result_info.get("latest_result_href") or activity.get("latest_result_href"),
             "latest_result_dir_href": result_info.get("latest_result_dir_href"),
             "latest_result_preview": result_info.get("latest_result_preview"),
@@ -876,6 +882,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "latest_result_residual": result_info.get("latest_result_residual") or [],
             "latest_result_needs_user_input": bool(result_info.get("latest_result_needs_user_input")),
             "result_count": int(result_info.get("result_count") or 0),
+            "latest_run_id": run_info.get("run_id"),
             "latest_run_status": run_info.get("run_status"),
             "latest_run_at": run_info.get("last_event_at"),
             "run_dir_href": run_info.get("run_dir_href"),
@@ -1015,32 +1022,89 @@ __BLACKDOG_STYLES__
   <script id="blackdog-snapshot" type="application/json">__BLACKDOG_SNAPSHOT__</script>
   <div class="page">
     <div class="page-shell">
-      <section id="hero-panel" class="hero" data-panel="hero">
-        <article class="panel hero-main">
-          <h1>Backlog Control</h1>
+      <section id="top-band" class="top-band" data-panel="hero">
+        <article id="hero-panel" class="panel control-panel">
+          <span class="eyebrow">Backlog Control</span>
+          <h1 id="project-name">Blackdog Backlog</h1>
           <p id="hero-copy" class="subhead"></p>
-          <div id="hero-meta-line" class="meta"></div>
-          <div id="hero-progress" class="progress-slot"></div>
-          <div id="hero-links" class="nav"></div>
+          <div id="hero-meta-line" class="meta-line"></div>
+          <p id="hero-note" class="hero-note"></p>
+          <div class="progress-cluster progress-cluster-hero">
+            <div class="progress-copy">
+              <span id="hero-progress-label" class="progress-label"></span>
+              <span id="hero-progress-detail" class="progress-detail"></span>
+            </div>
+            <div id="hero-progress" class="progress-slot"></div>
+          </div>
+          <div id="hero-links" class="link-row"></div>
         </article>
-        <aside class="panel hero-side">
-          <h2>Queue Health</h2>
+        <aside id="status-panel" class="panel status-panel">
+          <h2>Status</h2>
           <div id="queue-stats" class="stats"></div>
+          <div class="status-next">
+            <span class="eyebrow">Next In Line</span>
+            <div id="status-next-lines" class="status-next-lines"></div>
+          </div>
         </aside>
       </section>
 
-      <section id="objectives-panel" class="objectives" data-panel="objectives">
-        <div id="objective-cards" class="objectives-grid"></div>
+      <section id="objectives-panel" class="panel objectives-panel" data-panel="objectives">
+        <div class="section-head section-head-inline">
+          <div>
+            <span class="eyebrow">Objectives</span>
+            <h2>Objectives</h2>
+          </div>
+          <span id="objective-summary" class="section-meta"></span>
+        </div>
+        <div class="objective-table-shell">
+          <table class="objective-table">
+            <thead>
+              <tr>
+                <th scope="col">Objective</th>
+                <th scope="col">Outcome</th>
+                <th scope="col">Progress</th>
+              </tr>
+            </thead>
+            <tbody id="objectives-table-body"></tbody>
+          </table>
+        </div>
       </section>
 
-      <section id="overview-panel" class="overview" data-panel="overview">
-        <div id="overview-cards" class="overview-grid"></div>
-      </section>
+      <div id="surface-grid" class="surface-grid">
+        <section id="execution-panel" class="panel board-panel" data-panel="execution">
+          <div class="section-head backlog-head">
+            <div>
+              <span class="eyebrow">Execution</span>
+              <h2>Execution Map</h2>
+              <p id="board-guide" class="section-copy"></p>
+            </div>
+            <div class="toolbar-topline">
+              <span id="board-summary" class="section-meta"></span>
+              <a id="inbox-link" class="text-link" href="#">Inbox JSON</a>
+            </div>
+          </div>
+          <div id="lane-board" class="lane-board"></div>
+          <section class="board-rail">
+            <div class="board-rail-head">
+              <span class="eyebrow">Release Gates</span>
+              <span id="release-gates-summary" class="section-meta"></span>
+            </div>
+            <ul id="release-gates-list" class="gate-list"></ul>
+          </section>
+        </section>
 
-      <section id="domains-panel" class="panel domains-panel" data-panel="domains">
-        <h2>Domains</h2>
-        <div id="domain-chips" class="chips domain-chips"></div>
-      </section>
+        <section id="completed-panel" class="panel result-panel" data-panel="completed">
+          <div class="section-head">
+            <div>
+              <span class="eyebrow">History</span>
+              <h2>Completed Tasks</h2>
+              <p id="completed-copy" class="section-copy"></p>
+            </div>
+            <span id="completed-summary" class="section-meta"></span>
+          </div>
+          <div id="completed-history-scroll" class="result-history"></div>
+        </section>
+      </div>
     </div>
   </div>
 
@@ -1065,13 +1129,23 @@ __BLACKDOG_STYLES__
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
     const allTasksById = new Map(allTasks.map((task) => [String(task.id), task]));
+    const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
     const objectiveRows = Array.isArray(snapshot.objective_rows) ? snapshot.objective_rows.slice() : [];
     const focusTaskIds = new Set(
       Array.isArray(snapshot.focus_task_ids) ? snapshot.focus_task_ids.map((taskId) => String(taskId)) : []
     );
+    const boardTasks = Array.isArray(snapshot.board_tasks)
+      ? snapshot.board_tasks.filter((task) => normalizeStatus(task.operator_status_key) !== "complete")
+      : allTasks.filter((task) => (task.objective || task.lane_id) && normalizeStatus(task.operator_status_key) !== "complete");
     const focusTasks = focusTaskIds.size
       ? allTasks.filter((task) => focusTaskIds.has(String(task.id)))
-      : allTasks.filter((task) => (task.objective || task.lane_id) && normalizeStatus(task.operator_status_key) !== "complete");
+      : boardTasks.length
+        ? boardTasks
+        : allTasks;
+    const trackedTasks = focusTasks.length ? focusTasks : allTasks;
+    const completedTasks = allTasks
+      .filter((task) => normalizeStatus(task.operator_status_key) === "complete")
+      .sort((left, right) => completionEpoch(right) - completionEpoch(left));
     const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     const statusMeta = {
       total: { label: "Total" },
@@ -1132,8 +1206,10 @@ __BLACKDOG_STYLES__
     function globalLinks() {
       const links = snapshot.links || {};
       return [
-        ["Backlog Source", links.backlog],
-        ["State", links.state]
+        ["Backlog", links.backlog],
+        ["State", links.state],
+        ["Events", links.events],
+        ["Results", links.results]
       ];
     }
 
@@ -1212,6 +1288,86 @@ __BLACKDOG_STYLES__
       return task.latest_result_preview || task.operator_status_detail || task.detail || task.safe_first_slice || "";
     }
 
+    function taskInventory(tasks) {
+      const rows = new Map();
+      for (const task of tasks) {
+        const key = String(task.lane_id || `lane:${task.id}`);
+        if (!rows.has(key)) {
+          rows.set(key, []);
+        }
+        rows.get(key).push(task);
+      }
+      return rows;
+    }
+
+    function laneRows(tasks) {
+      const rows = new Map();
+      lanePlan.forEach((lane, index) => {
+        rows.set(String(lane.id), {
+          id: String(lane.id),
+          title: lane.title || "Unplanned",
+          wave: lane.wave,
+          plan_index: index,
+          tasks: []
+        });
+      });
+      for (const task of tasks) {
+        const key = String(task.lane_id || `lane:${task.id}`);
+        if (!rows.has(key)) {
+          rows.set(key, {
+            id: key,
+            title: task.lane_title || "Unplanned",
+            wave: task.wave,
+            plan_index: Number(task.lane_plan_index ?? 9999),
+            tasks: []
+          });
+        }
+        rows.get(key).tasks.push(task);
+      }
+      return Array.from(rows.values())
+        .filter((lane) => lane.tasks.length)
+        .map((lane) => ({
+          ...lane,
+          tasks: lane.tasks.sort((left, right) => {
+            const leftPosition = left.lane_position == null ? 9999 : Number(left.lane_position);
+            const rightPosition = right.lane_position == null ? 9999 : Number(right.lane_position);
+            if (leftPosition !== rightPosition) {
+              return leftPosition - rightPosition;
+            }
+            return String(left.id).localeCompare(String(right.id));
+          })
+        }))
+        .sort((left, right) => {
+          const leftWave = left.wave == null ? 9999 : Number(left.wave);
+          const rightWave = right.wave == null ? 9999 : Number(right.wave);
+          if (leftWave !== rightWave) {
+            return leftWave - rightWave;
+          }
+          const leftPlan = left.plan_index == null ? 9999 : Number(left.plan_index);
+          const rightPlan = right.plan_index == null ? 9999 : Number(right.plan_index);
+          if (leftPlan !== rightPlan) {
+            return leftPlan - rightPlan;
+          }
+          return String(left.title).localeCompare(String(right.title));
+        });
+    }
+
+    function groupedWaveRows(tasks) {
+      const waves = new Map();
+      for (const lane of laneRows(tasks)) {
+        const waveId = lane.wave == null ? "Unassigned" : `Wave ${lane.wave}`;
+        if (!waves.has(waveId)) {
+          waves.set(waveId, { id: waveId, wave: lane.wave, lanes: [] });
+        }
+        waves.get(waveId).lanes.push(lane);
+      }
+      return Array.from(waves.values()).sort((left, right) => {
+        const leftWave = left.wave == null ? 9999 : Number(left.wave);
+        const rightWave = right.wave == null ? 9999 : Number(right.wave);
+        return leftWave - rightWave;
+      });
+    }
+
     function objectiveTone(objective) {
       const progress = objective.progress || { counts: {}, remaining: 0 };
       if (!progress.remaining) {
@@ -1258,57 +1414,51 @@ __BLACKDOG_STYLES__
       return `${count} ${noun}${count === 1 ? "" : "s"}`;
     }
 
-    function renderObjectiveCard(objective) {
+    function objectiveTaskRows(objective) {
+      return (Array.isArray(objective.task_ids) ? objective.task_ids : [])
+        .map((taskId) => allTasksById.get(String(taskId)))
+        .filter(Boolean);
+    }
+
+    function renderObjectiveQuanta(tasks) {
+      if (!tasks.length) {
+        return `<div class="objective-quanta"><span class="quantum quantum-empty"></span></div>`;
+      }
+      return `
+        <div class="objective-quanta" aria-hidden="true">
+          ${tasks.map((task) => `<span class="quantum quantum-${escapeHtml(normalizeStatus(task.operator_status_key || "ready"))}"></span>`).join("")}
+        </div>
+      `;
+    }
+
+    function renderObjectiveRow(objective) {
+      const taskRows = objectiveTaskRows(objective);
       const progress = objective.progress || progressMetrics(
         (Array.isArray(objective.task_ids) ? objective.task_ids : [])
           .map((taskId) => allTasksById.get(String(taskId)))
           .filter(Boolean)
       );
       const leadTask = objectiveLeadTask(objective);
-      const leadTaskId = leadTask ? String(leadTask.id || "") : "";
-      const copy = leadTask
-        ? taskSummary(leadTask) || leadTask.title
+      const description = leadTask
+        ? taskSummary(leadTask) || `${progressDetail(progress)} across ${pluralize(progress.total, "task")}`
         : (progress.remaining ? progressDetail(progress) : "Complete");
       return `
-        <article class="objective-card"${interactiveCardAttributes(leadTaskId)} data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
-          <div class="objective-top">
-            <span class="objective-id">${escapeHtml(objective.id || "Unassigned")}</span>
-            <span class="objective-meta">${escapeHtml(`${progress.complete}/${progress.total}`)}</span>
-          </div>
-          <h3>${escapeHtml(objective.title || objective.id || "Unassigned")}</h3>
-          <div class="progress-cluster">
-            ${renderProgressBar(progress)}
-          </div>
-          <p class="objective-copy">${escapeHtml(copy)}</p>
-        </article>
+        <tr data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}">
+          <td class="objective-key">${escapeHtml(objective.id || "Unassigned")}</td>
+          <td class="objective-outcome">
+            <strong>${escapeHtml(objective.title || objective.id || "Unassigned")}</strong>
+            <p>${escapeHtml(description)}</p>
+          </td>
+          <td class="objective-progress-cell">
+            <div class="objective-progress-copy">
+              <span>${escapeHtml(`${progress.complete}/${progress.total}`)}</span>
+              <span>${escapeHtml(progressDetail(progress))}</span>
+            </div>
+            ${renderProgressBar(progress, "progress-compact")}
+            ${renderObjectiveQuanta(taskRows)}
+          </td>
+        </tr>
       `;
-    }
-
-    function renderObjectiveCards() {
-      document.getElementById("objective-cards").innerHTML = objectiveRows.length
-        ? objectiveRows.map(renderObjectiveCard).join("")
-        : `<div class="empty">No objective rows tagged in the backlog yet.</div>`;
-      applyProgressBars(document.getElementById("objective-cards"));
-    }
-
-    function domainCounts(tasks) {
-      const counts = new Map();
-      for (const task of tasks) {
-        const domains = Array.isArray(task.domains) ? task.domains : [];
-        for (const rawDomain of domains) {
-          const domain = String(rawDomain || "").trim();
-          if (!domain) {
-            continue;
-          }
-          counts.set(domain, Number(counts.get(domain) || 0) + 1);
-        }
-      }
-      return Array.from(counts.entries()).sort((left, right) => {
-        if (right[1] !== left[1]) {
-          return right[1] - left[1];
-        }
-        return left[0].localeCompare(right[0]);
-      });
     }
 
     function nextFocusRow() {
@@ -1316,7 +1466,7 @@ __BLACKDOG_STYLES__
       if (nextRows.length) {
         return nextRows[0];
       }
-      const fallback = focusTasks.find((task) => normalizeStatus(task.operator_status_key) !== "complete");
+      const fallback = trackedTasks.find((task) => normalizeStatus(task.operator_status_key) !== "complete");
       if (!fallback) {
         return null;
       }
@@ -1329,80 +1479,73 @@ __BLACKDOG_STYLES__
       };
     }
 
-    function overviewCard(title, headline, copy, items = [], options = {}) {
-      const filteredItems = items.filter(Boolean);
-      const taskId = options.taskId ? String(options.taskId) : "";
+    function nextRows() {
+      const next = Array.isArray(snapshot.next_rows) ? snapshot.next_rows.slice(0, 2) : [];
+      if (next.length) {
+        return next;
+      }
+      return trackedTasks
+        .filter((task) => normalizeStatus(task.operator_status_key) === "ready")
+        .slice(0, 2)
+        .map((task) => ({
+          id: task.id,
+          title: task.title,
+          lane: task.lane_title,
+          wave: task.wave,
+          risk: task.risk,
+        }));
+    }
+
+    function nextLine(row) {
+      const taskId = row?.id ? String(row.id) : "";
+      const meta = [
+        row?.lane ? `Lane ${row.lane}` : "",
+        row?.wave != null ? `Wave ${row.wave}` : "",
+        row?.risk ? `Risk ${row.risk}` : "",
+      ].filter(Boolean).join(" · ");
       return `
-        <article class="compact-card"${interactiveCardAttributes(taskId)}>
-          <span class="eyebrow">${escapeHtml(title)}</span>
-          ${headline ? `<strong>${escapeHtml(headline)}</strong>` : ""}
-          ${copy ? `<p>${escapeHtml(copy)}</p>` : ""}
-          ${filteredItems.length ? `<ul class="compact-list">${filteredItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
-        </article>
+        <div class="status-next-line"${interactiveCardAttributes(taskId)}>
+          <strong>${escapeHtml(taskId ? `${taskId} ${row.title || ""}` : row?.title || "No queued work")}</strong>
+          <span>${escapeHtml(meta || "No additional scheduling detail")}</span>
+        </div>
       `;
     }
 
-    function renderOverviewCards() {
-      const currentObjective = objectiveRows.find((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length) || objectiveRows[0] || null;
-      const currentObjectiveProgress = currentObjective?.progress || null;
-      const currentObjectiveLeadTask = currentObjective ? objectiveLeadTask(currentObjective) : null;
-      const next = nextFocusRow();
-      const releaseGates = Array.isArray(snapshot.release_gates) ? snapshot.release_gates.slice(0, 4) : [];
-
-      document.getElementById("overview-cards").innerHTML = [
-        overviewCard(
-          "What We Are Doing",
-          currentObjective ? currentObjective.title || currentObjective.id || "Unassigned" : "No objective rows yet",
-          currentObjectiveProgress ? objectiveStateLabel(currentObjective) : "Add objective tags to make the board lead with intent.",
-          currentObjective
-            ? [
-                `${currentObjective.done}/${currentObjective.total} complete`,
-                Array.isArray(currentObjective.lane_titles) && currentObjective.lane_titles.length
-                  ? pluralize(currentObjective.lane_titles.length, "lane")
-                  : "",
-                Array.isArray(currentObjective.wave_ids) && currentObjective.wave_ids.length
-                  ? pluralize(currentObjective.wave_ids.length, "wave")
-                  : ""
-              ]
-            : [],
-          { taskId: currentObjectiveLeadTask?.id }
-        ),
-        overviewCard(
-          "What's Next",
-          next ? `${next.id} ${next.title}` : "No runnable backlog task",
-          next ? "This is the next claimable slice from the current backlog ordering." : "The tracked objective work is complete.",
-          next
-            ? [
-                next.lane ? `Lane: ${next.lane}` : "",
-                next.wave != null ? `Wave ${next.wave}` : "",
-                next.risk ? `Risk: ${next.risk}` : ""
-              ]
-            : [],
-          { taskId: next?.id }
-        ),
-        overviewCard(
-          "Release Gates",
-          "",
-          "",
-          releaseGates.length ? releaseGates : ["Add release gates to the backlog header to surface them here."]
-        )
-      ].join("");
+    function renderObjectivesTable() {
+      const activeObjectives = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
+      document.getElementById("objective-summary").textContent = objectiveRows.length
+        ? `${objectiveRows.length} objective row(s) · ${activeObjectives.length} active`
+        : "No objective rows";
+      document.getElementById("objectives-table-body").innerHTML = objectiveRows.length
+        ? objectiveRows.map(renderObjectiveRow).join("")
+        : `<tr><td colspan="3"><div class="empty">No objective rows tagged in the backlog yet.</div></td></tr>`;
+      applyProgressBars(document.getElementById("objectives-panel"));
     }
 
-    function renderDomainChips() {
-      const domains = domainCounts(focusTasks);
-      document.getElementById("domain-chips").innerHTML = domains.length
-        ? domains.map(([domain, count]) => `<span class="chip chip-domain">${escapeHtml(domain)} <strong>${escapeHtml(count)}</strong></span>`).join("")
-        : `<div class="empty">No domain tags yet.</div>`;
+    function taskTone(task) {
+      return normalizeStatus(task.operator_status_key || "ready") || "ready";
+    }
+
+    function renderStatusChipRows(rows) {
+      if (!Array.isArray(rows) || !rows.length) {
+        return "";
+      }
+      return rows.map((row) => chip(row.label, row.key)).join("");
+    }
+
+    function renderTaskLinks(task) {
+      const links = Array.isArray(task.links) ? task.links : [];
+      return links.map((row) => textLink(row.label, row.href)).join("");
     }
 
     function renderHeader() {
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
       document.getElementById("hero-copy").textContent =
-        objective || "Objective-first backlog control for the current push.";
+        objective || "Direct backlog control for the current push.";
       const heroHighlights = snapshot.hero_highlights || {};
       const headers = snapshot.headers || {};
-      const overallProgress = progressMetrics(focusTasks);
+      const activity = snapshot.last_activity || {};
+      const overallProgress = progressMetrics(trackedTasks);
       const metaItems = [
         heroHighlights.branch ? `Branch ${heroHighlights.branch}` : headers["Target branch"] ? `Branch ${headers["Target branch"]}` : "",
         heroHighlights.commit ? `Commit ${heroHighlights.commit}` : headers["Target commit"] ? `Commit ${headers["Target commit"]}` : "",
@@ -1413,6 +1556,11 @@ __BLACKDOG_STYLES__
       document.getElementById("hero-meta-line").innerHTML = metaItems
         .map((item) => `<span>${escapeHtml(item)}</span>`)
         .join("");
+      document.getElementById("hero-note").textContent = activity.summary
+        ? `Latest activity: ${activity.task_id ? `${activity.task_id} ` : ""}${activity.summary}`
+        : "Snapshot follows committed backlog state and recorded task results.";
+      document.getElementById("hero-progress-label").textContent = progressLabel(overallProgress);
+      document.getElementById("hero-progress-detail").textContent = progressDetail(overallProgress);
       document.getElementById("hero-progress").innerHTML = renderProgressBar(overallProgress, "progress-hero");
       applyProgressBars(document.getElementById("hero-progress"));
       document.getElementById("hero-links").innerHTML = globalLinks()
@@ -1420,8 +1568,8 @@ __BLACKDOG_STYLES__
         .join("");
     }
 
-    function renderQueueHealth() {
-      const counts = countStatuses(focusTasks);
+    function renderStatusPanel() {
+      const counts = countStatuses(trackedTasks);
       const stats = [
         ["Finished", counts.complete || 0],
         ["Running", (counts.running || 0) + (counts.claimed || 0)],
@@ -1435,18 +1583,10 @@ __BLACKDOG_STYLES__
           <strong>${escapeHtml(value)}</strong>
         </div>
       `).join("");
-    }
-
-    function renderTaskLinks(task) {
-      const links = Array.isArray(task.links) ? task.links : [];
-      return links.map((row) => textLink(row.label, row.href)).join("");
-    }
-
-    function renderStatusChipRows(rows) {
-      if (!Array.isArray(rows) || !rows.length) {
-        return "";
-      }
-      return rows.map((row) => chip(row.label, row.key)).join("");
+      const lines = nextRows();
+      document.getElementById("status-next-lines").innerHTML = lines.length
+        ? lines.map(nextLine).join("")
+        : `<div class="status-next-line"><strong>No queued work</strong><span>The tracked objective work is complete.</span></div>`;
     }
 
     function detailBlock(label, content, options = {}) {
@@ -1515,8 +1655,167 @@ __BLACKDOG_STYLES__
       `;
     }
 
+    function renderTaskCard(task) {
+      const tone = taskTone(task);
+      const laneMeta = [
+        task.lane_title || "",
+        task.wave != null ? `Wave ${task.wave}` : "",
+        task.total_compute_label ? `Compute ${task.total_compute_label}` : "",
+      ].filter(Boolean);
+      const dependency = Array.isArray(task.predecessor_ids) && task.predecessor_ids.length
+        ? `Depends on ${task.predecessor_ids.join(", ")}`
+        : "Lane opener";
+      return `
+        <article class="task-card tone-${escapeHtml(tone)}"${interactiveCardAttributes(task.id)}>
+          <div class="task-card-top">
+            <div class="task-id-group">
+              <span class="task-code">${escapeHtml(task.id)}</span>
+              ${renderStatusChipRows(task.card_status_chips)}
+            </div>
+            ${task.priority ? `<span class="mini-chip">${escapeHtml(task.priority)}</span>` : ""}
+          </div>
+          <h3 class="task-title">${escapeHtml(task.title)}</h3>
+          <p class="task-summary">${escapeHtml(taskSummary(task) || "No current summary recorded.")}</p>
+          <div class="task-meta">${laneMeta.map((row) => `<span>${escapeHtml(row)}</span>`).join("")}</div>
+          <div class="task-dependency">${escapeHtml(dependency)}</div>
+        </article>
+      `;
+    }
+
+    function renderLaneColumn(lane) {
+      return `
+        <section class="lane-column" data-lane-id="${escapeHtml(lane.id)}">
+          <div class="lane-head">
+            <span class="lane-phase">${escapeHtml(lane.wave == null ? "Unassigned" : `Wave ${lane.wave}`)}</span>
+            <h3>${escapeHtml(lane.title)}</h3>
+            <div class="lane-meta">
+              <span>${escapeHtml(pluralize(lane.tasks.length, "task"))}</span>
+            </div>
+          </div>
+          <div class="lane-stack">
+            ${lane.tasks.map(renderTaskCard).join("")}
+          </div>
+        </section>
+      `;
+    }
+
+    function renderExecutionMap() {
+      document.getElementById("board-guide").textContent =
+        "The execution map stays focused on live lanes and waves. Search and filter chrome is gone; click a task card when you need the full reader.";
+      const waveRows = groupedWaveRows(boardTasks);
+      document.getElementById("board-summary").textContent = boardTasks.length
+        ? `${pluralize(waveRows.length, "wave")} · ${pluralize(laneRows(boardTasks).length, "lane")} · ${pluralize(boardTasks.length, "task")}`
+        : "No active execution map";
+      document.getElementById("lane-board").innerHTML = waveRows.length
+        ? waveRows.map((waveRow) => `
+            <section class="wave-section">
+              <div class="wave-head">
+                <div>
+                  <span class="eyebrow">Execution sweep</span>
+                  <h3>${escapeHtml(waveRow.id)}</h3>
+                </div>
+                <div class="wave-meta">
+                  <span>${escapeHtml(pluralize(waveRow.lanes.length, "lane"))}</span>
+                  <span>${escapeHtml(pluralize(waveRow.lanes.reduce((count, lane) => count + lane.tasks.length, 0), "task"))}</span>
+                </div>
+              </div>
+              <div class="wave-grid">
+                ${waveRow.lanes.map(renderLaneColumn).join("")}
+              </div>
+            </section>
+          `).join("")
+        : `<div class="empty">No active lanes remain in the current execution map.</div>`;
+      const releaseGates = Array.isArray(snapshot.release_gates) ? snapshot.release_gates : [];
+      document.getElementById("release-gates-summary").textContent = releaseGates.length
+        ? `${pluralize(releaseGates.length, "gate")}`
+        : "No gates";
+      document.getElementById("release-gates-list").innerHTML = releaseGates.length
+        ? releaseGates.map((row) => `<li>${escapeHtml(row)}</li>`).join("")
+        : `<li>Add release gates to the backlog header to surface them here.</li>`;
+      document.getElementById("inbox-link").href = snapshot.links?.inbox || "#";
+    }
+
+    function completionStamp(task) {
+      return task.completed_at || task.latest_result_at || task.latest_run_at || "";
+    }
+
+    function completionEpoch(task) {
+      const value = completionStamp(task);
+      const parsed = Date.parse(String(value || ""));
+      return Number.isNaN(parsed) ? 0 : parsed;
+    }
+
+    function completionSweep(task) {
+      return String(task.latest_result_run_id || task.latest_run_id || "direct");
+    }
+
+    function completionSweepLabel(task) {
+      const sweep = completionSweep(task);
+      if (sweep === "direct") {
+        return "Direct updates";
+      }
+      return `Sweep ${sweep}`;
+    }
+
+    function groupedCompletedTasks(tasks) {
+      const groups = [];
+      for (const task of tasks) {
+        const key = completionSweep(task);
+        const label = completionSweepLabel(task);
+        const existing = groups[groups.length - 1];
+        if (!existing || existing.key !== key) {
+          groups.push({ key, label, tasks: [task] });
+          continue;
+        }
+        existing.tasks.push(task);
+      }
+      return groups;
+    }
+
+    function renderCompletedCard(task) {
+      const meta = [
+        completionStamp(task) ? formatTimestamp(completionStamp(task)) : "",
+        task.latest_result_actor ? `Actor ${task.latest_result_actor}` : "",
+        task.total_compute_label ? `Compute ${task.total_compute_label}` : "",
+      ].filter(Boolean);
+      return `
+        <article class="result-card tone-complete"${interactiveCardAttributes(task.id)}>
+          <div class="result-top">
+            <span class="task-code">${escapeHtml(task.id)}</span>
+            ${renderStatusChipRows(task.card_status_chips)}
+          </div>
+          <h3 class="result-title">${escapeHtml(task.title)}</h3>
+          <p>${escapeHtml(taskSummary(task) || "Completed task with no additional summary.")}</p>
+          <div class="result-meta">${meta.map((row) => `<span>${escapeHtml(row)}</span>`).join("")}</div>
+        </article>
+      `;
+    }
+
+    function renderCompletedPanel() {
+      document.getElementById("completed-copy").textContent =
+        "Completed work stays visible here, grouped by sweep so the history shows where execution boundaries moved.";
+      const visibleCompleted = completedTasks.slice(0, 60);
+      const grouped = groupedCompletedTasks(visibleCompleted);
+      document.getElementById("completed-summary").textContent = visibleCompleted.length
+        ? `Showing ${visibleCompleted.length} of ${completedTasks.length}`
+        : "No completed tasks";
+      document.getElementById("completed-history-scroll").innerHTML = grouped.length
+        ? grouped.map((group) => `
+            <section class="completed-group" data-sweep="${escapeHtml(group.key)}">
+              <div class="completed-group-head">
+                <span class="eyebrow">${escapeHtml(group.label)}</span>
+                <span class="section-meta">${escapeHtml(pluralize(group.tasks.length, "task"))}</span>
+              </div>
+              <div class="results-grid">
+                ${group.tasks.map(renderCompletedCard).join("")}
+              </div>
+            </section>
+          `).join("")
+        : `<div class="empty">Completed tasks will appear here once work lands.</div>`;
+    }
+
     function openTaskReader(taskId) {
-      const task = allTasks.find((row) => row.id === taskId);
+      const task = allTasks.find((row) => String(row.id) === String(taskId));
       if (!task) {
         return;
       }
@@ -1558,30 +1857,6 @@ __BLACKDOG_STYLES__
       document.getElementById("reader-dialog").showModal();
     }
 
-    function openMessageReader(messageId) {
-      const message = openMessages.find((row) => row.message_id === messageId);
-      if (!message) {
-        return;
-      }
-      document.getElementById("reader-eyebrow").textContent = "Inbox message";
-      document.getElementById("reader-title").textContent = `${message.sender || "unknown"} -> ${message.recipient || "unknown"}`;
-      document.getElementById("reader-statuses").innerHTML = "";
-      document.getElementById("reader-links").innerHTML = [
-        textLink("Inbox JSON", snapshot.links?.inbox)
-      ].join("");
-      document.getElementById("reader-grid").innerHTML = [
-        detailBlock("Body", paragraphBlock(message.body)),
-        detailBlock("Routing", detailList([
-          message.kind ? `Kind: ${message.kind}` : "",
-          message.task_id ? `Task: ${message.task_id}` : "",
-          message.reply_to ? `Reply to: ${message.reply_to}` : "",
-          message.at ? `Sent: ${formatTimestamp(message.at)}` : ""
-        ])),
-        detailBlock("Tags", listBlock(message.tags))
-      ].filter(Boolean).join("");
-      document.getElementById("reader-dialog").showModal();
-    }
-
     function wireStaticEvents() {
       document.addEventListener("click", (event) => {
         const taskCard = event.target.closest("[data-task-id]");
@@ -1605,15 +1880,11 @@ __BLACKDOG_STYLES__
     }
 
     renderHeader();
-    renderQueueHealth();
-    renderObjectiveCards();
-    renderOverviewCards();
-    renderDomainChips();
+    renderStatusPanel();
+    renderObjectivesTable();
+    renderExecutionMap();
+    renderCompletedPanel();
     wireStaticEvents();
-    window.setInterval(() => {
-      renderHeader();
-      renderQueueHealth();
-    }, 30000);
   </script>
 </body>
 </html>

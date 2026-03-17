@@ -233,14 +233,14 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 6. Complete or release the task through the CLI for direct work.
 7. Use `{cli_command} supervise run` when you want Blackdog to launch child agents instead of editing directly.
 8. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-9. Open `{profile.paths.html_file}` directly when you want the static three-panel backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes.
+9. Open `{profile.paths.html_file}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
 ## Static Board
 
-- `{profile.paths.html_file}` renders a narrow three-panel board with stacked horizontal sections: hero metadata, `Backlog`, and `Completed Tasks`.
-- The hero panel shows render timing, workspace key-value rows, board summary rows, and plain artifact links.
-- The `Backlog` panel owns the search/status controls and the `Inbox JSON` text link; that link points at `{profile.paths.inbox_file}` and shows the current open-message count when available.
-- The `Completed Tasks` panel is a scrollable history of finished work with result/run/task links.
+- `{profile.paths.html_file}` renders a wide control board with a `Backlog Control` panel, `Status` panel, scrollable objective table, `Execution Map`, and `Completed Tasks`.
+- The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
+- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link plus release gates, and removes search/filter chrome.
+- Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
 
 ## Docs to Review
 
