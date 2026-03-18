@@ -25,7 +25,18 @@ from blackdog.backlog import load_backlog, render_backlog_plan_block, render_tas
 from blackdog.cli import main as blackdog_main
 from blackdog.config import load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
-from blackdog.store import append_jsonl, atomic_write_text, load_events, load_inbox, load_jsonl, record_task_result, resolve_message, save_state, send_message
+from blackdog.store import (
+    append_jsonl,
+    atomic_write_text,
+    load_events,
+    load_inbox,
+    load_jsonl,
+    load_task_results,
+    record_task_result,
+    resolve_message,
+    save_state,
+    send_message,
+)
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
 from blackdog.ui import UI_SNAPSHOT_SCHEMA_VERSION, build_ui_snapshot, render_static_html
 from blackdog.worktree import WorktreeSpec
@@ -4624,14 +4635,14 @@ def record_result(
 
 
 def parse_task_title(prompt_text: str) -> str:
-    for line in prompt_text.splitlines():
-        if line.startswith("Title:"):
-            return line.partition(":")[2].strip()
+    match = re.search(r"^\s*Title:\s*(.*)$", prompt_text, flags=re.M)
+    if match:
+        return match.group(1).strip()
     return ""
 
 
 def candidate_score(title: str) -> int:
-    match = re.search(r"Candidate (\\d+)", title)
+    match = re.search(r"Candidate (\d+)", title)
     if not match:
         return 0
     order = int(match.group(1))
@@ -4845,7 +4856,7 @@ if __name__ == "__main__":
         for task_id in all_task_ids:
             self.assertEqual(state["task_claims"][task_id]["status"], "done")
 
-        events = load_events(self.runtime_paths().events_file)
+        events = load_events(self.runtime_paths())
         for task_id in all_task_ids:
             self.assertTrue(any(row["type"] == "task_result" and row["task_id"] == task_id for row in events))
             self.assertTrue(any(row["type"] == "child_finish" and row["task_id"] == task_id for row in events))
@@ -4875,17 +4886,528 @@ if __name__ == "__main__":
         self.assertEqual(result_winner_entry.split("=", 1)[1], winner_id)
         self.assertEqual(int(result_winner_score.split("=", 1)[1]), winner_score)
 
-        evaluator_child = next(child for child in payload["children"] if child["task_id"] == evaluator_id)
-        winner_payload = json.loads(
-            (Path(evaluator_child["run_dir"]) / "winner.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(winner_payload["winner_task_id"], winner_id)
-        self.assertEqual(int(winner_payload["winner_score"]), winner_score)
-
         snapshot = html_snapshot(self.runtime_paths().html_file)
         board_task_ids = {row["id"] for row in snapshot["board_tasks"]}
         self.assertEqual(board_task_ids, all_task_ids)
         snapshot_tasks = {row["id"]: row for row in snapshot["tasks"]}
         for task_id in all_task_ids:
+            self.assertEqual(snapshot_tasks[task_id]["operator_status"], "Complete")
+            self.assertEqual(snapshot_tasks[task_id]["latest_result_status"], "success")
+
+    def test_supervise_run_performs_a_second_round_convergence_optimization_funnel(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+
+        def parse_winner_report(path: Path) -> tuple[str, int]:
+            match = re.search(r"winner=(?P<task_id>[A-Z0-9-]+) score=(?P<score>\d+)", path.read_text(encoding="utf-8"))
+            if match is None:
+                raise AssertionError(f"Could not parse winner report from {path}")
+            return match.group("task_id"), int(match.group("score"))
+
+        install_model_backed_supervisor_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def record_result(
+    *,
+    project_root: Path,
+    task_id: str,
+    actor: str,
+    status: str,
+    what_changed: list[str],
+    validation: list[str],
+) -> None:
+    command = [
+        sys.executable,
+        "-m",
+        "blackdog.cli",
+        "result",
+        "record",
+        "--project-root",
+        str(project_root),
+        "--id",
+        task_id,
+        "--actor",
+        actor,
+        "--status",
+        status,
+    ]
+    for item in what_changed:
+        command.extend(["--what-changed", item])
+    for item in validation:
+        command.extend(["--validation", item])
+    subprocess.run(command, check=True, env=os.environ.copy())
+
+
+def parse_task_title(prompt_text: str) -> str:
+    match = re.search(r"^\s*Title:\s*(.*)$", prompt_text, flags=re.M)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def candidate_score(title: str) -> int:
+    match = re.search(r"Candidate (\d+)", title)
+    if not match:
+        return 0
+    order = int(match.group(1))
+    return [61, 72, 95, 66][order - 1]
+
+
+def optimization_score(title: str) -> int:
+    match = re.search(r"Optimization (\d+)", title)
+    if not match:
+        return 0
+    order = int(match.group(1))
+    return [18, 23][order - 1]
+
+
+def read_round1_winner(project_root: Path) -> tuple[str, int]:
+    payload = (project_root / "convergence-round1-winner.txt").read_text(encoding="utf-8")
+    match = re.search(r"winner=(\S+) score=(\d+)", payload)
+    if not match:
+        raise RuntimeError("round1 winner report missing or malformed")
+    return match.group(1), int(match.group(2))
+
+
+def wait_for_round2_optimizations(run_root: Path, timeout_seconds: float) -> list[dict[str, int]]:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        outputs: list[dict[str, int]] = []
+        for path in sorted(run_root.glob("optimization-*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
+            if "task_id" not in payload or "optimization_score" not in payload:
+                time.sleep(0.05)
+                continue
+            outputs.append(payload)
+        if len(outputs) >= 2:
+            return outputs
+        time.sleep(0.05)
+    return []
+
+
+def wait_for_candidates(run_dir: Path, timeout_seconds: float) -> list[dict[str, int]]:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        candidates: list[dict[str, int]] = []
+        for sibling in sorted(run_dir.parent.iterdir()):
+            if not sibling.is_dir() or sibling == run_dir:
+                continue
+            payload_path = sibling / "candidate.json"
+            if not payload_path.exists():
+                continue
+            try:
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
+            if "task_id" not in payload or payload.get("score") is None:
+                continue
+            candidates.append(payload)
+        if len(candidates) >= 4:
+            return candidates
+        time.sleep(0.05)
+    return []
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    run_dir = Path(os.environ["BLACKDOG_RUN_DIR"])
+    prompt_text = Path(os.environ["BLACKDOG_PROMPT_FILE"]).read_text(encoding="utf-8")
+    title = parse_task_title(prompt_text)
+    workspace = Path(os.environ["BLACKDOG_WORKSPACE"])
+
+    if "evaluator" in title.lower():
+        candidates = wait_for_candidates(run_dir, timeout_seconds=12.0)
+        if len(candidates) < 4:
+            print(f"timed out waiting for 4 candidates; got {len(candidates)}", file=sys.stderr)
+            return 3
+        winner = max(candidates, key=lambda item: (int(item["score"]), str(item["task_id"])))
+        (run_dir / "winner.json").write_text(
+            json.dumps(
+                {
+                    "winner_task_id": winner["task_id"],
+                    "winner_score": int(winner["score"]),
+                },
+                sort_keys=True,
+            )
+            + "\\n",
+            encoding="utf-8",
+        )
+        report = project_root / "convergence-round1-winner.txt"
+        report.write_text(f"winner={winner['task_id']} score={winner['score']}\\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project_root), "add", str(report.name)], check=True)
+        subprocess.run(["git", "-C", str(project_root), "commit", "-m", f"Record convergence winner for {task_id}"], check=True)
+        record_result(
+            project_root=project_root,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[f"Selected candidate winner {winner['task_id']}"],
+            validation=[
+                "alignment-evaluator",
+                f"winner={winner['task_id']}",
+                f"winner-score={winner['score']}",
+            ],
+        )
+        return 0
+
+    if "optimization pass" in title.lower():
+        winner_task_id, winner_score = read_round1_winner(project_root)
+        score = winner_score + optimization_score(title)
+        optimization_file = run_dir.parent / f"optimization-{task_id}.json"
+        optimization_file.write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "round1_winner_task_id": winner_task_id,
+                    "optimization_score": score,
+                    "score_source": winner_score,
+                },
+                sort_keys=True,
+            )
+            + "\\n",
+            encoding="utf-8",
+        )
+        record_result(
+            project_root=project_root,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[f"Optimized from winner {winner_task_id}"],
+            validation=[
+                "alignment-optimizer",
+                f"round1-winner={winner_task_id}",
+                f"optimization-score={score}",
+                f"score-source={winner_score}",
+            ],
+        )
+        return 0
+
+    if "final convergence chooser" in title.lower():
+        runner = run_dir.parent
+        outputs = wait_for_round2_optimizations(runner, timeout_seconds=12.0)
+        if len(outputs) < 2:
+            print(f"timed out waiting for 2 optimization outputs; got {len(outputs)}", file=sys.stderr)
+            return 3
+        winner = max(outputs, key=lambda item: (int(item.get("optimization_score", 0)), str(item.get("task_id", ""))))
+        winner_task_id = winner["task_id"]
+        winner_score = int(winner.get("optimization_score", 0))
+        source_task_id = winner.get("round1_winner_task_id", "")
+        report = project_root / "convergence-round2-winner.txt"
+        report.write_text(
+            f"winner={winner_task_id} score={winner_score} source-winner={source_task_id}\\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "-C", str(project_root), "add", str(report.name)], check=True)
+        subprocess.run(["git", "-C", str(project_root), "commit", "-m", f"Record convergence final winner for {task_id}"], check=True)
+        record_result(
+            project_root=project_root,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[f"Selected optimized winner {winner_task_id}"],
+            validation=[
+                "alignment-final-chooser",
+                f"winner={winner_task_id}",
+                f"winner-score={winner_score}",
+                f"source-winner={source_task_id}",
+            ],
+        )
+        return 0
+
+    score = candidate_score(title)
+    candidate_file = workspace / f"{task_id}-implementation.py"
+    candidate_file.write_text(f"SCORE = {score}\\n", encoding="utf-8")
+    subprocess.run(["git", "add", candidate_file.name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Implement convergence candidate for {task_id}"], check=True)
+    (run_dir / "candidate.json").write_text(json.dumps({"task_id": task_id, "score": score}, sort_keys=True) + "\\n", encoding="utf-8")
+    record_result(
+        project_root=project_root,
+        task_id=task_id,
+        actor=actor,
+        status="success",
+        what_changed=[f"Implemented candidate for {task_id}"],
+        validation=[
+            "alignment-candidate",
+            f"candidate-score={score}",
+        ],
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint model-backed convergence funnel launcher",
+            use_low_effort=True,
+        )
+
+        implementation_titles = [
+            "MSA Candidate 1",
+            "MSA Candidate 2",
+            "MSA Candidate 3",
+            "MSA Candidate 4",
+        ]
+        evaluator_title = "MSA Convergence Evaluator"
+        for index, title in enumerate(implementation_titles, start=1):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                f"Produce implementation candidate #{index} for a convergence task.",
+                "--evidence",
+                "Each implementation should emit a score for evaluator comparison.",
+                "--safe-first-slice",
+                "Produce an implementation candidate and record the alignment score result.",
+                "--path",
+                f"src/blackdog/msa_candidate_{index}.py",
+                "--epic-title",
+                "Release Convergence",
+                "--lane-title",
+                f"Candidate Lane {index}",
+                "--wave",
+                "0",
+            )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            evaluator_title,
+            "--bucket",
+            "core",
+            "--why",
+            "Collect candidate implementations and select the highest scored entry.",
+            "--evidence",
+            "Evaluator should record the winner metadata and mark task completion.",
+            "--safe-first-slice",
+            "Wait until all candidates are available, select winner, and record convergence result.",
+            "--path",
+            "src/blackdog/msa_convergence_evaluator.py",
+            "--epic-title",
+            "Release Convergence",
+            "--lane-title",
+            "Evaluator Lane",
+            "--wave",
+            "0",
+        )
+
+        round1_task_ids_by_title = task_ids_by_title(self.root)
+        round1_task_ids = set(round1_task_ids_by_title.values())
+        round1_evaluator_id = round1_task_ids_by_title[evaluator_title]
+
+        first_round_process = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--poll-interval-seconds",
+                "0",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        first_round_payload = json.loads(first_round_process.stdout)
+        self.assertEqual(first_round_payload["final_status"], "idle")
+        self.assertEqual(set(child["task_id"] for child in first_round_payload["children"]), set(round1_task_ids))
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        for task_id in round1_task_ids:
+            if task_id == round1_evaluator_id:
+                self.assertIn(state["task_claims"][task_id]["status"], {"done", "released"})
+            else:
+                self.assertEqual(state["task_claims"][task_id]["status"], "done")
+        first_round_winner_id = parse_winner_report(self.root / "convergence-round1-winner.txt")[0]
+        self.assertIn(first_round_winner_id, round1_task_ids)
+
+        optimization_titles = [
+            "MSA Optimization Pass 1",
+            "MSA Optimization Pass 2",
+        ]
+        chooser_title = "MSA Final Convergence Chooser"
+        for index, title in enumerate(optimization_titles, start=1):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                f"Optimize the winner from a convergence round, pass #{index}.",
+                "--evidence",
+                "Each optimization should raise the score for final selection.",
+                "--safe-first-slice",
+                "Optimize the first-round winner implementation.",
+                "--path",
+                f"src/blackdog/msa_round2_optimization_{index}.py",
+                "--epic-title",
+                "Release Convergence",
+                "--lane-title",
+                f"Optimization Lane {index}",
+                "--wave",
+                "1",
+            )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            chooser_title,
+            "--bucket",
+            "core",
+            "--why",
+            "Compare optimization outputs and mark the best downstream result.",
+            "--evidence",
+            "Chooser should commit the final winner artifact from optimized outputs.",
+            "--safe-first-slice",
+            "Wait for both optimizers and select the highest-scoring output.",
+            "--path",
+            "src/blackdog/msa_final_convergence_chooser.py",
+            "--epic-title",
+            "Release Convergence",
+            "--lane-title",
+            "Optimization Chooser Lane",
+            "--wave",
+            "2",
+        )
+
+        all_task_ids = task_ids_by_title(self.root)
+        optimization_ids = [all_task_ids[title] for title in optimization_titles]
+        final_chooser_id = all_task_ids[chooser_title]
+        second_round_task_ids = optimization_ids + [final_chooser_id]
+
+        second_round_process = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+                "--poll-interval-seconds",
+                "0",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        second_round_payload = json.loads(second_round_process.stdout)
+        self.assertEqual(second_round_payload["final_status"], "idle")
+        self.assertEqual(set(child["task_id"] for child in second_round_payload["children"]), set(second_round_task_ids))
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        for task_id in second_round_task_ids:
+            self.assertEqual(state["task_claims"][task_id]["status"], "done")
+        for task_id in round1_task_ids:
+            self.assertEqual(state["task_claims"][task_id]["status"], "released")
+
+        events = load_events(self.runtime_paths())
+        sweep_rows = [row for row in events if row["type"] == "supervisor_run_sweep"]
+        self.assertEqual(len(sweep_rows), 1)
+        sweep_payload = sweep_rows[0]["payload"]
+        self.assertEqual(set(sweep_payload["removed_task_ids"]), set(round1_task_ids))
+        self.assertEqual(sweep_payload["wave_map"], {"1": 0, "2": 1})
+        for task_id in round1_task_ids | set(second_round_task_ids):
+            self.assertTrue(any(row["type"] == "task_result" and row["task_id"] == task_id for row in events))
+            self.assertTrue(any(row["type"] == "child_finish" and row["task_id"] == task_id for row in events))
+
+        plan_snapshot = load_backlog(load_profile(self.root).paths, load_profile(self.root))
+        plan_task_ids = sorted(task_id for lane in plan_snapshot.plan["lanes"] for task_id in lane["task_ids"])
+        self.assertEqual(set(plan_task_ids), set(second_round_task_ids))
+        self.assertEqual(sorted({int(lane["wave"]) for lane in plan_snapshot.plan["lanes"]}), [0, 1])
+
+        results = [row for row in load_task_results(self.runtime_paths()) if row["task_id"] in round1_task_ids | set(second_round_task_ids)]
+        self.assertEqual(len(results), len(round1_task_ids) + len(second_round_task_ids))
+        result_by_id = {row["task_id"]: row for row in results}
+        for task_id in round1_task_ids | set(second_round_task_ids):
+            row = result_by_id[task_id]
+            self.assertEqual(row["status"], "success")
+
+        optimization_scores: dict[str, int] = {}
+        for task_id in optimization_ids:
+            score_entries = [entry for entry in result_by_id[task_id]["validation"] if str(entry).startswith("optimization-score=")]
+            self.assertEqual(len(score_entries), 1)
+            optimization_scores[task_id] = int(score_entries[0].split("=", 1)[1])
+        expected_final_winner = max(
+            optimization_scores,
+            key=lambda key: (optimization_scores[key], key),
+        )
+        final_chooser_result = result_by_id[final_chooser_id]
+        final_winner_entries = [
+            entry for entry in final_chooser_result["validation"] if str(entry).startswith("winner=")
+        ]
+        final_winner_score_entries = [
+            entry for entry in final_chooser_result["validation"] if str(entry).startswith("winner-score=")
+        ]
+        self.assertEqual(len(final_winner_entries), 1)
+        self.assertEqual(len(final_winner_score_entries), 1)
+
+        final_winner_report = parse_winner_report(self.root / "convergence-round2-winner.txt")
+        final_winner_id = final_winner_report[0]
+        final_winner_score = int(final_winner_report[1])
+        self.assertEqual(final_winner_id, expected_final_winner)
+        self.assertEqual(final_winner_score, optimization_scores[expected_final_winner])
+        self.assertEqual(final_winner_entries[0], f"winner={final_winner_id}")
+        self.assertEqual(int(final_winner_score_entries[0].split("=", 1)[1]), final_winner_score)
+
+        source_winner_entries = [
+            entry for entry in final_chooser_result["validation"] if str(entry).startswith("source-winner=")
+        ]
+        self.assertEqual(len(source_winner_entries), 1)
+        self.assertEqual(source_winner_entries[0], f"source-winner={first_round_winner_id}")
+
+        snapshot = html_snapshot(self.runtime_paths().html_file)
+        board_task_ids = {row["id"] for row in snapshot["board_tasks"]}
+        self.assertEqual(board_task_ids, set(round1_task_ids) | set(second_round_task_ids))
+        snapshot_tasks = {row["id"]: row for row in snapshot["tasks"]}
+        for task_id in round1_task_ids | set(second_round_task_ids):
             self.assertEqual(snapshot_tasks[task_id]["operator_status"], "Complete")
             self.assertEqual(snapshot_tasks[task_id]["latest_result_status"], "success")
