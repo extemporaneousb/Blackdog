@@ -47,6 +47,7 @@ as the required path to continue product development.
 - `blackdog next`
 - `blackdog supervise run`
 - `blackdog supervise status`
+- `blackdog supervise recover`
 - `blackdog claim --agent NAME [--pid PID]`
 - `blackdog release --id TASK --agent NAME`
 - `blackdog complete --id TASK --agent NAME`
@@ -79,6 +80,8 @@ The generated child prompt tells the agent that committed repo state is the base
 Claimed tasks no longer have a lease timeout. `blackdog claim` can record the long-lived claiming process with `--pid PID`, and supervisor child claims record that pid automatically. A live claimed process can run indefinitely; the supervisor only recovers a claim when the reported claiming pid is missing on repeated liveness scans, and even then it releases the claim instead of killing a still-live task.
 
 `blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the currently open `stop` control messages for that actor, the current ready-task queue, the most recent supervisor or child-agent task results, and the resolved WTAM workspace contract for that actor in one compact text or JSON view.
+
+`blackdog supervise recover` is the structured interruption-recovery surface. It reports recent supervisor runs and child executions, and highlights recoverable cases with suggested follow-up actions. Use this command to get non-destructive recommendations before deciding whether to relaunch, clean up, retry, or complete a replacement flow.
 
 `blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. That payload drives the current board: the `Backlog Control` hero, `Status` counts plus next-in-line rows, objective-table summaries, a paired release-gates table, the live `Execution Map`, grouped `Completed Tasks`, and the task reader popout. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, objective rows with progress summaries, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, stdout-derived model-response excerpts, landed-commit metadata, open inbox messages, direct artifact links, focus-task summaries, recent task-result summaries, release gates, and grouping guidance.
 

@@ -303,6 +303,66 @@ Current keys include:
 - `ready_tasks`
 - `recent_results`
 
+## `blackdog supervise recover --format json`
+
+Canonical structured recovery payload for interrupted/blocked supervisor runs.
+
+Current keys include:
+
+- `actor`
+- `latest_run`
+- `workspace_contract`
+- `runs`
+- `recoverable_cases`
+
+Each `runs` entry includes:
+
+- `run_id`
+- `status`
+- `workspace_mode`
+- `draining`
+- `run_dir`
+- `status_file`
+- `step_count`
+- `children`
+
+Each `children` entry includes child execution data from event replay, including:
+
+- `run_id`
+- `task_id`
+- `child_agent`
+- `workspace_mode`
+- `task_branch`
+- `target_branch`
+- `primary_worktree`
+- `workspace`
+- `pid`
+- `run_status`
+- `final_task_status`
+- `branch_ahead`
+- `landed`
+- `land_error`
+- `exit_code`
+- `missing_process`
+- `claim_status`
+- `run_dir`
+- `child_artifact_dir`
+- optional `recovery_case`
+
+When a case is recoverable, `recovery_case` includes:
+
+- `case`
+- `severity`
+- `summary`
+- `next_actions`
+
+Known `case` values today:
+
+- `blocked_by_dirty_primary`
+- `blocked_land`
+- `partial_run`
+- `landed_but_unfinished`
+
 ## `blackdog worktree start --format json`
 
 Structured worktree spec emitted by the CLI and reused in the `worktree_start` event payload.

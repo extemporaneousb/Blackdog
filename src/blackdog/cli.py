@@ -47,8 +47,10 @@ from .store import (
 from .supervisor import (
     SupervisorError,
     build_supervisor_status_view,
+    build_supervisor_recover_view,
     render_supervisor_output,
     render_supervisor_status_output,
+    render_supervisor_recover_output,
     run_supervisor,
 )
 from .ui import UIError, build_ui_snapshot
@@ -252,6 +254,13 @@ def cmd_supervise_status(args: argparse.Namespace) -> int:
         allow_high_risk=args.allow_high_risk,
     )
     print(render_supervisor_status_output(payload, as_json=args.format == "json"), end="")
+    return 0
+
+
+def cmd_supervise_recover(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = build_supervisor_recover_view(profile, actor=args.actor)
+    print(render_supervisor_recover_output(payload, as_json=args.format == "json"), end="")
     return 0
 
 
@@ -702,6 +711,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_status.add_argument("--allow-high-risk", action="store_true")
     p_supervise_status.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_status.set_defaults(func=cmd_supervise_status)
+    p_supervise_recover = supervise_subparsers.add_parser("recover", help="Report interrupt/blocked/partial cases and suggested recovery actions")
+    p_supervise_recover.add_argument("--project-root", default=None)
+    p_supervise_recover.add_argument("--actor", default="supervisor")
+    p_supervise_recover.add_argument("--format", choices=("text", "json"), default="text")
+    p_supervise_recover.set_defaults(func=cmd_supervise_recover)
 
     p_claim = subparsers.add_parser("claim", help="Claim tasks for an agent")
     p_claim.add_argument("--project-root", default=None)

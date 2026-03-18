@@ -31,6 +31,7 @@ from .store import (
     append_event,
     claim_task_entry,
     load_inbox,
+    load_events,
     load_state,
     load_task_results,
     locked_state,
@@ -46,6 +47,7 @@ from .worktree import (
     WorktreeSpec,
     branch_ahead_of_target,
     land_branch,
+    find_worktree_for_branch,
     rebase_branch_onto_target,
     supervisor_task_branch,
     supervisor_task_worktree_path,
@@ -227,6 +229,333 @@ def render_supervisor_status_output(view: dict[str, Any], *, as_json: bool) -> s
     if as_json:
         return json.dumps(view, indent=2) + "\n"
     return _supervisor_status_text(view)
+
+
+def _run_dir_for_id(profile: Profile, run_id: str) -> Path | None:
+    matches = sorted(profile.paths.supervisor_runs_dir.glob(f"*-{run_id}"))
+    return matches[0].resolve() if matches else None
+
+
+def _load_supervisor_recovery_status_files(profile: Profile, *, actor: str) -> dict[str, dict[str, Any]]:
+    runs: dict[str, dict[str, Any]] = {}
+    for status_file in sorted(profile.paths.supervisor_runs_dir.glob("*/status.json"), reverse=True):
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("actor") or "") != actor:
+            continue
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            continue
+        if str(payload.get("status_file") or "") != str(status_file):
+            payload["status_file"] = str(status_file)
+        if str(payload.get("run_dir") or "") != str(status_file.parent):
+            payload["run_dir"] = str(status_file.parent)
+        if "steps" not in payload:
+            payload["steps"] = []
+        runs[run_id] = payload
+    return runs
+
+
+def _load_run_events(profile: Profile, *, actor: str) -> dict[str, list[dict[str, Any]]]:
+    events = load_events(profile.paths)
+    recovered: dict[str, list[dict[str, Any]]] = {}
+    relevant = {"supervisor_run_started", "worktree_start", "child_launch", "child_launch_failed", "child_finish"}
+    for event in events:
+        if str(event.get("actor") or "") != actor:
+            continue
+        if str(event.get("type") or "") not in relevant:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        run_id = str(payload.get("run_id") or "")
+        if not run_id:
+            continue
+        recovered.setdefault(run_id, []).append(event)
+    for rows in recovered.values():
+        rows.sort(key=lambda row: str(row.get("at") or ""))
+    return recovered
+
+
+def _build_recovery_child_run(
+    profile: Profile,
+    rows: list[dict[str, Any]],
+    *,
+    run_id: str,
+    state: dict[str, Any],
+    workspace_mode: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "run_id": run_id,
+        "task_id": "",
+        "child_agent": None,
+        "workspace_mode": None,
+        "task_branch": None,
+        "target_branch": None,
+        "primary_worktree": None,
+        "workspace": None,
+        "pid": None,
+        "run_status": None,
+        "final_task_status": None,
+        "branch_ahead": None,
+        "landed": False,
+        "land_error": None,
+        "exit_code": None,
+        "missing_process": False,
+        "claim_status": None,
+        "run_dir": None,
+        "child_artifact_dir": None,
+    }
+    for event in rows:
+        event_type = str(event.get("type") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        task_id = str(event.get("task_id") or row["task_id"] or "")
+        if task_id:
+            row["task_id"] = task_id
+        if payload.get("child_agent"):
+            row["child_agent"] = payload.get("child_agent")
+        if payload.get("workspace_mode"):
+            row["workspace_mode"] = payload.get("workspace_mode")
+        if payload.get("workspace"):
+            row["workspace"] = str(payload.get("workspace"))
+        if payload.get("worktree_path"):
+            row["workspace"] = str(payload.get("worktree_path"))
+        if payload.get("branch"):
+            row["task_branch"] = str(payload.get("branch"))
+        if payload.get("target_branch"):
+            row["target_branch"] = str(payload.get("target_branch"))
+        if payload.get("primary_worktree"):
+            row["primary_worktree"] = str(payload.get("primary_worktree"))
+        if event_type == "worktree_start":
+            row["run_status"] = "prepared"
+        elif event_type == "child_launch":
+            row["run_status"] = "running"
+            row["pid"] = payload.get("pid")
+            row["child_agent"] = payload.get("child_agent") or row.get("child_agent")
+        elif event_type == "child_launch_failed":
+            row["run_status"] = "launch-failed"
+        elif event_type == "child_finish":
+            if payload.get("missing_process"):
+                row["run_status"] = "interrupted"
+            elif payload.get("land_error"):
+                row["run_status"] = "blocked"
+            elif payload.get("exit_code") not in {0, None}:
+                row["run_status"] = "failed"
+            else:
+                row["run_status"] = str(payload.get("final_task_status") or "finished")
+            row["exit_code"] = payload.get("exit_code")
+            row["missing_process"] = bool(payload.get("missing_process"))
+            row["final_task_status"] = payload.get("final_task_status")
+            row["branch_ahead"] = bool(payload.get("branch_ahead"))
+            row["landed"] = bool(payload.get("landed"))
+            row["land_error"] = payload.get("land_error")
+            row["child_agent"] = payload.get("child_agent") or row.get("child_agent")
+            row["task_branch"] = str(payload.get("branch") or row.get("task_branch") or "")
+            row["target_branch"] = str(payload.get("target_branch") or row.get("target_branch") or "")
+
+    if row["run_status"] == "running":
+        if not _pid_alive(row.get("pid")):
+            row["run_status"] = "interrupted"
+    if row["run_status"] == "finished":
+        row["run_status"] = "done"
+    if row["claim_status"] is None:
+        task_id = str(row["task_id"])
+        claim_entry = state.get("task_claims", {}).get(task_id) or {}
+        if isinstance(claim_entry, dict):
+            row["claim_status"] = claim_entry.get("status")
+    if row["workspace"] is None and row["task_branch"]:
+        resolved_path = find_worktree_for_branch(profile, str(row["task_branch"]))
+        row["workspace"] = resolved_path
+    if row["workspace_mode"] is None:
+        row["workspace_mode"] = workspace_mode
+    if row["run_status"] is None:
+        row["run_status"] = "unknown"
+    if row["task_id"]:
+        run_dir = _run_dir_for_id(profile, run_id)
+        row["run_dir"] = str(run_dir) if run_dir is not None else None
+        row["child_artifact_dir"] = str((run_dir / row["task_id"]).resolve()) if run_dir is not None else None
+    return row
+
+
+def _recovery_case_recommendations(row: dict[str, Any]) -> dict[str, Any] | None:
+    run_status = str(row.get("run_status") or "")
+    if row.get("landed") and str(row.get("final_task_status") or "") not in {"", "done"}:
+        return {
+            "case": "landed_but_unfinished",
+            "severity": "high",
+            "summary": "Child branch was landed but task state is not complete.",
+            "next_actions": [
+                "record a completion result",
+                "create a replacement child run",
+                "clean up the task worktree",
+            ],
+        }
+    if run_status == "blocked":
+        error_text = str(row.get("land_error") or "").lower()
+        if "dirty primary worktree contract violation" in error_text:
+            return {
+                "case": "blocked_by_dirty_primary",
+                "severity": "high",
+                "summary": "Landing is blocked by primary checkout dirtiness.",
+                "next_actions": [
+                    "clean dirty primary worktree state",
+                    "retry the task run",
+                    "create a replacement task run from a fresh branch",
+                ],
+            }
+        return {
+            "case": "blocked_land",
+            "severity": "high",
+            "summary": "Landing failed and blocked child completion.",
+            "next_actions": [
+                "resolve landing block",
+                "retry the task run",
+                "create a replacement task run",
+            ],
+        }
+    if run_status in {"interrupted", "failed", "launch-failed", "released"}:
+        return {
+            "case": "partial_run",
+            "severity": "high",
+            "summary": "Child run ended without a clean completion outcome.",
+            "next_actions": [
+                "retry the child run",
+                "cancel and clean the worktree",
+                "create a replacement task run",
+            ],
+        }
+    return None
+
+
+def _build_supervisor_recovery_runs(
+    profile: Profile,
+    *,
+    actor: str,
+    events_by_run: dict[str, list[dict[str, Any]]],
+    status_by_run: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    claim_state = load_state(profile.paths.state_file)
+    run_ids = sorted(set(events_by_run.keys()) | set(status_by_run.keys()), reverse=True)
+    runs: list[dict[str, Any]] = []
+    for run_id in run_ids:
+        status_payload = status_by_run.get(run_id, {})
+        status = str(status_payload.get("final_status") or status_payload.get("status") or "historical")
+        if status == "running" and not _pid_alive(status_payload.get("supervisor_pid")):
+            status = "interrupted"
+        run_dir = status_payload.get("run_dir")
+        if run_dir is None:
+            run_dir = str(_run_dir_for_id(profile, run_id)) if _run_dir_for_id(profile, run_id) else None
+        events = events_by_run.get(run_id, [])
+        child_map: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            task_id = str(event.get("task_id") or "")
+            if not task_id:
+                continue
+            child_rows = child_map.setdefault(task_id, [])
+            child_rows.append(event)
+        children: list[dict[str, Any]] = []
+        for task_id in sorted(child_map.keys()):
+            child_payload = _build_recovery_child_run(
+                profile,
+                child_map[task_id],
+                run_id=run_id,
+                state=claim_state,
+                workspace_mode=status_payload.get("workspace_mode"),
+            )
+            case = _recovery_case_recommendations(child_payload)
+            if case is not None:
+                child_payload["recovery_case"] = case
+            children.append(child_payload)
+        run_children = sorted(children, key=lambda item: str(item.get("task_id") or ""))
+        runs.append(
+            {
+                "run_id": run_id,
+                "status": status,
+                "workspace_mode": status_payload.get("workspace_mode"),
+                "draining": bool(status_payload.get("draining")),
+                "run_dir": str(Path(run_dir).resolve()) if run_dir else None,
+                "status_file": status_payload.get("status_file"),
+                "step_count": len(status_payload.get("steps") or []),
+                "children": run_children,
+            }
+        )
+    return runs
+
+
+def build_supervisor_recover_view(profile: Profile, *, actor: str) -> dict[str, Any]:
+    workspace_mode = profile.supervisor_workspace_mode
+    latest_run = _latest_run_status(profile, actor=actor)
+    if latest_run:
+        workspace_mode = str(latest_run.get("workspace_mode") or workspace_mode)
+    events_by_run = _load_run_events(profile, actor=actor)
+    status_by_run = _load_supervisor_recovery_status_files(profile, actor=actor)
+    runs = _build_supervisor_recovery_runs(
+        profile,
+        actor=actor,
+        events_by_run=events_by_run,
+        status_by_run=status_by_run,
+    )
+    recoverable_cases: list[dict[str, Any]] = []
+    for run in runs:
+        for child in run.get("children", []):
+            case = child.get("recovery_case")
+            if isinstance(case, dict):
+                recoverable_cases.append(
+                    {
+                        "run_id": run["run_id"],
+                        "task_id": child["task_id"],
+                        "task_branch": child.get("task_branch"),
+                        "workspace": child.get("workspace"),
+                        "run_status": child.get("run_status"),
+                        "claim_status": child.get("claim_status"),
+                        "case": case.get("case"),
+                        "severity": case.get("severity"),
+                        "summary": case.get("summary"),
+                        "next_actions": list(case.get("next_actions") or []),
+                    }
+                )
+    severity_rank = {"high": 3, "medium": 2, "low": 1}
+    recoverable_cases.sort(
+        key=lambda item: (
+            -severity_rank.get(str(item.get("severity") or "low"), 1),
+            str(item.get("run_id")),
+            str(item.get("task_id")),
+        )
+    )
+    return {
+        "actor": actor,
+        "latest_run": latest_run,
+        "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
+        "runs": runs,
+        "recoverable_cases": recoverable_cases,
+    }
+
+
+def render_supervisor_recover_output(view: dict[str, Any], *, as_json: bool) -> str:
+    if as_json:
+        return json.dumps(view, indent=2) + "\n"
+    lines: list[str] = [f"Supervisor actor: {view['actor']}"]
+    latest_run = view.get("latest_run")
+    if isinstance(latest_run, dict):
+        lines.append(
+            f"Latest run: {latest_run.get('status')} | {latest_run.get('run_id')} | steps {latest_run.get('step_count')} | workspace {latest_run.get('workspace_mode')}"
+        )
+    else:
+        lines.append("Latest run: none")
+    if view["recoverable_cases"]:
+        lines.append(f"Recoverable cases: {len(view['recoverable_cases'])}")
+        for index, case in enumerate(view["recoverable_cases"], start=1):
+            lines.append(
+                f"{index}. {case['task_id']} [{case['run_id']}] {case['run_status']} -> {case['case']} ({case['severity']})"
+            )
+            lines.append(f"   workspace: {case['workspace']}")
+            lines.append(f"   summary: {case['summary']}")
+            lines.append(f"   actions: {', '.join(case['next_actions'])}")
+    else:
+        lines.append("No recoverable supervisor cases detected.")
+    return "\n".join(lines) + "\n"
 
 
 def _select_tasks(

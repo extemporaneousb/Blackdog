@@ -137,6 +137,12 @@ def _find_worktree_for_branch(project_root: Path, branch_ref: str) -> Path | Non
     return None
 
 
+def find_worktree_for_branch(profile: Profile, branch: str) -> str | None:
+    branch_ref = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+    resolved = _find_worktree_for_branch(profile.paths.project_root, branch_ref)
+    return str(resolved) if resolved is not None else None
+
+
 def _status_entries(repo_root: Path) -> list[list[str]]:
     completed = _run_git_no_check(repo_root, "status", "--porcelain")
     if completed.returncode != 0:

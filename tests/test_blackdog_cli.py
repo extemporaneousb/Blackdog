@@ -2214,6 +2214,236 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(chip_keys, ["complete", "subtle"])
         self.assertEqual(task["latest_run_status"], "blocked")
 
+    def _seed_supervisor_recovery_fixtures(self, *, actor: str = "supervisor") -> dict[str, str]:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_ids = {
+            "blocked": "20260313-101000-blocked01",
+            "partial": "20260313-102000-partial02",
+            "landed": "20260313-103000-landed03",
+        }
+        task_ids = {
+            "blocked": "recover-blocked-task",
+            "partial": "recover-partial-task",
+            "landed": "recover-landed-task",
+        }
+
+        for key, run_id in run_ids.items():
+            run_dir = paths.supervisor_runs_dir / run_id / task_ids[key]
+            run_dir.mkdir(parents=True)
+            status_file = run_dir.parent / "status.json"
+            status_file.write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "actor": actor,
+                        "workspace_mode": "git-worktree",
+                        "poll_interval_seconds": 1.0,
+                        "draining": False,
+                        "run_dir": str(run_dir.parent),
+                        "status_file": str(status_file),
+                        "supervisor_pid": os.getpid(),
+                        "steps": [
+                            {
+                                "index": 1,
+                                "at": "2026-03-13T10:10:00-07:00",
+                                "status": "complete",
+                            }
+                        ],
+                        "completed_at": "2026-03-13T10:10:01-07:00",
+                        "final_status": "finished",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-recover-start-{run_id}",
+                    "type": "supervisor_run_started",
+                    "at": "2026-03-13T10:10:00-07:00",
+                    "actor": actor,
+                    "task_id": None,
+                    "payload": {
+                        "run_id": run_id,
+                        "workspace_mode": "git-worktree",
+                        "task_ids": [task_ids[key]],
+                    },
+                },
+            )
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-recover-worktree-{run_id}",
+                    "type": "worktree_start",
+                    "at": "2026-03-13T10:10:01-07:00",
+                    "actor": actor,
+                    "task_id": task_ids[key],
+                    "payload": {
+                        "run_id": run_id,
+                        "child_agent": f"{actor}/child-{key}",
+                        "branch": f"agent/recover-{key}",
+                        "target_branch": "main",
+                        "worktree_path": str(run_dir.parent),
+                        "primary_worktree": str(self.root),
+                    },
+                },
+            )
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-recover-launch-{run_id}",
+                    "type": "child_launch",
+                    "at": "2026-03-13T10:10:02-07:00",
+                    "actor": actor,
+                    "task_id": task_ids[key],
+                    "payload": {
+                        "run_id": run_id,
+                        "child_agent": f"{actor}/child-{key}",
+                        "workspace": str(run_dir.parent),
+                        "pid": os.getpid(),
+                    },
+                },
+            )
+
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-recover-finish-blocked",
+                "type": "child_finish",
+                "at": "2026-03-13T10:10:03-07:00",
+                "actor": actor,
+                "task_id": task_ids["blocked"],
+                "payload": {
+                    "run_id": run_ids["blocked"],
+                    "child_agent": f"{actor}/child-blocked",
+                    "branch": "agent/recover-blocked",
+                    "target_branch": "main",
+                    "exit_code": 0,
+                    "missing_process": False,
+                    "final_task_status": "released",
+                    "branch_ahead": True,
+                    "landed": False,
+                    "land_error": "dirty primary worktree contract violation: primary dirty paths.",
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-recover-finish-partial",
+                "type": "child_finish",
+                "at": "2026-03-13T10:10:04-07:00",
+                "actor": actor,
+                "task_id": task_ids["partial"],
+                "payload": {
+                    "run_id": run_ids["partial"],
+                    "child_agent": f"{actor}/child-partial",
+                    "branch": "agent/recover-partial",
+                    "target_branch": "main",
+                    "exit_code": 1,
+                    "missing_process": False,
+                    "final_task_status": "partial",
+                    "branch_ahead": False,
+                    "landed": False,
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-recover-finish-landed",
+                "type": "child_finish",
+                "at": "2026-03-13T10:10:05-07:00",
+                "actor": actor,
+                "task_id": task_ids["landed"],
+                "payload": {
+                    "run_id": run_ids["landed"],
+                    "child_agent": f"{actor}/child-landed",
+                    "branch": "agent/recover-landed",
+                    "target_branch": "main",
+                    "exit_code": 0,
+                    "missing_process": False,
+                    "final_task_status": "partial",
+                    "branch_ahead": False,
+                    "landed": True,
+                },
+            },
+        )
+        return {"blocked": run_ids["blocked"], "partial": run_ids["partial"], "landed": run_ids["landed"]}
+
+    def test_supervise_recover_reports_structured_cases_in_json(self) -> None:
+        fixture = self._seed_supervisor_recovery_fixtures(actor="supervisor")
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "recover",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(payload["actor"], "supervisor")
+        self.assertEqual(len(payload["runs"]), 3)
+        cases = {row["task_id"]: row["case"] for row in payload["recoverable_cases"]}
+        self.assertEqual(
+            cases,
+            {
+                "recover-blocked-task": "blocked_by_dirty_primary",
+                "recover-partial-task": "partial_run",
+                "recover-landed-task": "landed_but_unfinished",
+            },
+        )
+        self.assertEqual(
+            {row["run_id"] for row in payload["recoverable_cases"]},
+            {fixture["blocked"], fixture["partial"], fixture["landed"]},
+        )
+        for case in payload["recoverable_cases"]:
+            self.assertEqual(case["severity"], "high")
+            self.assertTrue(case["next_actions"])
+
+    def test_supervise_recover_text_output(self) -> None:
+        self._seed_supervisor_recovery_fixtures(actor="supervisor")
+        text = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "recover",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        ).stdout
+        self.assertIn("Supervisor actor: supervisor", text)
+        self.assertIn("Recoverable cases: 3", text)
+        self.assertIn("recover-blocked-task", text)
+        self.assertIn("recover-partial-task", text)
+        self.assertIn("recover-landed-task", text)
+
     def test_supervise_status_reports_run_controls_ready_tasks_and_recent_results(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         for title in ("Status task one", "Status task two"):
