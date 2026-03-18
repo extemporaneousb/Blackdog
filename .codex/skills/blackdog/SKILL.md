@@ -9,12 +9,12 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## CLI Entry Points
 
-- Blackdog CLI: `blackdog`
-- Skill refresh CLI: `blackdog-skill`
+- Blackdog CLI: `/Users/bullard/Work/Blackdog/.VE/bin/blackdog`
+- Skill refresh CLI: `/Users/bullard/Work/Blackdog/.VE/bin/blackdog-skill`
 
 ## Core Paths
 
-- Profile: `/Users/bullard/Work/.worktrees/wt-black-9d0c78051f-remove-utter-residue-and-keep-blackdog-dependency-light/blackdog.toml`
+- Profile: `/Users/bullard/Work/Blackdog/blackdog.toml`
 - Control root: `/Users/bullard/Work/Blackdog/.git/blackdog`
 - Backlog: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog.md`
 - State: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-state.json`
@@ -25,14 +25,14 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Standard Flow
 
-1. Run `blackdog validate`.
-2. Run `blackdog summary`.
-3. Inspect runnable work with `blackdog next`.
-4. Before any repo edit you intend to keep, run `blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-5. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
+1. Run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog validate`.
+2. Run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog summary`.
+3. Inspect runnable work with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog next`.
+4. Before any repo edit you intend to keep, run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
+5. Claim one task with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog claim --agent <agent-name>`, then record structured output with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog result record ...`.
 6. Complete or release the task through the CLI for direct work.
-7. Use `blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
-8. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+7. Use `/Users/bullard/Work/Blackdog/.VE/bin/blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
+8. Check `/Users/bullard/Work/Blackdog/.VE/bin/blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 9. Open `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
 ## Static Board
@@ -66,7 +66,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `/Users/bullard/Work/Blackdog/.git/blackdog`.
-- Regenerate this skill after profile changes with `blackdog-skill refresh backlog --project-root /Users/bullard/Work/.worktrees/wt-black-9d0c78051f-remove-utter-residue-and-keep-blackdog-dependency-light`.
+- Regenerate this skill after profile changes with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog-skill refresh backlog --project-root /Users/bullard/Work/Blackdog`.
 
 ## Repo Defaults
 
