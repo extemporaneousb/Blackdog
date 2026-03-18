@@ -65,6 +65,10 @@ Current supervisor launcher contract:
 - Child workspaces are branch-backed task worktrees created from the primary worktree branch.
 - Dirty primary-worktree state blocks branch landing as a contract violation. The supervisor sends an inbox warning, records a blocked result, and leaves the child branch/worktree intact rather than auto-stashing the primary checkout.
 - Successful branch-backed child runs are landed through the primary worktree with fast-forward semantics, and the supervisor completes the task after a successful land.
+- Child run snapshots now distinguish completion outcome with:
+  - `latest_run_branch_ahead`: whether the branch was ahead of the target when the run ended.
+  - `latest_run_landed`: whether a landing commit was produced.
+  - `latest_run_land_error`: landing failure text when the run is blocked.
 
 ## `<control_dir>/backlogs/<slug>/...`
 
@@ -173,6 +177,19 @@ Canonical event types include:
 - `child_launch_failed`
 - `child_finish`
 - `supervisor_run_finished`
+
+`child_finish` event payloads carry landing outcome fields:
+
+- `run_id`
+- `child_agent`
+- `exit_code`
+- `missing_process`
+- `result_recorded`
+- `final_task_status`
+- `land_error`
+- `branch_ahead`
+- `landed`
+- `landed_commit`
 
 ## `<control_dir>/inbox.jsonl`
 
@@ -384,6 +401,9 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `landed_commit_short`
 - `landed_commit_url`
 - `landed_commit_message`
+- `latest_run_branch_ahead`
+- `latest_run_landed`
+- `latest_run_land_error`
 - `operator_status`
 - `operator_status_key`
 - `operator_status_detail`

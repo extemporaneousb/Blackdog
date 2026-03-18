@@ -655,10 +655,12 @@ h3 {
 .chip-running { background: var(--running-bg); border-color: #a9c3c1; color: var(--running-fg); }
 .chip-waiting { background: var(--waiting-bg); border-color: #cbc8be; color: var(--waiting-fg); }
 .chip-blocked, .chip-approval, .chip-high-risk { background: var(--blocked-bg); border-color: #d3aaa3; color: var(--blocked-fg); }
+.chip-failed-to-land { background: var(--blocked-bg); border-color: #d3aaa3; color: var(--blocked-fg); }
 .chip-failed, .chip-launch-failed, .chip-timed-out, .chip-interrupted { background: var(--failed-bg); border-color: #ddb0b0; color: var(--failed-fg); }
-.chip-complete, .chip-done, .chip-success, .chip-finished { background: var(--complete-bg); border-color: #a4c6a8; color: var(--complete-fg); }
+.chip-complete, .chip-done, .chip-success, .chip-finished, .chip-landed { background: var(--complete-bg); border-color: #a4c6a8; color: var(--complete-fg); }
 .chip-partial { background: var(--partial-bg); border-color: #d8b284; color: var(--partial-fg); }
 .chip-subtle { background: #eeece7; border-color: #d4cdc2; color: var(--muted); }
+.chip-link { text-decoration: none; }
 
 .result-panel {
   grid-template-rows: auto minmax(0, 1fr);

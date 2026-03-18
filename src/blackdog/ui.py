@@ -371,6 +371,9 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
                 "diffstat_href": None,
                 "model_response": None,
                 "model_response_truncated": False,
+                "branch_ahead": None,
+                "landed": None,
+                "land_error": None,
                 "landed_commit": None,
                 "landed_commit_short": None,
                 "landed_commit_url": None,
@@ -383,12 +386,18 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             entry["child_agent"] = payload.get("child_agent")
         if payload.get("workspace_mode"):
             entry["workspace_mode"] = payload.get("workspace_mode")
+        if "branch_ahead" in payload:
+            entry["branch_ahead"] = bool(payload.get("branch_ahead"))
+        if "landed" in payload:
+            entry["landed"] = bool(payload.get("landed"))
         if payload.get("branch"):
             entry["task_branch"] = payload.get("branch")
         if payload.get("target_branch"):
             entry["target_branch"] = payload.get("target_branch")
         if payload.get("primary_worktree"):
             entry["primary_worktree"] = payload.get("primary_worktree")
+        if payload.get("land_error"):
+            entry["land_error"] = payload.get("land_error")
         if event_type == "worktree_start":
             entry["run_status"] = entry.get("run_status") or "prepared"
         elif event_type == "child_launch":
@@ -408,6 +417,8 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             else:
                 entry["run_status"] = str(payload.get("final_task_status") or "finished")
             entry["finished_at"] = str(event.get("at") or "")
+            if payload.get("landed_commit"):
+                entry["landed"] = True
             if payload.get("landed_commit"):
                 entry["landed_commit"] = str(payload.get("landed_commit"))
 
@@ -631,6 +642,12 @@ def _operator_status(task_row: dict[str, Any]) -> dict[str, str]:
         }
 
     if run_status == "blocked":
+        if task_row.get("latest_run_branch_ahead") and not task_row.get("latest_run_landed"):
+            return {
+                "operator_status": "Failed to land",
+                "operator_status_key": "blocked",
+                "operator_status_detail": str(task_row.get("latest_run_land_error") or "Landing blocked by the target branch state"),
+            }
         return {
             "operator_status": "Blocked",
             "operator_status_key": "blocked",
@@ -681,22 +698,47 @@ def _operator_status(task_row: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _landing_status_chip(task_row: dict[str, Any]) -> dict[str, str] | None:
+    if task_row.get("latest_run_landed"):
+        return {
+            "label": "Landed",
+            "key": "landed",
+            "href": str(task_row.get("landed_commit_url") or ""),
+        }
+    if task_row.get("latest_run_status") == "blocked" and task_row.get("operator_status_key") != "complete":
+        return {
+            "label": "Failed to land",
+            "key": "failed-to-land",
+        }
+    return None
+
+
 def _dialog_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def add_chip(label: str, key: str) -> None:
+    def add_chip(label: str, key: str, href: str | None = None) -> None:
         normalized = str(key or "").strip().lower() or str(label or "").strip().lower()
         if not normalized or normalized in seen:
             return
         seen.add(normalized)
-        rows.append({"label": label, "key": key})
+        chip: dict[str, Any] = {"label": str(label), "key": str(key)}
+        if href:
+            chip["href"] = str(href)
+        rows.append(chip)
 
     current = str(task_row.get("operator_status_key") or "ready").strip().lower()
     task_status = str(task_row.get("status") or "").strip().lower()
     if current == "running" and (task_status == "claimed" or task_row.get("claimed_by")):
         add_chip("Claimed", "claimed")
     add_chip(str(task_row.get("operator_status") or "Ready"), str(task_row.get("operator_status_key") or "ready"))
+    landing_chip = _landing_status_chip(task_row)
+    if landing_chip is not None:
+        add_chip(
+            str(landing_chip["label"]),
+            str(landing_chip["key"]),
+            str(landing_chip.get("href") or ""),
+        )
     if current != "complete":
         covered = {
             "running": {"running", "claimed"},
@@ -723,6 +765,9 @@ def _card_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     if current == "running" and (task_status == "claimed" or task_row.get("claimed_by")):
         rows.append({"label": "Claimed", "key": "claimed"})
+    landing_chip = _landing_status_chip(task_row)
+    if landing_chip is not None:
+        rows.append({str(k): str(v) for k, v in landing_chip.items() if v is not None})
     rows.append(
         {
             "label": str(task_row.get("operator_status") or "Ready"),
@@ -956,6 +1001,9 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "result_count": int(result_info.get("result_count") or 0),
             "latest_run_id": run_info.get("run_id"),
             "latest_run_status": run_info.get("run_status"),
+            "latest_run_branch_ahead": run_info.get("branch_ahead"),
+            "latest_run_landed": run_info.get("landed"),
+            "latest_run_land_error": run_info.get("land_error"),
             "latest_run_at": run_info.get("last_event_at"),
             "run_dir_href": run_info.get("run_dir_href"),
             "prompt_href": run_info.get("prompt_href"),
@@ -1246,11 +1294,14 @@ __BLACKDOG_STYLES__
       return String(value || "").trim().toLowerCase().replaceAll(" ", "-");
     }
 
-    function chip(label, key) {
+    function chip(label, key, href) {
       if (!label) {
         return "";
       }
       const normalized = normalizeStatus(key || label) || "subtle";
+      if (href) {
+        return `<a class="chip chip-${escapeHtml(normalized)} chip-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+      }
       return `<span class="chip chip-${escapeHtml(normalized)}">${escapeHtml(label)}</span>`;
     }
 
@@ -1542,7 +1593,7 @@ __BLACKDOG_STYLES__
       if (!Array.isArray(rows) || !rows.length) {
         return "";
       }
-      return rows.map((row) => chip(row.label, row.key)).join("");
+      return rows.map((row) => chip(row.label, row.key, row.href)).join("");
     }
 
     function renderTaskLinks(task) {

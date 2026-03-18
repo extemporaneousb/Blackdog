@@ -90,7 +90,9 @@ class ChildRun:
     missing_process: bool = False
     result_recorded: bool = False
     final_task_status: str | None = None
+    branch_ahead: bool = False
     land_result: dict[str, Any] | None = None
+    landed: bool = False
     land_error: str | None = None
     land_needs_user_input: bool = False
     land_followup_candidates: list[str] = field(default_factory=list)
@@ -785,6 +787,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
         return
     try:
         branch_ready = branch_ahead_of_target(profile, branch=spec.branch, target_branch=spec.target_branch)
+        child.branch_ahead = branch_ready
     except WorktreeError as exc:
         child.land_error = str(exc)
         return
@@ -792,6 +795,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
     current_status = str((state.get("task_claims", {}).get(child.task.id) or {}).get("status") or "open")
     if not branch_ready:
         if current_status == "claimed":
+            child.landed = False
             _release_if_still_claimed(
                 profile,
                 child.task.id,
@@ -804,6 +808,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
         payload = _land_child_branch(profile, child, actor=actor)
     except DirtyPrimaryWorktreeError as exc:
         child.land_error = str(exc)
+        child.landed = False
         child.land_needs_user_input = True
         child.land_followup_candidates = [
             "Clean up or land the primary worktree changes in the primary checkout.",
@@ -819,6 +824,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
         return
     except WorktreeError as exc:
         child.land_error = str(exc)
+        child.landed = False
         if current_status == "claimed":
             _release_if_still_claimed(
                 profile,
@@ -828,6 +834,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
             )
         return
     child.land_result = payload
+    child.landed = True
     append_event(
         profile.paths,
         event_type="worktree_land",
@@ -977,6 +984,8 @@ def _finish_child(
             "result_recorded": child.result_recorded,
             "final_task_status": child.final_task_status,
             "land_error": child.land_error,
+            "branch_ahead": child.branch_ahead,
+            "landed": child.landed,
             "landed_commit": (child.land_result or {}).get("landed_commit"),
         },
     )
@@ -1513,6 +1522,8 @@ def run_supervisor(
                 "task_branch": child.worktree_spec.branch if child.worktree_spec is not None else None,
                 "target_branch": child.worktree_spec.target_branch if child.worktree_spec is not None else None,
                 "land_result": child.land_result,
+                "branch_ahead": child.branch_ahead,
+                "landed": child.landed,
                 "land_error": child.land_error,
             }
             for child in children

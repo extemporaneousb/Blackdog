@@ -2077,6 +2077,11 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(commit_subject, task["landed_commit_message"])
         self.assertIn(commit_body, task["landed_commit_message"])
         self.assertTrue(any(row["label"] == "Commit" for row in task["links"]))
+        card_chip_keys = [row["key"] for row in task["card_status_chips"]]
+        self.assertIn("landed", card_chip_keys)
+        landed_chip = next(row for row in task["card_status_chips"] if row["key"] == "landed")
+        self.assertEqual(landed_chip["label"], "Landed")
+        self.assertEqual(landed_chip["href"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")
 
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         html = paths.html_file.read_text(encoding="utf-8")
@@ -2084,6 +2089,45 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("function commitBlock(task)", html)
         self.assertIn('detailBlock("Model Response", preBlock(task.model_response), { wide: true })', html)
         self.assertIn('detailBlock("Landed Commit", commitBlock(task), { wide: true })', html)
+
+    def test_snapshot_completed_noop_completion_has_no_landed_badge(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "No-op completion task",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need to verify no-op completions never show landed badges.",
+            "--evidence",
+            "A task completed without child-run changes should remain a no-op completion.",
+            "--safe-first-slice",
+            "Claim and complete a task without making any code changes.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "UI",
+            "--lane-title",
+            "Badges",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["No-op completion task"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/noop", "--id", task_id)
+        run_cli("complete", "--project-root", str(self.root), "--agent", "agent/noop", "--id", task_id, "--note", "done")
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
+        self.assertEqual(task["operator_status"], "Complete")
+        self.assertEqual(task["operator_status_key"], "complete")
+        self.assertFalse(task["latest_run_landed"])
+        self.assertFalse(task["latest_run_branch_ahead"])
+        card_chip_keys = [row["key"] for row in task["card_status_chips"]]
+        self.assertNotIn("landed", card_chip_keys)
+        self.assertIn("complete", card_chip_keys)
 
     def test_snapshot_dialog_status_chips_ignore_stale_blocked_run_after_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3482,10 +3526,13 @@ if __name__ == "__main__":
         self.assertEqual(payload["children"][0]["exit_code"], 0)
         self.assertIsNone(payload["children"][0]["launch_error"])
         self.assertIsNone(payload["children"][0]["land_result"])
+        self.assertIs(payload["children"][0]["branch_ahead"], True)
+        self.assertIs(payload["children"][0]["landed"], False)
         self.assertIn("dirty primary worktree contract violation", payload["children"][0]["land_error"])
         self.assertTrue((self.root / "dirty.txt").exists())
         self.assertFalse((self.root / "dirty-landed.txt").exists())
         self.assertTrue(Path(payload["children"][0]["workspace"]).exists())
+
         state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][task_id]["status"], "released")
         branch_check = subprocess.run(
@@ -3535,6 +3582,14 @@ if __name__ == "__main__":
         self.assertTrue(
             any("Blackdog will not auto-stash the primary checkout." in row["body"] for row in open_messages)
         )
+        task = next(row for row in build_ui_snapshot(load_profile(self.root))["tasks"] if row["id"] == task_id)
+        self.assertEqual(task["operator_status"], "Failed to land")
+        self.assertEqual(task["operator_status_key"], "blocked")
+        self.assertEqual(task["latest_run_status"], "blocked")
+        self.assertTrue(task["latest_run_branch_ahead"])
+        self.assertFalse(task["latest_run_landed"])
+        self.assertIn("dirty primary worktree contract violation", task["latest_run_land_error"])
+        self.assertIn("failed-to-land", [row["key"] for row in task["card_status_chips"]])
 
     def test_supervise_run_drains_multiple_tasks(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

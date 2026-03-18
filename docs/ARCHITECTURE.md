@@ -113,6 +113,11 @@ primary-worktree changes, Blackdog treats that as a contract
 violation: it warns through the inbox, records a blocked result, and
 leaves the child branch/worktree intact instead of mutating the
 primary checkout with `git stash`.
+Landing outcome is now surfaced in snapshots as:
+
+- `latest_run_branch_ahead`: branch had committable changes relative to the target branch when the run ended.
+- `latest_run_landed`: a landing commit was recorded for the run.
+- `latest_run_land_error`: the landing failure reason when `latest_run_status` is blocked.
 
 The supervisor-generated prompt tells the child that committed repo
 state is the baseline, that the task is already claimed, that code
