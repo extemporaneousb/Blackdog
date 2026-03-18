@@ -191,10 +191,14 @@ The rendered page now uses a wider control-board layout. It opens with
 split objective/release-gates row, then ends with a split
 `Execution Map` and `Completed Tasks` history. Objective and
 release-gate rows are summary-only; the live execution map and
-completed-task cards open the task reader. Artifact navigation stays as
-plain text links, release gates render as a checked table, and
-completed history keeps sweep boundaries visible when run metadata
-exists.
+completed-task cards open the task reader. The reader leads with
+`What Changed` from the latest result payload, keeps `Summary`,
+`Activity`, and run metadata immediately visible, and places variable
+artifact/file details (`Paths`, `Checks`, `Docs`, `Validation`,
+`Residual`) lower in the panel so the high-signal change narrative stays
+top-most. Artifact navigation stays as plain text links, release gates
+render as a checked table, and completed history keeps sweep
+boundaries visible when run metadata exists.
 
 The current supervisor run is inbox-steerable in a narrow way: open
 `stop` messages addressed to the supervisor actor put the run into a

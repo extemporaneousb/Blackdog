@@ -2013,6 +2013,7 @@ __BLACKDOG_STYLES__
 
       document.getElementById("reader-grid").innerHTML = [
         detailBlock("Summary", paragraphBlock(taskSummary(task))),
+        detailBlock("What Changed", listBlock(task.latest_result_what_changed), { wide: true }),
         detailBlock("Activity", activityList(activityRows), { wide: true }),
         detailBlock("Sequence", detailList(sequenceRows)),
         detailBlock("Safe First Slice", paragraphBlock(task.safe_first_slice)),
@@ -2024,9 +2025,8 @@ __BLACKDOG_STYLES__
         detailBlock("Paths", listBlock(task.paths)),
         detailBlock("Checks", listBlock(task.checks)),
         detailBlock("Docs", listBlock(task.docs)),
-        detailBlock("Latest Result Changes", listBlock(task.latest_result_what_changed), { wide: true }),
-        detailBlock("Latest Result Validation", listBlock(task.latest_result_validation), { wide: true }),
-        detailBlock("Latest Result Residual", listBlock(task.latest_result_residual), { wide: true })
+        detailBlock("Validation", listBlock(task.latest_result_validation), { wide: true }),
+        detailBlock("Residual", listBlock(task.latest_result_residual), { wide: true })
       ].filter(Boolean).join("");
       document.getElementById("reader-dialog").showModal();
     }

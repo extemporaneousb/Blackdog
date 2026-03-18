@@ -2076,6 +2076,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(task["landed_commit_url"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")
         self.assertIn(commit_subject, task["landed_commit_message"])
         self.assertIn(commit_body, task["landed_commit_message"])
+        self.assertEqual(task["latest_result_what_changed"], ["Recorded completed-task reader output."])
+        self.assertEqual(task["latest_result_validation"], ["reader-detail-test"])
         self.assertTrue(any(row["label"] == "Commit" for row in task["links"]))
         card_chip_keys = [row["key"] for row in task["card_status_chips"]]
         self.assertIn("landed", card_chip_keys)
@@ -2087,6 +2089,12 @@ class BlackdogCliTests(unittest.TestCase):
         html = paths.html_file.read_text(encoding="utf-8")
         self.assertIn("function preBlock(text, className = \"detail-pre\")", html)
         self.assertIn("function commitBlock(task)", html)
+        self.assertIn('detailBlock("What Changed", listBlock(task.latest_result_what_changed), { wide: true })', html)
+        self.assertIn('detailBlock("Validation", listBlock(task.latest_result_validation), { wide: true })', html)
+        self.assertIn('detailBlock("Residual", listBlock(task.latest_result_residual), { wide: true })', html)
+        self.assertNotIn('detailBlock("Latest Result Changes"', html)
+        self.assertNotIn('detailBlock("Latest Result Validation"', html)
+        self.assertNotIn('detailBlock("Latest Result Residual"', html)
         self.assertIn('detailBlock("Model Response", preBlock(task.model_response), { wide: true })', html)
         self.assertIn('detailBlock("Landed Commit", commitBlock(task), { wide: true })', html)
 
