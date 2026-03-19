@@ -7,7 +7,11 @@ name = "blackdog"
 version = "0.1.0"
 description = "Repo-scoped backlog CLI for AI-assisted local development"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+]
 dependencies = []
 
 [project.scripts]

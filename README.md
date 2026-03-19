@@ -88,5 +88,5 @@ This repo uses a top-level `.VE/` virtual environment for local Blackdog develop
 - Preserve human-readable backlog markdown while moving execution semantics into structured state and event files.
 - Support AI agents with explicit claims, messages, structured results, and predictable file layouts.
 
-See [docs/INDEX.md](/Users/bullard/Work/Blackdog/docs/INDEX.md) for the full document map.
-See [docs/CHARTER.md](/Users/bullard/Work/Blackdog/docs/CHARTER.md) for the product charter and [docs/INTEGRATION.md](/Users/bullard/Work/Blackdog/docs/INTEGRATION.md) for host-repo setup guidance.
+See [docs/INDEX.md](docs/INDEX.md) for the full document map.
+See [docs/CHARTER.md](docs/CHARTER.md) for the product charter and [docs/INTEGRATION.md](docs/INTEGRATION.md) for host-repo setup guidance.

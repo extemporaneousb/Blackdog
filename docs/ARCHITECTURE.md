@@ -262,4 +262,4 @@ The intended next layer is a repo-local supervisor runtime that can:
 - capture child-agent status and structured results without hiding state outside the repo
 - let a coordinating agent absorb user feedback, detect drift, and redirect future work through backlog and inbox updates
 
-That target is described in [docs/CHARTER.md](/Users/bullard/Work/Blackdog/docs/CHARTER.md). It is not fully implemented yet.
+That target is described in [docs/CHARTER.md](docs/CHARTER.md). It is not fully implemented yet.

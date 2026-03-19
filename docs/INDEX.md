@@ -4,11 +4,11 @@ Use this index as the entrypoint for the repo-scoped Blackdog system.
 
 ## Document Map
 
-- [docs/CHARTER.md](/Users/bullard/Work/Blackdog/docs/CHARTER.md): product intent, current-vs-target scope, and success criteria for the multi-agent backlog system
-- [docs/ARCHITECTURE.md](/Users/bullard/Work/Blackdog/docs/ARCHITECTURE.md): system boundaries, data flow, and the split between repo-local contract and shared runtime state
-- [docs/CLI.md](/Users/bullard/Work/Blackdog/docs/CLI.md): command reference for `blackdog`, including `blackdog bootstrap`, and the `blackdog-skill` compatibility wrapper
-- [docs/FILE_FORMATS.md](/Users/bullard/Work/Blackdog/docs/FILE_FORMATS.md): canonical schema for `blackdog.toml`, backlog markdown, state, events, inbox, and task-result files
-- [docs/INTEGRATION.md](/Users/bullard/Work/Blackdog/docs/INTEGRATION.md): current host-repo setup flow, configuration review points, and pilot rollout guidance
+- [docs/CHARTER.md](docs/CHARTER.md): product intent, current-vs-target scope, and success criteria for the multi-agent backlog system
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): system boundaries, data flow, and the split between repo-local contract and shared runtime state
+- [docs/CLI.md](docs/CLI.md): command reference for `blackdog`, including `blackdog bootstrap`, and the `blackdog-skill` compatibility wrapper
+- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for `blackdog.toml`, backlog markdown, state, events, inbox, and task-result files
+- [docs/INTEGRATION.md](docs/INTEGRATION.md): current host-repo setup flow, configuration review points, and pilot rollout guidance
 
 ## Working Guidance
 
