@@ -39,14 +39,29 @@ from blackdog.store import (
 )
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
 from blackdog.ui import (
+    UIError,
     UI_SNAPSHOT_SCHEMA_VERSION,
     _activity_message,
     _artifact_href,
+    _branch_summary,
+    _build_objective_snapshot_rows,
+    _build_result_index,
+    _build_task_activity,
+    _build_task_run_artifacts,
+    _dialog_status_chips,
+    _github_repo_url,
+    _latest_activity,
     _latest_supervisor_check_at,
     _latest_timestamp,
     _operator_status,
+    _parse_iso,
     _pid_alive,
+    _progress_for_task_rows,
     _read_artifact_text,
+    _result_preview,
+    _short_commit,
+    _title_label,
+    _ui_stylesheet,
     build_ui_snapshot,
     render_static_html,
 )
@@ -2140,6 +2155,148 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(_activity_message({"type": "child_finish", "payload": {"land_error": "dirty main"}}), "run blocked")
         self.assertEqual(_activity_message({"type": "child_finish", "payload": {"exit_code": 2}}), "run failed")
         self.assertEqual(_activity_message({"type": "custom_event", "payload": {}}), "custom event")
+
+    def test_ui_helper_misc_error_and_empty_state_branches(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        with patch("blackdog.ui.resources.files") as files:
+            files.return_value.joinpath.return_value.read_text.side_effect = FileNotFoundError("missing ui.css")
+            with self.assertRaises(UIError):
+                _ui_stylesheet()
+
+        self.assertIsNone(_parse_iso("not-an-iso"))
+        self.assertIsNone(_result_preview(None))
+        self.assertIsNone(_result_preview({"what_changed": [""], "residual": [""], "validation": [""]}))
+        self.assertEqual(_title_label(""), "")
+        self.assertIsNone(_short_commit(None))
+        self.assertEqual(_branch_summary({"target_branch": "main"}, []), "main")
+        self.assertIsNone(_latest_activity([]))
+
+        with patch("blackdog.ui._run_git_capture", return_value="git@example.com:owner/repo.git"):
+            self.assertIsNone(_github_repo_url(self.root))
+        with patch("blackdog.ui._run_git_capture", return_value="git@github.com:owner/repo.git"):
+            self.assertEqual(_github_repo_url(self.root), "https://github.com/owner/repo")
+
+        invalid_dir = paths.supervisor_runs_dir / "20260319-110000-invalid-raw"
+        invalid_dir.mkdir(parents=True, exist_ok=True)
+        (invalid_dir / "status.json").write_text(json.dumps({"last_checked_at": "not-a-timestamp"}), encoding="utf-8")
+        self.assertIsNone(_latest_supervisor_check_at(load_profile(self.root)))
+
+    def test_ui_helper_activity_result_progress_and_objective_fallbacks(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        result_dir = paths.results_dir / "TASK-1"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_file = result_dir / "result.json"
+        result_file.write_text("{}", encoding="utf-8")
+
+        activity = _build_task_activity(
+            paths,
+            {
+                "task_claims": {
+                    "TASK-SKIP": "invalid",
+                    "TASK-1": {
+                        "status": "claimed",
+                        "claimed_at": "2026-03-19T10:00:00-07:00",
+                        "claimed_by": "codex",
+                    },
+                }
+            },
+            [],
+            [],
+        )
+        self.assertNotIn("TASK-SKIP", activity)
+        self.assertEqual(activity["TASK-1"]["claimed_at"], "2026-03-19T10:00:00-07:00")
+
+        result_index = _build_result_index(
+            paths,
+            [
+                {"status": "ignored"},
+                {
+                    "task_id": "TASK-1",
+                    "status": "passed",
+                    "recorded_at": "2026-03-19T10:02:00-07:00",
+                    "actor": "codex",
+                    "result_file": result_file,
+                    "what_changed": ["Added coverage regression."],
+                },
+            ],
+        )
+        self.assertEqual(sorted(result_index), ["TASK-1"])
+        self.assertEqual(result_index["TASK-1"]["result_count"], 1)
+
+        objective_rows = _build_objective_snapshot_rows(
+            [
+                {
+                    "id": "TASK-1",
+                    "operator_status_key": "mystery",
+                }
+            ],
+            [
+                {"id": "OBJ-1", "title": "Covered objective", "task_ids": ["TASK-1"]},
+                {"id": "OBJ-2", "title": "Skipped objective", "task_ids": ["MISSING"]},
+            ],
+        )
+        self.assertEqual([row["id"] for row in objective_rows], ["OBJ-1"])
+        progress = _progress_for_task_rows([{"operator_status_key": "mystery"}])
+        self.assertEqual(progress["counts"]["ready"], 1)
+
+    def test_ui_helper_run_and_status_chip_edge_cases(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        events = [
+            {"type": "worktree_start", "task_id": "", "at": "2026-03-19T10:00:00-07:00", "payload": {}},
+            {"type": "child_launch", "task_id": "TASK-NO-RUN", "at": "2026-03-19T10:01:00-07:00", "payload": {}},
+            {
+                "type": "child_launch_failed",
+                "task_id": "TASK-LAUNCH-FAIL",
+                "at": "2026-03-19T10:02:00-07:00",
+                "payload": {"run_id": "run-launch-fail"},
+            },
+            {
+                "type": "child_finish",
+                "task_id": "TASK-INTERRUPTED",
+                "at": "2026-03-19T10:03:00-07:00",
+                "payload": {"run_id": "run-interrupted", "missing_process": True},
+            },
+            {
+                "type": "child_finish",
+                "task_id": "TASK-FAILED",
+                "at": "2026-03-19T10:04:00-07:00",
+                "payload": {"run_id": "run-failed", "exit_code": 2},
+            },
+            {
+                "type": "child_launch",
+                "task_id": "TASK-STALE",
+                "at": "2026-03-19T10:05:00-07:00",
+                "payload": {"run_id": "run-stale", "pid": 999999},
+            },
+        ]
+
+        with patch("blackdog.ui._pid_alive", return_value=False):
+            run_artifacts = _build_task_run_artifacts(paths, events)
+
+        self.assertEqual(run_artifacts["TASK-LAUNCH-FAIL"]["run_status"], "launch-failed")
+        self.assertEqual(run_artifacts["TASK-INTERRUPTED"]["run_status"], "interrupted")
+        self.assertEqual(run_artifacts["TASK-FAILED"]["run_status"], "failed")
+        self.assertEqual(run_artifacts["TASK-STALE"]["run_status"], "interrupted")
+        self.assertEqual(run_artifacts["TASK-STALE"]["finished_at"], "2026-03-19T10:05:00-07:00")
+        self.assertNotIn("TASK-NO-RUN", run_artifacts)
+
+        chips = _dialog_status_chips(
+            {
+                "operator_status": "Claimed",
+                "operator_status_key": "claimed",
+                "status": "claimed",
+                "latest_run_status": "queued",
+                "latest_result_status": "queued",
+                "priority": "P2",
+            }
+        )
+        self.assertEqual([chip["key"] for chip in chips], ["claimed", "queued", "subtle"])
 
     def test_snapshot_models_objective_rows_with_progress_summaries(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
