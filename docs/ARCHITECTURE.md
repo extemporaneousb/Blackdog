@@ -194,7 +194,10 @@ service:
 
 That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
-and the operator reloads the page when they want the latest state.
+and the operator reloads the page when they want the latest state. The
+page header also offers an optional auto-reload toggle with a fixed
+countdown so operators can keep the static file cycling during active
+runs without introducing a live data transport.
 Each snapshot exposes both content freshness (`content_updated_at`) and
 board freshness (`last_checked_at`) so operators can see how current the
 visible file is. `last_checked_at` is clamped to the snapshot generation

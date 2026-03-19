@@ -1274,6 +1274,7 @@ __BLACKDOG_STYLES__
         <article id="hero-panel" class="panel control-panel">
           <h1 id="project-name">Blackdog Backlog</h1>
           <div id="hero-meta-line" class="meta-line"></div>
+          <div id="hero-reload-controls" class="hero-controls"></div>
           <p id="hero-note" class="hero-note"></p>
           <div class="progress-cluster progress-cluster-hero">
             <div class="progress-copy progress-copy-hero">
@@ -1785,6 +1786,87 @@ __BLACKDOG_STYLES__
       return `${progress.complete}/${progress.total} ${noun} complete`;
     }
 
+    const AUTO_RELOAD_INTERVAL_SECONDS = 30;
+    const AUTO_RELOAD_STORAGE_KEY = "blackdog:autoReloadEnabled";
+    let autoReloadEnabled = false;
+    let autoReloadCountdownSeconds = AUTO_RELOAD_INTERVAL_SECONDS;
+    let autoReloadTimerId = null;
+
+    function readAutoReloadPreference() {
+      try {
+        return window.localStorage.getItem(AUTO_RELOAD_STORAGE_KEY) === "true";
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function writeAutoReloadPreference(enabled) {
+      try {
+        if (enabled) {
+          window.localStorage.setItem(AUTO_RELOAD_STORAGE_KEY, "true");
+        } else {
+          window.localStorage.removeItem(AUTO_RELOAD_STORAGE_KEY);
+        }
+      } catch (error) {
+      }
+    }
+
+    function stopAutoReloadTimer() {
+      if (autoReloadTimerId == null) {
+        return;
+      }
+      window.clearInterval(autoReloadTimerId);
+      autoReloadTimerId = null;
+    }
+
+    function autoReloadStatusText() {
+      if (!autoReloadEnabled) {
+        return `Manual mode · ${AUTO_RELOAD_INTERVAL_SECONDS}s cycle`;
+      }
+      return `Next refresh in ${autoReloadCountdownSeconds}s`;
+    }
+
+    function renderAutoReloadControls() {
+      const container = document.getElementById("hero-reload-controls");
+      if (!container) {
+        return;
+      }
+      const buttonClass = autoReloadEnabled ? "reload-toggle is-active" : "reload-toggle";
+      const buttonLabel = autoReloadEnabled ? "Auto-reload on" : "Auto-reload off";
+      container.innerHTML = `
+        <button type="button" id="auto-reload-toggle" class="${buttonClass}" aria-pressed="${autoReloadEnabled ? "true" : "false"}">
+          ${escapeHtml(buttonLabel)}
+        </button>
+        <span class="reload-status">${escapeHtml(autoReloadStatusText())}</span>
+      `;
+      const toggle = document.getElementById("auto-reload-toggle");
+      if (toggle) {
+        toggle.addEventListener("click", () => {
+          autoReloadEnabled = !autoReloadEnabled;
+          writeAutoReloadPreference(autoReloadEnabled);
+          startAutoReloadTimer();
+        });
+      }
+    }
+
+    function startAutoReloadTimer() {
+      stopAutoReloadTimer();
+      autoReloadCountdownSeconds = AUTO_RELOAD_INTERVAL_SECONDS;
+      renderAutoReloadControls();
+      if (!autoReloadEnabled) {
+        return;
+      }
+      autoReloadTimerId = window.setInterval(() => {
+        autoReloadCountdownSeconds = Math.max(0, autoReloadCountdownSeconds - 1);
+        if (autoReloadCountdownSeconds <= 0) {
+          stopAutoReloadTimer();
+          window.location.reload();
+          return;
+        }
+        renderAutoReloadControls();
+      }, 1000);
+    }
+
     function renderHeader() {
       const heroHighlights = snapshot.hero_highlights || {};
       const headers = snapshot.headers || {};
@@ -2239,6 +2321,8 @@ __BLACKDOG_STYLES__
     }
 
     renderHeader();
+    autoReloadEnabled = readAutoReloadPreference();
+    startAutoReloadTimer();
     renderStatusPanel();
     renderObjectivesTable();
     renderReleaseGatesPanel();

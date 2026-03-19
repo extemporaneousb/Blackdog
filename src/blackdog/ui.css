@@ -112,6 +112,13 @@ h3 {
   color: var(--muted);
 }
 
+.hero-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
 .hero-note {
   max-width: 82ch;
 }
@@ -175,6 +182,38 @@ h3 {
 .text-link:hover {
   color: var(--accent);
   text-decoration-color: var(--accent);
+}
+
+.reload-toggle,
+.reload-status {
+  border-radius: 999px;
+  border: 1px solid rgba(23, 26, 25, 0.12);
+  background: rgba(255, 255, 255, 0.48);
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.reload-toggle {
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 700;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.reload-toggle:hover {
+  border-color: rgba(23, 26, 25, 0.24);
+}
+
+.reload-toggle.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fffaf3;
+}
+
+.reload-status {
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .progress-cluster {
