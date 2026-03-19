@@ -63,6 +63,7 @@ from .worktree import (
     render_preflight_text,
     render_start_text,
     start_task_worktree,
+    task_id_for_branch,
     worktree_preflight,
 )
 
@@ -332,10 +333,12 @@ def cmd_worktree_land(args: argparse.Namespace) -> int:
         pull=not args.no_pull,
         cleanup=args.cleanup,
     )
+    task_id = args.id or task_id_for_branch(profile, str(payload.get("branch") or ""))
     append_event(
         profile.paths,
         event_type="worktree_land",
         actor=args.actor,
+        task_id=task_id,
         payload=payload,
     )
     if args.format == "json":
@@ -678,6 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_worktree_land = worktree_subparsers.add_parser("land", help="Fast-forward a task branch into the target branch")
     p_worktree_land.add_argument("--project-root", default=None)
     p_worktree_land.add_argument("--actor", default="blackdog")
+    p_worktree_land.add_argument("--id", default=None)
     p_worktree_land.add_argument("--branch", default=None)
     p_worktree_land.add_argument("--into", dest="target_branch", default=None)
     p_worktree_land.add_argument("--no-pull", action="store_true")

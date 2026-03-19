@@ -1671,6 +1671,9 @@ class BlackdogCliTests(unittest.TestCase):
                 ).stdout
             )
             self.assertIn("worktree_land", {row["type"] for row in events})
+            land_event = next(row for row in reversed(events) if row["type"] == "worktree_land")
+            self.assertEqual(land_event["task_id"], task_id)
+            self.assertEqual(land_event["payload"]["landed_commit"], landed["landed_commit"])
 
     def test_snapshot_reports_graph_and_static_contract(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2282,6 +2285,118 @@ class BlackdogCliTests(unittest.TestCase):
         card_chip_keys = [row["key"] for row in task["card_status_chips"]]
         self.assertNotIn("landed", card_chip_keys)
         self.assertIn("complete", card_chip_keys)
+
+    def test_snapshot_direct_completed_landed_task_uses_worktree_land_metadata(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        subprocess.run(
+            ["git", "-C", str(self.root), "remote", "add", "origin", "https://github.com/example/blackdog-demo.git"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Direct landed task",
+            "--bucket",
+            "cli",
+            "--why",
+            "Direct completion flow should still show landed metadata.",
+            "--evidence",
+            "A landed direct task should render the same landed badge as a supervisor-completed task.",
+            "--safe-first-slice",
+            "Correlate direct worktree landing metadata back to the completed task card.",
+            "--path",
+            "src/blackdog/cli.py",
+            "--epic-title",
+            "UI",
+            "--lane-title",
+            "Badges",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Direct landed task"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/direct", "--id", task_id)
+
+        commit_subject = "Record direct landed commit"
+        commit_body = "Preserve landed metadata for direct completed tasks."
+        landing_file = self.root / "direct-landed.txt"
+        landing_file.write_text("direct landed\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "direct-landed.txt"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", commit_subject, "-m", commit_body],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        landed_commit = subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        paths = self.runtime_paths()
+        branch = "agent/direct-landed-task"
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-direct-start",
+                "type": "worktree_start",
+                "at": "2026-03-18T17:12:20-07:00",
+                "actor": "agent/direct",
+                "task_id": task_id,
+                "payload": {
+                    "task_id": task_id,
+                    "task_title": "Direct landed task",
+                    "task_slug": "direct-landed-task",
+                    "branch": branch,
+                    "base_ref": "main",
+                    "base_commit": "abc123",
+                    "target_branch": "main",
+                    "worktree_path": str(self.root / "wt-direct-landed"),
+                    "primary_worktree": str(self.root),
+                    "current_worktree": str(self.root / "wt-direct-landed"),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-direct-land",
+                "type": "worktree_land",
+                "at": "2026-03-18T17:51:30-07:00",
+                "actor": "agent/direct",
+                "task_id": None,
+                "payload": {
+                    "branch": branch,
+                    "target_branch": "main",
+                    "primary_worktree": str(self.root),
+                    "target_worktree": str(self.root),
+                    "landed_commit": landed_commit,
+                    "cleanup": True,
+                    "cleaned_worktree": str(self.root / "wt-direct-landed"),
+                    "deleted_branch": True,
+                    "removed_temporary_target": False,
+                },
+            },
+        )
+        run_cli("complete", "--project-root", str(self.root), "--agent", "agent/direct", "--id", task_id, "--note", "done")
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
+
+        self.assertTrue(task["latest_run_landed"])
+        self.assertEqual(task["landed_commit"], landed_commit)
+        self.assertEqual(task["landed_commit_short"], landed_commit[:12])
+        self.assertEqual(task["landed_commit_url"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")
+        self.assertIn(commit_subject, task["landed_commit_message"])
+        self.assertIn(commit_body, task["landed_commit_message"])
+        landed_chip = next(row for row in task["card_status_chips"] if row["key"] == "landed")
+        self.assertEqual(landed_chip["label"], "Landed")
+        self.assertEqual(landed_chip["href"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")
 
     def test_snapshot_dialog_status_chips_ignore_stale_blocked_run_after_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

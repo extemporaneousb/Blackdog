@@ -249,6 +249,18 @@ def default_task_branch(task: TaskInfo) -> str:
     return f"agent/{_task_slug(task)}"
 
 
+def task_id_for_branch(profile: Profile, branch: str | None) -> str | None:
+    resolved_branch = str(branch or "").strip()
+    if not resolved_branch:
+        return None
+    snapshot = load_backlog(profile.paths, profile)
+    for task in snapshot.tasks.values():
+        task_branch = default_task_branch(task)
+        if resolved_branch == task_branch or resolved_branch.startswith(f"{task_branch}-"):
+            return task.id
+    return None
+
+
 def default_task_worktree_path(profile: Profile, task: TaskInfo) -> Path:
     return profile.paths.worktrees_dir / f"wt-{_task_slug(task)}"
 

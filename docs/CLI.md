@@ -15,7 +15,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
-- `blackdog worktree land [--branch BRANCH] [--into TARGET]`
+- `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
 - `blackdog worktree cleanup --id TASK|--path PATH`
 
 Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
@@ -24,7 +24,7 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 
 - implementation work should happen from a branch-backed task worktree, not the primary checkout
 - `blackdog worktree start` creates a task branch from the primary worktree branch and returns a structured worktree spec
-- `blackdog worktree land` fast-forwards that task branch into the target branch and can remove the task worktree with `--cleanup`
+- `blackdog worktree land` fast-forwards that task branch into the target branch, can remove the task worktree with `--cleanup`, and records task-scoped landed metadata when the branch belongs to a Blackdog task (or when `--id` is supplied explicitly)
 - `blackdog worktree cleanup` removes a landed task worktree and, when explicitly told, deletes the associated branch
 - `blackdog worktree preflight` reports the central project root, the actual current `cwd` and worktree, the primary worktree, configured worktree base, whether there are implementation-blocking local changes, the enforced WTAM workspace contract, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
 

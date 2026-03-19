@@ -338,15 +338,26 @@ def _build_result_index(paths: ProjectPaths, results: list[dict[str, Any]]) -> d
 
 def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
-    relevant_events = {"worktree_start", "child_launch", "child_launch_failed", "child_finish"}
-    for event in sorted(events, key=lambda row: str(row.get("at") or "")):
+    ordered_events = sorted(events, key=lambda row: str(row.get("at") or ""))
+    branch_task_ids: dict[str, str] = {}
+    for event in ordered_events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        branch = str(payload.get("branch") or "")
+        task_id = str(event.get("task_id") or "")
+        if branch and task_id:
+            branch_task_ids.setdefault(branch, task_id)
+
+    relevant_events = {"worktree_start", "worktree_land", "child_launch", "child_launch_failed", "child_finish"}
+    for event in ordered_events:
         event_type = str(event.get("type") or "")
         if event_type not in relevant_events:
             continue
-        task_id = str(event.get("task_id") or "")
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        task_id = str(event.get("task_id") or "") or branch_task_ids.get(str(payload.get("branch") or ""), "")
         run_id = str(payload.get("run_id") or "")
-        if not task_id or not run_id:
+        if not task_id:
+            continue
+        if event_type in {"child_launch", "child_launch_failed", "child_finish"} and not run_id:
             continue
         entry = rows.setdefault(
             task_id,
@@ -381,7 +392,8 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             },
         )
         entry["last_event_at"] = str(event.get("at") or entry["last_event_at"])
-        entry["run_id"] = run_id
+        if run_id:
+            entry["run_id"] = run_id
         if payload.get("child_agent"):
             entry["child_agent"] = payload.get("child_agent")
         if payload.get("workspace_mode"):
@@ -400,6 +412,11 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             entry["land_error"] = payload.get("land_error")
         if event_type == "worktree_start":
             entry["run_status"] = entry.get("run_status") or "prepared"
+        elif event_type == "worktree_land":
+            entry["finished_at"] = str(event.get("at") or "")
+            if payload.get("landed_commit"):
+                entry["landed"] = True
+                entry["landed_commit"] = str(payload.get("landed_commit"))
         elif event_type == "child_launch":
             entry["run_status"] = "running"
             entry["pid"] = payload.get("pid")
@@ -422,7 +439,7 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
             if payload.get("landed_commit"):
                 entry["landed_commit"] = str(payload.get("landed_commit"))
 
-        run_dir = _find_run_dir(paths, run_id)
+        run_dir = _find_run_dir(paths, run_id) if run_id else None
         entry.update(_child_artifacts(paths, run_dir, task_id))
 
     github_repo_url = _github_repo_url(paths.project_root)

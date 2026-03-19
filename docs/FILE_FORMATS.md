@@ -198,6 +198,16 @@ Canonical event types include:
 
 `launch_command` is the resolved argv prefix and includes prompt-mode launch behavior (for example, replacing default `codex` with desktop `Codex.app`), while `prompt_*` fields capture the child prompt fingerprint used for that run.
 
+`worktree_land` event payloads carry the landed branch outcome for direct/manual WTAM flow:
+
+- `branch`
+- `target_branch`
+- `primary_worktree`
+- `target_worktree`
+- `landed_commit`
+
+When the landing belongs to a Blackdog task, `task_id` should be set on the event so completed-task views can render landed status without relying on supervisor-only `child_finish` records.
+
 ## `<control_dir>/inbox.jsonl`
 
 Append-only message channel.
