@@ -853,6 +853,127 @@ def refresh_backlog_headers(profile: Profile) -> None:
             atomic_write_text(profile.paths.backlog_file, updated)
 
 
+def _unique_ordered(items: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        item = str(raw).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _tune_task_payload(profile: Profile) -> dict[str, Any]:
+    paths = _unique_ordered(
+        [
+            str(profile.paths.backlog_file),
+            str(profile.paths.state_file),
+            str(profile.paths.events_file),
+            str(profile.paths.inbox_file),
+            str(profile.paths.results_dir),
+            str(profile.paths.profile_file),
+            str(profile.paths.html_file),
+            str(profile.paths.skill_dir / "SKILL.md"),
+            str(profile.paths.skill_dir / "agents/openai.yaml"),
+        ]
+    )
+    docs = _unique_ordered(
+        [
+            "AGENTS.md",
+            ".codex/skills/blackdog/SKILL.md",
+            ".codex/skills/blackdog/agents/openai.yaml",
+            "blackdog.toml",
+            "docs/CLI.md",
+            "docs/FILE_FORMATS.md",
+            "docs/INTEGRATION.md",
+            *profile.doc_routing_defaults,
+        ]
+    )
+    return {
+        "title": "Auto-tune runtime contract and backlog health",
+        "bucket": "skills",
+        "priority": "P1",
+        "risk": "low",
+        "effort": "S",
+        "paths": paths,
+        "checks": list(profile.validation_commands),
+        "docs": docs,
+        "domains": list(profile.domains),
+        "packages": [],
+        "objective": "TUNING",
+        "why": (
+            "Analyze the historical backlog runtime footprint and local profile/skill contract, "
+            "then propose one next-slice tuning task."
+        ),
+        "evidence": (
+            "Use this task to review backlog drift, event cadence, result patterns, and control-surface coverage "
+            "so self-tuning can improve repo-local backlog health."
+        ),
+        "safe_first_slice": textwrap.dedent(
+            """\
+            1. Review backlog history, state, and event/activity logs for recurring failure or delay patterns.
+            2. Validate profile, skill, and review-doc contracts against real runtime behavior.
+            3. Draft one concrete tuning task with the highest-confidence repo-local impact.
+            """
+        ).strip(),
+        "requires_approval": False,
+        "approval_reason": "",
+        "epic_title": "Self-tuning queue",
+        "epic_id": "epic-blackdog-tune",
+        "lane_title": "Self-tuning lane",
+        "lane_id": "lane-blackdog-tune",
+        "wave": 0,
+    }
+
+
+def seed_tune_task(profile: Profile) -> tuple[dict[str, Any], bool]:
+    template = _tune_task_payload(profile)
+    target_task_id = make_task_id(profile, bucket=template["bucket"], title=template["title"], paths=template["paths"])
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+        existing = snapshot.tasks.get(target_task_id)
+        if existing is not None:
+            return existing.payload, False
+
+    try:
+        payload = add_task(
+            profile,
+            title=template["title"],
+            bucket=template["bucket"],
+            priority=template["priority"],
+            risk=template["risk"],
+            effort=template["effort"],
+            why=template["why"],
+            evidence=template["evidence"],
+            safe_first_slice=template["safe_first_slice"],
+            paths=template["paths"],
+            checks=template["checks"],
+            docs=template["docs"],
+            domains=template["domains"],
+            packages=template["packages"],
+            affected_paths=template["paths"],
+            objective=template["objective"],
+            requires_approval=template["requires_approval"],
+            approval_reason=template["approval_reason"],
+            epic_id=template["epic_id"],
+            epic_title=template["epic_title"],
+            lane_id=template["lane_id"],
+            lane_title=template["lane_title"],
+            wave=template["wave"],
+        )
+    except BacklogError:
+        with locked_path(profile.paths.backlog_file):
+            snapshot = load_backlog(profile.paths, profile)
+            existing = snapshot.tasks.get(target_task_id)
+            if existing is not None:
+                return existing.payload, False
+        raise
+
+    return payload, True
+
+
 def compact_active_plan(snapshot: BacklogSnapshot, state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     original_plan = snapshot.plan if isinstance(snapshot.plan, dict) else {"epics": [], "lanes": []}
     active_task_ids = {task_id for task_id in snapshot.tasks if not task_done(task_id, state)}

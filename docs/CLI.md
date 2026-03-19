@@ -57,6 +57,7 @@ product development.
 - `blackdog plan`
 - `blackdog summary`
 - `blackdog next`
+- `blackdog tune`
 - `blackdog supervise run`
 - `blackdog supervise status`
 - `blackdog supervise recover`

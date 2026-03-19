@@ -619,6 +619,69 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(len(payload["next_rows"]), 1)
         self.assertTrue(paths.html_file.exists())
 
+    def test_tune_command_creates_stable_self_tuning_task(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        profile = load_profile(self.root)
+
+        tune_payload = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "tune", "--project-root", str(self.root)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(tune_payload["title"], "Auto-tune runtime contract and backlog health")
+        self.assertEqual(tune_payload["bucket"], "skills")
+        self.assertEqual(tune_payload["checks"], list(profile.validation_commands))
+        self.assertIn("AGENTS.md", tune_payload["docs"])
+        self.assertIn("docs/CLI.md", tune_payload["docs"])
+        self.assertIn("docs/FILE_FORMATS.md", tune_payload["docs"])
+        self.assertIn("docs/INTEGRATION.md", tune_payload["docs"])
+        self.assertIn(".codex/skills/blackdog/SKILL.md", tune_payload["docs"])
+        self.assertIn(".codex/skills/blackdog/agents/openai.yaml", tune_payload["docs"])
+        self.assertIn("blackdog.toml", tune_payload["docs"])
+        self.assertIn(str(paths.backlog_file), tune_payload["paths"])
+        self.assertIn(str(paths.state_file), tune_payload["paths"])
+        self.assertIn(str(paths.events_file), tune_payload["paths"])
+        self.assertIn(str(paths.inbox_file), tune_payload["paths"])
+        self.assertIn(str(paths.results_dir), tune_payload["paths"])
+        self.assertIn(str(paths.profile_file), tune_payload["paths"])
+        self.assertIn(str(paths.skill_dir / "SKILL.md"), tune_payload["paths"])
+        self.assertIn("Review backlog history", tune_payload["safe_first_slice"])
+
+        summary = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "summary", "--project-root", str(self.root), "--format", "json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(len(summary["next_rows"]), 1)
+        self.assertEqual(summary["next_rows"][0]["id"], tune_payload["id"])
+        self.assertEqual(summary["next_rows"][0]["title"], tune_payload["title"])
+        self.assertIn(tune_payload["id"], {row["task_id"] for row in load_events(paths) if row["type"] == "task_added"})
+
+        rerun_payload = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "tune", "--project-root", str(self.root)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(rerun_payload["id"], tune_payload["id"])
+        task_added_rows = [row for row in load_events(paths) if row["type"] == "task_added" and row.get("task_id") == tune_payload["id"]]
+        self.assertEqual(len(task_added_rows), 1)
+
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"
         state_file.write_text('{"version": 1}\n', encoding="utf-8")

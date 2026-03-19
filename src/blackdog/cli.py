@@ -12,6 +12,7 @@ from .backlog import (
     build_plan_view,
     build_view_model,
     classify_task_status,
+    seed_tune_task,
     load_backlog,
     next_runnable_tasks,
     render_plan_text,
@@ -567,6 +568,22 @@ def cmd_result_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tune(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload, created = seed_tune_task(profile)
+    if created:
+        append_event(
+            profile.paths,
+            event_type="task_added",
+            actor=args.actor,
+            task_id=payload["id"],
+            payload={"title": payload["title"], "bucket": payload["bucket"]},
+        )
+    _emit_render(profile)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def cmd_inbox_send(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     message = send_message(
@@ -695,6 +712,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_snapshot = subparsers.add_parser("snapshot", help="Print the canonical static-HTML snapshot contract")
     p_snapshot.add_argument("--project-root", default=None)
     p_snapshot.set_defaults(func=cmd_snapshot)
+
+    p_tune = subparsers.add_parser("tune", help="Seed a self-tuning backlog analysis task")
+    p_tune.add_argument("--project-root", default=None)
+    p_tune.add_argument("--actor", default="blackdog")
+    p_tune.set_defaults(func=cmd_tune)
 
     p_worktree = subparsers.add_parser("worktree", help="Branch-backed worktree lifecycle for implementation tasks")
     worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
