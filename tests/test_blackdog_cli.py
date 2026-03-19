@@ -1077,6 +1077,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertTrue((self.root / "blackdog.toml").exists())
         self.assertTrue(paths.backlog_file.exists())
         self.assertTrue((self.root / ".codex/skills/blackdog/SKILL.md").exists())
+        self.assertTrue((self.root / ".codex/skills/blackdog/references/task-shaping.md").exists())
 
         second_payload = json.loads(
             subprocess.run(
@@ -1519,11 +1520,19 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("@git-common", refreshed_text)
         self.assertIn("`make test`", refreshed_text)
         self.assertIn("Before any repo edit you intend to keep", refreshed_text)
+        self.assertIn("## Task Shaping", refreshed_text)
+        self.assertIn("Default to one lane and one task", refreshed_text)
+        self.assertIn("references/task-shaping.md", refreshed_text)
         self.assertIn("## Docs to Review", refreshed_text)
         self.assertIn("`AGENTS.md`", refreshed_text)
         self.assertIn("doc_routing_defaults", refreshed_text)
         self.assertIn("Blackdog uses branch-backed task worktrees for kept implementation changes.", refreshed_text)
         self.assertIn("refresh backlog", refreshed_text)
+        task_shaping_reference = (
+            self.root / ".codex" / "skills" / "blackdog" / "references" / "task-shaping.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("estimated_elapsed_minutes", task_shaping_reference)
+        self.assertIn("parallel time saved", task_shaping_reference)
 
     def test_plan_summary_reports_epics_lanes_and_waves(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

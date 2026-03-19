@@ -223,12 +223,76 @@ def _display_path(project_root: Path, path: Path, *, git_common_dir: Path | None
     return relative.as_posix() or "."
 
 
+def _task_shaping_reference_text() -> str:
+    return """# Task Shaping
+
+Use this reference when turning a user prompt into backlog tasks or when restructuring an existing plan.
+
+## Objective
+
+- Minimize the number of separate agent requests, worktrees, and handoffs while still minimizing end-to-end turnaround time.
+- Prefer fewer, larger tasks that own a coherent deliverable and can land with one validation story.
+
+## Measure First
+
+Estimate these values before deciding whether to split work:
+
+- `estimated_elapsed_minutes`: total wall-clock time to land and validate the deliverable.
+- `estimated_active_minutes`: expected edit and reasoning time.
+- `estimated_touched_paths`: approximate number of files or directories likely to change.
+- `estimated_validation_minutes`: time to run the required checks.
+- `estimated_worktrees`: how many branch-backed worktrees or child launches the plan would require.
+- `estimated_handoffs`: how many times context would move between agents or tasks.
+- `parallelizable_groups`: how many truly independent write scopes could run at the same time.
+
+If the CLI has nowhere to store these fields, keep them in working notes and only record the meaningful constraints in task `why`, `evidence`, or comments.
+
+## Consolidate by Default
+
+Use one task when most of the following are true:
+
+- the work shares the same touched paths or validation commands;
+- one step depends directly on the previous step;
+- the deliverable only makes sense as one landed change;
+- worktree spin-up cost is material relative to the expected edit time; or
+- handoff cost is likely to exceed any parallel speedup.
+
+Use one lane for one cohesive deliverable. Do not create separate lane or task pairs for research, implementation, cleanup, and validation when they are parts of the same serial change.
+
+## Split Only for Parallelism or Blocking
+
+Split a task only when every child slice has:
+
+- a disjoint or lightly coupled write set;
+- an independently meaningful landed outcome;
+- validation that can run mostly independently; and
+- a believable wall-clock win from parallel execution.
+
+Simple rule: split only when `parallel time saved > extra worktree spin-up + extra coordination + duplicated validation`.
+
+## Tuning Loop
+
+After completion, compare the estimates with actuals:
+
+- actual elapsed time;
+- actual changed path count;
+- actual validation time;
+- number of worktrees or agents used; and
+- number of times work had to be merged, re-claimed, or re-scoped.
+
+If consolidation repeatedly produces tasks that are too large, split later at the boundary that appeared in the real work. If parallel slices repeatedly collide in the same files or validations, merge them earlier next time.
+"""
+
+
 def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     skill_dir = profile.paths.skill_dir
     agents_dir = skill_dir / "agents"
+    references_dir = skill_dir / "references"
     agents_dir.mkdir(parents=True, exist_ok=True)
+    references_dir.mkdir(parents=True, exist_ok=True)
     skill_file = skill_dir / "SKILL.md"
     agent_file = agents_dir / "openai.yaml"
+    task_shaping_reference_file = references_dir / "task-shaping.md"
     if skill_file.exists() and not force:
         raise ScaffoldError(f"Refusing to overwrite {skill_file}; pass --force to replace it")
     skill_name = "blackdog"
@@ -263,7 +327,7 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     doc_routing_lines = "\n".join(f"  - `{path}`" for path in profile.doc_routing_defaults)
     skill_text = f"""---
 name: {skill_name}
-description: "Use the project-local Blackdog backlog contract for {profile.project_name}. Trigger this skill when reviewing, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
+description: "Use the project-local Blackdog backlog contract for {profile.project_name}. Trigger this skill when shaping a user request into measurable backlog tasks, reviewing, adding, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
 ---
 
 # {display_name}
@@ -306,6 +370,15 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 9. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 10. Open `{html_path}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
+## Task Shaping
+
+- Treat a new user request as one candidate deliverable first. Default to one lane and one task unless there is a measured reason to split it.
+- Consolidate serial slices that touch the same files, need the same validation, or must land together. Do not create separate tasks for analysis, implementation, cleanup, and verification of the same change.
+- Split only when it buys real parallelism: disjoint write sets, independent validation, separate blockers, or clearly separable deliverables that can land independently.
+- Before creating or reshaping tasks, estimate total elapsed task time, active edit time, touched paths, validation time, worktree spin-ups, and coordination handoffs. Minimize separate requests first, then add parallelism only when the saved wall-clock time exceeds the extra spin-up and coordination cost.
+- When uncertain, under-split first. It is easier to split a live task later than to merge redundant lanes and half-finished work.
+- Use [references/task-shaping.md](references/task-shaping.md) when adding, tuning, or restructuring work; it contains the measurement fields and consolidation rubric.
+
 ## Static Board
 
 - `{html_path}` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
@@ -346,8 +419,9 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
     agent_text = f"""interface:
   display_name: "{display_name}"
   short_description: "Project-local backlog control via Blackdog"
-  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to review, claim, supervise, and report backlog work through the repo CLI."
+  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to shape this request into measurable, consolidated backlog work and then review, claim, supervise, or report it through the repo CLI."
 """
     skill_file.write_text(skill_text, encoding="utf-8")
     agent_file.write_text(agent_text, encoding="utf-8")
+    task_shaping_reference_file.write_text(_task_shaping_reference_text(), encoding="utf-8")
     return skill_file

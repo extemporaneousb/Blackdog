@@ -1,6 +1,6 @@
 ---
 name: blackdog
-description: "Use the project-local Blackdog backlog contract for Blackdog. Trigger this skill when reviewing, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
+description: "Use the project-local Blackdog backlog contract for Blackdog. Trigger this skill when shaping a user request into measurable backlog tasks, reviewing, adding, claiming, completing, supervising, or reporting backlog work in this repo, or when checking inbox messages and structured task results."
 ---
 
 # Blackdog
@@ -42,6 +42,15 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 8. Use `blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
 9. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 10. Open `@git-common/blackdog/backlog-index.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
+
+## Task Shaping
+
+- Treat a new user request as one candidate deliverable first. Default to one lane and one task unless there is a measured reason to split it.
+- Consolidate serial slices that touch the same files, need the same validation, or must land together. Do not create separate tasks for analysis, implementation, cleanup, and verification of the same change.
+- Split only when it buys real parallelism: disjoint write sets, independent validation, separate blockers, or clearly separable deliverables that can land independently.
+- Before creating or reshaping tasks, estimate total elapsed task time, active edit time, touched paths, validation time, worktree spin-ups, and coordination handoffs. Minimize separate requests first, then add parallelism only when the saved wall-clock time exceeds the extra spin-up and coordination cost.
+- When uncertain, under-split first. It is easier to split a live task later than to merge redundant lanes and half-finished work.
+- Use [references/task-shaping.md](references/task-shaping.md) when adding, tuning, or restructuring work; it contains the measurement fields and consolidation rubric.
 
 ## Static Board
 
