@@ -6455,14 +6455,14 @@ def record_result(
 
 
 def parse_task_title(prompt_text: str) -> str:
-    match = re.search(r"^\s*Title:\s*(.*)$", prompt_text, flags=re.M)
+    match = re.search(r"^\\s*Title:\\s*(.*)$", prompt_text, flags=re.M)
     if match:
         return match.group(1).strip()
     return ""
 
 
 def candidate_score(title: str) -> int:
-    match = re.search(r"Candidate (\d+)", title)
+    match = re.search(r"Candidate (\\d+)", title)
     if not match:
         return 0
     order = int(match.group(1))
@@ -6770,14 +6770,14 @@ def record_result(
 
 
 def parse_task_title(prompt_text: str) -> str:
-    match = re.search(r"^\s*Title:\s*(.*)$", prompt_text, flags=re.M)
+    match = re.search(r"^\\s*Title:\\s*(.*)$", prompt_text, flags=re.M)
     if match:
         return match.group(1).strip()
     return ""
 
 
 def candidate_score(title: str) -> int:
-    match = re.search(r"Candidate (\d+)", title)
+    match = re.search(r"Candidate (\\d+)", title)
     if not match:
         return 0
     order = int(match.group(1))
@@ -6785,7 +6785,7 @@ def candidate_score(title: str) -> int:
 
 
 def optimization_score(title: str) -> int:
-    match = re.search(r"Optimization (\d+)", title)
+    match = re.search(r"Optimization (\\d+)", title)
     if not match:
         return 0
     order = int(match.group(1))
@@ -6794,7 +6794,7 @@ def optimization_score(title: str) -> int:
 
 def read_round1_winner(project_root: Path) -> tuple[str, int]:
     payload = (project_root / "convergence-round1-winner.txt").read_text(encoding="utf-8")
-    match = re.search(r"winner=(\S+) score=(\d+)", payload)
+    match = re.search(r"winner=(\\S+) score=(\\d+)", payload)
     if not match:
         raise RuntimeError("round1 winner report missing or malformed")
     return match.group(1), int(match.group(2))
