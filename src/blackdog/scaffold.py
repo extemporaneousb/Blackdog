@@ -244,6 +244,13 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 - Results: `{profile.paths.results_dir}`
 - HTML view: `{profile.paths.html_file}`
 
+## Codex Skill Discovery
+
+- Skill metadata file: `{profile.paths.skill_dir / "SKILL.md"}`
+- UI discovery file: `{profile.paths.skill_dir / "agents/openai.yaml"}`
+- Codex discovers this skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repo.
+- Open or refresh the repo in Codex after bootstrap so the skill appears in the available skill list.
+
 ## Standard Flow
 
 1. Run `{cli_command} validate`.

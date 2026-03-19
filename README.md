@@ -39,6 +39,33 @@ Planned but not implemented yet:
 python3 -m venv .VE
 source .VE/bin/activate
 python -m pip install -e .
+```
+
+## Fresh host install
+
+For the first deployment in another repository, install Blackdog into that repo's Python environment first, then bootstrap:
+
+```bash
+# Editable local checkout (recommended for internal hosting)
+python3 -m pip install -e /path/to/blackdog
+
+# Or install directly from git
+python3 -m pip install git+https://github.com/<org>/blackdog.git
+
+cd /path/to/host-repo
+blackdog bootstrap --project-name "Repo Name"
+```
+
+Bootstrap writes the project-local skill discovery payload to:
+
+- `.codex/skills/blackdog/SKILL.md`
+- `.codex/skills/blackdog/agents/openai.yaml`
+
+Codex surfaces the `blackdog` skill from `agents/openai.yaml` once these files exist and the repo is opened in Codex with file-system-based skill discovery enabled (reopen the repo if the skill list was already loaded).
+
+Then continue with the usual contract commands:
+
+```bash
 blackdog bootstrap --project-name "My Project"
 blackdog add \
   --title "Create first task" \

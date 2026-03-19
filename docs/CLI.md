@@ -20,6 +20,28 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 
 Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
 
+### Installation and host bootstrap
+
+For a fresh host repo, install Blackdog first using one of:
+
+- `python -m pip install -e /path/to/blackdog`
+- `python -m pip install git+<github-url>`
+
+Then run bootstrap in that repo:
+
+```bash
+cd /path/to/repo
+blackdog bootstrap --project-name "Repo Name"
+```
+
+Bootstrap creates the project-local discovery files under:
+
+- `.codex/skills/blackdog/SKILL.md`
+- `.codex/skills/blackdog/agents/openai.yaml`
+
+Codex surfaces the `blackdog` skill from the `agents/openai.yaml` file in the opened repository tree.
+If the repo was open before bootstrap, reopen the repo (or restart the Codex session) so discovery picks up the new files.
+
 `blackdog worktree ...` is the implementation-work entrypoint. WTAM is the implementation model:
 
 - implementation work should happen from a branch-backed task worktree, not the primary checkout
