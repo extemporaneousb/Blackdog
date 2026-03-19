@@ -576,6 +576,7 @@ h3 {
 .tone-complete { border-left: 6px solid var(--complete-fg); background: linear-gradient(180deg, rgba(217, 239, 223, 0.24) 0%, rgba(255, 252, 247, 0.96) 56%); }
 
 .task-card-top,
+.result-top,
 .task-id-group {
   display: flex;
   flex-wrap: wrap;
@@ -583,8 +584,21 @@ h3 {
   align-items: center;
 }
 
+.result-top {
+  align-items: start;
+}
+
 .task-card-top {
   justify-content: space-between;
+}
+
+.result-chips {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
 }
 
 .task-code,
@@ -857,8 +871,14 @@ dialog::backdrop {
   .wave-head,
   .completed-objective-head,
   .completed-group-head,
-  .task-card-top {
+  .task-card-top,
+  .result-top {
     flex-direction: column;
+  }
+
+  .result-chips {
+    margin-left: 0;
+    justify-content: flex-start;
   }
 
   .objective-table thead {

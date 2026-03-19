@@ -193,6 +193,36 @@ def _empty_task_activity() -> dict[str, Any]:
     }
 
 
+def _latest_supervisor_check_at(profile: Profile) -> str | None:
+    latest_check = None
+    latest_parsed = None
+    for status_file in profile.paths.supervisor_runs_dir.glob("*/status.json"):
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        raw = None
+        if payload.get("completed_at"):
+            raw = payload.get("completed_at")
+        elif isinstance(payload.get("steps"), list) and payload["steps"]:
+            last_step = payload["steps"][-1]
+            if isinstance(last_step, dict):
+                raw = last_step.get("at")
+        if not raw:
+            continue
+        parsed = _parse_iso(raw)
+        if parsed is None:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        if latest_parsed is None or parsed > latest_parsed:
+            latest_check = str(raw)
+            latest_parsed = parsed
+    return latest_check
+
+
 def _build_task_activity(
     paths: ProjectPaths,
     state: dict[str, Any],
@@ -1135,10 +1165,14 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     )
     workspace_contract = worktree_contract(profile)
     headers = dict(snapshot.headers)
+    generated_at = now_iso()
+    last_checked_at = _latest_supervisor_check_at(profile) or generated_at
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
+        "content_updated_at": generated_at,
+        "last_checked_at": last_checked_at,
         "project_name": profile.project_name,
         "project_root": str(profile.paths.project_root),
         "control_dir": str(profile.paths.control_dir),
@@ -1741,7 +1775,8 @@ __BLACKDOG_STYLES__
         renderMetaItem("Active Branch", heroHighlights.branch || headers["Target branch"] || "", { mono: true }),
         renderMetaItem("Commit", heroHighlights.commit || headers["Target commit"] || "", { mono: true }),
         renderMetaItem("Time on task", summarizeTimeOnTask(heroHighlights.time_on_task || "")),
-        renderMetaItem("Last updated", relativeTimeFromNow(snapshot.generated_at || activity.at || ""))
+        renderMetaItem("Last content updated", relativeTimeFromNow(snapshot.content_updated_at || snapshot.generated_at || activity.at || "")),
+        renderMetaItem("Last checked", relativeTimeFromNow(snapshot.last_checked_at || snapshot.generated_at || activity.at || ""))
       ].filter(Boolean);
       document.getElementById("hero-meta-line").innerHTML = metaItems
         .join("");
@@ -2070,7 +2105,9 @@ __BLACKDOG_STYLES__
         <article class="result-card tone-complete"${interactiveCardAttributes(task.id)}>
           <div class="result-top">
             <span class="task-code">${escapeHtml(task.id)}</span>
-            ${renderStatusChipRows(task.card_status_chips)}
+            <div class="result-chips">
+              ${renderStatusChipRows(task.card_status_chips)}
+            </div>
           </div>
           <h3 class="result-title">${escapeHtml(task.title)}</h3>
           <p>${escapeHtml(taskSummary(task) || "Completed task with no additional summary.")}</p>

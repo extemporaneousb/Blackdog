@@ -1856,6 +1856,60 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["graph"]["tasks"][1]["lane_position"], 2)
         self.assertEqual(snapshot["graph"]["tasks"][0]["lane_task_count"], 2)
         self.assertIn("scheduler gate", snapshot["grouping_guide"][-1]["meaning"])
+        datetime.fromisoformat(snapshot["generated_at"])
+        datetime.fromisoformat(snapshot["content_updated_at"])
+        datetime.fromisoformat(snapshot["last_checked_at"])
+        self.assertEqual(snapshot["content_updated_at"], snapshot["generated_at"])
+        self.assertEqual(snapshot["last_checked_at"], snapshot["generated_at"])
+
+    def test_snapshot_includes_freshness_timestamps(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_cli(
+            "add",
+            "--project-root", str(self.root),
+            "--title", "Freshness sample",
+            "--bucket", "html",
+            "--why", "Need a deterministic snapshot to validate freshness timestamps.",
+            "--evidence", "The board should show both content-updated and last-checked timestamps.",
+            "--safe-first-slice", "Expose fresh timestamp fields in snapshot output.",
+            "--path", "src/blackdog/ui.py",
+            "--epic-title", "Docs",
+            "--lane-title", "Freshness lane",
+            "--wave", "0",
+        )
+        status_dir = paths.supervisor_runs_dir / "20260319-101421-supervisor-freshness"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        (status_dir / "status.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "supervisor-freshness",
+                    "actor": "supervisor",
+                    "completed_at": "2026-03-19T10:14:21-07:00",
+                    "steps": [
+                        {
+                            "index": 1,
+                            "at": "2026-03-19T10:14:00-07:00",
+                            "status": "running",
+                            "ready_task_ids": [],
+                            "running_task_ids": [],
+                        },
+                    ],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        self.assertEqual(snapshot["last_checked_at"], "2026-03-19T10:14:21-07:00")
+        run_cli("render", "--project-root", str(self.root), "--actor", "tester")
+        rendered_html = paths.html_file.read_text(encoding="utf-8")
+        self.assertIn("Last content updated", rendered_html)
+        self.assertIn("Last checked", rendered_html)
+        rendered_snapshot = html_snapshot(paths.html_file)
+        self.assertEqual(rendered_snapshot["last_checked_at"], snapshot["last_checked_at"])
+        self.assertEqual(rendered_snapshot["content_updated_at"], snapshot["content_updated_at"])
 
     def test_snapshot_models_objective_rows_with_progress_summaries(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2531,6 +2585,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn('detailBlock("Latest Result Residual"', html)
         self.assertIn('detailBlock("Model Response", preBlock(task.model_response), { wide: true })', html)
         self.assertIn('detailBlock("Landed Commit", commitBlock(task), { wide: true })', html)
+        self.assertIn('class="result-chips"', html)
 
     def test_snapshot_completed_noop_completion_has_no_landed_badge(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3734,7 +3789,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Active Branch", updated_html)
         self.assertIn("Commit", updated_html)
         self.assertIn("Time on task", updated_html)
-        self.assertIn("Last updated", updated_html)
+        self.assertIn("Last content updated", updated_html)
+        self.assertIn("Last checked", updated_html)
         self.assertNotIn("Git head", updated_html)
         self.assertNotIn("Blackdog runtime", updated_html)
         self.assertIn("Blackdog Backlog", updated_html)

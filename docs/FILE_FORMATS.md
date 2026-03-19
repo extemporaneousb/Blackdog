@@ -547,6 +547,8 @@ Top-level keys:
 
 - `schema_version`
 - `generated_at`
+- `content_updated_at`
+- `last_checked_at`
 - `project_name`
 - `project_root`
 - `control_dir`
@@ -701,7 +703,7 @@ Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projecti
 
 Layout projections:
 
-- `Backlog Control` uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
+- `Backlog Control` uses `project_name`, `push_objective`, `content_updated_at`, `last_checked_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
 - The control panel renders a compact branch/commit/run/time-on-task line, a progress bar, and artifact links.
 - The objective table uses `objective_rows` as non-clickable summary rows with progress bars and quantized task-state indicators, but the rendered board shows only rows whose `active_task_ids` are still non-empty.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
