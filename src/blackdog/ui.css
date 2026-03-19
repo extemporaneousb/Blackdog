@@ -687,6 +687,44 @@ h3 {
   padding-top: 12px;
 }
 
+.completed-objective-stack,
+.completed-objective-group {
+  display: grid;
+  gap: 12px;
+}
+
+.completed-objective-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+}
+
+.completed-objective-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.completed-objective-key {
+  color: #5f635b;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.completed-objective-title {
+  color: var(--ink);
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.completed-objective-group + .completed-objective-group {
+  padding-top: 12px;
+  border-top: 1px dashed rgba(23, 26, 25, 0.1);
+}
+
 .completed-group + .completed-group {
   margin-top: 8px;
   border-top: 1px solid rgba(23, 26, 25, 0.08);
@@ -817,6 +855,7 @@ dialog::backdrop {
   .toolbar-topline,
   .reader-head,
   .wave-head,
+  .completed-objective-head,
   .completed-group-head,
   .task-card-top {
     flex-direction: column;

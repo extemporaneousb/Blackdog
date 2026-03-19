@@ -1283,6 +1283,7 @@ __BLACKDOG_STYLES__
     const allTasksById = new Map(allTasks.map((task) => [String(task.id), task]));
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
     const objectiveRows = Array.isArray(snapshot.objective_rows) ? snapshot.objective_rows.slice() : [];
+    const activeObjectiveRows = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
     const focusTaskIds = new Set(
       Array.isArray(snapshot.focus_task_ids) ? snapshot.focus_task_ids.map((taskId) => String(taskId)) : []
     );
@@ -1590,15 +1591,19 @@ __BLACKDOG_STYLES__
 
     function renderObjectivesTable() {
       const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
-      const activeObjectives = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
+      const completedObjectiveCount = Math.max(0, objectiveRows.length - activeObjectiveRows.length);
       document.getElementById("objective-intro").textContent =
-        objective || "Tracked outcomes for the current push.";
+        activeObjectiveRows.length
+          ? (objective || "Active outcomes for the current push.")
+          : objectiveRows.length
+            ? "No active objective rows. Completed objective context is listed in the history below."
+            : "No objective rows tagged in the backlog yet.";
       document.getElementById("objective-summary").textContent = objectiveRows.length
-        ? `${objectiveRows.length} objective row(s) · ${activeObjectives.length} active`
+        ? `${activeObjectiveRows.length} active · ${completedObjectiveCount} completed`
         : "No objective rows";
-      document.getElementById("objectives-table-body").innerHTML = objectiveRows.length
-        ? objectiveRows.map(renderObjectiveRow).join("")
-        : `<tr><td colspan="3"><div class="empty">No objective rows tagged in the backlog yet.</div></td></tr>`;
+      document.getElementById("objectives-table-body").innerHTML = activeObjectiveRows.length
+        ? activeObjectiveRows.map(renderObjectiveRow).join("")
+        : `<tr><td colspan="3"><div class="empty">No active objective rows. Completed objective context moves to the history below.</div></td></tr>`;
       applyProgressBars(document.getElementById("objectives-panel"));
     }
 
@@ -1946,6 +1951,30 @@ __BLACKDOG_STYLES__
       return `Sweep ${sweep}`;
     }
 
+    function completedObjectiveGroup(task) {
+      const objectiveId = String(task.objective || "").trim();
+      const objectiveTitle = String(task.objective_title || "").trim();
+      if (objectiveId) {
+        return {
+          key: objectiveId,
+          id: objectiveId,
+          title: objectiveTitle && objectiveTitle !== objectiveId ? objectiveTitle : objectiveId
+        };
+      }
+      if (objectiveTitle && objectiveTitle !== "Unassigned") {
+        return {
+          key: `title:${objectiveTitle}`,
+          id: "",
+          title: objectiveTitle
+        };
+      }
+      return {
+        key: "unassigned",
+        id: "",
+        title: "Unassigned objective"
+      };
+    }
+
     function groupedCompletedTasks(tasks) {
       const groups = [];
       for (const task of tasks) {
@@ -1957,6 +1986,22 @@ __BLACKDOG_STYLES__
           continue;
         }
         existing.tasks.push(task);
+      }
+      return groups;
+    }
+
+    function groupedCompletedObjectives(tasks) {
+      const groups = [];
+      const groupsByKey = new Map();
+      for (const task of tasks) {
+        const objective = completedObjectiveGroup(task);
+        let group = groupsByKey.get(objective.key);
+        if (!group) {
+          group = { ...objective, tasks: [] };
+          groupsByKey.set(objective.key, group);
+          groups.push(group);
+        }
+        group.tasks.push(task);
       }
       return groups;
     }
@@ -1982,7 +2027,7 @@ __BLACKDOG_STYLES__
 
     function renderCompletedPanel() {
       document.getElementById("completed-copy").textContent =
-        "Completed work stays visible here, grouped by sweep so the history shows where execution boundaries moved.";
+        "Completed work stays visible here, grouped by sweep and objective so finished outcomes keep their context.";
       const visibleCompleted = completedTasks.slice(0, 60);
       const grouped = groupedCompletedTasks(visibleCompleted);
       document.getElementById("completed-summary").textContent = visibleCompleted.length
@@ -1995,8 +2040,21 @@ __BLACKDOG_STYLES__
                 <span class="completed-group-label">${escapeHtml(group.label)}</span>
                 <span class="section-meta">${escapeHtml(pluralize(group.tasks.length, "task"))}</span>
               </div>
-              <div class="results-grid">
-                ${group.tasks.map(renderCompletedCard).join("")}
+              <div class="completed-objective-stack">
+                ${groupedCompletedObjectives(group.tasks).map((objectiveGroup) => `
+                  <section class="completed-objective-group" data-objective-key="${escapeHtml(objectiveGroup.key)}">
+                    <div class="completed-objective-head">
+                      <div class="completed-objective-copy">
+                        ${objectiveGroup.id ? `<span class="completed-objective-key">${escapeHtml(objectiveGroup.id)}</span>` : ""}
+                        <span class="completed-objective-title">${escapeHtml(objectiveGroup.title)}</span>
+                      </div>
+                      <span class="section-meta">${escapeHtml(pluralize(objectiveGroup.tasks.length, "task"))}</span>
+                    </div>
+                    <div class="results-grid">
+                      ${objectiveGroup.tasks.map(renderCompletedCard).join("")}
+                    </div>
+                  </section>
+                `).join("")}
               </div>
             </section>
           `).join("")

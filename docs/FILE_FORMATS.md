@@ -685,11 +685,11 @@ Layout projections:
 
 - `Backlog Control` uses `project_name`, `push_objective`, `generated_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
 - The control panel renders a compact branch/commit/run/time-on-task line, a progress bar, and artifact links.
-- The objective table uses `objective_rows` as non-clickable summary rows with progress bars and quantized task-state indicators.
+- The objective table uses `objective_rows` as non-clickable summary rows with progress bars and quantized task-state indicators, but the rendered board shows only rows whose `active_task_ids` are still non-empty.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
 - The release-gates table uses `release_gates`; explicit `[x]`/`[ ]` markers are honored, and otherwise the board infers passed checks from the tracked push being complete.
 - The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
-- `Completed Tasks` groups finished task rows by available run/sweep metadata derived from task completion, result, and run fields.
+- `Completed Tasks` groups finished task rows by available run/sweep metadata derived from task completion, result, and run fields, then keeps per-task objective context visible as history subheadings inside each sweep.
 - The browser renders a split `Backlog Control`/`Status` top row, a split objective/release-gates row, then a split `Execution Map`/`Completed Tasks` row. Objective and release-gate rows are summary-only, while execution-map and completed-task cards stay clickable.
 - Focused task rows still derive from objective-tagged and lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.

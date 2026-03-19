@@ -200,7 +200,9 @@ The rendered page now uses a wider control-board layout. It opens with
 `Backlog Control` and `Status` in a split top band, follows with a
 split objective/release-gates row, then ends with a split
 `Execution Map` and `Completed Tasks` history. Objective and
-release-gate rows are summary-only; the live execution map and
+release-gate rows are summary-only, and the objective table only shows
+still-active objective rows while completed history keeps retired
+objective context under each sweep. The live execution map and
 completed-task cards open the task reader. The reader leads with
 `What Changed` from the latest result payload, keeps `Summary`,
 `Activity`, and run metadata immediately visible, and places variable
