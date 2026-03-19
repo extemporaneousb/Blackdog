@@ -726,6 +726,41 @@ class BlackdogCliTests(unittest.TestCase):
         persisted = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(persisted["status"], "passed")
 
+    def test_coverage_command_counts_missing_trace_lines_as_uncovered(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        target_script = self.root / "src" / "blackdog" / "coverage_branch_target.py"
+        target_script.parent.mkdir(parents=True, exist_ok=True)
+        target_script.write_text(
+            "flag = False\n"
+            "if flag:\n"
+            "    print('missing branch')\n"
+            "print('coverage branch ok')\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "coverage",
+                "--project-root",
+                str(self.root),
+                "--command",
+                "PYTHONPATH=src python3 -m blackdog.coverage_branch_target",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        module = payload["summary"]["modules"]["src/blackdog/coverage_branch_target.py"]
+        self.assertEqual(module["covered"], 3)
+        self.assertEqual(module["total"], 4)
+        self.assertEqual(module["coverage_percent"], 75.0)
+
     def test_coverage_command_reports_failure_for_failing_validation(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         fail_script = self.root / "coverage_fail.py"

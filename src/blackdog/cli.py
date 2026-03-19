@@ -79,7 +79,7 @@ from .worktree import (
 )
 
 
-_COVERAGE_LINE_RE = re.compile(r"^\s*(?P<count>\d+)?\s*:\s*(?P<code>.*)$")
+_COVERAGE_LINE_RE = re.compile(r"^\s*(?:(?P<count>\d+)\s*:|(?P<missing>>>>>>))\s*(?P<code>.*)$")
 _ENV_ASSIGN_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
 _TRACE_RUNNER = """
 import io
