@@ -9,43 +9,47 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## CLI Entry Points
 
-- Blackdog CLI (preferred): `./.VE/bin/blackdog` in the current worktree.
-- Skill refresh CLI (preferred): `./.VE/bin/blackdog-skill`.
-- For branch-backed child workspaces, pass `--project-root /Users/bullard/Work/Blackdog` so all commands target the central control root.
-- Never reuse another worktree's `.VE`; bootstrap a local `.VE` per worktree if needed.
+- Blackdog CLI: `blackdog`
+- Skill refresh CLI: `blackdog-skill`
 
 ## Core Paths
 
-- Profile: `/Users/bullard/Work/Blackdog/blackdog.toml`
-- Control root: `/Users/bullard/Work/Blackdog/.git/blackdog`
-- Backlog: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog.md`
-- State: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-state.json`
-- Events: `/Users/bullard/Work/Blackdog/.git/blackdog/events.jsonl`
-- Inbox: `/Users/bullard/Work/Blackdog/.git/blackdog/inbox.jsonl`
-- Results: `/Users/bullard/Work/Blackdog/.git/blackdog/task-results`
-- HTML view: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html`
+- Profile: `blackdog.toml`
+- Control root: `@git-common/blackdog`
+- Backlog: `@git-common/blackdog/backlog.md`
+- State: `@git-common/blackdog/backlog-state.json`
+- Events: `@git-common/blackdog/events.jsonl`
+- Inbox: `@git-common/blackdog/inbox.jsonl`
+- Results: `@git-common/blackdog/task-results`
+- HTML view: `@git-common/blackdog/backlog-index.html`
 
-## Direct Implementation Flow (manual/WTAM mode)
+## Codex Skill Discovery
 
-1. Run `blackdog validate` (with project-root when in task worktree context).
+- Skill metadata file: `.codex/skills/blackdog/SKILL.md`
+- UI discovery file: `.codex/skills/blackdog/agents/openai.yaml`
+- Codex discovers this skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repo.
+- Open or refresh the repo in Codex after bootstrap so the skill appears in the available skill list.
+
+## Standard Flow
+
+1. Run `blackdog validate`.
 2. Run `blackdog summary`.
 3. Inspect runnable work with `blackdog next`.
-4. Before any repo edit you intend to keep, run `blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit that checkout; create or enter a branch-backed task worktree with `blackdog worktree start --id TASK` first.
-5. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
-6. Complete or release the task through the CLI for direct work.
-7. Use `blackdog supervise run` only when you want Blackdog to launch child agents.
-8. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-9. Open `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
+4. Before any repo edit you intend to keep, run `blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
+5. Run `blackdog coverage --output coverage/latest.json` to collect shipping-surface validation coverage evidence before large surface edits.
+6. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
+7. Complete or release the task through the CLI for direct work.
+8. Use `blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
+9. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+10. Open `@git-common/blackdog/backlog-index.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
-## Delegated Child Flow (supervised mode)
+## Static Board
 
-1. Do not run `validate`, `summary`, `next`, or `claim` for a task already launched by supervisor.
-2. Read the launch instructions from inbox (`blackdog inbox list --project-root /Users/bullard/Work/Blackdog --recipient <agent-name>`).
-3. Use the workspace-local CLI first. If absent, use the active environment's `blackdog` with `--project-root /Users/bullard/Work/Blackdog`.
-4. Follow the protocol from the child prompt: the task is already claimed, the child branch is the delegated workspace, and committed repo state is the baseline.
-5. Work in the delegated branch, then run `blackdog result record --project-root /Users/bullard/Work/Blackdog --id <TASK> --actor <agent-name> ...`.
-6. Do not run `complete` or `land` from child workspaces.
-7. If the run blocks, report via inbox and wait for supervisor/operator recovery.
+- `@git-common/blackdog/backlog-index.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
+- The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
+- The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
+- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
+- Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
 
 ## Docs to Review
 
@@ -58,14 +62,6 @@ Review these repo docs before editing when they apply:
 
 Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's required review set, then regenerate this skill after routing changes.
 
-## Static Board
-
-- `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
-- The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
-- The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
-- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
-- Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
-
 ## Supervisor Model
 
 - The coordinating agent stays in the primary worktree.
@@ -77,8 +73,8 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 ## Repo Contract
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
-- Do not check in mutable runtime files from `/Users/bullard/Work/Blackdog/.git/blackdog`.
-- Regenerate this skill after profile changes with `./.VE/bin/blackdog-skill refresh backlog --project-root /Users/bullard/Work/Blackdog`.
+- Do not check in mutable runtime files from `@git-common/blackdog`.
+- Regenerate this skill after profile changes with `blackdog-skill refresh backlog --project-root .`.
 
 ## Repo Defaults
 

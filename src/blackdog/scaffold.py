@@ -10,7 +10,7 @@ from .backlog import (
     render_initial_backlog,
     refresh_backlog_headers,
 )
-from .config import load_profile, named_backlog_paths, write_default_profile, Profile
+from .config import GIT_COMMON_TOKEN, _git_common_dir, load_profile, named_backlog_paths, write_default_profile, Profile
 from .store import append_event, default_state, save_state
 from .ui import build_ui_snapshot, render_static_html
 
@@ -199,10 +199,28 @@ def render_project_html(profile: Profile) -> Path:
 
 
 def _preferred_cli_command(project_root: Path, executable: str) -> str:
-    candidate = (project_root / ".VE" / "bin" / executable).resolve()
+    candidate = project_root / ".VE" / "bin" / executable
     if candidate.is_file() and os.access(candidate, os.X_OK):
-        return shlex.quote(str(candidate))
+        return shlex.quote(f"./.VE/bin/{executable}")
     return executable
+
+
+def _display_path(project_root: Path, path: Path, *, git_common_dir: Path | None = None) -> str:
+    resolved_root = project_root.resolve()
+    resolved_path = path.resolve()
+    if git_common_dir is not None:
+        try:
+            relative_to_git_common = resolved_path.relative_to(git_common_dir)
+        except ValueError:
+            pass
+        else:
+            relative_text = relative_to_git_common.as_posix()
+            return GIT_COMMON_TOKEN if not relative_text else f"{GIT_COMMON_TOKEN}/{relative_text}"
+    try:
+        relative = resolved_path.relative_to(resolved_root)
+    except ValueError:
+        return str(resolved_path)
+    return relative.as_posix() or "."
 
 
 def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
@@ -217,6 +235,30 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     display_name = "Blackdog"
     cli_command = _preferred_cli_command(profile.paths.project_root, "blackdog")
     skill_command = _preferred_cli_command(profile.paths.project_root, "blackdog-skill")
+    git_common_dir = _git_common_dir(profile.paths.project_root)
+    profile_path = _display_path(profile.paths.project_root, profile.paths.profile_file, git_common_dir=git_common_dir)
+    control_root = _display_path(profile.paths.project_root, profile.paths.control_dir, git_common_dir=git_common_dir)
+    backlog_path = _display_path(profile.paths.project_root, profile.paths.backlog_file, git_common_dir=git_common_dir)
+    state_path = _display_path(profile.paths.project_root, profile.paths.state_file, git_common_dir=git_common_dir)
+    events_path = _display_path(profile.paths.project_root, profile.paths.events_file, git_common_dir=git_common_dir)
+    inbox_path = _display_path(profile.paths.project_root, profile.paths.inbox_file, git_common_dir=git_common_dir)
+    results_path = _display_path(profile.paths.project_root, profile.paths.results_dir, git_common_dir=git_common_dir)
+    html_path = _display_path(profile.paths.project_root, profile.paths.html_file, git_common_dir=git_common_dir)
+    coverage_output = _display_path(
+        profile.paths.project_root,
+        profile.paths.project_root / "coverage" / "latest.json",
+        git_common_dir=git_common_dir,
+    )
+    skill_metadata_path = _display_path(
+        profile.paths.project_root,
+        profile.paths.skill_dir / "SKILL.md",
+        git_common_dir=git_common_dir,
+    )
+    skill_discovery_path = _display_path(
+        profile.paths.project_root,
+        profile.paths.skill_dir / "agents" / "openai.yaml",
+        git_common_dir=git_common_dir,
+    )
     validation_lines = "\n".join(f"  - `{command}`" for command in profile.validation_commands)
     doc_routing_lines = "\n".join(f"  - `{path}`" for path in profile.doc_routing_defaults)
     skill_text = f"""---
@@ -235,19 +277,19 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Core Paths
 
-- Profile: `{profile.paths.profile_file}`
-- Control root: `{profile.paths.control_dir}`
-- Backlog: `{profile.paths.backlog_file}`
-- State: `{profile.paths.state_file}`
-- Events: `{profile.paths.events_file}`
-- Inbox: `{profile.paths.inbox_file}`
-- Results: `{profile.paths.results_dir}`
-- HTML view: `{profile.paths.html_file}`
+- Profile: `{profile_path}`
+- Control root: `{control_root}`
+- Backlog: `{backlog_path}`
+- State: `{state_path}`
+- Events: `{events_path}`
+- Inbox: `{inbox_path}`
+- Results: `{results_path}`
+- HTML view: `{html_path}`
 
 ## Codex Skill Discovery
 
-- Skill metadata file: `{profile.paths.skill_dir / "SKILL.md"}`
-- UI discovery file: `{profile.paths.skill_dir / "agents/openai.yaml"}`
+- Skill metadata file: `{skill_metadata_path}`
+- UI discovery file: `{skill_discovery_path}`
 - Codex discovers this skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repo.
 - Open or refresh the repo in Codex after bootstrap so the skill appears in the available skill list.
 
@@ -257,16 +299,16 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 2. Run `{cli_command} summary`.
 3. Inspect runnable work with `{cli_command} next`.
 4. Before any repo edit you intend to keep, run `{cli_command} worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `{cli_command} worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-5. Run `{cli_command} coverage --output {profile.paths.control_dir / "coverage" / "latest.json"}` to collect shipping-surface validation coverage evidence before large surface edits.
+5. Run `{cli_command} coverage --output {coverage_output}` to collect shipping-surface validation coverage evidence before large surface edits.
 6. Claim one task with `{cli_command} claim --agent <agent-name>`, then record structured output with `{cli_command} result record ...`.
 7. Complete or release the task through the CLI for direct work.
 8. Use `{cli_command} supervise run` when you want Blackdog to launch child agents instead of editing directly.
 9. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-10. Open `{profile.paths.html_file}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
+10. Open `{html_path}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
 ## Static Board
 
-- `{profile.paths.html_file}` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
+- `{html_path}` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
 - The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
 - The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
 - The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
@@ -290,8 +332,8 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 ## Repo Contract
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
-- Do not check in mutable runtime files from `{profile.paths.control_dir}`.
-- Regenerate this skill after profile changes with `{skill_command} refresh backlog --project-root {profile.paths.project_root}`.
+- Do not check in mutable runtime files from `{control_root}`.
+- Regenerate this skill after profile changes with `{skill_command} refresh backlog --project-root .`.
 
 ## Repo Defaults
 
