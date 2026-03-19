@@ -2094,8 +2094,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotEqual(snapshot["last_checked_at"], snapshot["content_updated_at"])
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         rendered_html = paths.html_file.read_text(encoding="utf-8")
-        self.assertIn("Last content updated", rendered_html)
-        self.assertIn("Last checked", rendered_html)
+        self.assertIn("Time since last check", rendered_html)
+        self.assertIn("Time since last update", rendered_html)
+        self.assertIn("Total time on sweep", rendered_html)
+        self.assertIn("Total time on backlog", rendered_html)
         rendered_snapshot = html_snapshot(paths.html_file)
         snapshot_last_checked = datetime.fromisoformat(snapshot["last_checked_at"])
         snapshot_content_updated = datetime.fromisoformat(snapshot["content_updated_at"])
@@ -2794,9 +2796,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(first_task, snapshot["hero_highlights"]["latest_run"])
         self.assertIn("Running", snapshot["hero_highlights"]["latest_run"])
         self.assertIn("supervisor/child-01", snapshot["hero_highlights"]["latest_run"])
-        self.assertIn("1 active task", snapshot["hero_highlights"]["time_on_task"])
-        self.assertIn("live", snapshot["hero_highlights"]["time_on_task"])
-        self.assertIn("across 1 task", snapshot["hero_highlights"]["time_on_task"])
+        self.assertIn("time_since_last_check", snapshot["hero_highlights"])
+        self.assertIn("time_since_last_update", snapshot["hero_highlights"])
+        self.assertIn("total_time_on_sweep", snapshot["hero_highlights"])
+        self.assertIn("total_time_on_backlog", snapshot["hero_highlights"])
         self.assertEqual(snapshot["active_tasks"][0]["id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
@@ -2858,7 +2861,6 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("const heroHighlights = snapshot.hero_highlights || {};", html)
         self.assertNotIn("Git head", html)
         self.assertNotIn("Blackdog runtime", html)
-        self.assertIn('part.includes("live")', html)
         self.assertIn('document.getElementById("hero-meta-line").innerHTML = metaItems', html)
         self.assertIn('document.getElementById("hero-links").innerHTML = globalLinks()', html)
         self.assertIn('document.getElementById("queue-stats").innerHTML = stats.map', html)
@@ -2869,6 +2871,22 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("supervisor-runs/20260314-120000-liverun1", html)
         self.assertIn('document.getElementById("hero-progress-detail").textContent = heroProgressSummary(overallProgress);', html)
         self.assertIn('renderMetaItem("Active Branch"', html)
+        self.assertIn('renderMetaItem("Time since last check"', html)
+        self.assertIn('renderMetaItem("Time since last update"', html)
+        self.assertIn('renderMetaItem("Total time on sweep"', html)
+        self.assertIn('renderMetaItem("Total time on backlog"', html)
+        self.assertLess(
+            html.index('renderMetaItem("Time since last check"'),
+            html.index('renderMetaItem("Time since last update"'),
+        )
+        self.assertLess(
+            html.index('renderMetaItem("Time since last update"'),
+            html.index('renderMetaItem("Total time on sweep"'),
+        )
+        self.assertLess(
+            html.index('renderMetaItem("Total time on sweep"'),
+            html.index('renderMetaItem("Total time on backlog"'),
+        )
         self.assertNotIn('id="release-gates-list"', html)
         self.assertNotIn('class="eyebrow"', html)
         self.assertNotIn('id="objectives-panel"', html)
@@ -4208,9 +4226,22 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('<h2>Status</h2>', updated_html)
         self.assertIn("Active Branch", updated_html)
         self.assertIn("Commit", updated_html)
-        self.assertIn("Time on task", updated_html)
-        self.assertIn("Last content updated", updated_html)
-        self.assertIn("Last checked", updated_html)
+        self.assertIn("Time since last check", updated_html)
+        self.assertIn("Time since last update", updated_html)
+        self.assertIn("Total time on sweep", updated_html)
+        self.assertIn("Total time on backlog", updated_html)
+        self.assertLess(
+            updated_html.index('renderMetaItem("Time since last check"'),
+            updated_html.index('renderMetaItem("Time since last update"'),
+        )
+        self.assertLess(
+            updated_html.index('renderMetaItem("Time since last update"'),
+            updated_html.index('renderMetaItem("Total time on sweep"'),
+        )
+        self.assertLess(
+            updated_html.index('renderMetaItem("Total time on sweep"'),
+            updated_html.index('renderMetaItem("Total time on backlog"'),
+        )
         self.assertNotIn("Git head", updated_html)
         self.assertNotIn("Blackdog runtime", updated_html)
         self.assertIn("Blackdog Backlog", updated_html)

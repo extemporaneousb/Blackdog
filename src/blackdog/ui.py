@@ -596,35 +596,40 @@ def _latest_run_summary(tasks: list[dict[str, Any]]) -> str:
     return " · ".join(part for part in (task_id, "claimed", actor) if part)
 
 
-def _time_on_task_summary(tasks: list[dict[str, Any]]) -> str:
-    active_tasks = [
-        task
-        for task in tasks
-        if str(task.get("operator_status_key") or "").strip().lower() in {"running", "claimed"}
-    ]
-    touched_tasks = [
-        task
-        for task in tasks
-        if int(task.get("total_compute_seconds") or 0) > 0
-        or task.get("claimed_at")
-        or task.get("completed_at")
-        or task.get("released_at")
-    ]
-    if active_tasks:
-        active_seconds = sum(int(task.get("active_compute_seconds") or 0) for task in active_tasks)
-        total_seconds = sum(int(task.get("total_compute_seconds") or 0) for task in touched_tasks)
-        parts = [
-            _count_label(len(active_tasks), "active task"),
-            f"{_format_duration(active_seconds) or '0s'} live",
-            f"{_format_duration(total_seconds) or '0s'} total",
-        ]
-        if touched_tasks:
-            parts.append(f"across {_count_label(len(touched_tasks), 'task')}")
-        return " · ".join(parts)
-    if touched_tasks:
-        total_seconds = sum(int(task.get("total_compute_seconds") or 0) for task in touched_tasks)
-        return f"{_count_label(len(touched_tasks), 'task')} touched · {_format_duration(total_seconds) or '0s'} recorded"
-    return "No claimed work recorded"
+def _latest_event_at(
+    events: list[dict[str, Any]],
+    *,
+    event_type: str | None = None,
+    prefer_oldest: bool = False,
+) -> str | None:
+    chosen: datetime | None = None
+    chosen_text: str | None = None
+    for event in events:
+        if event_type and str(event.get("type") or "") != event_type:
+            continue
+        parsed = _parse_iso(event.get("at"))
+        if parsed is None:
+            continue
+        if chosen is None:
+            chosen = parsed
+            chosen_text = str(event.get("at") or "")
+            continue
+        if prefer_oldest and parsed < chosen:
+            chosen = parsed
+            chosen_text = str(event.get("at") or "")
+        elif not prefer_oldest and parsed > chosen:
+            chosen = parsed
+            chosen_text = str(event.get("at") or "")
+    return chosen_text
+
+
+def _duration_label(start_at: Any, now: datetime | None) -> str:
+    started_at = _parse_iso(start_at)
+    if started_at is None:
+        return "0s"
+    if now is None:
+        return "0s"
+    return _format_duration(_duration_seconds(started_at, now)) or "0s"
 
 
 def _build_hero_highlights(
@@ -632,12 +637,22 @@ def _build_hero_highlights(
     contract: dict[str, Any],
     headers: dict[str, Any],
     tasks: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    content_updated_at: str | None,
+    last_checked_at: str | None,
+    generated_at: str,
 ) -> dict[str, str]:
+    generated_time = _parse_iso(generated_at) or datetime.now().astimezone()
+    latest_sweep_at = _latest_event_at(events, event_type="supervisor_run_sweep") or _latest_event_at(events) or content_updated_at or generated_at
+    backlog_started_at = _latest_event_at(events, prefer_oldest=True) or content_updated_at or generated_at
     return {
         "branch": _branch_summary(contract, tasks) or "",
         "commit": _short_commit(headers.get("Target commit")) or "",
         "latest_run": _latest_run_summary(tasks),
-        "time_on_task": _time_on_task_summary(tasks),
+        "time_since_last_check": _duration_label(last_checked_at, generated_time),
+        "time_since_last_update": _duration_label(content_updated_at, generated_time),
+        "total_time_on_sweep": _duration_label(latest_sweep_at, generated_time),
+        "total_time_on_backlog": _duration_label(backlog_started_at, generated_time),
     }
 
 
@@ -1199,7 +1214,15 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "profile_file": str(profile.paths.profile_file),
         "workspace_contract": workspace_contract,
         "headers": headers,
-        "hero_highlights": _build_hero_highlights(contract=workspace_contract, headers=headers, tasks=focus_tasks),
+        "hero_highlights": _build_hero_highlights(
+            contract=workspace_contract,
+            headers=headers,
+            tasks=focus_tasks,
+            events=events,
+            content_updated_at=content_updated_at,
+            last_checked_at=last_checked_at,
+            generated_at=generated_at,
+        ),
         "last_activity": last_activity,
         "counts": summary["counts"],
         "total": summary["total"],
@@ -1576,33 +1599,6 @@ __BLACKDOG_STYLES__
       return links.map((row) => textLink(row.label, row.href)).join("");
     }
 
-    function relativeTimeFromNow(value) {
-      if (!value) {
-        return "just now";
-      }
-      const parsed = Date.parse(String(value));
-      if (Number.isNaN(parsed)) {
-        return String(value);
-      }
-      const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
-      if (seconds < 10) {
-        return "just now";
-      }
-      if (seconds < 60) {
-        return `${seconds}s ago`;
-      }
-      const minutes = Math.round(seconds / 60);
-      if (minutes < 60) {
-        return `${minutes}m ago`;
-      }
-      const hours = Math.round(minutes / 60);
-      if (hours < 24) {
-        return `${hours}h ago`;
-      }
-      const days = Math.round(hours / 24);
-      return `${days}d ago`;
-    }
-
     function renderMetaItem(label, value, options = {}) {
       if (!value) {
         return "";
@@ -1614,20 +1610,6 @@ __BLACKDOG_STYLES__
           <span class="${valueClass}">${escapeHtml(value)}</span>
         </span>
       `;
-    }
-
-    function summarizeTimeOnTask(value) {
-      const raw = String(value || "").trim();
-      if (!raw) {
-        return "";
-      }
-      const parts = raw.split("·").map((part) => part.trim()).filter(Boolean);
-      const hasLive = parts.some((part) => part.includes("live"));
-      if (hasLive) {
-        return parts.join(" · ");
-      }
-      const filtered = parts.filter((part) => part.includes("recorded") || part.includes("total"));
-      return filtered.length ? filtered.join(" · ") : raw;
     }
 
     function heroProgressSummary(progress) {
@@ -1727,9 +1709,10 @@ __BLACKDOG_STYLES__
       const metaItems = [
         renderMetaItem("Active Branch", heroHighlights.branch || headers["Target branch"] || "", { mono: true }),
         renderMetaItem("Commit", heroHighlights.commit || headers["Target commit"] || "", { mono: true }),
-        renderMetaItem("Time on task", summarizeTimeOnTask(heroHighlights.time_on_task || "")),
-        renderMetaItem("Last content updated", relativeTimeFromNow(snapshot.content_updated_at || snapshot.generated_at || activity.at || "")),
-        renderMetaItem("Last checked", relativeTimeFromNow(snapshot.last_checked_at || snapshot.generated_at || activity.at || ""))
+        renderMetaItem("Time since last check", heroHighlights.time_since_last_check || "0s"),
+        renderMetaItem("Time since last update", heroHighlights.time_since_last_update || "0s"),
+        renderMetaItem("Total time on sweep", heroHighlights.total_time_on_sweep || "0s"),
+        renderMetaItem("Total time on backlog", heroHighlights.total_time_on_backlog || "0s"),
       ].filter(Boolean);
       document.getElementById("hero-meta-line").innerHTML = metaItems
         .join("");

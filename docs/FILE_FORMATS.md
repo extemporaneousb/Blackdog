@@ -707,7 +707,10 @@ Current `hero_highlights` keys summarize the hero's workspace/activity strip:
 - `branch`
 - `commit`
 - `latest_run`
-- `time_on_task`
+- `time_since_last_check`
+- `time_since_last_update`
+- `total_time_on_sweep`
+- `total_time_on_backlog`
 
 Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projection:
 
@@ -720,7 +723,7 @@ Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projecti
 Layout projections:
 
 - `Backlog Control` uses `project_name`, `push_objective`, `content_updated_at`, `last_checked_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
-- The control panel renders a compact branch/commit/run/time-on-task line, a progress bar, and artifact links.
+- The control panel renders a compact branch/commit line, a fixed hero timing line (time since last check, time since last update, total time on sweep, total time on backlog), a progress bar, and artifact links.
 - The board does not render an objectives table or release-gate panel in the static snapshot.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
 - The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
