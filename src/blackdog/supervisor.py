@@ -1262,6 +1262,7 @@ def _ensure_stash_followup_task(
         domains=["cli", "state", "events", "inbox"],
         packages=[],
         affected_paths=list(dirty_paths),
+        task_shaping=None,
         objective=source_task.payload.get("objective") if source_task is not None else "Supervisor recovery and task outcome UX",
         requires_approval=False,
         approval_reason="",
