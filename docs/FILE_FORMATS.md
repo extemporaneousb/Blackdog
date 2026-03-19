@@ -190,6 +190,13 @@ Canonical event types include:
 - `branch_ahead`
 - `landed`
 - `landed_commit`
+- `launch_command`
+- `launch_command_strategy`
+- `prompt_template_version`
+- `prompt_template_hash`
+- `prompt_hash`
+
+`launch_command` is the resolved argv prefix and includes prompt-mode launch behavior (for example, replacing default `codex` with desktop `Codex.app`), while `prompt_*` fields capture the child prompt fingerprint used for that run.
 
 ## `<control_dir>/inbox.jsonl`
 
@@ -220,6 +227,35 @@ Required keys:
 - `residual`
 - `needs_user_input`
 - `followup_candidates`
+- `metadata`
+
+`metadata` is optional in older rows and now includes structured child protocol telemetry for supervisor-launched runs.
+
+## `<control_dir>/supervisor-runs/*/<task-id>/metadata.json`
+
+Per-child launch artifact written by the supervisor before child execution.
+
+Required keys:
+
+- `run_id`
+- `task_id`
+- `child_agent`
+- `workspace`
+- `workspace_mode`
+- `prompt_file`
+- `stdout_file`
+- `stderr_file`
+- `launched_at`
+- `metadata_file`
+- `launch_command`
+- `launch_command_strategy`
+- `prompt_template_version`
+- `prompt_template_hash`
+- `prompt_hash`
+
+Optional keys:
+
+- `worktree_spec`
 
 ## `<control_dir>/supervisor-runs/*/status.json`
 

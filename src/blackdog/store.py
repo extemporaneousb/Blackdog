@@ -299,6 +299,7 @@ def record_task_result(
     needs_user_input: bool,
     followup_candidates: list[str],
     run_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Path:
     result_dir = paths.results_dir / task_id
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -317,6 +318,7 @@ def record_task_result(
         "residual": residual,
         "needs_user_input": needs_user_input,
         "followup_candidates": followup_candidates,
+        "metadata": metadata or {},
     }
     atomic_write_text(result_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     append_event(

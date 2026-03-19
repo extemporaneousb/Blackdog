@@ -3377,8 +3377,20 @@ if __name__ == "__main__":
         self.assertIsNotNone(payload["children"][0]["land_result"])
         self.assertTrue((child_run_dir / "changes.diff").exists())
         self.assertTrue((child_run_dir / "changes.stat.txt").exists())
-        result_files = sorted((paths.results_dir / task_id).glob("*.json"))
-        self.assertTrue(result_files)
+        metadata = json.loads((child_run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["task_id"], task_id)
+        self.assertEqual(metadata["run_id"], payload["run_id"])
+        self.assertIn("prompt_template_version", metadata)
+        self.assertIn("prompt_template_hash", metadata)
+        self.assertIn("prompt_hash", metadata)
+        self.assertEqual(metadata["launch_command"][0], str(launcher_script))
+        self.assertEqual(metadata["launch_command_strategy"], "profile")
+        result_file = sorted((paths.results_dir / task_id).glob("*.json"))[-1]
+        result_payload = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertIn("metadata", result_payload)
+        self.assertEqual(result_payload["metadata"]["prompt_hash"], metadata["prompt_hash"])
+        self.assertEqual(result_payload["metadata"]["prompt_template_version"], metadata["prompt_template_version"])
+        self.assertTrue(result_file.exists())
         branch_check = subprocess.run(
             ["git", "-C", str(self.root), "show-ref", "--verify", f"refs/heads/{payload['children'][0]['task_branch']}"],
             check=False,
@@ -3386,6 +3398,17 @@ if __name__ == "__main__":
             text=True,
         )
         self.assertNotEqual(branch_check.returncode, 0)
+        child_finish_rows = [
+            row
+            for row in load_events(paths)
+            if row.get("type") == "child_finish" and row.get("task_id") == task_id
+        ]
+        self.assertTrue(child_finish_rows)
+        latest_child_finish = child_finish_rows[-1]
+        self.assertEqual(latest_child_finish["payload"]["prompt_template_version"], metadata["prompt_template_version"])
+        self.assertEqual(latest_child_finish["payload"]["prompt_hash"], metadata["prompt_hash"])
+        self.assertEqual(latest_child_finish["payload"]["launch_command"], metadata["launch_command"])
+        self.assertEqual(latest_child_finish["payload"]["launch_command_strategy"], metadata["launch_command_strategy"])
         resolved_messages = json.loads(
             subprocess.run(
                 [

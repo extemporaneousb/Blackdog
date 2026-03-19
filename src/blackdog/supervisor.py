@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 import json
+import hashlib
 import os
 import queue
 import shlex
@@ -72,6 +73,55 @@ SUPERVISOR_STATUS_CONTROL_LIMIT = 8
 DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS = 1.0
 CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS = 60.0
 CLAIM_LIVENESS_MISSING_SCAN_LIMIT = 2
+CHILD_PROMPT_TEMPLATE_VERSION = 1
+_CHILD_PROMPT_TEMPLATE = """
+You are Blackdog child agent `{child_agent}` working on one Blackdog backlog task.
+
+Current workspace for code changes: `{workspace}`
+Central Blackdog project root for backlog state: `{project_root}`
+Workspace mode: `{workspace_mode}`
+
+Task id: `{task_id}`
+Title: {task_title}
+Objective: {objective}
+Epic: {epic_title}
+Lane: {lane_title}
+Wave: {wave}
+Priority: {priority}
+Risk: {risk}
+Domains: {domains}
+
+Why it matters: {why}
+Evidence: {evidence}
+Safe first slice: {safe_first_slice}
+
+Target paths:
+{paths}
+
+Docs to review:
+{docs}
+
+Checks to run if you change behavior:
+{checks}
+
+Required operating rules:
+{workspace_baseline_rule}
+{preserve_rule}
+- Supervisor workspace mode for this run: `{workspace_mode}`.
+{primary_cleanliness_rule}
+{venv_rule}
+- The supervisor has already claimed `{task_id}` for you as `{child_agent}`. Do not run `blackdog claim` for this task again.
+- Prefer Blackdog CLI output over direct reads of raw state files when checking claims, inbox state, results, or task status.
+- Work only on `{task_id}`.
+- Use the current directory for code edits.
+- For Blackdog state commands, always target the central root with `--project-root {project_root}`.
+- Before starting, read your inbox with `{blackdog_command} inbox list --project-root {project_root} --recipient {child_agent}`.
+- When finished, record a structured result with `{blackdog_command} result record --project-root {project_root} --id {task_id} --actor {child_agent} ...`.
+{branch_rules}
+- If blocked, record a blocked or partial result and release the task with `{blackdog_command} release --project-root {project_root} --agent {child_agent} --id {task_id} --note "<reason>"`.
+- Do not start unrelated tasks.
+""".lstrip()
+CHILD_PROMPT_TEMPLATE_HASH = hashlib.sha256(_CHILD_PROMPT_TEMPLATE.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -103,6 +153,7 @@ class ChildRun:
     land_error: str | None = None
     land_needs_user_input: bool = False
     land_followup_candidates: list[str] = field(default_factory=list)
+    telemetry: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1278,65 +1329,62 @@ def _build_child_prompt(
         """
     ).strip()
     return textwrap.dedent(
-        f"""
-        You are Blackdog child agent `{child_agent}` working on one Blackdog backlog task.
-
-        Current workspace for code changes: `{workspace}`
-        Central Blackdog project root for backlog state: `{profile.paths.project_root}`
-        Workspace mode: `{workspace_mode}`
-
-        Task id: `{task.id}`
-        Title: {task.title}
-        Objective: {task.payload.get("objective") or "unassigned"}
-        Epic: {task.epic_title or "Unplanned"}
-        Lane: {task.lane_title or "Unplanned"}
-        Wave: {task.wave if task.wave is not None else "unplanned"}
-        Priority: {task.payload.get("priority")}
-        Risk: {task.payload.get("risk")}
-        Domains: {domains}
-
-        Why it matters: {task.narrative.why or "See backlog task entry."}
-        Evidence: {task.narrative.evidence or "See backlog task entry."}
-        Safe first slice: {task.payload.get("safe_first_slice")}
-
-        Target paths:
-        {paths}
-
-        Docs to review:
-        {docs}
-
-        Checks to run if you change behavior:
-        {checks}
-
-        Required operating rules:
-        {workspace_baseline_rule}
-        {preserve_rule}
-        - Supervisor workspace mode for this run: `{contract['workspace_mode']}`.
-        {primary_cleanliness_rule}
-        {venv_rule}
-        - The supervisor has already claimed `{task.id}` for you as `{child_agent}`. Do not run `blackdog claim` for this task again.
-        - Prefer Blackdog CLI output over direct reads of raw state files when checking claims, inbox state, results, or task status.
-        - Work only on `{task.id}`.
-        - Use the current directory for code edits.
-        - For Blackdog state commands, always target the central root with `--project-root {profile.paths.project_root}`.
-        - Before starting, read your inbox with `{blackdog_command} inbox list --project-root {profile.paths.project_root} --recipient {child_agent}`.
-        - When finished, record a structured result with `{blackdog_command} result record --project-root {profile.paths.project_root} --id {task.id} --actor {child_agent} ...`.
-        {branch_rules}
-        - If blocked, record a blocked or partial result and release the task with `{blackdog_command} release --project-root {profile.paths.project_root} --agent {child_agent} --id {task.id} --note "<reason>"`.
-        - Do not start unrelated tasks.
-        """
+        _CHILD_PROMPT_TEMPLATE.format(
+            child_agent=child_agent,
+            workspace=workspace,
+            project_root=profile.paths.project_root,
+            workspace_mode=contract["workspace_mode"],
+            task_id=task.id,
+            task_title=task.title,
+            objective=task.payload.get("objective") or "unassigned",
+            epic_title=task.epic_title or "Unplanned",
+            lane_title=task.lane_title or "Unplanned",
+            wave=task.wave if task.wave is not None else "unplanned",
+            priority=task.payload.get("priority"),
+            risk=task.payload.get("risk"),
+            domains=domains,
+            why=task.narrative.why or "See backlog task entry.",
+            evidence=task.narrative.evidence or "See backlog task entry.",
+            safe_first_slice=task.payload.get("safe_first_slice"),
+            paths=paths,
+            docs=docs,
+            checks=checks,
+            workspace_baseline_rule=workspace_baseline_rule,
+            preserve_rule=preserve_rule,
+            primary_cleanliness_rule=primary_cleanliness_rule,
+            venv_rule=venv_rule,
+            branch_rules=branch_rules,
+            blackdog_command=blackdog_command,
+        )
     ).strip()
 
 
 def _resolved_launch_command(profile: Profile) -> list[str]:
+    command, _ = _resolved_launch_command_with_strategy(profile)
+    return command
+
+
+def _resolved_launch_command_with_strategy(profile: Profile) -> tuple[list[str], str]:
     command = list(profile.supervisor_launch_command)
+    strategy = "profile"
     if (
         tuple(profile.supervisor_launch_command) == DEFAULT_SUPERVISOR_COMMAND
         and DESKTOP_CODEX_BINARY.is_file()
         and os.access(DESKTOP_CODEX_BINARY, os.X_OK)
     ):
         command[0] = str(DESKTOP_CODEX_BINARY)
-    return command
+        strategy = "default-desktop-codex"
+    return command, strategy
+
+
+def _build_child_launch_telemetry(launch_command: tuple[str, ...], launch_command_strategy: str, prompt: str) -> dict[str, Any]:
+    return {
+        "launch_command": list(launch_command),
+        "launch_command_strategy": launch_command_strategy,
+        "prompt_template_version": CHILD_PROMPT_TEMPLATE_VERSION,
+        "prompt_template_hash": CHILD_PROMPT_TEMPLATE_HASH,
+        "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    }
 
 
 def _build_launch_command(launch_command: tuple[str, ...], prompt: str) -> list[str]:
@@ -1463,6 +1511,40 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         (state.get("task_claims", {}).get(child.task.id) or {}).get("status") or "open"
     )
     if child.result_recorded and child.final_task_status == "done" and not child.land_error:
+        result_metadata = dict(child.telemetry)
+        result_metadata.update(
+            {
+                "final_task_status": child.final_task_status,
+                "exit_code": child.exit_code,
+                "missing_process": child.missing_process,
+                "branch_ahead": child.branch_ahead,
+                "landed": child.landed,
+                "land_error": child.land_error,
+                "result_recorded": child.result_recorded,
+                "landed_commit": (child.land_result or {}).get("landed_commit"),
+                "run_dir": str(child.run_dir),
+            }
+        )
+        result_rows = [
+            str(row["result_file"]) for row in load_task_results(profile.paths, task_id=child.task.id) if row.get("result_file")
+        ]
+        result_paths = sorted(path for path in result_rows if path in after_results - child.result_files_before)
+        for result_file in result_paths[-1:]:
+            path = Path(result_file)
+            try:
+                result_payload = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, FileNotFoundError):
+                continue
+            if not isinstance(result_payload, dict):
+                continue
+            existing_metadata = result_payload.get("metadata")
+            if isinstance(existing_metadata, dict):
+                existing_metadata.update(result_metadata)
+                result_payload["metadata"] = existing_metadata
+            else:
+                result_payload["metadata"] = result_metadata
+            atomic_write_text(path, json.dumps(result_payload, indent=2, sort_keys=True) + "\n")
+            break
         if child.message_id:
             resolve_message(
                 profile.paths,
@@ -1509,6 +1591,20 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
             residual.append("The supervisor failed to land the branch-backed child worktree.")
     if child.land_needs_user_input:
         residual.append("Primary worktree cleanup is required before the supervisor can land the child branch.")
+    result_metadata = dict(child.telemetry)
+    result_metadata.update(
+        {
+            "final_task_status": child.final_task_status,
+            "exit_code": child.exit_code,
+            "missing_process": child.missing_process,
+            "branch_ahead": child.branch_ahead,
+            "landed": child.landed,
+            "land_error": child.land_error,
+            "result_recorded": child.result_recorded,
+            "landed_commit": (child.land_result or {}).get("landed_commit"),
+            "run_dir": str(child.run_dir),
+        }
+    )
     record_task_result(
         profile.paths,
         task_id=child.task.id,
@@ -1530,6 +1626,7 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         needs_user_input=child.land_needs_user_input,
         followup_candidates=list(child.land_followup_candidates),
         run_id=child.run_dir.name,
+        metadata=result_metadata,
     )
     if child.final_task_status != "done":
         _release_if_still_claimed(
@@ -1584,6 +1681,7 @@ def _finish_child(
             "branch_ahead": child.branch_ahead,
             "landed": child.landed,
             "landed_commit": (child.land_result or {}).get("landed_commit"),
+            **child.telemetry,
         },
     )
     _emit_render(profile)
@@ -1627,6 +1725,7 @@ def _launch_child_run(
     run_id: str,
     run_dir: Path,
     launch_command: tuple[str, ...],
+    launch_command_strategy: str,
     workspace_mode: str,
 ) -> ChildRun:
     _claim_for_child(profile, load_backlog(profile.paths, profile), task, child_agent=child_agent)
@@ -1663,6 +1762,11 @@ def _launch_child_run(
             started_at=started_at,
             launch_error=str(exc),
             exit_code=None,
+            telemetry=_build_child_launch_telemetry(
+                launch_command=tuple(launch_command),
+                launch_command_strategy=launch_command_strategy,
+                prompt="",
+            ),
         )
         _finalize_child_run(profile, child, actor=actor)
         append_event(
@@ -1691,7 +1795,29 @@ def _launch_child_run(
         workspace=workspace,
         worktree_spec=prepared.worktree_spec,
     )
+    launch_telemetry = _build_child_launch_telemetry(
+        launch_command=launch_command,
+        launch_command_strategy=launch_command_strategy,
+        prompt=prompt,
+    )
     metadata_file = child_run_dir / "metadata.json"
+    metadata = {
+        "run_id": run_id,
+        **launch_telemetry,
+    }
+    metadata.update(
+        {
+            "task_id": task.id,
+            "child_agent": child_agent,
+            "workspace": str(workspace),
+            "workspace_mode": workspace_mode,
+            "prompt_file": str(prompt_file),
+            "stdout_file": str(stdout_file),
+            "stderr_file": str(stderr_file),
+            "launched_at": now_iso(),
+            "metadata_file": str(metadata_file),
+        }
+    )
     prompt_file.write_text(prompt + "\n", encoding="utf-8")
     message = send_message(
         profile.paths,
@@ -1702,16 +1828,6 @@ def _launch_child_run(
         task_id=task.id,
         tags=["supervisor-run", workspace_mode],
     )
-    metadata = {
-        "task_id": task.id,
-        "child_agent": child_agent,
-        "workspace": str(workspace),
-        "workspace_mode": workspace_mode,
-        "prompt_file": str(prompt_file),
-        "stdout_file": str(stdout_file),
-        "stderr_file": str(stderr_file),
-        "launched_at": now_iso(),
-    }
     if prepared.worktree_spec is not None:
         metadata["worktree_spec"] = prepared.worktree_spec.to_dict()
     metadata_file.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1734,6 +1850,7 @@ def _launch_child_run(
         stderr_handle=stderr_handle,
         started_at=started_at,
         worktree_spec=prepared.worktree_spec,
+        telemetry=launch_telemetry,
     )
     command = _build_launch_command(launch_command, prompt)
     env = os.environ.copy()
@@ -1909,7 +2026,8 @@ def run_supervisor(
         removed_task_ids=list(sweep["removed_task_ids"]),
     )
 
-    resolved_launch_command = tuple(_resolved_launch_command(profile))
+    resolved_launch_command, launch_command_strategy = _resolved_launch_command_with_strategy(profile)
+    resolved_launch_command = tuple(resolved_launch_command)
     children: list[ChildRun] = []
     active: dict[str, ChildRun] = {}
     completion_queue: queue.Queue[tuple[str, int | None]] = queue.Queue()
@@ -1934,6 +2052,7 @@ def run_supervisor(
             run_id=run_id,
             run_dir=run_dir,
             launch_command=resolved_launch_command,
+            launch_command_strategy=launch_command_strategy,
             workspace_mode=resolved_workspace_mode,
         )
         children.append(child)
