@@ -29,6 +29,25 @@ def _profile_for_paths(profile: Profile, *, paths) -> Profile:
     return replace(profile, paths=paths)
 
 
+def _ensure_baseline_agents_file(project_root: Path) -> None:
+    agents_file = project_root / "AGENTS.md"
+    if agents_file.exists():
+        if agents_file.is_file():
+            return
+        raise ScaffoldError(f"AGENTS path exists but is not a file: {agents_file}")
+    agents_file.write_text(
+        "# AGENTS\n\n"
+        "This repository was scaffolded with Blackdog.\n\n"
+        "Update this contract for host-repo-specific requirements.\n\n"
+        "Until this file is updated, follow a minimal standard:\n"
+        "- Keep dependency-light changes when possible.\n"
+        "- Use repository-local `./.VE/bin/blackdog`/`blackdog-skill` when present.\n"
+        "- Keep implementation changes in branch-backed task worktrees.\n"
+        "- Preserve this repository's existing operational contract.\n",
+        encoding="utf-8",
+    )
+
+
 def scaffold_named_backlog(profile: Profile, name: str, *, force: bool = False) -> Path:
     paths = named_backlog_paths(profile, name)
     named_profile = _profile_for_paths(profile, paths=paths)
@@ -158,6 +177,8 @@ def bootstrap_project(
                 + ", ".join(missing)
                 + ". Use --force to rebuild the scaffold."
             )
+
+    _ensure_baseline_agents_file(root)
 
     skill_file = profile.paths.skill_dir / "SKILL.md"
     if force or not skill_file.exists():

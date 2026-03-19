@@ -6,6 +6,7 @@ This document describes the current integration path for adopting Blackdog in an
 
 - a one-command repo bootstrap once Blackdog is installed in the local Python environment
 - repo-local profile in `blackdog.toml`
+- baseline `AGENTS.md` contract file on first bootstrap when absent
 - mutable backlog/runtime artifacts under a shared git control root
 - project-local skill scaffold under `.codex/skills/blackdog/`
 - a branch-backed `blackdog worktree` lifecycle for implementation tasks
@@ -27,6 +28,7 @@ This document describes the current integration path for adopting Blackdog in an
 2. Run `blackdog bootstrap --project-root /path/to/repo --project-name "Repo Name"`.
    If needed, `blackdog-skill new backlog` remains as a compatibility wrapper around the same bootstrap flow.
 3. Review `blackdog.toml` and tune taxonomy, validation commands, and doc routing for the host repo.
+   If `AGENTS.md` was missing, bootstrap created a baseline host-contract file you should then tailor to your repo.
    Review `paths.control_dir` and `paths.worktrees_dir` in particular; the defaults are `@git-common/blackdog` and `../.worktrees`, so runtime state is shared across worktrees and implementation work lands through sibling task worktrees rather than nested repo-runtime directories.
    Set `taxonomy.doc_routing_defaults` to the minimum repo docs agents must review before making kept changes; Blackdog emits that list into the generated project-local skill.
 4. Commit `blackdog.toml` and the project-local skill scaffold if they are part of the repo's working contract.

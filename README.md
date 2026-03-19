@@ -27,6 +27,7 @@ Planned but not implemented yet:
 
 - `blackdog`: core CLI for repo bootstrap, backlog parsing, validation, task selection, claims, approvals, completion, inbox messaging, task results, static HTML rendering, and supervisor control
 - `blackdog-skill`: compatibility wrapper for project-specific skill generation
+- `AGENTS.md`: baseline host-repo operating instructions generated on bootstrap when absent
 - `blackdog.toml`: repo-local profile for id prefixes, bucket/domain taxonomy, defaults, and heuristics
 - shared runtime state under the git control root, which defaults to `@git-common/blackdog`
 - `blackdog worktree ...`: explicit branch-backed worktree start/land/cleanup entrypoints for implementation work

@@ -929,6 +929,57 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(second_payload["skill_file"], payload["skill_file"])
 
+    def test_bootstrap_writes_baseline_agents_md_only_if_missing(self) -> None:
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "bootstrap",
+                    "--project-root",
+                    str(self.root),
+                    "--project-name",
+                    "Bootstrap Demo",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(Path(payload["project_root"]).resolve(), self.root.resolve())
+
+        agents_file = self.root / "AGENTS.md"
+        self.assertTrue(agents_file.exists())
+        agents_body = agents_file.read_text(encoding="utf-8")
+        self.assertIn("# AGENTS", agents_body)
+        self.assertIn("This repository was scaffolded with Blackdog.", agents_body)
+
+        agents_file.write_text("# AGENTS\n\nHost-specific contract.\n", encoding="utf-8")
+        second_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "bootstrap",
+                    "--project-root",
+                    str(self.root),
+                    "--project-name",
+                    "Bootstrap Demo",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(second_payload["skill_file"], payload["skill_file"])
+        self.assertEqual(agents_file.read_text(encoding="utf-8"), "# AGENTS\n\nHost-specific contract.\n")
+
     def test_default_supervisor_launcher_prefers_desktop_exec_binary(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         desktop_launcher = self.root / "codex"
