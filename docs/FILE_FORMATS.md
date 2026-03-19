@@ -609,6 +609,10 @@ Top-level keys:
 - `links`
 - `grouping_guide`
 
+`generated_at` is the snapshot creation timestamp.
+`content_updated_at` is the latest event timestamp from the source backlog/events stream (or `generated_at` when no event timestamp is available).
+`last_checked_at` is the latest supervisor heartbeat timestamp when present, falling back to `generated_at`.
+
 `queue_status` includes the counters used by the top-right status panel in the current static board:
 - `running`: tasks currently executing (`operator_status_key == "running"`).
 - `waiting`: tasks ready in the execution queue (`operator_status_key == "waiting"`).

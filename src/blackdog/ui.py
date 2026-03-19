@@ -1189,11 +1189,13 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     generated_at = now_iso()
     supervisor_last_checked_at = _latest_supervisor_check_at(profile)
     last_checked_at = _latest_timestamp(supervisor_last_checked_at, generated_at) or generated_at
+    content_updated_at = _latest_timestamp(*[row.get("at") for row in events]) or generated_at
+    last_activity = _latest_activity(events)
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
         "generated_at": generated_at,
-        "content_updated_at": generated_at,
+        "content_updated_at": content_updated_at,
         "last_checked_at": last_checked_at,
         "supervisor_last_checked_at": supervisor_last_checked_at,
         "project_name": profile.project_name,
@@ -1203,7 +1205,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "workspace_contract": workspace_contract,
         "headers": headers,
         "hero_highlights": _build_hero_highlights(contract=workspace_contract, headers=headers, tasks=focus_tasks),
-        "last_activity": _latest_activity(events),
+        "last_activity": last_activity,
         "counts": summary["counts"],
         "total": summary["total"],
         "queue_status": {
@@ -1779,7 +1781,12 @@ __BLACKDOG_STYLES__
         return "";
       }
       const parts = raw.split("·").map((part) => part.trim()).filter(Boolean);
-      return parts.find((part) => part.includes("recorded") || part.includes("total")) || raw;
+      const hasLive = parts.some((part) => part.includes("live"));
+      if (hasLive) {
+        return parts.join(" · ");
+      }
+      const filtered = parts.filter((part) => part.includes("recorded") || part.includes("total"));
+      return filtered.length ? filtered.join(" · ") : raw;
     }
 
     function heroProgressSummary(progress) {

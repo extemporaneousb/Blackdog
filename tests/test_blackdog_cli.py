@@ -2042,8 +2042,10 @@ class BlackdogCliTests(unittest.TestCase):
         datetime.fromisoformat(snapshot["content_updated_at"])
         datetime.fromisoformat(snapshot["last_checked_at"])
         self.assertIsNone(snapshot["supervisor_last_checked_at"])
-        self.assertEqual(snapshot["content_updated_at"], snapshot["generated_at"])
-        self.assertEqual(snapshot["last_checked_at"], snapshot["generated_at"])
+        self.assertLessEqual(
+            datetime.fromisoformat(snapshot["content_updated_at"]),
+            datetime.fromisoformat(snapshot["last_checked_at"]),
+        )
 
     def test_snapshot_includes_freshness_timestamps(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2068,7 +2070,7 @@ class BlackdogCliTests(unittest.TestCase):
                 {
                     "run_id": "supervisor-freshness",
                     "actor": "supervisor",
-                    "completed_at": "2026-03-19T10:14:21-07:00",
+                    "completed_at": "2099-03-19T10:14:21-07:00",
                     "steps": [
                         {
                             "index": 1,
@@ -2085,8 +2087,10 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         snapshot = build_ui_snapshot(load_profile(self.root))
-        self.assertEqual(snapshot["supervisor_last_checked_at"], "2026-03-19T10:14:21-07:00")
-        self.assertEqual(snapshot["last_checked_at"], snapshot["content_updated_at"])
+        self.assertEqual(snapshot["supervisor_last_checked_at"], "2099-03-19T10:14:21-07:00")
+        latest_event = load_events(paths)[-1]
+        self.assertEqual(snapshot["content_updated_at"], latest_event["at"])
+        self.assertNotEqual(snapshot["last_checked_at"], snapshot["content_updated_at"])
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         rendered_html = paths.html_file.read_text(encoding="utf-8")
         self.assertIn("Last content updated", rendered_html)
@@ -2098,7 +2102,7 @@ class BlackdogCliTests(unittest.TestCase):
         rendered_content_updated = datetime.fromisoformat(rendered_snapshot["content_updated_at"])
         self.assertGreaterEqual(rendered_last_checked, snapshot_last_checked)
         self.assertGreaterEqual(rendered_content_updated, snapshot_content_updated)
-        self.assertEqual(rendered_last_checked, rendered_content_updated)
+        self.assertGreater(rendered_last_checked, rendered_content_updated)
         self.assertEqual(rendered_snapshot["supervisor_last_checked_at"], snapshot["supervisor_last_checked_at"])
 
     def test_ui_helper_pid_artifact_and_read_fallbacks(self) -> None:
@@ -2808,6 +2812,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Running", snapshot["hero_highlights"]["latest_run"])
         self.assertIn("supervisor/child-01", snapshot["hero_highlights"]["latest_run"])
         self.assertIn("1 active task", snapshot["hero_highlights"]["time_on_task"])
+        self.assertIn("live", snapshot["hero_highlights"]["time_on_task"])
         self.assertIn("across 1 task", snapshot["hero_highlights"]["time_on_task"])
         self.assertEqual(snapshot["active_tasks"][0]["id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
@@ -2879,6 +2884,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("const heroHighlights = snapshot.hero_highlights || {};", html)
         self.assertNotIn("Git head", html)
         self.assertNotIn("Blackdog runtime", html)
+        self.assertIn('part.includes("live")', html)
         self.assertIn('document.getElementById("hero-meta-line").innerHTML = metaItems', html)
         self.assertIn('document.getElementById("hero-links").innerHTML = globalLinks()', html)
         self.assertIn('document.getElementById("queue-stats").innerHTML = stats.map', html)

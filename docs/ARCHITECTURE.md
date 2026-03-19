@@ -200,8 +200,9 @@ countdown so operators can keep the static file cycling during active
 runs without introducing a live data transport.
 Each snapshot exposes both content freshness (`content_updated_at`) and
 board freshness (`last_checked_at`) so operators can see how current the
-visible file is. `last_checked_at` is clamped to the snapshot generation
-time so the board never reports a check older than the HTML it embeds.
+visible file is. `content_updated_at` comes from the latest event timestamp
+in the current snapshot source stream, while `last_checked_at` is derived from
+the latest supervisor heartbeat (falling back to the snapshot generation time).
 When the raw supervisor loop heartbeat matters, the snapshot also
 includes `supervisor_last_checked_at`.
 
