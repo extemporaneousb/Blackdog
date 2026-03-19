@@ -3728,16 +3728,37 @@ def main() -> int:
     task_id = os.environ["BLACKDOG_TASK_ID"]
     actor = os.environ["BLACKDOG_AGENT_NAME"]
     run_dir = Path(os.environ["BLACKDOG_RUN_DIR"])
+    protocol_cli = run_dir / "blackdog-child"
+    protocol_probe = subprocess.run(
+        [
+            str(protocol_cli),
+            "inbox",
+            "list",
+            "--project-root",
+            str(project_root),
+            "--recipient",
+            actor,
+            "--status",
+            "open",
+        ],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+        check=False,
+    )
+    run_dir.joinpath("protocol-helper-check.txt").write_text(
+        f"inbox_exit_code={protocol_probe.returncode}\\n",
+        encoding="utf-8",
+    )
+    if protocol_probe.returncode != 0:
+        return 3
     run_dir.joinpath("prompt-copy.txt").write_text(prompt, encoding="utf-8")
     Path("feature.txt").write_text(task_id + "\\n", encoding="utf-8")
     subprocess.run(["git", "add", "feature.txt"], check=True)
     subprocess.run(["git", "commit", "-m", f"Land {task_id} from child run"], check=True)
-    env = os.environ.copy()
-    subprocess.run(
+    helper_result = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "blackdog.cli",
+            str(protocol_cli),
             "result",
             "record",
             "--project-root",
@@ -3753,10 +3774,10 @@ def main() -> int:
             "--validation",
             "fake-child",
         ],
-        check=True,
-        env=env,
+        env=os.environ.copy(),
+        check=False,
     )
-    return 0
+    return 0 if helper_result.returncode == 0 else 4
 
 
 if __name__ == "__main__":
@@ -3859,6 +3880,10 @@ if __name__ == "__main__":
         self.assertEqual(result_payload["metadata"]["prompt_hash"], metadata["prompt_hash"])
         self.assertEqual(result_payload["metadata"]["prompt_template_version"], metadata["prompt_template_version"])
         self.assertTrue(result_file.exists())
+        self.assertEqual(
+            (child_run_dir / "protocol-helper-check.txt").read_text(encoding="utf-8").strip(),
+            "inbox_exit_code=0",
+        )
         branch_check = subprocess.run(
             ["git", "-C", str(self.root), "show-ref", "--verify", f"refs/heads/{payload['children'][0]['task_branch']}"],
             check=False,
@@ -3900,6 +3925,194 @@ if __name__ == "__main__":
             ).stdout
         )
         self.assertEqual(len(resolved_messages), 1)
+
+    def test_supervise_report_observations_reflect_missing_artifacts_in_run_bundle(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        launcher_script = install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    run_dir = Path(os.environ["BLACKDOG_RUN_DIR"])
+    protocol_cli = run_dir / "blackdog-child"
+
+    Path("artifact.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "artifact.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Land {task_id} from child run"], check=True)
+
+    if os.environ.get("BLACKDOG_TEST_DELETE_METADATA") == "1":
+        metadata_path = run_dir / "metadata.json"
+        if metadata_path.exists():
+            metadata_path.unlink()
+        run_dir.joinpath("metadata-deleted.txt").write_text("deleted\\n", encoding="utf-8")
+
+    helper_result = subprocess.run(
+        [
+            str(protocol_cli),
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"child ran in {Path.cwd()}",
+            "--validation",
+            "fake-child-observation",
+        ],
+        env=os.environ.copy(),
+        check=False,
+    )
+    return 0 if helper_result.returncode == 0 else 4
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint launcher for report artifact-observation test",
+        )
+
+        for title, lane_title in (
+            ("Report complete run task", "Observation lane complete"),
+            ("Report missing-artifact run task", "Observation lane incomplete"),
+        ):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "integration",
+                "--why",
+                "Need a delegated child report that shows artifact-shape regressions.",
+                "--evidence",
+                "A missing run artifact should be visible in the supervisor report observations.",
+                "--safe-first-slice",
+                "Run one child with a full artifact bundle and one with a missing metadata artifact.",
+                "--path",
+                "artifact.txt",
+                "--epic-title",
+                "Supervisor",
+                "--lane-title",
+                lane_title,
+                "--wave",
+                "0",
+            )
+
+        complete_task_id = task_ids_by_title(self.root)["Report complete run task"]
+        missing_task_id = task_ids_by_title(self.root)["Report missing-artifact run task"]
+
+        complete_run = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--id",
+                complete_task_id,
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(complete_run.returncode, 0, complete_run.stderr)
+
+        missing_meta_env = cli_env()
+        missing_meta_env["BLACKDOG_TEST_DELETE_METADATA"] = "1"
+        incomplete_run = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--id",
+                missing_task_id,
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=missing_meta_env,
+            cwd=self.root,
+        )
+        self.assertEqual(incomplete_run.returncode, 0, incomplete_run.stderr)
+
+        report_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "report",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--run-limit",
+                    "2",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(report_payload["summary"]["output_shape"]["artifact_incomplete_attempts"], 1)
+        self.assertEqual(report_payload["summary"]["runs_total"], 2)
+        self.assertIn(
+            "output_shape_consistency",
+            {row["category"] for row in report_payload["observations"]},
+        )
+        attempts = {
+            attempt["task_id"]: attempt for run in report_payload["runs"] for attempt in run["attempts"]
+        }
+        complete_attempt = attempts[complete_task_id]
+        missing_attempt = attempts[missing_task_id]
+        self.assertTrue(complete_attempt["artifact_complete"])
+        self.assertTrue(complete_attempt["metadata_exists"])
+        self.assertEqual(complete_attempt["artifact_count"], 4)
+        self.assertFalse(missing_attempt["artifact_complete"])
+        self.assertFalse(missing_attempt["metadata_exists"])
+        self.assertEqual(missing_attempt["artifact_count"], 3)
+        self.assertIn("missing artifacts", missing_attempt["output_shape_note"])
 
     def test_supervise_run_keeps_live_child_claimed_until_completion(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

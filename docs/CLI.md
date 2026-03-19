@@ -114,12 +114,22 @@ For delegated ergonomics reviews, use:
 - `blackdog supervise recover --format json`
 - `blackdog supervise status --format json`
 
+When child work happens, prefer the generated protocol helper in the child
+workspace (`blackdog-child`) for protocol operations:
+
+- `blackdog-child result record --status ...`
+- `blackdog-child inbox list ...`
+- `blackdog-child release --note ...`
+
 Use these payloads to check:
 
 - startup friction (`summary.startup`, `observations` with category `startup`)
 - retry pressure (`summary.retry`, launch re-runs)
-- output-shape consistency (`attempts[*].artifact_complete`, `output_shape` summary)
+- output-shape consistency (`attempts[*].artifact_complete`, `attempts[*].artifact_count`,
+  `attempts[*].output_shape_note`, `output_shape` summary)
 - landing outcomes (`summary.landing`, `runs[*].landed_count`, `attempts[*].land_error`)
+- artifact telemetry observations (`observations` with category `startup_friction`,
+  `retry_pressure`, `output_shape_consistency`, `landing_failures`)
 
 Cross-check attempt-level fields (`prompt_exists`, `stdout_exists`,
 `stderr_exists`, `metadata_exists`) against `supervisor-runs` artifacts

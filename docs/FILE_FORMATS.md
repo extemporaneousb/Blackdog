@@ -299,6 +299,8 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
   execution and explicit recoverable cases.
 - `blackdog supervise report --format json` for startup friction, retry
   pressure, output-shape consistency, and landing outcomes.
+- In the child workspace, use `blackdog-child` for protocol commands:
+  `result record`, `inbox`, and `release`.
 - `supervise report` payload fields:
   - `summary.startup`, `summary.retry`, `summary.output_shape`, `summary.landing`
   - `runs[*].attempts[*].launch_error`, `artifacts_dir`, `prompt_exists`,
@@ -306,6 +308,9 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
     `artifact_count`, `artifact_complete`, `metadata_valid`
   - `runs[*].attempts[*].branch_ahead`, `landed`, `land_error`
   - `observations` with actionable severity buckets
+  - `observations[*].category` values include
+    `startup_friction`, `retry_pressure`, `output_shape_consistency`,
+    `landing_failures`
 - Child artifacts in `supervisor-runs/*/<task-id>/` and
   `task-results/<task-id>/` are the source-of-truth artifacts for
   startup and landing diagnostics.
@@ -470,10 +475,10 @@ Current keys include:
 
 Each `attempts` entry includes:
 
-- `task_id`
-- `child_agent`
-- `attempted_at`
-- `workspace`
+  - `task_id`
+  - `child_agent`
+  - `attempted_at`
+  - `workspace`
 - `workspace_mode`
 - `branch`
 - `target_branch`
@@ -486,16 +491,16 @@ Each `attempts` entry includes:
 - `branch_ahead`
 - `landed`
 - `land_error`
-- `artifacts_dir`
-- `prompt_exists`
-- `stdout_exists`
-- `stderr_exists`
-- `metadata_exists`
-- `artifact_count`
-- `artifact_complete`
-- `metadata_valid`
-- `metadata_parse_error`
-- `metadata_prompt_hash`
+  - `artifacts_dir`
+  - `prompt_exists`
+  - `stdout_exists`
+  - `stderr_exists`
+  - `metadata_exists`
+  - `artifact_count`
+  - `artifact_complete`
+  - `metadata_valid`
+  - `metadata_parse_error`
+  - `metadata_prompt_hash`
 - `output_shape_note`
 
 `summary` includes:
