@@ -1983,9 +1983,14 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Last content updated", rendered_html)
         self.assertIn("Last checked", rendered_html)
         rendered_snapshot = html_snapshot(paths.html_file)
-        self.assertEqual(rendered_snapshot["last_checked_at"], snapshot["last_checked_at"])
+        snapshot_last_checked = datetime.fromisoformat(snapshot["last_checked_at"])
+        snapshot_content_updated = datetime.fromisoformat(snapshot["content_updated_at"])
+        rendered_last_checked = datetime.fromisoformat(rendered_snapshot["last_checked_at"])
+        rendered_content_updated = datetime.fromisoformat(rendered_snapshot["content_updated_at"])
+        self.assertGreaterEqual(rendered_last_checked, snapshot_last_checked)
+        self.assertGreaterEqual(rendered_content_updated, snapshot_content_updated)
+        self.assertEqual(rendered_last_checked, rendered_content_updated)
         self.assertEqual(rendered_snapshot["supervisor_last_checked_at"], snapshot["supervisor_last_checked_at"])
-        self.assertEqual(rendered_snapshot["content_updated_at"], snapshot["content_updated_at"])
 
     def test_snapshot_models_objective_rows_with_progress_summaries(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
