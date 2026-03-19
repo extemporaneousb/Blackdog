@@ -257,11 +257,12 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 2. Run `{cli_command} summary`.
 3. Inspect runnable work with `{cli_command} next`.
 4. Before any repo edit you intend to keep, run `{cli_command} worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `{cli_command} worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-5. Claim one task with `{cli_command} claim --agent <agent-name>`, then record structured output with `{cli_command} result record ...`.
-6. Complete or release the task through the CLI for direct work.
-7. Use `{cli_command} supervise run` when you want Blackdog to launch child agents instead of editing directly.
-8. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-9. Open `{profile.paths.html_file}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
+5. Run `{cli_command} coverage --output {profile.paths.control_dir / "coverage" / "latest.json"}` to collect shipping-surface validation coverage evidence before large surface edits.
+6. Claim one task with `{cli_command} claim --agent <agent-name>`, then record structured output with `{cli_command} result record ...`.
+7. Complete or release the task through the CLI for direct work.
+8. Use `{cli_command} supervise run` when you want Blackdog to launch child agents instead of editing directly.
+9. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+10. Open `{profile.paths.html_file}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
 ## Static Board
 

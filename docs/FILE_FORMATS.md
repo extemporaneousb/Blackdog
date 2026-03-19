@@ -86,6 +86,35 @@ Each named backlog reuses the same artifact layout as the default backlog root:
 
 These named roots are created and removed with `blackdog backlog new NAME` and `blackdog backlog remove NAME`. The default CLI still operates on the default backlog unless a command explicitly targets a named root in the future.
 
+## `coverage/latest.json` (or configured `tool.blackdog.coverage.artifact_output`)
+
+`blackdog coverage` writes a JSON report when `--output` is set or when
+`[tool.blackdog.coverage].artifact_output` exists in `pyproject.toml`.
+
+The emitted schema includes:
+
+- `project_root`
+- `profile`
+- `status`
+- `runs`: command execution results, each with:
+  - `command`
+  - `status`
+  - `returncode`
+  - `elapsed_seconds`
+  - `stdout`
+  - `stderr`
+  - `coverage`
+- `summary`: aggregated coverage totals for modules under `src/`
+
+`runs[*].coverage` maps `module_path` → `{covered, total, coverage_percent}`.
+`summary` also includes:
+
+- `modules`
+- `module_count`
+- `total_lines`
+- `covered_lines`
+- `coverage_percent`
+
 ## `<control_dir>/backlog.md`
 
 Human-readable backlog plus machine-readable fenced JSON blocks.

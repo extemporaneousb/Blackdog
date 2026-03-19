@@ -23,30 +23,26 @@ This document describes the current integration path for adopting Blackdog in an
 
 ## Fresh install operator flow
 
-1. Install Blackdog into the host repo's local Python environment, then run bootstrap.
-   - Editable local installation: `python -m pip install -e /path/to/blackdog`
-   - Git installation: `python -m pip install git+<github-url>`
-   - `blackdog bootstrap --project-root /path/to/repo --project-name "Repo Name"`
-   - If needed, `blackdog-skill new backlog` remains as a compatibility wrapper around the same bootstrap flow.
-2. Verify generated bootstrap artifacts are present:
+1. Install Blackdog into a local Python environment available to the host repo.
+   Today that can be an editable checkout or a Git install such as `python -m pip install -e /path/to/blackdog` or `python -m pip install git+<github-url>`.
+2. Run `blackdog bootstrap --project-root /path/to/repo --project-name "Repo Name"`.
+   If needed, `blackdog-skill new backlog` remains as a compatibility wrapper around the same bootstrap flow.
+3. Verify the generated bootstrap artifacts are present:
    - `blackdog.toml`
    - `AGENTS.md` (generated when absent)
    - `.codex/skills/blackdog/SKILL.md`
    - `.codex/skills/blackdog/agents/openai.yaml`
-   - runtime artifacts under the resolved control root (`backlog.md`, `task-results/`, etc.)
-3. Commit `blackdog.toml` and the project-local skill files if they are part of your repo contract.
-   - If you later change `blackdog.toml`, run `blackdog-skill refresh backlog --project-root /path/to/repo`.
-   - Do not plan on committing mutable runtime files from the control root.
-4. Set up worktree-local Python environments before implementation work in each fresh worktree:
-   - Create that worktree's own `.VE/` (or equivalent repo-local env).
-   - Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
-5. Tune the generated profile for host behavior:
-   - `paths.control_dir` and `paths.worktrees_dir` (deployment model)
-   - `taxonomy.doc_routing_defaults` (required docs before edits)
-6. Start implementation work with the WTAM preflight check:
-   - `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first.
-7. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work.
-   Open `backlog-index.html` directly and reload it when you want the latest state.
+   - runtime artifacts under the resolved control root (`backlog.md`, `task-results/`, and related state files)
+4. Review `blackdog.toml` and tune taxonomy, validation commands, and doc routing for the host repo.
+   If `AGENTS.md` was missing, bootstrap created a baseline host-contract file you should then tailor to your repo.
+   Review `paths.control_dir` and `paths.worktrees_dir` in particular; the defaults are `@git-common/blackdog` and `../.worktrees`, so runtime state is shared across worktrees and implementation work lands through sibling task worktrees rather than nested repo-runtime directories.
+   Set `taxonomy.doc_routing_defaults` to the minimum repo docs agents must review before making kept changes; Blackdog emits that list into the generated project-local skill.
+5. Commit `blackdog.toml` and the project-local skill scaffold if they are part of the repo's working contract.
+   Do not plan around checking in mutable runtime files; Blackdog now defaults to a shared local control root outside the built artifact.
+6. If you later change `blackdog.toml`, regenerate the tailored skill with `blackdog-skill refresh backlog --project-root /path/to/repo`.
+7. In each fresh git worktree, create that worktree's own `.VE/` (or equivalent repo-local environment) before running repo-local commands. Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
+8. Treat implementation edits in the primary worktree as a contract violation. Start with `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
+9. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog coverage`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work. Open `backlog-index.html` directly and reload it when you want the latest state.
 
 ## How the Blackdog skill appears in Codex
 

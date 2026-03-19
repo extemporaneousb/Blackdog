@@ -3,7 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shlex
+import subprocess
 from pathlib import Path
+import sys
+import tempfile
+import time
+import tomllib
 from typing import Any
 
 from .backlog import (
@@ -72,6 +79,68 @@ from .worktree import (
 )
 
 
+_COVERAGE_LINE_RE = re.compile(r"^\s*(?P<count>\d+)?\s*:\s*(?P<code>.*)$")
+_ENV_ASSIGN_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
+_TRACE_RUNNER = """
+import io
+import os
+import runpy
+import sys
+import trace
+
+
+def _system_exit_code(value):
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    print(value, file=sys.stderr)
+    return 1
+
+
+def _main():
+    cover_dir, mode, target, *arguments = sys.argv[1:]
+    tracer = trace.Trace(count=1, trace=0)
+    exit_code = 0
+    try:
+        if mode == "module":
+            _, mod_spec, code = runpy._get_module_details(target)
+            sys.argv = [code.co_filename, *arguments]
+            globs = {
+                "__name__": "__main__",
+                "__file__": code.co_filename,
+                "__package__": mod_spec.parent,
+                "__loader__": mod_spec.loader,
+                "__spec__": mod_spec,
+                "__cached__": None,
+            }
+        elif mode == "script":
+            sys.argv = [target, *arguments]
+            sys.path[0] = os.path.dirname(target)
+            with io.open_code(target) as handle:
+                code = compile(handle.read(), target, "exec")
+            globs = {
+                "__file__": target,
+                "__name__": "__main__",
+                "__package__": None,
+                "__cached__": None,
+            }
+        else:
+            raise SystemExit(f"Unsupported coverage runner mode: {mode}")
+        tracer.runctx(code, globs, globs)
+    except OSError as err:
+        sys.exit(f"Cannot run file {sys.argv[0]!r} because: {err}")
+    except SystemExit as exc:
+        exit_code = _system_exit_code(exc.code)
+    tracer.results().write_results(show_missing=True, summary=False, coverdir=cover_dir)
+    raise SystemExit(exit_code)
+
+
+if __name__ == "__main__":
+    _main()
+""".strip()
+
+
 def _load_runtime(project_root: Path | None = None):
     profile = load_profile(project_root)
     snapshot = load_backlog(profile.paths, profile)
@@ -97,6 +166,170 @@ def _env_required(value: str | None, env_var: str, *, arg_name: str, command: st
     if resolved:
         return resolved
     raise BacklogError(f"{command} requires --{arg_name} (or set ${env_var})")
+
+
+def _parse_trace_command(command: str) -> tuple[dict[str, str], list[str]]:
+    parts = shlex.split(command)
+    if not parts:
+        raise BacklogError("Coverage command is empty.")
+    env: dict[str, str] = {}
+    while parts:
+        match = _ENV_ASSIGN_RE.match(parts[0])
+        if match is None:
+            break
+        env[match.group("key")] = match.group("value")
+        parts.pop(0)
+    if not parts:
+        raise BacklogError(f"Coverage command is only environment assignments: {command!r}")
+    return env, parts
+
+
+def _load_coverage_profile_settings(project_root: Path) -> dict[str, object]:
+    pyproject_path = project_root / "pyproject.toml"
+    if not pyproject_path.exists():
+        return {}
+    with pyproject_path.open("rb") as handle:
+        payload = tomllib.load(handle)
+    return dict((payload.get("tool") or {}).get("blackdog", {}).get("coverage") or {})
+
+
+def _build_trace_runner(parts: list[str], *, cover_dir: Path) -> list[str]:
+    if not parts:
+        raise BacklogError(f"Coverage command is not executable: {parts!r}")
+
+    command = [sys.executable, "-c", _TRACE_RUNNER, str(cover_dir)]
+    head = parts[0]
+    if Path(head).name.startswith("python"):
+        python_args = parts[1:]
+        if not python_args:
+            raise BacklogError(f"Coverage command is incomplete: {parts!r}")
+    elif Path(head).suffix == ".py":
+        python_args = parts
+    else:
+        raise BacklogError(
+            f"Coverage command must start with a Python executable or a .py script path: {parts!r}"
+        )
+
+    if python_args[0] == "-m":
+        if len(python_args) < 2:
+            raise BacklogError(f"Coverage command is incomplete: {parts!r}")
+        command.extend(["module", python_args[1], *python_args[2:]])
+    else:
+        command.extend(["script", *python_args])
+    return command
+
+
+def _parse_coverage_file(path: Path) -> tuple[int, int]:
+    covered = 0
+    total = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = _COVERAGE_LINE_RE.match(line)
+        if match is None:
+            continue
+        code = match.group("code").strip()
+        if not code:
+            continue
+        total += 1
+        if match.group("count") is not None and match.group("count").strip():
+            covered += 1
+    return covered, total
+
+
+def _coverage_source(profile_root: Path, source_root: Path, cover_file: Path) -> Path | None:
+    if not source_root.is_dir():
+        return None
+    target = source_root / Path(*cover_file.stem.split(".")).with_suffix(".py")
+    if not target.exists():
+        return None
+    try:
+        relative = target.relative_to(profile_root)
+    except ValueError:
+        return None
+    if not (relative.parts[0] == "src" and len(relative.parts) > 1 and relative.parts[1] == "blackdog"):
+        return None
+    return target
+
+
+def _truncate_text(value: str, *, max_chars: int = 6_000) -> str | None:
+    value = value.strip()
+    if not value:
+        return None
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "\n[truncated]"
+
+
+def _collect_trace_coverage(profile_root: Path, source_root: Path, *, cover_dir: Path) -> dict[str, dict[str, int | float]]:
+    modules: dict[str, dict[str, int | float]] = {}
+    for cover_file in sorted(cover_dir.glob("*.cover")):
+        source = _coverage_source(profile_root, source_root, cover_file)
+        if source is None:
+            continue
+        covered, total = _parse_coverage_file(cover_file)
+        if total <= 0:
+            continue
+        key = str(source.relative_to(profile_root))
+        percent = round((covered / total * 100.0), 2) if total else 0.0
+        modules[key] = {"covered": covered, "total": total, "coverage_percent": percent}
+    return modules
+
+
+def _merge_coverage(
+    a: dict[str, dict[str, int | float]],
+    b: dict[str, dict[str, int | float]],
+) -> dict[str, dict[str, int | float]]:
+    merged = dict(a)
+    for path, payload in b.items():
+        if path not in merged:
+            merged[path] = payload.copy()
+            continue
+        merged[path]["covered"] = max(merged[path]["covered"], payload["covered"])
+        merged[path]["total"] = max(merged[path]["total"], payload["total"])
+        if merged[path]["total"]:
+            merged[path]["coverage_percent"] = round((merged[path]["covered"] / merged[path]["total"]) * 100.0, 2)
+        else:
+            merged[path]["coverage_percent"] = 0.0
+    return merged
+
+
+def _run_coverage_command(command: str, *, project_root: Path, cover_dir: Path) -> dict[str, Any]:
+    env_assignments, command_parts = _parse_trace_command(command)
+    env = os.environ.copy()
+    env.update(env_assignments)
+    start = time.perf_counter()
+    runner = _build_trace_runner(command_parts, cover_dir=cover_dir)
+    completed = subprocess.run(
+        runner,
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    elapsed = time.perf_counter() - start
+    coverage = _collect_trace_coverage(project_root, project_root / "src", cover_dir=cover_dir)
+    status = "passed" if completed.returncode == 0 else "failed"
+    return {
+        "command": command,
+        "status": status,
+        "returncode": completed.returncode,
+        "elapsed_seconds": round(elapsed, 3),
+        "stdout": _truncate_text(completed.stdout or "", max_chars=6_000),
+        "stderr": _truncate_text(completed.stderr or "", max_chars=6_000),
+        "coverage": coverage,
+    }
+
+
+def _coverage_summary(modules: dict[str, dict[str, int | float]]) -> dict[str, Any]:
+    total = sum(int(payload["total"]) for payload in modules.values())
+    covered = sum(int(payload["covered"]) for payload in modules.values())
+    percent = round((covered / total * 100.0), 2) if total else 0.0
+    return {
+        "modules": modules,
+        "module_count": len(modules),
+        "total_lines": total,
+        "covered_lines": covered,
+        "coverage_percent": percent,
+    }
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -568,6 +801,47 @@ def cmd_result_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_coverage(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    coverage_settings = _load_coverage_profile_settings(profile.paths.project_root)
+    default_output = coverage_settings.get("artifact_output")
+    output_path = args.output
+    if output_path is None and isinstance(default_output, str) and default_output.strip():
+        output_path = str(Path(default_output))
+
+    commands = [args.command] if args.command else list(profile.validation_commands)
+    runs: list[dict[str, Any]] = []
+    merged_modules: dict[str, dict[str, int | float]] = {}
+    status = "passed"
+    for command in commands:
+        with tempfile.TemporaryDirectory(prefix="blackdog-coverage-") as raw_tmp_dir:
+            run = _run_coverage_command(
+                command,
+                project_root=profile.paths.project_root,
+                cover_dir=Path(raw_tmp_dir),
+            )
+        merged_modules = _merge_coverage(merged_modules, run["coverage"])
+        runs.append(run)
+        if run["status"] != "passed":
+            status = "failed"
+
+    summary = _coverage_summary(merged_modules)
+    payload = {
+        "project_root": str(profile.paths.project_root),
+        "profile": str(profile.paths.profile_file),
+        "status": status,
+        "runs": runs,
+        "summary": summary,
+    }
+    if output_path is not None:
+        output = (profile.paths.project_root / Path(output_path)).resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        payload["output"] = str(output)
+    print(json.dumps(payload, indent=2))
+    return 0 if status == "passed" else 1
+
+
 def cmd_tune(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     payload, created = seed_tune_task(profile)
@@ -849,6 +1123,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_result_record.add_argument("--followup", action="append", default=[])
     p_result_record.add_argument("--needs-user-input", action="store_true")
     p_result_record.set_defaults(func=cmd_result_record)
+
+    p_coverage = subparsers.add_parser("coverage", help="Run validation checks and emit coverage report")
+    p_coverage.add_argument("--project-root", default=None)
+    p_coverage.add_argument("--command", default=None)
+    p_coverage.add_argument("--output", default=None)
+    p_coverage.set_defaults(func=cmd_coverage)
 
     p_inbox = subparsers.add_parser("inbox", help="Inbox messaging for supervisor and child agents")
     inbox_subparsers = p_inbox.add_subparsers(dest="inbox_command", required=True)

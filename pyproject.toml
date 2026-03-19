@@ -26,3 +26,7 @@ blackdog = ["ui.css"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.blackdog.coverage]
+artifact_output = "coverage/latest.json"
+shipped_surface = ["src/blackdog/cli.py", "src/blackdog/scaffold.py", "src/blackdog/ui.py"]

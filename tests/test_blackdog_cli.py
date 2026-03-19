@@ -682,6 +682,78 @@ class BlackdogCliTests(unittest.TestCase):
         task_added_rows = [row for row in load_events(paths) if row["type"] == "task_added" and row.get("task_id") == tune_payload["id"]]
         self.assertEqual(len(task_added_rows), 1)
 
+    def test_coverage_command_runs_specified_command_and_writes_output(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        profile = load_profile(self.root)
+        target_script = self.root / "src" / "blackdog" / "coverage_target.py"
+        target_script.parent.mkdir(parents=True, exist_ok=True)
+        target_script.write_text(
+            "print('coverage ok')\n",
+            encoding="utf-8",
+        )
+        output = profile.paths.project_root / "coverage" / "latest.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "coverage",
+                "--project-root",
+                str(self.root),
+                "--command",
+                f"PYTHONPATH=src python3 {target_script}",
+                "--output",
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "passed")
+        self.assertIsInstance(payload["runs"], list)
+        self.assertEqual(len(payload["runs"]), 1)
+        run_payload = payload["runs"][0]
+        self.assertEqual(run_payload["status"], "passed")
+        self.assertIn("coverage", run_payload)
+        self.assertGreaterEqual(payload["summary"]["module_count"], 0)
+        self.assertIn("modules", payload["summary"])
+        self.assertEqual(payload["output"], str(output.resolve()))
+        self.assertTrue(output.exists())
+        persisted = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["status"], "passed")
+
+    def test_coverage_command_reports_failure_for_failing_validation(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        fail_script = self.root / "coverage_fail.py"
+        fail_script.write_text("raise SystemExit(1)\n", encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "coverage",
+                "--project-root",
+                str(self.root),
+                "--command",
+                f"PYTHONPATH=src python3 {fail_script}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(len(payload["runs"]), 1)
+        self.assertEqual(payload["runs"][0]["status"], "failed")
+        self.assertEqual(payload["runs"][0]["returncode"], 1)
+
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"
         state_file.write_text('{"version": 1}\n', encoding="utf-8")

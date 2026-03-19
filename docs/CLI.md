@@ -13,6 +13,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog validate`
 - `blackdog render`
 - `blackdog snapshot`
+- `blackdog coverage [--command CMD] [--output FILE]`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
@@ -128,6 +129,14 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 ### Structured results
 
 - `blackdog result record --id TASK --actor NAME --status success|blocked|partial ...`
+
+### Coverage reporting
+
+`blackdog coverage` runs one or more validation commands (defaulting to profile `taxonomy.validation_commands`) under the stdlib `trace` module and emits a JSON summary with module-level coverage and aggregated totals.
+
+- `--command` uses the supplied validation command instead of profile defaults.
+- `--output` writes the same JSON report to disk for retention.
+- Return code is non-zero when any validation command fails.
 
 ### Delegated child telemetry workflow
 

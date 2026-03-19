@@ -9,5 +9,6 @@ __pycache__/
 .VE/
 build/
 dist/
+coverage/
 .worktrees/
 .blackdog/worktrees/
