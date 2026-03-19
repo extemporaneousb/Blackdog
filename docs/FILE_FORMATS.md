@@ -419,6 +419,74 @@ Known `case` values today:
 - `partial_run`
 - `landed_but_unfinished`
 
+## `blackdog supervise report --format json`
+
+Canonical operator-metrics payload for startup friction, retry pressure, output-shape consistency, and landing outcomes.
+
+Current keys include:
+
+- `actor`
+- `run_limit`
+- `runs`
+- `summary`
+- `observations`
+
+`runs` entries include:
+
+- `run_id`
+- `actor`
+- `workspace_mode`
+- `final_status`
+- `attempts`
+- `run_dir`
+- `status_file`
+- `started_at`
+- `completed_at`
+- `step_count`
+- `attempt_count`
+- `launch_failures`
+- `landed_count`
+
+Each `attempts` entry includes:
+
+- `task_id`
+- `child_agent`
+- `attempted_at`
+- `workspace`
+- `workspace_mode`
+- `branch`
+- `target_branch`
+- `launch_error`
+- `launched`
+- `exit_code`
+- `missing_process`
+- `final_task_status`
+- `result_recorded`
+- `branch_ahead`
+- `landed`
+- `land_error`
+- `artifacts_dir`
+- `prompt_exists`
+- `stdout_exists`
+- `stderr_exists`
+- `metadata_exists`
+- `artifact_count`
+- `artifact_complete`
+- `metadata_valid`
+- `metadata_parse_error`
+- `metadata_prompt_hash`
+- `output_shape_note`
+
+`summary` includes:
+
+- `runs_total`
+- `startup`
+- `retry`
+- `output_shape`
+- `landing`
+
+`observations` entries include `category`, `severity`, `summary`, and `detail`.
+
 ## `blackdog worktree start --format json`
 
 Structured worktree spec emitted by the CLI and reused in the `worktree_start` event payload.

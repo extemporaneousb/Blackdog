@@ -48,6 +48,7 @@ as the required path to continue product development.
 - `blackdog supervise run`
 - `blackdog supervise status`
 - `blackdog supervise recover`
+- `blackdog supervise report`
 - `blackdog claim --agent NAME [--pid PID]`
 - `blackdog release --id TASK --agent NAME`
 - `blackdog complete --id TASK --agent NAME`
@@ -82,6 +83,8 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 `blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the resolved WTAM workspace contract, the current pre-launch recovery decision when one exists, the currently open `stop` control messages for that actor, the current ready-task queue, and the most recent supervisor or child-agent task results in one compact text or JSON view.
 
 `blackdog supervise recover` is the structured interruption-recovery surface. It reports recent supervisor runs and child executions, and highlights recoverable cases with suggested follow-up actions. Recoverable dirty-primary rows now include the branch/primary metadata the supervisor uses for the pre-launch recovery gate. Use this command to inspect what the supervisor will try to land, commit, or stash before deciding whether to relaunch, clean up, retry, or complete a replacement flow yourself.
+
+`blackdog supervise report` is the operator metrics surface. It reads historical supervisor events/status/results and summarizes startup friction (launch pressure/failures), retry pressure (task re-run rate), output-shape consistency (expected artifact presence), and landing outcomes (landing failures and success). This report is read-only and intended for quick ergonomics diagnostics across the most recent runs.
 
 `blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. That payload drives the current board: the `Backlog Control` hero, `Status` counts plus next-in-line rows, objective-table summaries, a paired release-gates table, the live `Execution Map`, grouped `Completed Tasks`, and the task reader popout. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, objective rows with progress summaries, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, stdout-derived model-response excerpts, landed-commit metadata, open inbox messages, direct artifact links, focus-task summaries, recent task-result summaries, release gates, and grouping guidance.
 

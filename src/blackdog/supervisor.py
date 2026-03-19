@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
@@ -75,6 +76,14 @@ CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS = 60.0
 CLAIM_LIVENESS_MISSING_SCAN_LIMIT = 2
 CHILD_PROMPT_TEMPLATE_VERSION = 2
 CHILD_PROTOCOL_HELPER = "blackdog-child"
+
+SUPERVISOR_REPORT_REQUIRED_ARTIFACTS = ("prompt", "stdout", "stderr", "metadata")
+SUPERVISOR_REPORT_ARTIFACT_FILES = {
+    "prompt": "prompt.txt",
+    "stdout": "stdout.log",
+    "stderr": "stderr.log",
+    "metadata": "metadata.json",
+}
 _CHILD_PROMPT_TEMPLATE = """
 You are Blackdog child agent `{child_agent}` working on one Blackdog backlog task.
 
@@ -708,6 +717,435 @@ def render_supervisor_recover_output(view: dict[str, Any], *, as_json: bool) -> 
     else:
         lines.append("No recoverable supervisor cases detected.")
     return "\n".join(lines) + "\n"
+
+
+def _artifact_payload_for_attempt(
+    run_dir: Path | None,
+    task_id: str,
+) -> dict[str, Any]:
+    if run_dir is None:
+        return {f"{item}_exists": False for item in SUPERVISOR_REPORT_REQUIRED_ARTIFACTS}
+    attempt_dir = run_dir / task_id
+    payload = {"artifacts_dir": str(attempt_dir)}
+    for artifact, filename in SUPERVISOR_REPORT_ARTIFACT_FILES.items():
+        payload[f"{artifact}_exists"] = (attempt_dir / filename).exists()
+    return payload
+
+
+def _parse_attempt_metadata(artifacts_dir: str | None) -> dict[str, Any]:
+    if not artifacts_dir:
+        return {"valid": False, "parse_error": False}
+    metadata_path = Path(artifacts_dir) / "metadata.json"
+    if not metadata_path.is_file():
+        return {"valid": False, "parse_error": False, "prompt_hash": None}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"valid": False, "parse_error": True, "prompt_hash": None}
+    if not isinstance(payload, dict):
+        return {"valid": False, "parse_error": True, "prompt_hash": None}
+    return {
+        "valid": True,
+        "parse_error": False,
+        "prompt_hash": payload.get("prompt_hash"),
+    }
+
+
+def _attempt_payload_from_events(
+    events: list[dict[str, Any]],
+    *,
+    run_id: str,
+    run_dir: Path | None,
+) -> list[dict[str, Any]]:
+    attempts: dict[str, dict[str, Any]] = {}
+    for event in events:
+        event_type = str(event.get("type") or "")
+        if event_type not in {"worktree_start", "child_launch", "child_launch_failed", "child_finish"}:
+            continue
+        task_id = str(event.get("task_id") or "")
+        if not task_id:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        attempt = attempts.setdefault(
+            task_id,
+            {
+                "task_id": task_id,
+                "run_id": run_id,
+                "child_agent": None,
+                "attempted_at": None,
+                "workspace": None,
+                "workspace_mode": None,
+                "branch": None,
+                "target_branch": None,
+                "launch_error": None,
+                "launched": False,
+                "exit_code": None,
+                "missing_process": None,
+                "final_task_status": None,
+                "result_recorded": None,
+                "branch_ahead": None,
+                "landed": None,
+                "land_error": None,
+                "landed_commit": None,
+                "prompt_hash": None,
+                "launch_command": None,
+            },
+        )
+        event_at = str(event.get("at") or "")
+        if event_at:
+            prev = str(attempt["attempted_at"] or "")
+            if not prev or event_at < prev:
+                attempt["attempted_at"] = event_at
+        if event_type == "worktree_start":
+            if payload.get("child_agent"):
+                attempt["child_agent"] = str(payload.get("child_agent"))
+            if payload.get("workspace"):
+                attempt["workspace"] = str(payload.get("workspace"))
+            if payload.get("workspace_mode"):
+                attempt["workspace_mode"] = str(payload.get("workspace_mode"))
+            if payload.get("branch"):
+                attempt["branch"] = str(payload.get("branch"))
+            if payload.get("target_branch"):
+                attempt["target_branch"] = str(payload.get("target_branch"))
+        elif event_type == "child_launch":
+            attempt["launched"] = True
+            attempt["attempted_at"] = attempt["attempted_at"] or event_at
+            if payload.get("child_agent"):
+                attempt["child_agent"] = str(payload.get("child_agent"))
+            if payload.get("workspace"):
+                attempt["workspace"] = str(payload.get("workspace"))
+            if payload.get("workspace_mode"):
+                attempt["workspace_mode"] = str(payload.get("workspace_mode"))
+        elif event_type == "child_launch_failed":
+            attempt["launch_error"] = str(
+                payload.get("error") or payload.get("launch_error") or "launch failed"
+            )
+        elif event_type == "child_finish":
+            if payload.get("child_agent"):
+                attempt["child_agent"] = str(payload.get("child_agent"))
+            if payload.get("exit_code") is not None:
+                attempt["exit_code"] = payload.get("exit_code")
+            if "missing_process" in payload:
+                attempt["missing_process"] = bool(payload.get("missing_process"))
+            if "result_recorded" in payload:
+                attempt["result_recorded"] = bool(payload.get("result_recorded"))
+            if payload.get("branch_ahead") is not None:
+                attempt["branch_ahead"] = bool(payload.get("branch_ahead"))
+            if payload.get("final_task_status") is not None:
+                attempt["final_task_status"] = str(payload.get("final_task_status"))
+            if "landed" in payload:
+                attempt["landed"] = bool(payload.get("landed"))
+            if payload.get("land_error") is not None:
+                attempt["land_error"] = str(payload.get("land_error"))
+            if payload.get("landed_commit") is not None:
+                attempt["landed_commit"] = str(payload.get("landed_commit"))
+            if payload.get("branch"):
+                attempt["branch"] = str(payload.get("branch"))
+            if payload.get("target_branch"):
+                attempt["target_branch"] = str(payload.get("target_branch"))
+            if payload.get("launch_command") is not None:
+                attempt["launch_command"] = payload.get("launch_command")
+            if payload.get("prompt_hash") is not None:
+                attempt["prompt_hash"] = str(payload.get("prompt_hash"))
+            attempt["attempted_at"] = attempt["attempted_at"] or event_at
+    for attempt in attempts.values():
+        artifact_payload = _artifact_payload_for_attempt(run_dir, str(attempt["task_id"]))
+        attempt.update(artifact_payload)
+        artifact_count = sum(1 for item in SUPERVISOR_REPORT_REQUIRED_ARTIFACTS if attempt.get(f"{item}_exists"))
+        attempt["artifact_count"] = artifact_count
+        attempt["artifact_complete"] = artifact_count == len(SUPERVISOR_REPORT_REQUIRED_ARTIFACTS)
+        attempt["output_shape_note"] = "complete" if attempt["artifact_complete"] else "missing artifacts"
+        parsed = _parse_attempt_metadata(attempt.get("artifacts_dir"))
+        attempt["metadata_valid"] = bool(parsed["valid"])
+        attempt["metadata_parse_error"] = bool(parsed["parse_error"])
+        attempt["metadata_prompt_hash"] = parsed.get("prompt_hash")
+        if attempt.get("launch_error"):
+            attempt["output_shape_note"] = "launch failed"
+        attempt["attempted_at"] = str(attempt["attempted_at"] or "")
+    return sorted(
+        attempts.values(),
+        key=lambda row: (
+            str(row["task_id"]),
+            str(row.get("attempted_at") or ""),
+        ),
+    )
+
+
+def _format_percent(attempted: int, total: int) -> float:
+    return (attempted / total) * 100 if total else 0.0
+
+
+def build_supervisor_observation_view(
+    profile: Profile,
+    *,
+    actor: str,
+    run_limit: int | None = None,
+) -> dict[str, Any]:
+    status_by_run = _load_supervisor_recovery_status_files(profile, actor=actor)
+    events_by_run = _load_run_events(profile, actor=actor)
+    results = load_task_results(profile.paths)
+    result_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in results:
+        task_id = str(row.get("task_id") or "")
+        run_id = str(row.get("run_id") or "")
+        if not task_id or not run_id:
+            continue
+        key = (task_id, run_id)
+        result_by_key.setdefault(key, row)
+
+    run_ids = sorted(set(status_by_run) | set(events_by_run), reverse=True)
+    if run_limit is not None and run_limit > 0:
+        run_ids = run_ids[:run_limit]
+
+    runs: list[dict[str, Any]] = []
+    startup_attempts = 0
+    startup_launches = 0
+    startup_failures = 0
+    landed_attempts = 0
+    landing_failures = 0
+    artifact_total = 0
+    artifact_complete = 0
+    landing_error_by_kind: Counter[str] = Counter()
+    task_attempt_counts = Counter()
+
+    for run_id in run_ids:
+        status = status_by_run.get(run_id, {})
+        run_dir = None
+        if status.get("run_dir"):
+            run_dir = Path(str(status["run_dir"]))
+        else:
+            run_dir = _run_dir_for_id(profile, run_id)
+        events = events_by_run.get(run_id, [])
+        attempts = _attempt_payload_from_events(events, run_id=run_id, run_dir=run_dir)
+        run_steps = list(status.get("steps") or [])
+        runs_row_attempts = 0
+        run_launch_failures = 0
+        for attempt in attempts:
+            task_id = str(attempt["task_id"])
+            if not task_id:
+                continue
+            task_attempt_counts[task_id] += 1
+            startup_attempts += 1
+            runs_row_attempts += 1
+            startup_launches += 1 if bool(attempt["launched"]) else 0
+            if attempt["launch_error"]:
+                startup_failures += 1
+                run_launch_failures += 1
+            if attempt["landed"]:
+                landed_attempts += 1
+            if attempt["land_error"]:
+                landing_failures += 1
+                landing_error_by_kind[str(attempt["land_error"]).strip().lower() or "unknown"] += 1
+            artifact_total += 1
+            if attempt["artifact_complete"]:
+                artifact_complete += 1
+            result_row = result_by_key.get((task_id, run_id))
+            if result_row is not None:
+                attempt["result_status"] = result_row.get("status")
+                attempt["result_file"] = result_row.get("result_file")
+                attempt["result_actor"] = result_row.get("actor")
+            else:
+                attempt["result_status"] = None
+                attempt["result_file"] = None
+                attempt["result_actor"] = None
+        if attempts:
+            runs.append(
+                {
+                    "run_id": run_id,
+                    "actor": str(status.get("actor") or actor),
+                    "workspace_mode": status.get("workspace_mode"),
+                    "final_status": str(status.get("final_status") or status.get("status") or "historical"),
+                    "attempts": attempts,
+                    "run_dir": str(run_dir) if run_dir else None,
+                    "status_file": str(status.get("status_file") or ""),
+                    "started_at": str((run_steps[0] if run_steps else {}).get("at") or status.get("started_at") or ""),
+                    "completed_at": str(status.get("completed_at") or status.get("finished_at") or ""),
+                    "step_count": len(run_steps),
+                    "attempt_count": runs_row_attempts,
+                    "launch_failures": run_launch_failures,
+                    "landed_count": sum(1 for attempt in attempts if attempt.get("landed")),
+                }
+            )
+
+    summary = {
+        "runs_total": len(runs),
+        "startup": {
+            "attempts": startup_attempts,
+            "launched": startup_launches,
+            "launch_failures": startup_failures,
+            "launch_success_rate": _format_percent(startup_launches - startup_failures, startup_launches + startup_failures),
+        },
+        "retry": {
+            "task_attempt_count": len(task_attempt_counts),
+            "retried_tasks": [task_id for task_id, count in sorted(task_attempt_counts.items()) if count > 1],
+            "retry_total": sum(max(0, count - 1) for count in task_attempt_counts.values() if count > 1),
+            "retry_by_task": {
+                task_id: count
+                for task_id, count in task_attempt_counts.items()
+                if count > 1
+            },
+        },
+        "output_shape": {
+            "artifact_total_attempts": artifact_total,
+            "artifact_complete_attempts": artifact_complete,
+            "artifact_incomplete_attempts": artifact_total - artifact_complete,
+            "artifact_completion_rate": _format_percent(artifact_complete, artifact_total),
+        },
+        "landing": {
+            "land_error_count": landing_failures,
+            "land_error_reason_count": dict(landing_error_by_kind),
+            "landed_attempts": landed_attempts,
+            "landing_success_rate": _format_percent(landed_attempts, startup_launches),
+        },
+    }
+
+    observations: list[dict[str, Any]] = []
+    if startup_failures:
+        observations.append(
+            {
+                "category": "startup_friction",
+                "severity": "high",
+                "summary": "Supervisor startup launched fewer children than attempts.",
+                "detail": (
+                    f"{startup_failures} launch failures were observed across {startup_attempts} startup attempts."
+                ),
+            }
+        )
+    if summary["retry"]["retry_total"]:
+        observations.append(
+            {
+                "category": "retry_pressure",
+                "severity": "medium",
+                "summary": "Tasks required retries before the requested completion outcome.",
+                "detail": (
+                    f"{summary['retry']['retry_total']} extra attempts were made on "
+                    f"{len(summary['retry']['retried_tasks'])} task(s)."
+                ),
+            }
+        )
+    if summary["output_shape"]["artifact_incomplete_attempts"]:
+        observations.append(
+            {
+                "category": "output_shape_consistency",
+                "severity": "medium",
+                "summary": "Supervisor artifact bundles were not always complete.",
+                "detail": (
+                    f"{summary['output_shape']['artifact_incomplete_attempts']} attempts missed "
+                    "required stdout/stderr/prompt/metadata outputs."
+                ),
+            }
+        )
+    if landing_failures:
+        observations.append(
+            {
+                "category": "landing_failures",
+                "severity": "high",
+                "summary": "Child run landing failures were observed.",
+                "detail": (
+                    f"{landing_failures} attempts ended with landing failure details; "
+                    "operator follow-up is required."
+                ),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "generated_at": now_iso(),
+        "actor": actor,
+        "run_limit": run_limit,
+        "runs": runs,
+        "summary": summary,
+        "observations": observations,
+    }
+
+
+def _observation_text(view: dict[str, Any]) -> str:
+    summary = view["summary"]
+    lines = [f"Supervisor actor: {view['actor']}", f"Runs included: {summary['runs_total']}"]
+    if view["run_limit"]:
+        lines.append(f"Run limit: {view['run_limit']}")
+    startup = summary["startup"]
+    lines.extend(
+        [
+            "",
+            "Startup friction:",
+            f"- attempts={startup['attempts']} launched={startup['launched']} failures={startup['launch_failures']}",
+            f"- launch success rate: {startup['launch_success_rate']:.1f}%",
+        ]
+    )
+    retry = summary["retry"]
+    lines.extend(
+        [
+            "",
+            "Retry pressure:",
+            f"- tasks={retry['task_attempt_count']} retried_tasks={len(retry['retried_tasks'])} extra_attempts={retry['retry_total']}",
+        ]
+    )
+    output_shape = summary["output_shape"]
+    lines.extend(
+        [
+            "",
+            "Output-shape consistency:",
+            (
+                "- complete="
+                f"{output_shape['artifact_complete_attempts']}/{output_shape['artifact_total_attempts']} "
+                f"({output_shape['artifact_completion_rate']:.1f}%)"
+            ),
+        ]
+    )
+    landing = summary["landing"]
+    lines.extend(
+        [
+            "",
+            "Landing outcomes:",
+            f"- landing errors={landing['land_error_count']} landed_attempts={landing['landed_attempts']} "
+            f"({landing['landing_success_rate']:.1f}%)",
+        ]
+    )
+    if landing["land_error_reason_count"]:
+        lines.append("  reasons:")
+        for reason, count in sorted(landing["land_error_reason_count"].items()):
+            lines.append(f"  - {reason}: {count}")
+    lines.extend(["", "Observations:"])
+    if view["observations"]:
+        for index, row in enumerate(view["observations"], start=1):
+            lines.append(
+                f"{index}. [{row['severity']}] {row['category']}: {row['summary']} :: {row['detail']}"
+            )
+    else:
+        lines.append("- No blocking operational observations.")
+
+    if view["runs"]:
+        lines.extend(["", "Runs:"])
+        for run in view["runs"]:
+            lines.append(
+                f"- {run['run_id']} status={run['final_status']} attempts={run['attempt_count']} "
+                f"launch_failures={run['launch_failures']} landed={run['landed_count']}"
+            )
+            for attempt in run["attempts"]:
+                status = "launched" if attempt["launched"] else "not launched"
+                lines.append(
+                    f"  * {attempt['task_id']} {attempt['child_agent'] or 'child-unknown'} "
+                    f"attempted={attempt['attempted_at'] or '-'} status={status}"
+                )
+                if attempt["launch_error"]:
+                    lines.append(f"    launch_error: {attempt['launch_error']}")
+                if attempt["land_error"]:
+                    lines.append(f"    land_error: {attempt['land_error']}")
+                lines.append(
+                    "    artifacts="
+                    f"{attempt['artifact_count']}/{len(SUPERVISOR_REPORT_REQUIRED_ARTIFACTS)} "
+                    f"output_shape={attempt['output_shape_note']}"
+                )
+    else:
+        lines.append("")
+        lines.append("No supervisor runs with child attempts were found.")
+    return "\n".join(lines) + "\n"
+
+
+def render_supervisor_observation_output(view: dict[str, Any], *, as_json: bool) -> str:
+    if as_json:
+        return json.dumps(view, indent=2) + "\n"
+    return _observation_text(view)
 
 
 def _land_branch_with_retry(profile: Profile, *, branch: str, target_branch: str) -> dict[str, Any]:

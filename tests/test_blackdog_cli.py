@@ -2502,10 +2502,10 @@ class BlackdogCliTests(unittest.TestCase):
                         "workspace_mode": "git-worktree",
                         "poll_interval_seconds": 1.0,
                         "draining": False,
-                        "run_dir": str(run_dir.parent),
-                        "status_file": str(status_file),
-                        "supervisor_pid": os.getpid(),
-                        "steps": [
+                    "run_dir": str(run_dir.parent),
+                    "status_file": str(status_file),
+                    "supervisor_pid": os.getpid(),
+                    "steps": [
                             {
                                 "index": 1,
                                 "at": "2026-03-13T10:10:00-07:00",
@@ -2635,6 +2635,345 @@ class BlackdogCliTests(unittest.TestCase):
             },
         )
         return {"blocked": run_ids["blocked"], "partial": run_ids["partial"], "landed": run_ids["landed"]}
+
+    def _seed_supervisor_report_fixtures(self, *, actor: str = "supervisor") -> dict[str, Any]:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_ids = {
+            "retry_a": "20260314-090000-retry-a",
+            "retry_b": "20260314-091000-retry-b",
+            "launch_fail": "20260314-092000-launch-fail",
+            "land_fail": "20260314-093000-land-fail",
+        }
+        task_ids = {
+            "retry": "report-retry-task",
+            "launch_fail": "report-launch-fail-task",
+            "land_fail": "report-land-fail-task",
+        }
+
+        def write_run_status(run_id: str, *, task_id: str, final_status: str) -> None:
+            run_dir = paths.supervisor_runs_dir / run_id
+            status_file = run_dir / "status.json"
+            status_file.parent.mkdir(parents=True, exist_ok=True)
+            status_file.write_text(
+                json.dumps(
+                    {
+                        "run_id": run_id,
+                        "actor": actor,
+                        "workspace_mode": "git-worktree",
+                        "poll_interval_seconds": 1.0,
+                        "draining": False,
+                        "run_dir": str(run_dir),
+                        "status_file": str(status_file),
+                        "supervisor_pid": os.getpid(),
+                        "steps": [
+                            {"index": 1, "at": "2026-03-14T09:00:00-07:00", "status": "running"},
+                            {"index": 2, "at": "2026-03-14T09:02:00-07:00", "status": final_status},
+                        ],
+                        "completed_at": "2026-03-14T09:02:00-07:00",
+                        "final_status": final_status,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-report-start-{run_id}",
+                    "type": "supervisor_run_started",
+                    "at": "2026-03-14T09:00:00-07:00",
+                    "actor": actor,
+                    "task_id": None,
+                    "payload": {
+                        "run_id": run_id,
+                        "workspace_mode": "git-worktree",
+                        "task_ids": [task_id],
+                    },
+                },
+            )
+
+        def write_worktree_start(run_id: str, *, task_id: str) -> None:
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-report-worktree-{run_id}",
+                    "type": "worktree_start",
+                    "at": "2026-03-14T09:00:10-07:00",
+                    "actor": actor,
+                    "task_id": task_id,
+                    "payload": {
+                        "run_id": run_id,
+                        "child_agent": f"{actor}/child-{task_id}",
+                        "branch": f"agent/{task_id}",
+                        "target_branch": "main",
+                        "workspace": str(paths.supervisor_runs_dir / run_id / task_id),
+                    },
+                },
+            )
+
+        write_run_status(run_ids["retry_a"], task_id=task_ids["retry"], final_status="finished")
+        write_worktree_start(run_ids["retry_a"], task_id=task_ids["retry"])
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-launch-retry-a",
+                "type": "child_launch",
+                "at": "2026-03-14T09:00:20-07:00",
+                "actor": actor,
+                "task_id": task_ids["retry"],
+                "payload": {
+                    "run_id": run_ids["retry_a"],
+                    "child_agent": f"{actor}/child-{task_ids['retry']}",
+                    "workspace": str(paths.supervisor_runs_dir / run_ids["retry_a"] / task_ids["retry"]),
+                    "pid": os.getpid(),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-finish-retry-a",
+                "type": "child_finish",
+                "at": "2026-03-14T09:00:30-07:00",
+                "actor": actor,
+                "task_id": task_ids["retry"],
+                "payload": {
+                    "run_id": run_ids["retry_a"],
+                    "child_agent": f"{actor}/child-{task_ids['retry']}",
+                    "branch": f"agent/{task_ids['retry']}",
+                    "target_branch": "main",
+                    "exit_code": 1,
+                    "missing_process": False,
+                    "final_task_status": "failed",
+                    "branch_ahead": False,
+                    "landed": False,
+                },
+            },
+        )
+
+        write_run_status(run_ids["retry_b"], task_id=task_ids["retry"], final_status="finished")
+        write_worktree_start(run_ids["retry_b"], task_id=task_ids["retry"])
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-launch-retry-b",
+                "type": "child_launch",
+                "at": "2026-03-14T09:01:00-07:00",
+                "actor": actor,
+                "task_id": task_ids["retry"],
+                "payload": {
+                    "run_id": run_ids["retry_b"],
+                    "child_agent": f"{actor}/child-{task_ids['retry']}-r2",
+                    "workspace": str(paths.supervisor_runs_dir / run_ids["retry_b"] / task_ids["retry"]),
+                    "pid": os.getpid(),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-finish-retry-b",
+                "type": "child_finish",
+                "at": "2026-03-14T09:01:10-07:00",
+                "actor": actor,
+                "task_id": task_ids["retry"],
+                "payload": {
+                    "run_id": run_ids["retry_b"],
+                    "child_agent": f"{actor}/child-{task_ids['retry']}-r2",
+                    "branch": f"agent/{task_ids['retry']}",
+                    "target_branch": "main",
+                    "exit_code": 0,
+                    "missing_process": False,
+                    "final_task_status": "done",
+                    "branch_ahead": False,
+                    "landed": True,
+                },
+            },
+        )
+        record_task_result(
+            paths,
+            task_id=task_ids["retry"],
+            actor=actor,
+            status="success",
+            what_changed=["Completed retry pass."],
+            validation=["unit"],
+            residual=[],
+            needs_user_input=False,
+            followup_candidates=[],
+            run_id=run_ids["retry_b"],
+        )
+
+        write_run_status(run_ids["launch_fail"], task_id=task_ids["launch_fail"], final_status="failed")
+        write_worktree_start(run_ids["launch_fail"], task_id=task_ids["launch_fail"])
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-launch-failed-launch",
+                "type": "child_launch_failed",
+                "at": "2026-03-14T09:01:20-07:00",
+                "actor": actor,
+                "task_id": task_ids["launch_fail"],
+                "payload": {
+                    "run_id": run_ids["launch_fail"],
+                    "error": "failed to execute child command",
+                    "child_agent": f"{actor}/child-{task_ids['launch_fail']}",
+                },
+            },
+        )
+
+        write_run_status(run_ids["land_fail"], task_id=task_ids["land_fail"], final_status="finished")
+        write_worktree_start(run_ids["land_fail"], task_id=task_ids["land_fail"])
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-launch-landfail",
+                "type": "child_launch",
+                "at": "2026-03-14T09:01:30-07:00",
+                "actor": actor,
+                "task_id": task_ids["land_fail"],
+                "payload": {
+                    "run_id": run_ids["land_fail"],
+                    "child_agent": f"{actor}/child-{task_ids['land_fail']}",
+                    "workspace": str(paths.supervisor_runs_dir / run_ids["land_fail"] / task_ids["land_fail"]),
+                    "pid": os.getpid(),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-report-finish-landfail",
+                "type": "child_finish",
+                "at": "2026-03-14T09:01:40-07:00",
+                "actor": actor,
+                "task_id": task_ids["land_fail"],
+                "payload": {
+                    "run_id": run_ids["land_fail"],
+                    "child_agent": f"{actor}/child-{task_ids['land_fail']}",
+                    "branch": f"agent/{task_ids['land_fail']}",
+                    "target_branch": "main",
+                    "exit_code": 0,
+                    "missing_process": False,
+                    "final_task_status": "released",
+                    "branch_ahead": True,
+                    "landed": False,
+                    "land_error": "dirty primary worktree contract violation: primary dirty paths",
+                },
+            },
+        )
+
+        for run_id, task_id, with_prompt, with_stdout, with_stderr, with_metadata in [
+            (run_ids["retry_a"], task_ids["retry"], True, False, False, False),
+            (run_ids["retry_b"], task_ids["retry"], True, True, True, True),
+            (run_ids["land_fail"], task_ids["land_fail"], True, True, True, True),
+        ]:
+            attempt_dir = paths.supervisor_runs_dir / run_id / task_id
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            if with_prompt:
+                (attempt_dir / "prompt.txt").write_text("prompt", encoding="utf-8")
+            if with_stdout:
+                (attempt_dir / "stdout.log").write_text("stdout", encoding="utf-8")
+            if with_stderr:
+                (attempt_dir / "stderr.log").write_text("stderr", encoding="utf-8")
+            if with_metadata:
+                (attempt_dir / "metadata.json").write_text(
+                    json.dumps({"prompt_hash": f"hash-{run_id}"}, indent=2), encoding="utf-8"
+                )
+
+        return {"run_ids": run_ids, "task_ids": task_ids}
+
+    def test_supervise_report_json_output_includes_supervisor_metrics(self) -> None:
+        fixtures = self._seed_supervisor_report_fixtures(actor="supervisor")
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "report",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(payload["actor"], "supervisor")
+        self.assertEqual(payload["summary"]["startup"]["attempts"], 4)
+        self.assertEqual(payload["summary"]["startup"]["launch_failures"], 1)
+        self.assertEqual(payload["summary"]["retry"]["retry_total"], 1)
+        self.assertEqual(payload["summary"]["retry"]["retried_tasks"], [fixtures["task_ids"]["retry"]])
+        self.assertEqual(payload["summary"]["output_shape"]["artifact_incomplete_attempts"], 2)
+        self.assertEqual(payload["summary"]["landing"]["land_error_count"], 1)
+        self.assertEqual(len(payload["runs"]), 4)
+        self.assertIn("landing_failures", {row["category"] for row in payload["observations"]})
+        self.assertIn("startup_friction", {row["category"] for row in payload["observations"]})
+        limited_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "report",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--run-limit",
+                    "1",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(limited_payload["summary"]["runs_total"], 1)
+        self.assertEqual(limited_payload["runs"][0]["run_id"], fixtures["run_ids"]["land_fail"])
+
+    def test_supervise_report_text_output_includes_sections_and_attempts(self) -> None:
+        fixtures = self._seed_supervisor_report_fixtures(actor="supervisor")
+        text = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "report",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "supervisor",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        ).stdout
+        self.assertIn("Supervisor actor: supervisor", text)
+        self.assertIn("Startup friction:", text)
+        self.assertIn("Retry pressure:", text)
+        self.assertIn("Output-shape consistency:", text)
+        self.assertIn("Landing outcomes:", text)
+        self.assertIn(fixtures["task_ids"]["retry"], text)
+        self.assertIn(fixtures["task_ids"]["launch_fail"], text)
+        self.assertIn(fixtures["task_ids"]["land_fail"], text)
+        self.assertIn("landing errors=1", text)
 
     def test_supervise_recover_reports_structured_cases_in_json(self) -> None:
         fixture = self._seed_supervisor_recovery_fixtures(actor="supervisor")

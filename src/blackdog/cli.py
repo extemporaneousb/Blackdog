@@ -49,9 +49,11 @@ from .supervisor import (
     SupervisorError,
     build_supervisor_status_view,
     build_supervisor_recover_view,
+    build_supervisor_observation_view,
     render_supervisor_output,
     render_supervisor_status_output,
     render_supervisor_recover_output,
+    render_supervisor_observation_output,
     run_supervisor,
 )
 from .ui import UIError, build_ui_snapshot
@@ -276,6 +278,13 @@ def cmd_supervise_recover(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     payload = build_supervisor_recover_view(profile, actor=args.actor)
     print(render_supervisor_recover_output(payload, as_json=args.format == "json"), end="")
+    return 0
+
+
+def cmd_supervise_report(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = build_supervisor_observation_view(profile, actor=args.actor, run_limit=args.run_limit)
+    print(render_supervisor_observation_output(payload, as_json=args.format == "json"), end="")
     return 0
 
 
@@ -744,6 +753,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_recover.add_argument("--actor", default="supervisor")
     p_supervise_recover.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_recover.set_defaults(func=cmd_supervise_recover)
+    p_supervise_report = supervise_subparsers.add_parser("report", help="Show aggregated startup/retry/output-shape/landing observations")
+    p_supervise_report.add_argument("--project-root", default=None)
+    p_supervise_report.add_argument("--actor", default="supervisor")
+    p_supervise_report.add_argument("--run-limit", type=int, default=0)
+    p_supervise_report.add_argument("--format", choices=("text", "json"), default="text")
+    p_supervise_report.set_defaults(func=cmd_supervise_report)
 
     p_claim = subparsers.add_parser("claim", help="Claim tasks for an agent")
     p_claim.add_argument("--project-root", default=None)
