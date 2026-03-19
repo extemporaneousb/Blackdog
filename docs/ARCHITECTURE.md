@@ -196,9 +196,11 @@ That keeps the communication path simple: file writers update the
 control root, the renderer snapshots those files into one HTML view,
 and the operator reloads the page when they want the latest state.
 Each snapshot exposes both content freshness (`content_updated_at`) and
-supervisor-check freshness (`last_checked_at`) so operators can see when
-the source data changed versus when the supervisor last refreshed board
-state.
+board freshness (`last_checked_at`) so operators can see how current the
+visible file is. `last_checked_at` is clamped to the snapshot generation
+time so the board never reports a check older than the HTML it embeds.
+When the raw supervisor loop heartbeat matters, the snapshot also
+includes `supervisor_last_checked_at`.
 
 The rendered page now uses a wider control-board layout. It opens with
 `Backlog Control` and `Status` in a split top band, follows with a

@@ -310,6 +310,7 @@ Current keys:
 - `run_dir`
 - `status_file`
 - `supervisor_pid`
+- `last_checked_at`
 - `steps`
 - `recovery_actions`
 - `completed_at`
@@ -578,6 +579,7 @@ Top-level keys:
 - `generated_at`
 - `content_updated_at`
 - `last_checked_at`
+- `supervisor_last_checked_at`
 - `project_name`
 - `project_root`
 - `control_dir`

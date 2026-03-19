@@ -1931,6 +1931,7 @@ class BlackdogCliTests(unittest.TestCase):
         datetime.fromisoformat(snapshot["generated_at"])
         datetime.fromisoformat(snapshot["content_updated_at"])
         datetime.fromisoformat(snapshot["last_checked_at"])
+        self.assertIsNone(snapshot["supervisor_last_checked_at"])
         self.assertEqual(snapshot["content_updated_at"], snapshot["generated_at"])
         self.assertEqual(snapshot["last_checked_at"], snapshot["generated_at"])
 
@@ -1974,13 +1975,15 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         snapshot = build_ui_snapshot(load_profile(self.root))
-        self.assertEqual(snapshot["last_checked_at"], "2026-03-19T10:14:21-07:00")
+        self.assertEqual(snapshot["supervisor_last_checked_at"], "2026-03-19T10:14:21-07:00")
+        self.assertEqual(snapshot["last_checked_at"], snapshot["content_updated_at"])
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         rendered_html = paths.html_file.read_text(encoding="utf-8")
         self.assertIn("Last content updated", rendered_html)
         self.assertIn("Last checked", rendered_html)
         rendered_snapshot = html_snapshot(paths.html_file)
         self.assertEqual(rendered_snapshot["last_checked_at"], snapshot["last_checked_at"])
+        self.assertEqual(rendered_snapshot["supervisor_last_checked_at"], snapshot["supervisor_last_checked_at"])
         self.assertEqual(rendered_snapshot["content_updated_at"], snapshot["content_updated_at"])
 
     def test_snapshot_models_objective_rows_with_progress_summaries(self) -> None:
@@ -3549,6 +3552,7 @@ class BlackdogCliTests(unittest.TestCase):
                             "control_message_id": stop_message["message_id"],
                         }
                     ],
+                    "last_checked_at": "2026-03-13T12:00:05-07:00",
                     "completed_at": "2026-03-13T12:00:05-07:00",
                     "final_status": "stopped",
                     "stopped_by_message_id": stop_message["message_id"],
@@ -3668,6 +3672,7 @@ class BlackdogCliTests(unittest.TestCase):
             cwd=self.root,
         ).stdout
         self.assertIn("Latest run: stopped | abcd1234 | steps 1 | workspace git-worktree", text_output)
+        self.assertIn("Last checked: 2026-03-13T12:00:05-07:00", text_output)
         self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
         self.assertIn(".VE rule: .VE is unversioned", text_output)
         self.assertIn(f"Run control: stop via {stop_message['message_id']}", text_output)
@@ -3809,6 +3814,7 @@ class BlackdogCliTests(unittest.TestCase):
         status_file = sorted(paths.supervisor_runs_dir.glob("*/status.json"))[-1]
         latest_run = json.loads(status_file.read_text(encoding="utf-8"))
         self.assertEqual(latest_run["final_status"], "idle")
+        datetime.fromisoformat(latest_run["last_checked_at"])
 
     def test_render_writes_static_html_with_embedded_snapshot(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

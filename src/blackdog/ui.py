@@ -23,7 +23,7 @@ from .store import load_events, load_inbox, load_state, load_task_results, now_i
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 5
+UI_SNAPSHOT_SCHEMA_VERSION = 6
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
@@ -204,7 +204,9 @@ def _latest_supervisor_check_at(profile: Profile) -> str | None:
         if not isinstance(payload, dict):
             continue
         raw = None
-        if payload.get("completed_at"):
+        if payload.get("last_checked_at"):
+            raw = payload.get("last_checked_at")
+        elif payload.get("completed_at"):
             raw = payload.get("completed_at")
         elif isinstance(payload.get("steps"), list) and payload["steps"]:
             last_step = payload["steps"][-1]
@@ -221,6 +223,21 @@ def _latest_supervisor_check_at(profile: Profile) -> str | None:
             latest_check = str(raw)
             latest_parsed = parsed
     return latest_check
+
+
+def _latest_timestamp(*values: Any) -> str | None:
+    latest_value = None
+    latest_parsed = None
+    for value in values:
+        parsed = _parse_iso(value)
+        if parsed is None:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        if latest_parsed is None or parsed > latest_parsed:
+            latest_parsed = parsed
+            latest_value = str(value)
+    return latest_value
 
 
 def _build_task_activity(
@@ -1166,13 +1183,15 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     workspace_contract = worktree_contract(profile)
     headers = dict(snapshot.headers)
     generated_at = now_iso()
-    last_checked_at = _latest_supervisor_check_at(profile) or generated_at
+    supervisor_last_checked_at = _latest_supervisor_check_at(profile)
+    last_checked_at = _latest_timestamp(supervisor_last_checked_at, generated_at) or generated_at
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
         "generated_at": generated_at,
         "content_updated_at": generated_at,
         "last_checked_at": last_checked_at,
+        "supervisor_last_checked_at": supervisor_last_checked_at,
         "project_name": profile.project_name,
         "project_root": str(profile.paths.project_root),
         "control_dir": str(profile.paths.control_dir),

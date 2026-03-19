@@ -325,6 +325,8 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
             f"Latest run: {latest_run['status']} | {latest_run['run_id']} | steps {latest_run['step_count']} | workspace {latest_run['workspace_mode']}"
         )
         lines.append(f"Status file: {latest_run['status_file']}")
+        if latest_run.get("last_checked_at"):
+            lines.append(f"Last checked: {latest_run['last_checked_at']}")
         last_step = latest_run.get("last_step")
         if isinstance(last_step, dict):
             lines.append(f"Last step: {last_step.get('status')} @ {last_step.get('at')}")
@@ -1518,6 +1520,7 @@ def _latest_run_status(profile: Profile, *, actor: str) -> dict[str, Any] | None
             "status_file": str(status_file),
             "step_count": len(steps),
             "last_step": last_step,
+            "last_checked_at": payload.get("last_checked_at") or (last_step or {}).get("at") or payload.get("completed_at"),
             "completed_at": payload.get("completed_at"),
             "final_status": payload.get("final_status"),
             "stopped_by_message_id": payload.get("stopped_by_message_id"),
@@ -1617,6 +1620,20 @@ def build_supervisor_status_view(
 
 def _write_run_status(status_file: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(status_file, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _mark_run_checked(
+    status_payload: dict[str, Any],
+    status_file: Path,
+    *,
+    checked_at: str | None = None,
+    persist: bool = False,
+) -> str:
+    resolved_checked_at = checked_at or now_iso()
+    status_payload["last_checked_at"] = resolved_checked_at
+    if persist:
+        _write_run_status(status_file, status_payload)
+    return resolved_checked_at
 
 
 def _claim_for_child(profile: Profile, snapshot: BacklogSnapshot, task: TaskInfo, *, child_agent: str) -> None:
@@ -2460,9 +2477,10 @@ def _append_run_step(
     released_task_ids: list[str] | None = None,
     recovery_actions: list[dict[str, Any]] | None = None,
 ) -> None:
+    step_at = _mark_run_checked(status_payload, status_file, persist=False)
     step = {
         "index": len(status_payload["steps"]) + 1,
-        "at": now_iso(),
+        "at": step_at,
         "status": status,
         "ready_task_ids": list(ready_task_ids),
         "running_task_ids": list(running_task_ids),
@@ -2520,6 +2538,7 @@ def run_supervisor(
         "run_dir": str(run_dir),
         "status_file": str(status_file),
         "supervisor_pid": os.getpid(),
+        "last_checked_at": now_iso(),
         "recovery_actions": [],
         "steps": [],
     }
@@ -2756,6 +2775,7 @@ def run_supervisor(
         try:
             child_agent, exit_code = completion_queue.get(timeout=resolved_poll_interval_seconds)
         except queue.Empty:
+            _mark_run_checked(status_payload, status_file, persist=True)
             continue
         child = active.pop(child_agent, None)
         if child is None:
