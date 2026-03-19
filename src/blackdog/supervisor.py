@@ -17,6 +17,7 @@ from .backlog import (
     BacklogError,
     BacklogSnapshot,
     TaskInfo,
+    add_task,
     classify_task_status,
     load_backlog,
     next_runnable_tasks,
@@ -46,12 +47,16 @@ from .worktree import (
     WorktreeError,
     WorktreeSpec,
     branch_ahead_of_target,
+    branch_changed_paths,
+    commit_working_tree_paths,
     land_branch,
     find_worktree_for_branch,
     rebase_branch_onto_target,
+    stash_working_tree,
     supervisor_task_branch,
     supervisor_task_worktree_path,
     start_task_worktree,
+    working_tree_matches_ref,
     worktree_contract,
 )
 
@@ -147,6 +152,8 @@ def _supervisor_text(view: dict[str, Any]) -> str:
         f"Steps: {len(view.get('steps', []))}",
         f"Tasks launched: {len(view['children'])}",
     ]
+    if view.get("recovery_actions"):
+        lines.append(f"Recovery actions: {len(view['recovery_actions'])}")
     if view.get("draining"):
         lines.append("Draining: yes")
     if view.get("status_file"):
@@ -194,6 +201,12 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
         if contract.get("primary_dirty_paths"):
             lines.append("Primary dirty paths: " + ", ".join(str(item) for item in contract["primary_dirty_paths"]))
         lines.append(f".VE rule: {contract.get('ve_expectation') or ''}")
+    recovery = view.get("prelaunch_recovery")
+    if isinstance(recovery, dict):
+        lines.append(
+            "Pre-launch recovery: "
+            f"{recovery.get('action')} | {recovery.get('task_id') or 'primary'} | {recovery.get('summary')}"
+        )
     control = view.get("control_action")
     if isinstance(control, dict):
         lines.append(f"Run control: {control['action']} via {control['message_id']}")
@@ -381,6 +394,8 @@ def _build_recovery_child_run(
 
 def _recovery_case_recommendations(row: dict[str, Any]) -> dict[str, Any] | None:
     run_status = str(row.get("run_status") or "")
+    if str(row.get("final_task_status") or "") == "done" or str(row.get("claim_status") or "") == "done":
+        return None
     if row.get("landed") and str(row.get("final_task_status") or "") not in {"", "done"}:
         return {
             "case": "landed_but_unfinished",
@@ -507,7 +522,10 @@ def build_supervisor_recover_view(profile: Profile, *, actor: str) -> dict[str, 
                         "run_id": run["run_id"],
                         "task_id": child["task_id"],
                         "task_branch": child.get("task_branch"),
+                        "target_branch": child.get("target_branch"),
+                        "primary_worktree": child.get("primary_worktree"),
                         "workspace": child.get("workspace"),
+                        "child_artifact_dir": child.get("child_artifact_dir"),
                         "run_status": child.get("run_status"),
                         "claim_status": child.get("claim_status"),
                         "case": case.get("case"),
@@ -556,6 +574,286 @@ def render_supervisor_recover_output(view: dict[str, Any], *, as_json: bool) -> 
     else:
         lines.append("No recoverable supervisor cases detected.")
     return "\n".join(lines) + "\n"
+
+
+def _land_branch_with_retry(profile: Profile, *, branch: str, target_branch: str) -> dict[str, Any]:
+    errors: list[str] = []
+    rebase_result: dict[str, Any] | None = None
+    for _ in range(2):
+        try:
+            payload = land_branch(
+                profile,
+                branch=branch,
+                target_branch=target_branch,
+                cleanup=True,
+            )
+            if rebase_result is not None:
+                payload["rebase"] = rebase_result
+            if errors:
+                payload["retry_errors"] = list(errors)
+            return payload
+        except WorktreeError as exc:
+            detail = str(exc)
+            errors.append(detail)
+            if "cannot land:" in detail and "not based on the current" in detail:
+                try:
+                    rebase_result = rebase_branch_onto_target(
+                        profile,
+                        branch=branch,
+                        target_branch=target_branch,
+                    )
+                except WorktreeError as rebase_exc:
+                    errors.append(str(rebase_exc))
+                    break
+                time.sleep(1)
+                continue
+            break
+    raise WorktreeError("; ".join(errors[-4:]) if errors else "landing failed")
+
+
+def _mark_task_done(profile: Profile, task_id: str, *, actor: str, note: str) -> None:
+    with locked_state(profile.paths.state_file) as state:
+        entry = state.setdefault("task_claims", {}).get(task_id) or {}
+        if entry.get("status") == "done":
+            return
+        entry["status"] = "done"
+        entry["completed_by"] = actor
+        entry["completed_at"] = now_iso()
+        entry["completion_note"] = note
+        entry.pop("claim_expires_at", None)
+        entry.pop("claimed_pid", None)
+        entry.pop("claimed_process_missing_scans", None)
+        entry.pop("claimed_process_last_seen_at", None)
+        entry.pop("claimed_process_last_checked_at", None)
+        state["task_claims"][task_id] = entry
+        approvals = state.setdefault("approval_tasks", {})
+        if task_id in approvals and isinstance(approvals[task_id], dict):
+            approvals[task_id]["status"] = "done"
+    append_event(profile.paths, event_type="complete", actor=actor, task_id=task_id, payload={"note": note})
+
+
+def _matching_dirty_primary_case(
+    profile: Profile,
+    *,
+    case: dict[str, Any],
+    dirty_paths: list[str],
+) -> bool:
+    branch = str(case.get("task_branch") or "").strip()
+    target_branch = str(case.get("target_branch") or "").strip()
+    primary_root = Path(str(case.get("primary_worktree") or profile.paths.project_root)).resolve()
+    if not branch or not target_branch or not dirty_paths:
+        return False
+    branch_paths = branch_changed_paths(profile, branch=branch, target_branch=target_branch)
+    if sorted(dict.fromkeys(branch_paths)) != sorted(dict.fromkeys(dirty_paths)):
+        return False
+    return working_tree_matches_ref(
+        profile,
+        ref=branch,
+        paths=dirty_paths,
+        repo_root=primary_root,
+    )
+
+
+def _ensure_stash_followup_task(
+    profile: Profile,
+    *,
+    source_task_id: str | None,
+    dirty_paths: list[str],
+    stash_ref: str,
+) -> str:
+    snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    source_task = snapshot.tasks.get(source_task_id or "")
+    title = (
+        f"Resolve supervisor recovery stash for {source_task_id}"
+        if source_task_id
+        else "Resolve supervisor recovery stash"
+    )
+    for task in snapshot.tasks.values():
+        if task.title == title and not task_done(task.id, state):
+            return task.id
+    payload = add_task(
+        profile,
+        title=title,
+        bucket="cli",
+        priority="P1",
+        risk="medium",
+        effort="S",
+        why="The supervisor stashed dirty primary-worktree changes to recover the WTAM launch gate before starting new child work.",
+        evidence=f"Recovery stash {stash_ref} contains: {', '.join(dirty_paths) or 'no explicit paths recorded'}.",
+        safe_first_slice="Inspect the recovery stash, decide whether each change belongs in a landed task or standalone work, then apply or drop it explicitly.",
+        paths=list(dirty_paths),
+        checks=list(profile.validation_commands),
+        docs=list(profile.doc_routing_defaults),
+        domains=["cli", "state", "events", "inbox"],
+        packages=[],
+        affected_paths=list(dirty_paths),
+        objective=source_task.payload.get("objective") if source_task is not None else "Supervisor recovery and task outcome UX",
+        requires_approval=False,
+        approval_reason="",
+        epic_id=None,
+        epic_title=source_task.epic_title if source_task is not None else "Supervisor recovery and task outcome UX",
+        lane_id=None,
+        lane_title="Recovery stash follow-up",
+        wave=source_task.wave if source_task is not None else 0,
+    )
+    append_event(
+        profile.paths,
+        event_type="task_added",
+        actor="supervisor",
+        task_id=str(payload["id"]),
+        payload={"title": payload["title"], "bucket": payload["bucket"]},
+    )
+    return str(payload["id"])
+
+
+def _plan_prelaunch_recovery(profile: Profile, *, actor: str) -> dict[str, Any] | None:
+    recover_view = build_supervisor_recover_view(profile, actor=actor)
+    contract = recover_view.get("workspace_contract") if isinstance(recover_view, dict) else {}
+    primary_dirty_paths = list((contract or {}).get("primary_dirty_paths") or [])
+    blocked_cases = [
+        case
+        for case in recover_view.get("recoverable_cases", [])
+        if isinstance(case, dict)
+        and str(case.get("case") or "") == "blocked_by_dirty_primary"
+        and str(case.get("task_branch") or "").strip()
+    ]
+    if primary_dirty_paths:
+        for case in blocked_cases:
+            if _matching_dirty_primary_case(profile, case=case, dirty_paths=primary_dirty_paths):
+                return {
+                    "action": "commit",
+                    "summary": f"Commit primary dirty state as the recovered landing for {case['task_id']}.",
+                    "dirty_paths": primary_dirty_paths,
+                    **case,
+                }
+        return {
+            "action": "stash",
+            "summary": "Stash dirty primary state and create an explicit follow-up task before launching new child work.",
+            "dirty_paths": primary_dirty_paths,
+            **(blocked_cases[0] if blocked_cases else {}),
+        }
+    if blocked_cases:
+        return {
+            "action": "land",
+            "summary": f"Land the blocked child branch for {blocked_cases[0]['task_id']} before launching new work.",
+            **blocked_cases[0],
+        }
+    return None
+
+
+def _run_prelaunch_recovery(profile: Profile, *, actor: str, run_id: str) -> dict[str, Any] | None:
+    plan = _plan_prelaunch_recovery(profile, actor=actor)
+    if plan is None:
+        return None
+    action = str(plan["action"])
+    task_id = str(plan.get("task_id") or "")
+    branch = str(plan.get("task_branch") or "")
+    target_branch = str(plan.get("target_branch") or "")
+    dirty_paths = list(plan.get("dirty_paths") or [])
+    if action == "land":
+        payload = _land_branch_with_retry(profile, branch=branch, target_branch=target_branch)
+        _mark_task_done(
+            profile,
+            task_id,
+            actor=actor,
+            note=f"Supervisor recovered blocked landing by landing {branch} into {target_branch}.",
+        )
+        record_task_result(
+            profile.paths,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[
+                f"Recovered the blocked child branch for {task_id} before launching new work.",
+                f"Landed {branch} into {target_branch}.",
+            ],
+            validation=[
+                f"Recovered landing for {branch} into {target_branch}.",
+                f"Landed commit: {payload.get('landed_commit')}",
+            ],
+            residual=[],
+            needs_user_input=False,
+            followup_candidates=[],
+            run_id=run_id,
+        )
+        _emit_render(profile)
+        return {"action": action, "task_id": task_id, "task_branch": branch, "land_result": payload}
+    if action == "commit":
+        payload = commit_working_tree_paths(
+            profile,
+            paths=dirty_paths,
+            message=f"Recover {task_id} from dirty primary landing state",
+            repo_root=Path(str(plan.get("primary_worktree") or profile.paths.project_root)),
+        )
+        _mark_task_done(
+            profile,
+            task_id,
+            actor=actor,
+            note=f"Supervisor recovered blocked landing by committing the primary dirty state for {task_id}.",
+        )
+        record_task_result(
+            profile.paths,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[
+                f"Recovered the blocked landing for {task_id} by committing the primary dirty state.",
+                f"Committed paths: {', '.join(dirty_paths)}",
+            ],
+            validation=[
+                f"Recovered primary commit: {payload['commit']}",
+                f"Commit message: {payload['message']}",
+            ],
+            residual=[
+                f"Task branch {branch} is left in place for inspection because the recovery landed through the primary worktree commit path."
+            ],
+            needs_user_input=False,
+            followup_candidates=[],
+            run_id=run_id,
+        )
+        _emit_render(profile)
+        return {
+            "action": action,
+            "task_id": task_id,
+            "task_branch": branch,
+            "commit": payload["commit"],
+            "paths": list(dirty_paths),
+        }
+    if action == "stash":
+        message = f"blackdog recovery {task_id or 'primary'} {run_id}"
+        payload = stash_working_tree(
+            profile,
+            message=message,
+            repo_root=Path(str(plan.get("primary_worktree") or profile.paths.project_root)),
+            include_untracked=True,
+        )
+        followup_task_id = _ensure_stash_followup_task(
+            profile,
+            source_task_id=task_id or None,
+            dirty_paths=dirty_paths,
+            stash_ref=str(payload["stash_ref"]),
+        )
+        _notify_supervisor(
+            profile,
+            actor=actor,
+            task_id=task_id or None,
+            kind="warning",
+            tags=["supervisor", "recovery", "stash"],
+            body=(
+                f"Stashed dirty primary-worktree state as {payload['stash_ref']} before launching new child work. "
+                f"Created follow-up task {followup_task_id} to resolve the stash contents explicitly."
+            ),
+        )
+        _emit_render(profile)
+        return {
+            "action": action,
+            "task_id": task_id or None,
+            "paths": list(dirty_paths),
+            "stash_ref": payload["stash_ref"],
+            "followup_task_id": followup_task_id,
+        }
+    raise SupervisorError(f"unknown prelaunch recovery action: {action}")
 
 
 def _select_tasks(
@@ -730,6 +1028,7 @@ def build_supervisor_status_view(
         "actor": actor,
         "latest_run": latest_run,
         "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
+        "prelaunch_recovery": _plan_prelaunch_recovery(profile, actor=actor),
         "control_action": (
             {
                 "action": control_action,
@@ -920,55 +1219,24 @@ def _land_child_branch(profile: Profile, child: ChildRun, *, actor: str) -> dict
     if spec is None:
         raise WorktreeError("missing worktree spec for branch-backed child run")
 
-    errors: list[str] = []
-    rebase_result: dict[str, Any] | None = None
-    for _ in range(2):
-        try:
-            payload = land_branch(
-                profile,
-                branch=spec.branch,
-                target_branch=spec.target_branch,
-                cleanup=True,
-            )
-            if rebase_result is not None:
-                payload["rebase"] = rebase_result
-            if errors:
-                payload["retry_errors"] = list(errors)
-            return payload
-        except DirtyPrimaryWorktreeError as exc:
-            _notify_supervisor(
-                profile,
-                actor=actor,
-                task_id=child.task.id,
-                kind="warning",
-                tags=["supervisor", "dirty-primary", "contract-violation", "land"],
-                body=(
-                    f"Landing {spec.branch} for {child.task.id} is blocked by dirty primary-worktree changes and "
-                    f"violates the WTAM contract. Overlap with branch changes: "
-                    f"{', '.join(exc.overlap_paths) or 'none detected'}. Dirty paths: "
-                    f"{', '.join(exc.dirty_paths) or 'none detected'}. Clean up or land the primary worktree "
-                    "changes, then rerun the task. Blackdog will not auto-stash the primary checkout."
-                ),
-            )
-            raise
-        except WorktreeError as exc:
-            detail = str(exc)
-            errors.append(detail)
-            if "cannot land:" in detail and "not based on the current" in detail:
-                try:
-                    rebase_result = rebase_branch_onto_target(
-                        profile,
-                        branch=spec.branch,
-                        target_branch=spec.target_branch,
-                    )
-                except WorktreeError as rebase_exc:
-                    errors.append(str(rebase_exc))
-                    break
-                time.sleep(1)
-                continue
-            break
-
-    raise WorktreeError("; ".join(errors[-4:]) if errors else "landing failed")
+    try:
+        return _land_branch_with_retry(profile, branch=spec.branch, target_branch=spec.target_branch)
+    except DirtyPrimaryWorktreeError as exc:
+        _notify_supervisor(
+            profile,
+            actor=actor,
+            task_id=child.task.id,
+            kind="warning",
+            tags=["supervisor", "dirty-primary", "contract-violation", "land"],
+            body=(
+                f"Landing {spec.branch} for {child.task.id} is blocked by dirty primary-worktree changes and "
+                f"violates the WTAM contract. Overlap with branch changes: "
+                f"{', '.join(exc.overlap_paths) or 'none detected'}. Dirty paths: "
+                f"{', '.join(exc.dirty_paths) or 'none detected'}. Clean up or land the primary worktree "
+                "changes, then rerun the task. Blackdog will not auto-stash the primary checkout."
+            ),
+        )
+        raise
 
 
 def _build_child_prompt(
@@ -1542,6 +1810,7 @@ def _append_run_step(
     control_message_id: str | None = None,
     removed_task_ids: list[str] | None = None,
     released_task_ids: list[str] | None = None,
+    recovery_actions: list[dict[str, Any]] | None = None,
 ) -> None:
     step = {
         "index": len(status_payload["steps"]) + 1,
@@ -1562,6 +1831,8 @@ def _append_run_step(
         step["removed_task_ids"] = list(removed_task_ids)
     if released_task_ids:
         step["released_task_ids"] = list(released_task_ids)
+    if recovery_actions:
+        step["recovery_actions"] = list(recovery_actions)
     status_payload["steps"].append(step)
     _write_run_status(status_file, status_payload)
 
@@ -1601,6 +1872,7 @@ def run_supervisor(
         "run_dir": str(run_dir),
         "status_file": str(status_file),
         "supervisor_pid": os.getpid(),
+        "recovery_actions": [],
         "steps": [],
     }
     append_event(
@@ -1642,6 +1914,7 @@ def run_supervisor(
     active: dict[str, ChildRun] = {}
     completion_queue: queue.Queue[tuple[str, int | None]] = queue.Queue()
     attempted_task_ids: set[str] = set()
+    recovery_actions: list[dict[str, Any]] = []
     launched_count = 0
     launch_command_checked = False
     next_claim_liveness_scan_at = 0.0
@@ -1705,6 +1978,25 @@ def run_supervisor(
             next_claim_liveness_scan_at = current + CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS
             if released_task_ids:
                 snapshot, state = _load_synced_runtime(profile)
+        pending_requested_task_ids = [
+            task_id for task_id in task_ids if task_id not in attempted_task_ids and task_id not in active_task_ids
+        ]
+        step_recovery_actions: list[dict[str, Any]] = []
+        if not active and not status_payload["draining"] and pending_requested_task_ids:
+            while True:
+                recovery = _run_prelaunch_recovery(profile, actor=actor, run_id=run_dir.name)
+                if recovery is None:
+                    break
+                step_recovery_actions.append(recovery)
+                recovery_actions.append(recovery)
+                status_payload["recovery_actions"] = list(recovery_actions)
+                snapshot, state = _load_synced_runtime(profile)
+                active_task_ids = {child.task.id for child in active.values()}
+                pending_requested_task_ids = [
+                    task_id for task_id in task_ids if task_id not in attempted_task_ids and task_id not in active_task_ids
+                ]
+                if not pending_requested_task_ids:
+                    break
         ready_tasks = _next_run_tasks(
             snapshot,
             state,
@@ -1715,6 +2007,28 @@ def run_supervisor(
             attempted_task_ids=attempted_task_ids,
             active_task_ids=active_task_ids,
         )
+        if not active and not status_payload["draining"] and ready_tasks and not step_recovery_actions:
+            while True:
+                recovery = _run_prelaunch_recovery(profile, actor=actor, run_id=run_dir.name)
+                if recovery is None:
+                    break
+                step_recovery_actions.append(recovery)
+                recovery_actions.append(recovery)
+                status_payload["recovery_actions"] = list(recovery_actions)
+                snapshot, state = _load_synced_runtime(profile)
+                active_task_ids = {child.task.id for child in active.values()}
+                ready_tasks = _next_run_tasks(
+                    snapshot,
+                    state,
+                    task_ids=task_ids,
+                    allow_high_risk=allow_high_risk,
+                    limit=max(0, selected_count - len(active)),
+                    force=force,
+                    attempted_task_ids=attempted_task_ids,
+                    active_task_ids=active_task_ids,
+                )
+                if not ready_tasks:
+                    break
 
         launched_task_ids: list[str] = []
         if not status_payload["draining"]:
@@ -1737,7 +2051,7 @@ def run_supervisor(
                     active_task_ids=active_task_ids,
                 )
 
-        if launched_task_ids or finished_task_ids or released_task_ids or control_message_id:
+        if launched_task_ids or finished_task_ids or released_task_ids or control_message_id or step_recovery_actions:
             _append_run_step(
                 status_payload,
                 status_file,
@@ -1749,6 +2063,7 @@ def run_supervisor(
                 finished_task_ids=finished_task_ids,
                 control_message_id=control_message_id,
                 released_task_ids=released_task_ids,
+                recovery_actions=step_recovery_actions,
             )
 
         if not active:
@@ -1819,6 +2134,7 @@ def run_supervisor(
             "stopped_by_message_id": status_payload.get("stopped_by_message_id"),
         },
     )
+    status_payload["recovery_actions"] = list(recovery_actions)
     _write_run_status(status_file, status_payload)
     return {
         "run_id": run_id,
@@ -1832,6 +2148,7 @@ def run_supervisor(
         "status_file": str(status_file),
         "steps": list(status_payload["steps"]),
         "stopped_by_message_id": status_payload.get("stopped_by_message_id"),
+        "recovery_actions": list(recovery_actions),
         "children": [
             {
                 "task_id": child.task.id,

@@ -110,9 +110,14 @@ For `git-worktree` launches, Blackdog creates a branch-backed child
 worktree from the primary worktree branch and treats committed repo
 state as the delegated baseline. If landing is later blocked by dirty
 primary-worktree changes, Blackdog treats that as a contract
-violation: it warns through the inbox, records a blocked result, and
-leaves the child branch/worktree intact instead of mutating the
-primary checkout with `git stash`.
+violation: it warns through the inbox and records the blocked child
+outcome first, but it no longer leaves the repo in that state once the
+run returns to an idle launch point. The supervisor now evaluates the
+dirty primary checkout before any later child launch and either lands
+the blocked branch after cleanup, commits a primary checkout that
+already matches the blocked branch tree, or stashes unrelated dirty
+state into an explicit follow-up backlog task so the queue can resume
+without silently losing work.
 Landing outcome is now surfaced in snapshots as:
 
 - `latest_run_branch_ahead`: branch had committable changes relative to the target branch when the run ended.

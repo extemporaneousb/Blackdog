@@ -63,7 +63,7 @@ Current supervisor launcher contract:
 - `control_dir` accepts the special prefix `@git-common`, which resolves against `git rev-parse --git-common-dir`.
 - The default `worktrees_dir` value is `../.worktrees`, which places branch-backed task worktrees beside the primary checkout by default.
 - Child workspaces are branch-backed task worktrees created from the primary worktree branch.
-- Dirty primary-worktree state blocks branch landing as a contract violation. The supervisor sends an inbox warning, records a blocked result, and leaves the child branch/worktree intact rather than auto-stashing the primary checkout.
+- Dirty primary-worktree state still blocks branch landing as a contract violation, and the child run records that blocked outcome first. Before any later child launch from the same idle supervisor loop, Blackdog re-evaluates the primary checkout and either lands the blocked branch after cleanup, commits a matching dirty primary checkout, or stashes unrelated dirty state into a follow-up backlog task.
 - Successful branch-backed child runs are landed through the primary worktree with fast-forward semantics, and the supervisor completes the task after a successful land.
 - Child run snapshots now distinguish completion outcome with:
   - `latest_run_branch_ahead`: whether the branch was ahead of the target when the run ended.
@@ -236,9 +236,12 @@ Current keys:
 - `status_file`
 - `supervisor_pid`
 - `steps`
+- `recovery_actions`
 - `completed_at`
 - `final_status`
 - `stopped_by_message_id`
+
+Each `steps` entry may also include `recovery_actions` when the supervisor resolved dirty-primary state before the next launch window.
 
 ## `blackdog snapshot`
 
@@ -298,6 +301,7 @@ Current keys include:
 - `actor`
 - `latest_run`
 - `workspace_contract`
+- `prelaunch_recovery`
 - `control_action`
 - `open_control_messages`
 - `ready_tasks`
@@ -348,6 +352,12 @@ Each `children` entry includes child execution data from event replay, including
 - `run_dir`
 - `child_artifact_dir`
 - optional `recovery_case`
+
+Each `recoverable_cases` entry now also includes:
+
+- `target_branch`
+- `primary_worktree`
+- `child_artifact_dir`
 
 When a case is recoverable, `recovery_case` includes:
 

@@ -178,6 +178,141 @@ def install_model_backed_supervisor_launcher(
     return launcher_script
 
 
+def install_dirty_primary_recovery_launcher(root: Path, *, commit_message: str) -> Path:
+    return install_exec_launcher(
+        root,
+        """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    Path("dirty-landed.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "dirty-landed.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Land {task_id} from dirty primary child"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"child completed {task_id}",
+            "--validation",
+            "fake-dirty-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+        commit_message=commit_message,
+    )
+
+
+def install_blocking_dirty_primary_launcher(root: Path, *, commit_message: str, primary_mode: str) -> Path:
+    if primary_mode not in {"matching", "unrelated"}:
+        raise AssertionError(f"unsupported primary_mode: {primary_mode}")
+    flag_file = root / ".git" / "blackdog" / "dirty-primary-once"
+    flag_file.parent.mkdir(parents=True, exist_ok=True)
+    flag_file.write_text("dirty once\n", encoding="utf-8")
+    primary_write = (
+        '        (primary_root / "dirty-landed.txt").write_text(task_id + "\\n", encoding="utf-8")\n'
+        if primary_mode == "matching"
+        else '        (primary_root / "dirty.txt").write_text("dirty primary worktree\\n", encoding="utf-8")\n'
+    )
+    return install_exec_launcher(
+        root,
+        f"""
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    primary_root = Path(os.environ["BLACKDOG_PRIMARY_WORKTREE"])
+    flag_file = project_root / ".git" / "blackdog" / "dirty-primary-once"
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    Path("dirty-landed.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "dirty-landed.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Land {{task_id}} from dirty primary child"], check=True)
+    if flag_file.exists():
+{primary_write.rstrip()}
+        flag_file.unlink()
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"child completed {{task_id}}",
+            "--validation",
+            "fake-dirty-child",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+        commit_message=commit_message,
+    )
+
+
 def remove_task_from_backlog(root: Path, task_id: str) -> None:
     profile = load_profile(root)
     snapshot = load_backlog(profile.paths, profile)
@@ -3652,62 +3787,10 @@ if __name__ == "__main__":
 
     def test_supervise_run_blocks_on_dirty_primary_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        install_exec_launcher(
+        install_blocking_dirty_primary_launcher(
             self.root,
-            """
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-
-def main() -> int:
-    args = sys.argv[1:]
-    if args == ["--help"]:
-        print("Commands:\\n  exec")
-        return 0
-    if not args or args[0] != "exec":
-        print("expected exec launcher", file=sys.stderr)
-        return 2
-    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
-    task_id = os.environ["BLACKDOG_TASK_ID"]
-    actor = os.environ["BLACKDOG_AGENT_NAME"]
-    Path("dirty-landed.txt").write_text(task_id + "\\n", encoding="utf-8")
-    subprocess.run(["git", "add", "dirty-landed.txt"], check=True)
-    subprocess.run(["git", "commit", "-m", f"Land {task_id} from dirty primary child"], check=True)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "blackdog.cli",
-            "result",
-            "record",
-            "--project-root",
-            str(project_root),
-            "--id",
-            task_id,
-            "--actor",
-            actor,
-            "--status",
-            "success",
-            "--what-changed",
-            f"child completed {task_id}",
-            "--validation",
-            "fake-dirty-child",
-        ],
-        check=True,
-        env=os.environ.copy(),
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-""",
             commit_message="Checkpoint dirty primary launcher for supervisor contract-violation test",
+            primary_mode="unrelated",
         )
 
         run_cli(
@@ -3737,8 +3820,6 @@ if __name__ == "__main__":
             "--wave",
             "0",
         )
-        (self.root / "dirty.txt").write_text("dirty primary worktree\n", encoding="utf-8")
-
         task_id = json.loads(
             subprocess.run(
                 [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
@@ -3778,6 +3859,7 @@ if __name__ == "__main__":
         self.assertIs(payload["children"][0]["branch_ahead"], True)
         self.assertIs(payload["children"][0]["landed"], False)
         self.assertIn("dirty primary worktree contract violation", payload["children"][0]["land_error"])
+        self.assertEqual(payload["recovery_actions"], [])
         self.assertTrue((self.root / "dirty.txt").exists())
         self.assertFalse((self.root / "dirty-landed.txt").exists())
         self.assertTrue(Path(payload["children"][0]["workspace"]).exists())
@@ -3803,34 +3885,8 @@ if __name__ == "__main__":
         results = [json.loads(path.read_text(encoding="utf-8")) for path in result_files]
         blocked_results = [row for row in results if row["actor"] == "supervisor" and row["status"] == "blocked"]
         self.assertEqual(len(blocked_results), 1)
-        self.assertTrue(blocked_results[0]["needs_user_input"])
-        self.assertIn(
-            "Clean up or land the primary worktree changes in the primary checkout.",
-            blocked_results[0]["followup_candidates"],
-        )
-        open_messages = json.loads(
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "blackdog.cli",
-                    "inbox",
-                    "list",
-                    "--project-root",
-                    str(self.root),
-                    "--recipient",
-                    "supervisor",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=cli_env(),
-                cwd=self.root,
-            ).stdout
-        )
-        self.assertTrue(
-            any("Blackdog will not auto-stash the primary checkout." in row["body"] for row in open_messages)
-        )
+        self.assertFalse(blocked_results[0]["needs_user_input"])
+        self.assertEqual(blocked_results[0]["followup_candidates"], [])
         task = next(row for row in build_ui_snapshot(load_profile(self.root))["tasks"] if row["id"] == task_id)
         self.assertEqual(task["operator_status"], "Failed to land")
         self.assertEqual(task["operator_status_key"], "blocked")
@@ -3839,6 +3895,270 @@ if __name__ == "__main__":
         self.assertFalse(task["latest_run_landed"])
         self.assertIn("dirty primary worktree contract violation", task["latest_run_land_error"])
         self.assertIn("failed-to-land", [row["key"] for row in task["card_status_chips"]])
+
+    def test_supervise_run_recovers_by_stashing_and_landing_before_new_child(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        install_blocking_dirty_primary_launcher(
+            self.root,
+            commit_message="Checkpoint dirty primary recovery launcher for stash-before-launch test",
+            primary_mode="unrelated",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Blocked dirty-primary task",
+            "--bucket",
+            "integration",
+            "--why",
+            "A previously blocked branch should be recovered before new work launches.",
+            "--evidence",
+            "Launching another child while the primary checkout is dirty compounds the WTAM blockage.",
+            "--safe-first-slice",
+            "Block one landed child on dirty primary state, then recover it before a second child launch.",
+            "--path",
+            "dirty-landed.txt",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Recovery lane",
+            "--wave",
+            "0",
+        )
+        blocked_task_id = task_ids_by_title(self.root)["Blocked dirty-primary task"]
+        first_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    blocked_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertIn("dirty primary worktree contract violation", first_payload["children"][0]["land_error"])
+        self.assertEqual(first_payload["recovery_actions"], [])
+
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Fresh runnable task",
+            "--bucket",
+            "integration",
+            "--why",
+            "The supervisor should resume normal launches after recovering blocked state.",
+            "--evidence",
+            "The recovery gate should clear stale blocked state before new work begins.",
+            "--safe-first-slice",
+            "Launch a second child only after the blocked first child has been recovered.",
+            "--path",
+            "dirty-landed.txt",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Recovery lane",
+            "--wave",
+            "0",
+        )
+        next_task_id = task_ids_by_title(self.root)["Fresh runnable task"]
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    next_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual([row["action"] for row in payload["recovery_actions"]], ["stash", "land"])
+        self.assertEqual(len(payload["children"]), 1)
+        self.assertEqual(payload["children"][0]["task_id"], next_task_id)
+        self.assertEqual((self.root / "dirty-landed.txt").read_text(encoding="utf-8").strip(), next_task_id)
+        self.assertFalse((self.root / "dirty.txt").exists())
+
+        stash_list = subprocess.run(
+            ["git", "-C", str(self.root), "stash", "list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("blackdog recovery", stash_list)
+
+        followup_title = f"Resolve supervisor recovery stash for {blocked_task_id}"
+        self.assertIn(followup_title, task_ids_by_title(self.root))
+
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][blocked_task_id]["status"], "done")
+        self.assertEqual(state["task_claims"][next_task_id]["status"], "done")
+
+        blocked_results = [row for row in load_task_results(self.runtime_paths(), task_id=blocked_task_id) if row["actor"] == "supervisor"]
+        self.assertTrue(any(row["status"] == "success" for row in blocked_results))
+
+    def test_supervise_run_recovers_matching_dirty_primary_by_commit(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        install_blocking_dirty_primary_launcher(
+            self.root,
+            commit_message="Checkpoint dirty primary recovery launcher for commit-before-launch test",
+            primary_mode="matching",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Commit-recover blocked task",
+            "--bucket",
+            "integration",
+            "--why",
+            "A matching primary dirty state should be committed as the recovered landing.",
+            "--evidence",
+            "If the primary checkout already matches the blocked branch tree, a recovery commit is safer than stashing.",
+            "--safe-first-slice",
+            "Block one child on matching dirty primary content, then recover it by committing the primary checkout.",
+            "--path",
+            "dirty-landed.txt",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Recovery lane",
+            "--wave",
+            "0",
+        )
+        blocked_task_id = task_ids_by_title(self.root)["Commit-recover blocked task"]
+        first_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    blocked_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertIn("dirty primary worktree contract violation", first_payload["children"][0]["land_error"])
+        self.assertEqual(first_payload["recovery_actions"], [])
+
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Post-recovery runnable task",
+            "--bucket",
+            "integration",
+            "--why",
+            "The supervisor should continue launching work after a recovery commit.",
+            "--evidence",
+            "A matched dirty-primary recovery should not leave the queue blocked.",
+            "--safe-first-slice",
+            "Commit the matching recovery state, then launch a fresh child task.",
+            "--path",
+            "dirty-landed.txt",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Recovery lane",
+            "--wave",
+            "0",
+        )
+        next_task_id = task_ids_by_title(self.root)["Post-recovery runnable task"]
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    next_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual([row["action"] for row in payload["recovery_actions"]], ["commit"])
+        self.assertEqual(payload["children"][0]["task_id"], next_task_id)
+        self.assertEqual((self.root / "dirty-landed.txt").read_text(encoding="utf-8").strip(), next_task_id)
+
+        stash_list = subprocess.run(
+            ["git", "-C", str(self.root), "stash", "list"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertEqual(stash_list.strip(), "")
+
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][blocked_task_id]["status"], "done")
+        self.assertEqual(state["task_claims"][next_task_id]["status"], "done")
+
+        recovery_log = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "log",
+                "--format=%s",
+                "--grep",
+                f"Recover {blocked_task_id} from dirty primary landing state",
+                "-n",
+                "1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn(f"Recover {blocked_task_id} from dirty primary landing state", recovery_log)
 
     def test_supervise_run_drains_multiple_tasks(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -5128,7 +5448,7 @@ if __name__ == "__main__":
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
 
         def parse_winner_report(path: Path) -> tuple[str, int]:
-            match = re.search(r"winner=(?P<task_id>[A-Z0-9-]+) score=(?P<score>\d+)", path.read_text(encoding="utf-8"))
+            match = re.search(r"winner=(?P<task_id>\S+) score=(?P<score>\d+)", path.read_text(encoding="utf-8"))
             if match is None:
                 raise AssertionError(f"Could not parse winner report from {path}")
             return match.group("task_id"), int(match.group("score"))
@@ -5288,10 +5608,10 @@ def main() -> int:
             + "\\n",
             encoding="utf-8",
         )
-        report = project_root / "convergence-round1-winner.txt"
+        report = workspace / "convergence-round1-winner.txt"
         report.write_text(f"winner={winner['task_id']} score={winner['score']}\\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(project_root), "add", str(report.name)], check=True)
-        subprocess.run(["git", "-C", str(project_root), "commit", "-m", f"Record convergence winner for {task_id}"], check=True)
+        subprocess.run(["git", "add", report.name], check=True)
+        subprocess.run(["git", "commit", "-m", f"Record convergence winner for {task_id}"], check=True)
         record_result(
             project_root=project_root,
             task_id=task_id,
@@ -5309,6 +5629,13 @@ def main() -> int:
     if "optimization pass" in title.lower():
         winner_task_id, winner_score = read_round1_winner(project_root)
         score = winner_score + optimization_score(title)
+        optimization_source = workspace / f"{task_id}-optimization.py"
+        optimization_source.write_text(
+            f"ROUND1_WINNER = {winner_task_id!r}\\nOPTIMIZATION_SCORE = {score}\\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", optimization_source.name], check=True)
+        subprocess.run(["git", "commit", "-m", f"Implement optimization pass for {task_id}"], check=True)
         optimization_file = run_dir.parent / f"optimization-{task_id}.json"
         optimization_file.write_text(
             json.dumps(
@@ -5348,13 +5675,13 @@ def main() -> int:
         winner_task_id = winner["task_id"]
         winner_score = int(winner.get("optimization_score", 0))
         source_task_id = winner.get("round1_winner_task_id", "")
-        report = project_root / "convergence-round2-winner.txt"
+        report = workspace / "convergence-round2-winner.txt"
         report.write_text(
             f"winner={winner_task_id} score={winner_score} source-winner={source_task_id}\\n",
             encoding="utf-8",
         )
-        subprocess.run(["git", "-C", str(project_root), "add", str(report.name)], check=True)
-        subprocess.run(["git", "-C", str(project_root), "commit", "-m", f"Record convergence final winner for {task_id}"], check=True)
+        subprocess.run(["git", "add", report.name], check=True)
+        subprocess.run(["git", "commit", "-m", f"Record convergence final winner for {task_id}"], check=True)
         record_result(
             project_root=project_root,
             task_id=task_id,
@@ -5577,7 +5904,7 @@ if __name__ == "__main__":
         for task_id in second_round_task_ids:
             self.assertEqual(state["task_claims"][task_id]["status"], "done")
         for task_id in round1_task_ids:
-            self.assertEqual(state["task_claims"][task_id]["status"], "released")
+            self.assertEqual(state["task_claims"][task_id]["status"], "done")
 
         events = load_events(self.runtime_paths())
         sweep_rows = [row for row in events if row["type"] == "supervisor_run_sweep"]
@@ -5636,7 +5963,7 @@ if __name__ == "__main__":
 
         snapshot = html_snapshot(self.runtime_paths().html_file)
         board_task_ids = {row["id"] for row in snapshot["board_tasks"]}
-        self.assertEqual(board_task_ids, set(round1_task_ids) | set(second_round_task_ids))
+        self.assertEqual(board_task_ids, set(second_round_task_ids))
         snapshot_tasks = {row["id"]: row for row in snapshot["tasks"]}
         for task_id in round1_task_ids | set(second_round_task_ids):
             self.assertEqual(snapshot_tasks[task_id]["operator_status"], "Complete")

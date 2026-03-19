@@ -477,6 +477,104 @@ def branch_changed_paths(profile: Profile, *, branch: str, target_branch: str | 
     return sorted({line.strip() for line in completed.stdout.splitlines() if line.strip()})
 
 
+def working_tree_matches_ref(
+    profile: Profile,
+    *,
+    ref: str,
+    paths: list[str],
+    repo_root: Path | None = None,
+) -> bool:
+    resolved_root = _repo_root(repo_root or profile.paths.project_root)
+    for path in paths:
+        candidate = (resolved_root / path).resolve()
+        if candidate.exists() and candidate.is_dir():
+            return False
+        completed = subprocess.run(
+            ["git", "-C", str(resolved_root), "show", f"{ref}:{path}"],
+            capture_output=True,
+            check=False,
+        )
+        ref_has_path = completed.returncode == 0
+        if ref_has_path:
+            if not candidate.exists() or candidate.is_dir():
+                return False
+            if candidate.read_bytes() != completed.stdout:
+                return False
+            continue
+        if candidate.exists():
+            return False
+    return True
+
+
+def commit_working_tree_paths(
+    profile: Profile,
+    *,
+    paths: list[str],
+    message: str,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    if not paths:
+        raise WorktreeError("cannot commit an empty path set")
+    resolved_root = _repo_root(repo_root or profile.paths.project_root)
+    add = _run_git_no_check(resolved_root, "add", "-A", "--", *paths)
+    if add.returncode != 0:
+        detail = add.stderr.strip() or add.stdout.strip() or f"exit code {add.returncode}"
+        raise WorktreeError(f"git add failed: {detail}")
+    staged = _run_git_no_check(resolved_root, "diff", "--cached", "--quiet", "--exit-code")
+    if staged.returncode == 0:
+        raise WorktreeError("git add produced no staged changes to commit")
+    if staged.returncode not in {0, 1}:
+        detail = staged.stderr.strip() or staged.stdout.strip() or f"exit code {staged.returncode}"
+        raise WorktreeError(f"git diff --cached --quiet failed: {detail}")
+    commit = _run_git_no_check(resolved_root, "commit", "-m", message)
+    if commit.returncode != 0:
+        detail = commit.stderr.strip() or commit.stdout.strip() or f"exit code {commit.returncode}"
+        raise WorktreeError(f"git commit failed: {detail}")
+    return {
+        "repo_root": str(resolved_root),
+        "commit": _run_git(resolved_root, "rev-parse", "HEAD"),
+        "message": message,
+        "paths": list(paths),
+    }
+
+
+def stash_working_tree(
+    profile: Profile,
+    *,
+    message: str,
+    repo_root: Path | None = None,
+    include_untracked: bool = True,
+) -> dict[str, Any]:
+    resolved_root = _repo_root(repo_root or profile.paths.project_root)
+    before = _run_git_no_check(resolved_root, "stash", "list", "--format=%gd%x00%gs")
+    if before.returncode != 0:
+        detail = before.stderr.strip() or before.stdout.strip() or f"exit code {before.returncode}"
+        raise WorktreeError(f"git stash list failed: {detail}")
+    command = ["stash", "push"]
+    if include_untracked:
+        command.append("-u")
+    command.extend(["-m", message])
+    push = _run_git_no_check(resolved_root, *command)
+    if push.returncode != 0:
+        detail = push.stderr.strip() or push.stdout.strip() or f"exit code {push.returncode}"
+        raise WorktreeError(f"git stash push failed: {detail}")
+    after = _run_git_no_check(resolved_root, "stash", "list", "--format=%gd%x00%gs")
+    if after.returncode != 0:
+        detail = after.stderr.strip() or after.stdout.strip() or f"exit code {after.returncode}"
+        raise WorktreeError(f"git stash list failed: {detail}")
+    rows = [line for line in after.stdout.splitlines() if line.strip()]
+    if not rows:
+        raise WorktreeError("git stash push succeeded but no stash entry was created")
+    ref, _, subject = rows[0].partition("\x00")
+    if message not in subject:
+        raise WorktreeError(f"expected newest stash entry to include {message!r}, got {subject!r}")
+    return {
+        "repo_root": str(resolved_root),
+        "stash_ref": ref.strip(),
+        "message": subject.strip(),
+    }
+
+
 def rebase_branch_onto_target(
     profile: Profile,
     *,
