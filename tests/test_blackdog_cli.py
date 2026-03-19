@@ -4681,6 +4681,149 @@ if __name__ == "__main__":
         state = json.loads(paths.state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][task_id]["status"], "done")
 
+    def test_supervise_run_completes_landed_task_after_child_self_release(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    Path("self-release.txt").write_text(task_id + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "self-release.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", f"Commit {task_id} before self-release"], check=True)
+    env = os.environ.copy()
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"child recorded success for {task_id}",
+            "--validation",
+            "self-release-child",
+        ],
+        check=True,
+        env=env,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "release",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--agent",
+            actor,
+            "--note",
+            "child released after recording success",
+        ],
+        check=True,
+        env=env,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint self-release launcher for supervisor landing recovery test",
+        )
+
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Release after success",
+            "--bucket",
+            "integration",
+            "--why",
+            "The supervisor should complete a landed task even if the child released its own claim after recording success.",
+            "--evidence",
+            "A successful child can exit with a released claim before the supervisor lands the branch.",
+            "--safe-first-slice",
+            "Record a success result, release the task from the child, and let the supervisor land and complete it.",
+            "--path",
+            "src/blackdog/supervisor.py",
+            "--epic-title",
+            "Supervisor",
+            "--lane-title",
+            "Landing recovery",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Release after success"]
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "supervise",
+                "run",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_id,
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        child = payload["children"][0]
+        self.assertFalse(child["missing_process"])
+        self.assertEqual(child["exit_code"], 0)
+        self.assertEqual(child["final_task_status"], "done")
+        self.assertIsNotNone(child["land_result"])
+        self.assertIsNone(child["land_error"])
+        self.assertFalse(Path(child["workspace"]).exists())
+
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["task_claims"][task_id]["status"], "done")
+        self.assertEqual(state["task_claims"][task_id]["completed_by"], child["child_agent"])
+
+        events = [row for row in load_events(self.runtime_paths()) if row.get("task_id") == task_id]
+        event_types = [row["type"] for row in events]
+        self.assertIn("release", event_types)
+        self.assertIn("complete", event_types)
+
     def test_supervise_run_releases_orphaned_claim_after_two_liveness_scans(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()

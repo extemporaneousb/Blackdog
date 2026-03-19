@@ -1744,8 +1744,9 @@ def _complete_if_still_claimed(profile: Profile, task_id: str, *, child_agent: s
         entry = state.setdefault("task_claims", {}).get(task_id) or {}
         if entry.get("status") == "done":
             return
-        if entry.get("status") != "claimed" or entry.get("claimed_by") != child_agent:
-            raise SupervisorError(f"Task {task_id} is not claimed by {child_agent}; cannot complete after land")
+        owner = entry.get("claimed_by")
+        if owner and owner != child_agent:
+            raise SupervisorError(f"Task {task_id} is not owned by {child_agent}; cannot complete after land")
         entry["status"] = "done"
         entry["completed_by"] = child_agent
         entry["completed_at"] = now_iso()
