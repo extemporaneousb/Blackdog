@@ -29,12 +29,24 @@ Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only
 - `blackdog worktree preflight` reports the central project root, the actual current `cwd` and worktree, the primary worktree, configured worktree base, whether there are implementation-blocking local changes, the enforced WTAM workspace contract, the target branch, primary-worktree landing cleanliness, and the per-worktree `.VE` rule/CLI path for the current checkout
 
 For Blackdog's own repo, manual-first is the default operating mode
-until the runtime-hardening tasks land. Prefer the direct `blackdog
-claim` -> `blackdog worktree preflight|start` -> `blackdog result
-record` -> land/`blackdog complete` flow for normal Blackdog-on-
-Blackdog work. Use `blackdog supervise run` when you are
-explicitly exercising delegated execution or supervisor behavior, not
-as the required path to continue product development.
+until the runtime-hardening tasks land. Prefer the direct
+`blackdog claim` -> `blackdog worktree preflight|start` ->
+`blackdog result record` -> `land`/`blackdog complete` flow for normal
+Blackdog-on-Blackdog work.
+
+If you are running as a delegated child workspace, follow the delegated
+startup protocol:
+
+- the task is already claimed by the supervisor;
+- the child task branch is already checked out in this workspace;
+- the committed repository state is the delegated baseline;
+- use workspace-local `./.VE/bin/blackdog` when available;
+- record work with `blackdog result record`;
+- do not run `land` or `complete` locally.
+
+Use `blackdog supervise run` when you are explicitly exercising delegated
+execution or supervisor behavior, not as the required path to continue
+product development.
 
 ### Backlog management
 
@@ -93,6 +105,25 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 ### Structured results
 
 - `blackdog result record --id TASK --actor NAME --status success|blocked|partial ...`
+
+### Delegated child telemetry workflow
+
+For delegated ergonomics reviews, use:
+
+- `blackdog supervise report --format json`
+- `blackdog supervise recover --format json`
+- `blackdog supervise status --format json`
+
+Use these payloads to check:
+
+- startup friction (`summary.startup`, `observations` with category `startup`)
+- retry pressure (`summary.retry`, launch re-runs)
+- output-shape consistency (`attempts[*].artifact_complete`, `output_shape` summary)
+- landing outcomes (`summary.landing`, `runs[*].landed_count`, `attempts[*].land_error`)
+
+Cross-check attempt-level fields (`prompt_exists`, `stdout_exists`,
+`stderr_exists`, `metadata_exists`) against `supervisor-runs` artifacts
+before changing launch settings or child startup contract details.
 
 ### Inbox
 

@@ -289,6 +289,27 @@ Current keys:
 
 Each `steps` entry may also include `recovery_actions` when the supervisor resolved dirty-primary state before the next launch window.
 
+## Delegated child telemetry and startup metrics
+
+Use these artifacts and payloads to measure delegated-child ergonomics:
+
+- `blackdog supervise status --format json` for current run state and
+  pre-launch recovery context.
+- `blackdog supervise recover --format json` for blocked/partial child
+  execution and explicit recoverable cases.
+- `blackdog supervise report --format json` for startup friction, retry
+  pressure, output-shape consistency, and landing outcomes.
+- `supervise report` payload fields:
+  - `summary.startup`, `summary.retry`, `summary.output_shape`, `summary.landing`
+  - `runs[*].attempts[*].launch_error`, `artifacts_dir`, `prompt_exists`,
+    `stdout_exists`, `stderr_exists`, `metadata_exists`,
+    `artifact_count`, `artifact_complete`, `metadata_valid`
+  - `runs[*].attempts[*].branch_ahead`, `landed`, `land_error`
+  - `observations` with actionable severity buckets
+- Child artifacts in `supervisor-runs/*/<task-id>/` and
+  `task-results/<task-id>/` are the source-of-truth artifacts for
+  startup and landing diagnostics.
+
 ## `blackdog snapshot`
 
 Canonical static-page snapshot payload.

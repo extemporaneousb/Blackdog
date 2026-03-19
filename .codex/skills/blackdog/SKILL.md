@@ -9,8 +9,10 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## CLI Entry Points
 
-- Blackdog CLI: `/Users/bullard/Work/Blackdog/.VE/bin/blackdog`
-- Skill refresh CLI: `/Users/bullard/Work/Blackdog/.VE/bin/blackdog-skill`
+- Blackdog CLI (preferred): `./.VE/bin/blackdog` in the current worktree.
+- Skill refresh CLI (preferred): `./.VE/bin/blackdog-skill`.
+- For branch-backed child workspaces, pass `--project-root /Users/bullard/Work/Blackdog` so all commands target the central control root.
+- Never reuse another worktree's `.VE`; bootstrap a local `.VE` per worktree if needed.
 
 ## Core Paths
 
@@ -23,25 +25,27 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 - Results: `/Users/bullard/Work/Blackdog/.git/blackdog/task-results`
 - HTML view: `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html`
 
-## Standard Flow
+## Direct Implementation Flow (manual/WTAM mode)
 
-1. Run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog validate`.
-2. Run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog summary`.
-3. Inspect runnable work with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog next`.
-4. Before any repo edit you intend to keep, run `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-5. Claim one task with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog claim --agent <agent-name>`, then record structured output with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog result record ...`.
+1. Run `blackdog validate` (with project-root when in task worktree context).
+2. Run `blackdog summary`.
+3. Inspect runnable work with `blackdog next`.
+4. Before any repo edit you intend to keep, run `blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit that checkout; create or enter a branch-backed task worktree with `blackdog worktree start --id TASK` first.
+5. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
 6. Complete or release the task through the CLI for direct work.
-7. Use `/Users/bullard/Work/Blackdog/.VE/bin/blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
-8. Check `/Users/bullard/Work/Blackdog/.VE/bin/blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+7. Use `blackdog supervise run` only when you want Blackdog to launch child agents.
+8. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 9. Open `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
-## Static Board
+## Delegated Child Flow (supervised mode)
 
-- `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
-- The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
-- The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
-- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
-- Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
+1. Do not run `validate`, `summary`, `next`, or `claim` for a task already launched by supervisor.
+2. Read the launch instructions from inbox (`blackdog inbox list --project-root /Users/bullard/Work/Blackdog --recipient <agent-name>`).
+3. Use the workspace-local CLI first. If absent, use the active environment's `blackdog` with `--project-root /Users/bullard/Work/Blackdog`.
+4. Follow the protocol from the child prompt: the task is already claimed, the child branch is the delegated workspace, and committed repo state is the baseline.
+5. Work in the delegated branch, then run `blackdog result record --project-root /Users/bullard/Work/Blackdog --id <TASK> --actor <agent-name> ...`.
+6. Do not run `complete` or `land` from child workspaces.
+7. If the run blocks, report via inbox and wait for supervisor/operator recovery.
 
 ## Docs to Review
 
@@ -53,6 +57,14 @@ Review these repo docs before editing when they apply:
   - `docs/FILE_FORMATS.md`
 
 Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's required review set, then regenerate this skill after routing changes.
+
+## Static Board
+
+- `/Users/bullard/Work/Blackdog/.git/blackdog/backlog-index.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
+- The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
+- The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
+- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
+- Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
 
 ## Supervisor Model
 
@@ -66,7 +78,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `/Users/bullard/Work/Blackdog/.git/blackdog`.
-- Regenerate this skill after profile changes with `/Users/bullard/Work/Blackdog/.VE/bin/blackdog-skill refresh backlog --project-root /Users/bullard/Work/Blackdog`.
+- Regenerate this skill after profile changes with `./.VE/bin/blackdog-skill refresh backlog --project-root /Users/bullard/Work/Blackdog`.
 
 ## Repo Defaults
 

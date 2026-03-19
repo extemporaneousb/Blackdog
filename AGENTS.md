@@ -21,12 +21,18 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
   rooted at that worktree; do not copy virtualenv directories between
   worktrees because they embed absolute paths.
 - Until the runtime-hardening tasks land, run Blackdog's own repo in
-  manual-first mode: unless a supervisor-issued child prompt already
-  claimed the task, prefer the direct `blackdog claim` ->
-  `blackdog worktree preflight|start` -> `blackdog result record` ->
-  land/`blackdog complete` flow. Treat `blackdog supervise ...` and
-  the static HTML control surface as optional aids rather than the
-  default way to keep Blackdog moving.
+  manual-first mode for operator work:
+  - `blackdog claim` -> `blackdog worktree preflight|start` ->
+    `blackdog result record` -> `land`/`complete` flow
+  - `blackdog supervise ...` and static HTML are optional aids for
+    inspection or delegated execution.
+- For a delegated child workspace launched by supervisor, skip manual
+  claim/preflight/bootstrap setup and follow the launch prompt:
+  - the task is already claimed
+  - committed repo state is the delegated baseline
+  - use workspace-local `.VE` if present
+  - commit changes on the child branch
+  - report only through `blackdog result record`
 - Blackdog uses WTAM for kept implementation changes. There is no
   non-WTAM implementation mode.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents
@@ -35,8 +41,7 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for
   backlog, state, events, inbox, and task-result artifacts.
 - Keep skills thin. If a change adds logic that belongs in the
-  CLI/library, move it there instead of expanding prompt-only
-  behavior.
+  CLI/library, move it there instead of expanding prompt-only behavior.
 - Preserve the self-hosted backlog in Blackdog's configured control
   root; use it to track Blackdog follow-up work.
 - Update docs in `docs/` when CLI behavior or file formats change.

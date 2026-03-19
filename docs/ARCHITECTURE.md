@@ -1,5 +1,10 @@
 # Architecture
 
+There are two supported operating modes for Blackdog:
+
+- Direct manual mode for operator-driven development from the primary worktree.
+- Delegated child mode for supervisor-launched branch-backed child runs.
+
 Blackdog is a local-first backlog runtime for AI-assisted software work, with a target direction toward local multi-agent supervision.
 
 Until the runtime-hardening tasks land, Blackdog's own repo should use
@@ -213,6 +218,22 @@ static HTML index is readonly: it surfaces tasks, results, and artifact
 links, but intervention still flows back through chat and Blackdog CLI
 writes.
 
+
+## Delegated child startup and reporting
+
+Blackdog's delegated child protocol is contract-first:
+
+- The supervisor prompt already provides the task claim, branch, target,
+  workspace mode, and workspace path.
+- Child workspaces are considered valid if they point at branch-backed task
+  trees and have the expected `.VE` handling for that checkout.
+- Child agents should only run implementation code and `result record` in
+  their delegated workspace.
+- Landing, completion status, and recovery outcomes are captured in run metadata
+  and surfaced through snapshots and supervision payloads.
+
+Use `blackdog supervise report` to spot startup friction and output-shape
+issues across recent runs before adjusting launch settings or launch instructions.
 
 ## WTAM audit
 
