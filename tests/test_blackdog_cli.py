@@ -38,7 +38,18 @@ from blackdog.store import (
     send_message,
 )
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
-from blackdog.ui import UI_SNAPSHOT_SCHEMA_VERSION, build_ui_snapshot, render_static_html
+from blackdog.ui import (
+    UI_SNAPSHOT_SCHEMA_VERSION,
+    _activity_message,
+    _artifact_href,
+    _latest_supervisor_check_at,
+    _latest_timestamp,
+    _operator_status,
+    _pid_alive,
+    _read_artifact_text,
+    build_ui_snapshot,
+    render_static_html,
+)
 from blackdog.worktree import WorktreeSpec
 
 
@@ -2035,6 +2046,100 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertGreaterEqual(rendered_content_updated, snapshot_content_updated)
         self.assertEqual(rendered_last_checked, rendered_content_updated)
         self.assertEqual(rendered_snapshot["supervisor_last_checked_at"], snapshot["supervisor_last_checked_at"])
+
+    def test_ui_helper_pid_artifact_and_read_fallbacks(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        self.assertFalse(_pid_alive("bad-pid"))
+        with patch("blackdog.ui.os.kill", side_effect=ProcessLookupError()):
+            self.assertFalse(_pid_alive(123))
+        with patch("blackdog.ui.os.kill", side_effect=PermissionError()):
+            self.assertTrue(_pid_alive(123))
+        with patch("blackdog.ui.os.kill", side_effect=OSError()):
+            self.assertFalse(_pid_alive(123))
+
+        self.assertIsNone(_artifact_href(paths, None))
+        self.assertIsNone(_artifact_href(paths, self.root / "outside.txt"))
+        self.assertIsNone(_artifact_href(paths, paths.backlog_dir / "missing.txt", must_exist=True))
+
+        artifact_path = paths.backlog_dir / "artifacts" / "stdout.log"
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text("abcdef", encoding="utf-8")
+        self.assertEqual(_artifact_href(paths, artifact_path), "artifacts/stdout.log")
+
+        self.assertEqual(_read_artifact_text(None), (None, False))
+        text, truncated = _read_artifact_text(artifact_path, char_limit=3)
+        self.assertTrue(truncated)
+        self.assertIn("[truncated in reader; open Stdout for the full response]", text)
+        with patch("pathlib.Path.read_text", side_effect=OSError()):
+            self.assertEqual(_read_artifact_text(artifact_path), (None, False))
+
+    def test_ui_helper_supervisor_freshness_and_timestamp_selection(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+
+        invalid_dir = paths.supervisor_runs_dir / "20260319-100000-invalid"
+        invalid_dir.mkdir(parents=True, exist_ok=True)
+        (invalid_dir / "status.json").write_text("{not json}\n", encoding="utf-8")
+
+        nondict_dir = paths.supervisor_runs_dir / "20260319-100100-nondict"
+        nondict_dir.mkdir(parents=True, exist_ok=True)
+        (nondict_dir / "status.json").write_text("[]\n", encoding="utf-8")
+
+        empty_step_dir = paths.supervisor_runs_dir / "20260319-100200-empty-step"
+        empty_step_dir.mkdir(parents=True, exist_ok=True)
+        (empty_step_dir / "status.json").write_text(json.dumps({"steps": [{}]}), encoding="utf-8")
+
+        steps_dir = paths.supervisor_runs_dir / "20260319-100300-step-fallback"
+        steps_dir.mkdir(parents=True, exist_ok=True)
+        (steps_dir / "status.json").write_text(
+            json.dumps({"steps": [{"at": "2026-03-19T10:03:00"}]}),
+            encoding="utf-8",
+        )
+
+        profile = load_profile(self.root)
+        self.assertEqual(_latest_supervisor_check_at(profile), "2026-03-19T10:03:00")
+        self.assertEqual(
+            _latest_timestamp("2026-03-19T10:03:00", "2026-03-19T10:04:00-07:00"),
+            "2026-03-19T10:04:00-07:00",
+        )
+
+    def test_ui_helper_operator_and_activity_messages_cover_fallback_branches(self) -> None:
+        failed = _operator_status({"status": "claimed", "latest_run_status": "launch-failed"})
+        self.assertEqual(failed["operator_status"], "Failed")
+        self.assertEqual(failed["operator_status_detail"], "Child launch failed")
+
+        land_blocked = _operator_status(
+            {
+                "status": "claimed",
+                "latest_run_status": "blocked",
+                "latest_run_branch_ahead": True,
+                "latest_run_landed": False,
+                "latest_run_land_error": "dirty main",
+            }
+        )
+        self.assertEqual(land_blocked["operator_status"], "Failed to land")
+        self.assertEqual(land_blocked["operator_status_detail"], "dirty main")
+
+        result_blocked = _operator_status(
+            {
+                "status": "claimed",
+                "latest_result_status": "blocked",
+                "latest_result_preview": "Latest result blocked preview",
+            }
+        )
+        self.assertEqual(result_blocked["operator_status_detail"], "Latest result blocked preview")
+
+        high_risk = _operator_status({"status": "high-risk"})
+        self.assertEqual(high_risk["operator_status"], "Blocked")
+        self.assertEqual(high_risk["operator_status_detail"], "High-risk task")
+
+        self.assertEqual(_activity_message({"type": "release", "payload": {"note": "manual"}}), "released · manual")
+        self.assertEqual(_activity_message({"type": "child_finish", "payload": {"missing_process": True}}), "run interrupted")
+        self.assertEqual(_activity_message({"type": "child_finish", "payload": {"land_error": "dirty main"}}), "run blocked")
+        self.assertEqual(_activity_message({"type": "child_finish", "payload": {"exit_code": 2}}), "run failed")
+        self.assertEqual(_activity_message({"type": "custom_event", "payload": {}}), "custom event")
 
     def test_snapshot_models_objective_rows_with_progress_summaries(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
