@@ -1995,6 +1995,162 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn('class="eyebrow"', html)
         self.assertNotIn('hero-progress-label', html)
 
+    def test_snapshot_includes_queue_status_counts(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        run_cli(
+            "add",
+            "--project-root", str(self.root),
+            "--title", "Dependency root",
+            "--bucket", "html",
+            "--why", "A task can block its lane successor.",
+            "--evidence", "Needed to expose waiting status in the queue counters.",
+            "--safe-first-slice", "Keep task ordering stable inside one lane.",
+            "--path", "src/blackdog/ui.py",
+            "--epic-title", "Queue panel",
+            "--lane-id", "queue-lane",
+            "--lane-title", "Dependency lane",
+            "--wave", "0",
+        )
+        run_cli(
+            "add",
+            "--project-root", str(self.root),
+            "--title", "Dependent waiting task",
+            "--bucket", "html",
+            "--why", "The queue panel should show waiting.",
+            "--evidence", "Blocking through lane predecessors drives waiting status.",
+            "--safe-first-slice", "Keep the dependent task behind the dependency.",
+            "--path", "src/blackdog/ui.py",
+            "--epic-title", "Queue panel",
+            "--lane-id", "queue-lane",
+            "--lane-title", "Dependency lane",
+            "--wave", "0",
+        )
+        run_cli(
+            "add",
+            "--project-root", str(self.root),
+            "--title", "Running task",
+            "--bucket", "html",
+            "--why", "The queue panel should show running status from active child runs.",
+            "--evidence", "Live runs should be tracked independently from claimed tasks.",
+            "--safe-first-slice", "Expose an actively running operator status for a slice.",
+            "--path", "src/blackdog/ui.py",
+            "--epic-title", "Queue panel",
+            "--lane-title", "Running lane",
+            "--wave", "0",
+        )
+        run_cli(
+            "add",
+            "--project-root", str(self.root),
+            "--title", "Blocked task",
+            "--bucket", "html",
+            "--why", "The queue panel should show blocked status.",
+            "--evidence", "Stalled runs surface as blocked in the operator panel.",
+            "--safe-first-slice", "Expose blocked status through child artifacts.",
+            "--path", "src/blackdog/ui.py",
+            "--epic-title", "Queue panel",
+            "--lane-title", "Blocked lane",
+            "--wave", "0",
+        )
+        run_cli(
+            "add",
+            "--project-root", str(self.root),
+            "--title", "Completed today",
+            "--bucket", "html",
+            "--why", "The queue panel should show completed today counts.",
+            "--evidence", "Completed tasks contribute to history and completion counters.",
+            "--safe-first-slice", "Collect all-time and daily completion metrics.",
+            "--path", "src/blackdog/ui.py",
+            "--epic-title", "Queue panel",
+            "--lane-title", "Complete lane",
+            "--wave", "0",
+        )
+        task_ids = task_ids_by_title(self.root)
+        running_task = task_ids["Running task"]
+        blocked_task = task_ids["Blocked task"]
+        completed_task = task_ids["Completed today"]
+
+        run_cli("complete", "--project-root", str(self.root), "--agent", "agent/owner", "--id", completed_task, "--note", "completed")
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-queue-running",
+                "type": "child_launch",
+                "at": "2026-03-19T10:10:00-07:00",
+                "actor": "supervisor",
+                "task_id": running_task,
+                "payload": {
+                    "run_id": "queuesweep1",
+                    "child_agent": "supervisor/child-01",
+                    "workspace": str(paths.supervisor_runs_dir / "20260319-101000-queuesweep1" / running_task),
+                    "pid": os.getpid(),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-queue-blocked",
+                "type": "child_finish",
+                "at": "2026-03-19T10:12:00-07:00",
+                "actor": "supervisor",
+                "task_id": blocked_task,
+                "payload": {
+                    "run_id": "queuesweep1",
+                    "child_agent": "supervisor/child-02",
+                    "land_error": "blocked by temporary environment",
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-queue-sweep",
+                "type": "supervisor_run_sweep",
+                "at": "2026-03-19T10:15:00-07:00",
+                "actor": "supervisor",
+                "task_id": None,
+                "payload": {
+                    "run_id": "queuesweep1",
+                    "removed_task_ids": [completed_task],
+                    "removed_lane_ids": ["queue-complete-lane"],
+                    "removed_epic_ids": [],
+                    "wave_map": {"0": 0},
+                },
+            },
+        )
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        status = snapshot["queue_status"]
+
+        self.assertEqual(status["running"], 1)
+        self.assertEqual(status["waiting"], 1)
+        self.assertEqual(status["blocked"], 1)
+        self.assertEqual(status["completed_today"], 1)
+        self.assertEqual(status["completed_all_time"], 1)
+        self.assertEqual(status["last_sweep_completed"], 1)
+
+        run_cli("render", "--project-root", str(self.root), "--actor", "tester")
+        rendered_html = paths.html_file.read_text(encoding="utf-8")
+        rendered_snapshot = html_snapshot(paths.html_file)
+        self.assertEqual(snapshot["queue_status"], rendered_snapshot["queue_status"])
+        status_function = re.search(
+            r"function renderStatusPanel\(\) \{[\s\S]*?const stats = \[([\s\S]*?)\];",
+            rendered_html,
+        )
+        self.assertIsNotNone(status_function)
+        stats_body = status_function.group(1)
+        labels = [
+            "Running",
+            "Waiting",
+            "Blocked",
+            "Last sweep completed",
+            "Completed today",
+            "Completed all-time",
+        ]
+        positions = [stats_body.index(f'["{label}"') for label in labels]
+        self.assertEqual(positions, sorted(positions))
+
     def test_snapshot_exposes_active_tasks_filters_messages_and_interrupts_empty_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()

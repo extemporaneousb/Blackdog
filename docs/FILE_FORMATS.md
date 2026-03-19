@@ -329,8 +329,17 @@ Representative top-level keys include:
 - `workspace_contract`
 - `board_tasks`
 - `tasks`
+- `queue_status`
 - `recent_results`
 - `links`
+
+`queue_status` contains board counter fields:
+- `running`
+- `waiting`
+- `blocked`
+- `last_sweep_completed`
+- `completed_today`
+- `completed_all_time`
 
 ## `blackdog worktree preflight --format json`
 
@@ -560,8 +569,17 @@ Top-level keys:
 - `board_tasks`
 - `graph`
 - `active_tasks`
+- `queue_status`
 - `links`
 - `grouping_guide`
+
+`queue_status` includes the counters used by the top-right status panel in the current static board:
+- `running`: tasks currently executing (`operator_status_key == "running"`).
+- `waiting`: tasks ready in the execution queue (`operator_status_key == "waiting"`).
+- `blocked`: tasks blocked from progression (`operator_status_key == "blocked"` or `"failed"`).
+- `last_sweep_completed`: number of task IDs removed by the most recent `supervisor_run_sweep` event.
+- `completed_today`: count of completed tasks whose `completed_at` date is the current local date.
+- `completed_all_time`: cumulative completed-task count in the snapshot.
 
 Current `links` keys:
 

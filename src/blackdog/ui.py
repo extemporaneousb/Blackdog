@@ -894,6 +894,54 @@ def _progress_for_task_rows(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _last_supervisor_sweep_completed_count(events: list[dict[str, Any]]) -> int:
+    last_removed_task_ids: list[str] = []
+    for event in sorted(events, key=lambda row: str(row.get("at") or "")):
+        if str(event.get("type") or "") != "supervisor_run_sweep":
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        removed_task_ids = [
+            str(task_id)
+            for task_id in payload.get("removed_task_ids", [])
+            if str(task_id).strip()
+        ]
+        last_removed_task_ids = removed_task_ids
+    return len(last_removed_task_ids)
+
+
+def _build_queue_status(task_rows: list[dict[str, Any]]) -> dict[str, int]:
+    today = datetime.now().astimezone().date()
+    running = 0
+    waiting = 0
+    blocked = 0
+    completed_all_time = 0
+    completed_today = 0
+
+    for task in task_rows:
+        status_key = str(task.get("operator_status_key") or "").strip().lower()
+        if status_key == "running":
+            running += 1
+        elif status_key == "waiting":
+            waiting += 1
+        elif status_key in {"blocked", "failed"}:
+            blocked += 1
+        if str(task.get("status") or "") != "done":
+            continue
+        completed_all_time += 1
+        completed_at = _parse_iso(task.get("completed_at"))
+        if completed_at is not None and completed_at.date() == today:
+            completed_today += 1
+
+    return {
+        "running": running,
+        "waiting": waiting,
+        "blocked": blocked,
+        "last_sweep_completed": 0,
+        "completed_today": completed_today,
+        "completed_all_time": completed_all_time,
+    }
+
+
 def _build_objective_snapshot_rows(
     tasks: list[dict[str, Any]],
     base_rows: list[dict[str, Any]],
@@ -1101,6 +1149,10 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "last_activity": _latest_activity(events),
         "counts": summary["counts"],
         "total": summary["total"],
+        "queue_status": {
+            **_build_queue_status(tasks),
+            "last_sweep_completed": _last_supervisor_sweep_completed_count(events),
+        },
         "push_objective": summary["push_objective"],
         "objectives": summary["objectives"],
         "objective_rows": objective_rows,
@@ -1705,13 +1757,15 @@ __BLACKDOG_STYLES__
     }
 
     function renderStatusPanel() {
+      const panelCounts = snapshot.queue_status || {};
       const counts = countStatuses(trackedTasks);
       const stats = [
-        ["Finished", counts.complete || 0],
-        ["Running", (counts.running || 0) + (counts.claimed || 0)],
-        ["Next", counts.ready || 0],
-        ["Waiting", counts.waiting || 0],
-        ["Blocked", (counts.blocked || 0) + (counts.failed || 0)],
+        ["Running", Number(panelCounts.running != null ? panelCounts.running : (counts.running || 0))],
+        ["Waiting", Number(panelCounts.waiting != null ? panelCounts.waiting : (counts.waiting || 0))],
+        ["Blocked", Number(panelCounts.blocked != null ? panelCounts.blocked : ((counts.blocked || 0) + (counts.failed || 0)))],
+        ["Last sweep completed", Number(panelCounts.last_sweep_completed || 0)],
+        ["Completed today", Number(panelCounts.completed_today || 0)],
+        ["Completed all-time", Number(panelCounts.completed_all_time || 0)],
       ];
       document.getElementById("queue-stats").innerHTML = stats.map(([label, value]) => `
         <div class="stat-card">
