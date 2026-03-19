@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,19 @@ def _load_runtime(project_root: Path | None = None):
 def _emit_render(profile) -> None:
     if profile.auto_render_html:
         render_project_html(profile)
+
+
+def _env_default(value: str | None, env_var: str) -> str | None:
+    if value:
+        return value
+    return os.environ.get(env_var)
+
+
+def _env_required(value: str | None, env_var: str, *, arg_name: str, command: str) -> str:
+    resolved = _env_default(value, env_var)
+    if resolved:
+        return resolved
+    raise BacklogError(f"{command} requires --{arg_name} (or set ${env_var})")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -424,13 +438,16 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
 
 def cmd_release(args: argparse.Namespace) -> int:
-    profile, _, _ = _load_runtime(Path(args.project_root) if args.project_root else None)
+    project_root = _env_required(args.project_root, "BLACKDOG_PROJECT_ROOT", arg_name="project-root", command="release")
+    task_id = _env_required(args.id, "BLACKDOG_TASK_ID", arg_name="id", command="release")
+    agent = _env_required(args.agent, "BLACKDOG_AGENT_NAME", arg_name="agent", command="release")
+    profile, _, _ = _load_runtime(Path(project_root))
     with locked_state(profile.paths.state_file) as state:
-        entry = state.setdefault("task_claims", {}).get(args.id) or {}
-        if entry.get("claimed_by") and entry.get("claimed_by") != args.agent and not args.force:
-            raise BacklogError(f"Task {args.id} is claimed by {entry.get('claimed_by')}; use --force to override")
+        entry = state.setdefault("task_claims", {}).get(task_id) or {}
+        if entry.get("claimed_by") and entry.get("claimed_by") != agent and not args.force:
+            raise BacklogError(f"Task {task_id} is claimed by {entry.get('claimed_by')}; use --force to override")
         entry["status"] = "released"
-        entry["released_by"] = args.agent
+        entry["released_by"] = agent
         entry["released_at"] = now_iso()
         if args.note:
             entry["release_note"] = args.note
@@ -439,10 +456,10 @@ def cmd_release(args: argparse.Namespace) -> int:
         entry.pop("claimed_process_missing_scans", None)
         entry.pop("claimed_process_last_seen_at", None)
         entry.pop("claimed_process_last_checked_at", None)
-        state["task_claims"][args.id] = entry
-    append_event(profile.paths, event_type="release", actor=args.agent, task_id=args.id, payload={"note": args.note or ""})
+        state["task_claims"][task_id] = entry
+    append_event(profile.paths, event_type="release", actor=agent, task_id=task_id, payload={"note": args.note or ""})
     _emit_render(profile)
-    print(args.id)
+    print(task_id)
     return 0
 
 
@@ -518,11 +535,16 @@ def cmd_render(args: argparse.Namespace) -> int:
 
 
 def cmd_result_record(args: argparse.Namespace) -> int:
-    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    project_root = _env_required(args.project_root, "BLACKDOG_PROJECT_ROOT", arg_name="project-root", command="result record")
+    profile = load_profile(
+        Path(project_root)
+    )
+    task_id = _env_required(args.id, "BLACKDOG_TASK_ID", arg_name="id", command="result record")
+    actor = _env_required(args.actor, "BLACKDOG_AGENT_NAME", arg_name="actor", command="result record")
     result_path = record_task_result(
         profile.paths,
-        task_id=args.id,
-        actor=args.actor,
+        task_id=task_id,
+        actor=actor,
         status=args.status,
         what_changed=args.what_changed,
         validation=args.validation,
@@ -554,8 +576,10 @@ def cmd_inbox_send(args: argparse.Namespace) -> int:
 
 
 def cmd_inbox_list(args: argparse.Namespace) -> int:
-    profile = load_profile(Path(args.project_root) if args.project_root else None)
-    rows = load_inbox(profile.paths, recipient=args.recipient, status=args.status, task_id=args.id)
+    project_root = _env_default(args.project_root, "BLACKDOG_PROJECT_ROOT")
+    profile = load_profile(Path(project_root) if project_root else None)
+    recipient = _env_default(args.recipient, "BLACKDOG_AGENT_NAME")
+    rows = load_inbox(profile.paths, recipient=recipient, status=args.status, task_id=args.id)
     print(json.dumps(rows, indent=2))
     return 0
 
@@ -733,8 +757,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_release = subparsers.add_parser("release", help="Release a claimed task")
     p_release.add_argument("--project-root", default=None)
-    p_release.add_argument("--id", required=True)
-    p_release.add_argument("--agent", required=True)
+    p_release.add_argument("--id", default=None)
+    p_release.add_argument("--agent", default=None)
     p_release.add_argument("--note", default="")
     p_release.add_argument("--force", action="store_true")
     p_release.set_defaults(func=cmd_release)
@@ -778,8 +802,8 @@ def build_parser() -> argparse.ArgumentParser:
     result_subparsers = p_result.add_subparsers(dest="result_command", required=True)
     p_result_record = result_subparsers.add_parser("record", help="Write a task-result JSON file")
     p_result_record.add_argument("--project-root", default=None)
-    p_result_record.add_argument("--id", required=True)
-    p_result_record.add_argument("--actor", required=True)
+    p_result_record.add_argument("--id", default=None)
+    p_result_record.add_argument("--actor", default=None)
     p_result_record.add_argument("--status", required=True)
     p_result_record.add_argument("--run-id", default=None)
     p_result_record.add_argument("--what-changed", action="append", default=[])

@@ -1231,7 +1231,19 @@ class BlackdogCliTests(unittest.TestCase):
         )
         resolved = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "inbox", "list", "--project-root", str(self.root), "--status", "resolved"],
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "inbox",
+                    "list",
+                    "--project-root",
+                    str(self.root),
+                    "--recipient",
+                    "supervisor",
+                    "--status",
+                    "resolved",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3230,6 +3242,7 @@ class BlackdogCliTests(unittest.TestCase):
                     child_agent="supervisor/child-01",
                     workspace_mode="git-worktree",
                     workspace=workspace,
+                    protocol_command=workspace / "blackdog-child",
                     worktree_spec=WorktreeSpec(
                         task_id=task.id,
                         task_title=task.title,
@@ -3316,6 +3329,7 @@ class BlackdogCliTests(unittest.TestCase):
                     child_agent="supervisor/child-01",
                     workspace_mode="git-worktree",
                     workspace=workspace,
+                    protocol_command=workspace / "blackdog-child",
                     worktree_spec=WorktreeSpec(
                         task_id=task.id,
                         task_title=task.title,
@@ -3346,7 +3360,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn(str(blackdog_script.resolve()), prompt)
         self.assertIn("This workspace does not currently have", prompt)
         self.assertIn("do not reuse another worktree's .VE", prompt)
-        self.assertIn("`./.VE/bin/blackdog inbox list", prompt)
+        self.assertIn("`{}`".format(workspace / "blackdog-child"), prompt)
 
     def test_supervise_run_launches_child_command_in_worktree(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3479,10 +3493,10 @@ if __name__ == "__main__":
         self.assertIn("Treat committed repo state as the baseline for this task", prompt_text)
         self.assertIn("Primary-worktree landing gate:", prompt_text)
         self.assertIn(".VE is unversioned and bound to this worktree path", prompt_text)
-        self.assertIn("Do not run `blackdog claim` for this task again.", prompt_text)
+        self.assertIn("Skip manual startup and completion steps like `blackdog worktree preflight`", prompt_text)
         self.assertIn("Prefer Blackdog CLI output over direct reads of raw state files", prompt_text)
         self.assertIn("Commit your code changes on that task branch", prompt_text)
-        self.assertIn("Do not run `./.VE/bin/blackdog complete` for this task from a branch-backed child run", prompt_text)
+        self.assertIn(f"Do not run `{child_run_dir / 'blackdog-child'} complete` for this task from a branch-backed child run", prompt_text)
         paths = self.runtime_paths()
         state = json.loads(paths.state_file.read_text(encoding="utf-8"))
         self.assertEqual(state["task_claims"][task_id]["status"], "done")

@@ -73,7 +73,8 @@ SUPERVISOR_STATUS_CONTROL_LIMIT = 8
 DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS = 1.0
 CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS = 60.0
 CLAIM_LIVENESS_MISSING_SCAN_LIMIT = 2
-CHILD_PROMPT_TEMPLATE_VERSION = 1
+CHILD_PROMPT_TEMPLATE_VERSION = 2
+CHILD_PROTOCOL_HELPER = "blackdog-child"
 _CHILD_PROMPT_TEMPLATE = """
 You are Blackdog child agent `{child_agent}` working on one Blackdog backlog task.
 
@@ -110,18 +111,81 @@ Required operating rules:
 - Supervisor workspace mode for this run: `{workspace_mode}`.
 {primary_cleanliness_rule}
 {venv_rule}
-- The supervisor has already claimed `{task_id}` for you as `{child_agent}`. Do not run `blackdog claim` for this task again.
+- This branch-backed child run is already claimed and prepared. Skip manual startup and completion steps like `blackdog worktree preflight`, `blackdog claim`, and `blackdog complete`.
 - Prefer Blackdog CLI output over direct reads of raw state files when checking claims, inbox state, results, or task status.
 - Work only on `{task_id}`.
 - Use the current directory for code edits.
 - For Blackdog state commands, always target the central root with `--project-root {project_root}`.
-- Before starting, read your inbox with `{blackdog_command} inbox list --project-root {project_root} --recipient {child_agent}`.
-- When finished, record a structured result with `{blackdog_command} result record --project-root {project_root} --id {task_id} --actor {child_agent} ...`.
+- Before starting, read your inbox with `{protocol_command} inbox list`.
+- Use the child protocol helper for protocol operations in this workspace:
+  - `{protocol_command} result record --status success --what-changed "..."`
+  - `{protocol_command} release --note "..."`
 {branch_rules}
-- If blocked, record a blocked or partial result and release the task with `{blackdog_command} release --project-root {project_root} --agent {child_agent} --id {task_id} --note "<reason>"`.
+- If blocked, record a blocked or partial result and release the task with `{protocol_command} release --note "<reason>"`.
 - Do not start unrelated tasks.
 """.lstrip()
 CHILD_PROMPT_TEMPLATE_HASH = hashlib.sha256(_CHILD_PROMPT_TEMPLATE.encode("utf-8")).hexdigest()
+
+_CHILD_PROTOCOL_HELPER_TEMPLATE = """#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__PROJECT_ROOT__)
+TASK_ID = __TASK_ID__
+CHILD_AGENT = __CHILD_AGENT__
+WORKSPACE = Path(__WORKSPACE__)
+CLI_CANDIDATES = (
+    str(WORKSPACE / ".VE" / "bin" / "blackdog"),
+    str(PROJECT_ROOT / ".VE" / "bin" / "blackdog"),
+    "blackdog",
+    "python3 -m blackdog.cli",
+)
+
+
+def _is_path_command(command: str) -> bool:
+    return "/" in command or command.startswith(".")
+
+
+def _resolve_cli() -> list[str]:
+    for raw in CLI_CANDIDATES:
+        command = shlex.split(raw)
+        if not command:
+            continue
+        executable = command[0]
+        if _is_path_command(executable):
+            if os.access(executable, os.X_OK):
+                return command
+            continue
+        if shutil.which(executable) is None:
+            continue
+        return command
+    raise SystemExit(
+        "No usable Blackdog CLI found. Bootstrap ./.VE/bin/blackdog in the child worktree, "
+        "or ensure a `blackdog` or `python3` executable is available in PATH."
+    )
+
+
+def _main() -> int:
+    if len(sys.argv) < 2:
+        print("Usage: blackdog-child <blackdog command...>", file=sys.stderr)
+        return 2
+    os.environ.setdefault("BLACKDOG_PROJECT_ROOT", str(PROJECT_ROOT))
+    os.environ.setdefault("BLACKDOG_TASK_ID", TASK_ID)
+    os.environ.setdefault("BLACKDOG_AGENT_NAME", CHILD_AGENT)
+    cli = _resolve_cli()
+    return subprocess.run(cli + sys.argv[1:], check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
+"""
 
 
 @dataclass
@@ -167,6 +231,25 @@ def _preferred_blackdog_command(profile: Profile, *, workspace: Path | None = No
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return shlex.quote(str(candidate))
     return "./.VE/bin/blackdog"
+
+
+def _build_child_protocol_helper(
+    child_run_dir: Path,
+    *,
+    workspace: Path,
+    project_root: Path,
+    task_id: str,
+    child_agent: str,
+) -> Path:
+    child_protocol_script = child_run_dir / CHILD_PROTOCOL_HELPER
+    script = _CHILD_PROTOCOL_HELPER_TEMPLATE
+    script = script.replace("__PROJECT_ROOT__", json.dumps(str(project_root.resolve())))
+    script = script.replace("__WORKSPACE__", json.dumps(str(workspace.resolve())))
+    script = script.replace("__TASK_ID__", json.dumps(task_id))
+    script = script.replace("__CHILD_AGENT__", json.dumps(child_agent))
+    child_protocol_script.write_text(script + "\n", encoding="utf-8")
+    child_protocol_script.chmod(0o755)
+    return child_protocol_script
 
 
 def _notify_supervisor(
@@ -1298,10 +1381,10 @@ def _build_child_prompt(
     workspace_mode: str,
     workspace: Path,
     worktree_spec: WorktreeSpec | None = None,
+    protocol_command: Path,
 ) -> str:
     if worktree_spec is None:
         raise SupervisorError("Blackdog only supports branch-backed task worktrees for child runs")
-    blackdog_command = _preferred_blackdog_command(profile, workspace=workspace)
     contract = worktree_contract(profile, workspace=workspace, workspace_mode=workspace_mode)
     docs = "\n".join(f"- {item}" for item in task.payload.get("docs", [])) or "- No routed docs."
     checks = "\n".join(f"- {item}" for item in task.payload.get("checks", [])) or "- No validation commands."
@@ -1318,14 +1401,14 @@ def _build_child_prompt(
     venv_rule = (
         f"- `{contract['ve_expectation']}` Preferred CLI for this workspace: `{contract['workspace_blackdog_path']}`."
         if contract["workspace_has_local_blackdog"]
-        else f"- `{contract['ve_expectation']}` This workspace does not currently have `{contract['workspace_blackdog_path']}`, so use `blackdog` from the active environment or bootstrap `./.VE` here."
+        else f"- `{contract['ve_expectation']}` This workspace does not currently have `{contract['workspace_blackdog_path']}`, so use the child protocol helper at `{protocol_command}`."
     )
     branch_rules = textwrap.dedent(
         f"""
         - This is a branch-backed task worktree on branch `{worktree_spec.branch}` targeting `{worktree_spec.target_branch}`.
         - Commit your code changes on that task branch before you exit if you want the supervisor to land them.
         - Do not land, merge, or delete the branch yourself. The supervisor will land `{worktree_spec.branch}` through the primary worktree and then clean it up.
-        - Do not run `{blackdog_command} complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
+        - Do not run `{protocol_command} complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
         """
     ).strip()
     return textwrap.dedent(
@@ -1354,7 +1437,7 @@ def _build_child_prompt(
             primary_cleanliness_rule=primary_cleanliness_rule,
             venv_rule=venv_rule,
             branch_rules=branch_rules,
-            blackdog_command=blackdog_command,
+            protocol_command=protocol_command,
         )
     ).strip()
 
@@ -1779,6 +1862,13 @@ def _launch_child_run(
         _emit_render(profile)
         return child
     workspace = prepared.workspace
+    protocol_command = _build_child_protocol_helper(
+        child_run_dir,
+        workspace=workspace,
+        project_root=profile.paths.project_root,
+        task_id=task.id,
+        child_agent=child_agent,
+    )
     if prepared.worktree_spec is not None:
         append_event(
             profile.paths,
@@ -1793,6 +1883,7 @@ def _launch_child_run(
         child_agent=child_agent,
         workspace_mode=workspace_mode,
         workspace=workspace,
+        protocol_command=protocol_command,
         worktree_spec=prepared.worktree_spec,
     )
     launch_telemetry = _build_child_launch_telemetry(
@@ -1811,6 +1902,7 @@ def _launch_child_run(
             "child_agent": child_agent,
             "workspace": str(workspace),
             "workspace_mode": workspace_mode,
+            "protocol_command": str(protocol_command),
             "prompt_file": str(prompt_file),
             "stdout_file": str(stdout_file),
             "stderr_file": str(stderr_file),
