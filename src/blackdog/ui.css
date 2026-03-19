@@ -94,8 +94,6 @@ h3 {
 
 .control-panel,
 .status-panel,
-.objectives-panel,
-.gates-panel,
 .board-panel,
 .result-panel {
   padding: 22px;
@@ -373,176 +371,6 @@ h3 {
   font-weight: 600;
 }
 
-.objectives-panel {
-  gap: 14px;
-}
-
-.gates-panel {
-  gap: 14px;
-}
-
-.objective-table-shell,
-.gate-table-shell {
-  max-height: 18rem;
-  overflow-y: auto;
-  padding-right: 4px;
-  margin-right: -4px;
-  scrollbar-gutter: stable;
-}
-
-.objective-table,
-.gate-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.objective-table thead th,
-.gate-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  text-align: left;
-  padding: 0 0 12px;
-  border-bottom: 1px solid rgba(23, 26, 25, 0.08);
-  background: linear-gradient(180deg, rgba(240, 242, 239, 0.98) 0%, rgba(240, 242, 239, 0.9) 100%);
-  color: var(--muted);
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.objective-table tbody tr,
-.gate-table tbody tr {
-  border-bottom: 1px solid rgba(23, 26, 25, 0.08);
-}
-
-.objective-table tbody tr[data-task-id] {
-  cursor: pointer;
-  transition: background-color 120ms ease;
-}
-
-.objective-table tbody tr[data-task-id]:hover {
-  background: rgba(255, 255, 255, 0.28);
-}
-
-.objective-table tbody tr:last-child,
-.gate-table tbody tr:last-child {
-  border-bottom: 0;
-}
-
-.objective-table td {
-  padding: 12px 0;
-  vertical-align: middle;
-}
-
-.gate-table td {
-  padding: 16px 0;
-  vertical-align: top;
-}
-
-.objective-key {
-  width: 120px;
-  padding-right: 18px;
-  color: #5f635b;
-  font-size: 0.92rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-
-.objective-outcome {
-  width: 56%;
-  padding-right: 22px;
-}
-
-.objective-title {
-  display: block;
-  color: var(--ink);
-  font-size: 0.96rem;
-  font-weight: 600;
-  line-height: 1.28;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.objective-progress-cell {
-  min-width: 220px;
-}
-
-.gate-copy {
-  color: var(--ink);
-  padding-right: 18px;
-}
-
-.gate-status-cell {
-  width: 128px;
-}
-
-.gate-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.gate-status-passed {
-  background: var(--complete-bg);
-  border-color: #a4c6a8;
-  color: var(--complete-fg);
-}
-
-.gate-status-open {
-  background: rgba(238, 236, 231, 0.9);
-  border-color: #d4cdc2;
-  color: var(--waiting-fg);
-}
-
-.gate-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0.9rem;
-}
-
-.objective-progress-copy {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.objective-quanta {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(8px, 1fr);
-  gap: 5px;
-  margin-top: 7px;
-}
-
-.quantum {
-  min-height: 7px;
-  border-radius: 999px;
-  background: rgba(23, 26, 25, 0.1);
-}
-
-.quantum-ready { background: var(--ready-fg); }
-.quantum-claimed { background: var(--claimed-fg); }
-.quantum-running { background: var(--running-fg); }
-.quantum-waiting { background: var(--waiting-fg); }
-.quantum-blocked { background: var(--blocked-fg); }
-.quantum-failed { background: var(--failed-fg); }
-.quantum-complete { background: var(--complete-fg); }
-.quantum-empty { background: rgba(23, 26, 25, 0.08); }
-
 .lane-board,
 .lane-stack,
 .results-grid,
@@ -740,44 +568,6 @@ h3 {
   padding-top: 12px;
 }
 
-.completed-objective-stack,
-.completed-objective-group {
-  display: grid;
-  gap: 12px;
-}
-
-.completed-objective-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 12px;
-}
-
-.completed-objective-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.completed-objective-key {
-  color: #5f635b;
-  font-size: 0.76rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-
-.completed-objective-title {
-  color: var(--ink);
-  font-size: 0.94rem;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.completed-objective-group + .completed-objective-group {
-  padding-top: 12px;
-  border-top: 1px dashed rgba(23, 26, 25, 0.1);
-}
-
 .completed-group + .completed-group {
   margin-top: 8px;
   border-top: 1px solid rgba(23, 26, 25, 0.08);
@@ -908,7 +698,6 @@ dialog::backdrop {
   .toolbar-topline,
   .reader-head,
   .wave-head,
-  .completed-objective-head,
   .completed-group-head,
   .task-card-top,
   .result-top {
@@ -918,35 +707,6 @@ dialog::backdrop {
   .result-chips {
     margin-left: 0;
     justify-content: flex-start;
-  }
-
-  .objective-table thead {
-    display: none;
-  }
-
-  .objective-table,
-  .objective-table tbody,
-  .objective-table tr,
-  .objective-table td,
-  .gate-table,
-  .gate-table tbody,
-  .gate-table tr,
-  .gate-table td {
-    display: block;
-    width: 100%;
-  }
-
-  .objective-table td,
-  .gate-table td {
-    padding: 10px 0;
-  }
-
-  .objective-key {
-    padding-right: 0;
-  }
-
-  .gate-status-cell {
-    width: auto;
   }
 
   .meta-item {

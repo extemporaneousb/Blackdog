@@ -595,7 +595,6 @@ Top-level keys:
 - `total`
 - `push_objective`
 - `objectives`
-- `objective_rows`
 - `next_rows`
 - `open_messages`
 - `recent_results`
@@ -710,29 +709,6 @@ Current `hero_highlights` keys summarize the hero's workspace/activity strip:
 - `latest_run`
 - `time_on_task`
 
-Current `objective_rows[*]` keys summarize the board's objective-table contract:
-
-- `key`
-- `id`
-- `title`
-- `task_ids`
-- `active_task_ids`
-- `lane_ids`
-- `lane_titles`
-- `wave_ids`
-- `total`
-- `done`
-- `remaining`
-- `progress`
-
-`objective_rows[*].progress` carries:
-
-- `counts`
-- `total`
-- `complete`
-- `remaining`
-- `percent`
-
 Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projection:
 
 - `id`
@@ -745,13 +721,12 @@ Layout projections:
 
 - `Backlog Control` uses `project_name`, `push_objective`, `content_updated_at`, `last_checked_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
 - The control panel renders a compact branch/commit/run/time-on-task line, a progress bar, and artifact links.
-- The objective table uses `objective_rows` as non-clickable summary rows with progress bars and quantized task-state indicators, but the rendered board shows only rows whose `active_task_ids` are still non-empty.
+- The board does not render an objectives table or release-gate panel in the static snapshot.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
-- The release-gates table uses `release_gates`; explicit `[x]`/`[ ]` markers are honored, and otherwise the board infers passed checks from the tracked push being complete.
 - The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
-- `Completed Tasks` groups finished task rows by available run/sweep metadata derived from task completion, result, and run fields, then keeps per-task objective context visible as history subheadings inside each sweep.
-- The browser renders a split `Backlog Control`/`Status` top row, a split objective/release-gates row, then a split `Execution Map`/`Completed Tasks` row. Objective and release-gate rows are summary-only, while execution-map and completed-task cards stay clickable.
-- Focused task rows still derive from objective-tagged and lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
+- `Completed Tasks` renders a flat list of the most recent completed cards by completion time.
+- The browser renders a split `Backlog Control`/`Status` top row, then a split `Execution Map`/`Completed Tasks` row. Execution-map and completed-task cards stay clickable.
+- Focused task rows derive from lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
 - When supervisor run artifacts exist, the task reader can render a capped stdout-derived model response inline and expose landed-commit metadata, including a GitHub commit URL when the repo origin resolves to GitHub.
 - When `links.inbox` is present, inbox artifacts remain available to the task reader and other snapshot consumers even though the main board no longer renders a dedicated inbox header link.

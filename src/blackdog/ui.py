@@ -1149,13 +1149,8 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         for predecessor_id in task.predecessor_ids:
             graph_edges.append({"from": predecessor_id, "to": task.id})
 
-    objective_rows = _build_objective_snapshot_rows(tasks, list(summary.get("objective_rows") or []))
-    focus_task_ids = {
-        str(task_id)
-        for row in objective_rows
-        for task_id in row.get("task_ids", [])
-    }
-    focus_tasks = [task for task in tasks if str(task.get("id") or "") in focus_task_ids] or tasks
+    focus_task_ids: set[str] = set()
+    focus_tasks = tasks
     recent_results = []
     for row in results[:10]:
         recent_results.append(
@@ -1170,7 +1165,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             }
         )
     open_messages = [row for row in summary["open_messages"][:10]]
-    board_tasks = [row for row in tasks if row.get("lane_id") or row.get("objective")]
+    board_tasks = [row for row in tasks if row.get("lane_id")]
     active_tasks = [
         row
         for row in tasks
@@ -1214,10 +1209,8 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         },
         "push_objective": summary["push_objective"],
         "objectives": summary["objectives"],
-        "objective_rows": objective_rows,
         "focus_task_ids": sorted(focus_task_ids),
         "next_rows": summary["next_rows"],
-        "release_gates": summary.get("release_gates", []),
         "open_messages": open_messages,
         "recent_results": recent_results,
         "recent_events": summary["recent_events"],
@@ -1301,50 +1294,6 @@ __BLACKDOG_STYLES__
       </section>
 
       <section id="middle-band" class="panel-row panel-row-middle">
-        <section id="objectives-panel" class="panel objectives-panel" data-panel="objectives">
-          <div class="section-head section-head-inline">
-            <div>
-              <h2>Objectives</h2>
-              <p id="objective-intro" class="section-copy"></p>
-            </div>
-            <span id="objective-summary" class="section-meta"></span>
-          </div>
-          <div class="objective-table-shell">
-            <table class="objective-table">
-              <thead>
-                <tr>
-                  <th scope="col">Objective</th>
-                  <th scope="col">Outcome</th>
-                  <th scope="col">Progress</th>
-                </tr>
-              </thead>
-              <tbody id="objectives-table-body"></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section id="release-gates-panel" class="panel gates-panel" data-panel="release-gates">
-          <div class="section-head section-head-inline">
-            <div>
-              <h2>Release Gates</h2>
-            </div>
-            <span id="release-gates-summary" class="section-meta"></span>
-          </div>
-          <div class="gate-table-shell">
-            <table class="gate-table">
-              <thead>
-                <tr>
-                  <th scope="col">Gate</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody id="release-gates-table-body"></tbody>
-            </table>
-          </div>
-        </section>
-      </section>
-
-      <section id="surface-grid" class="panel-row panel-row-bottom">
         <section id="execution-panel" class="panel board-panel" data-panel="execution">
           <div class="section-head backlog-head">
             <div>
@@ -1394,14 +1343,12 @@ __BLACKDOG_STYLES__
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
     const allTasksById = new Map(allTasks.map((task) => [String(task.id), task]));
     const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
-    const objectiveRows = Array.isArray(snapshot.objective_rows) ? snapshot.objective_rows.slice() : [];
-    const activeObjectiveRows = objectiveRows.filter((row) => Array.isArray(row.active_task_ids) && row.active_task_ids.length);
     const focusTaskIds = new Set(
       Array.isArray(snapshot.focus_task_ids) ? snapshot.focus_task_ids.map((taskId) => String(taskId)) : []
     );
     const boardTasks = Array.isArray(snapshot.board_tasks)
       ? snapshot.board_tasks.filter((task) => normalizeStatus(task.operator_status_key) !== "complete")
-      : allTasks.filter((task) => (task.objective || task.lane_id) && normalizeStatus(task.operator_status_key) !== "complete");
+      : allTasks.filter((task) => task.lane_id && normalizeStatus(task.operator_status_key) !== "complete");
     const focusTasks = focusTaskIds.size
       ? allTasks.filter((task) => focusTaskIds.has(String(task.id)))
       : boardTasks.length
@@ -1577,96 +1524,8 @@ __BLACKDOG_STYLES__
       });
     }
 
-    function objectiveLeadTask(objective) {
-      const orderedTaskIds = [
-        ...(Array.isArray(objective.active_task_ids) ? objective.active_task_ids : []),
-        ...(Array.isArray(objective.task_ids) ? objective.task_ids : [])
-      ];
-      for (const taskId of orderedTaskIds) {
-        const task = allTasksById.get(String(taskId));
-        if (task) {
-          return task;
-        }
-      }
-      return null;
-    }
-
     function pluralize(count, noun) {
       return `${count} ${noun}${count === 1 ? "" : "s"}`;
-    }
-
-    function objectiveTaskRows(objective) {
-      return (Array.isArray(objective.task_ids) ? objective.task_ids : [])
-        .map((taskId) => allTasksById.get(String(taskId)))
-        .filter(Boolean);
-    }
-
-    function renderObjectiveQuanta(tasks) {
-      if (!tasks.length) {
-        return `<div class="objective-quanta"><span class="quantum quantum-empty"></span></div>`;
-      }
-      return `
-        <div class="objective-quanta" aria-hidden="true">
-          ${tasks.map((task) => `<span class="quantum quantum-${escapeHtml(normalizeStatus(task.operator_status_key || "ready"))}"></span>`).join("")}
-        </div>
-      `;
-    }
-
-    function objectiveProgressSummary(progress) {
-      if (!progress.total) {
-        return "No tasks";
-      }
-      return `${progress.complete}/${progress.total}`;
-    }
-
-    function objectiveProgressState(progress) {
-      if (!progress.total) {
-        return "No tracked work";
-      }
-      if (!progress.remaining) {
-        return "Complete";
-      }
-      if (progress.counts.running) {
-        return `${progress.counts.running} running`;
-      }
-      if (progress.counts.claimed) {
-        return `${progress.counts.claimed} claimed`;
-      }
-      if (progress.counts.ready) {
-        return `${progress.counts.ready} ready`;
-      }
-      if (progress.counts.waiting) {
-        return `${progress.counts.waiting} waiting`;
-      }
-      if (progress.counts.blocked || progress.counts.failed) {
-        return `${(progress.counts.blocked || 0) + (progress.counts.failed || 0)} blocked`;
-      }
-      return `${progress.remaining} remaining`;
-    }
-
-    function renderObjectiveRow(objective) {
-      const taskRows = objectiveTaskRows(objective);
-      const progress = objective.progress || progressMetrics(
-        (Array.isArray(objective.task_ids) ? objective.task_ids : [])
-          .map((taskId) => allTasksById.get(String(taskId)))
-          .filter(Boolean)
-      );
-      const leadTask = objectiveLeadTask(objective);
-      return `
-        <tr data-objective-id="${escapeHtml(objective.id || objective.key || "objective")}"${interactiveCardAttributes(leadTask?.id)}>
-          <td class="objective-key">${escapeHtml(objective.id || "Unassigned")}</td>
-          <td class="objective-outcome">
-            <span class="objective-title">${escapeHtml(objective.title || objective.id || "Unassigned")}</span>
-          </td>
-          <td class="objective-progress-cell">
-            <div class="objective-progress-copy">
-              <span>${escapeHtml(objectiveProgressSummary(progress))}</span>
-              <span>${escapeHtml(objectiveProgressState(progress))}</span>
-            </div>
-            ${renderObjectiveQuanta(taskRows)}
-          </td>
-        </tr>
-      `;
     }
 
     function nextRows() {
@@ -1699,24 +1558,6 @@ __BLACKDOG_STYLES__
           <span>${escapeHtml(meta || "No additional scheduling detail")}</span>
         </div>
       `;
-    }
-
-    function renderObjectivesTable() {
-      const objective = Array.isArray(snapshot.push_objective) ? snapshot.push_objective.join(" ") : "";
-      const completedObjectiveCount = Math.max(0, objectiveRows.length - activeObjectiveRows.length);
-      document.getElementById("objective-intro").textContent =
-        activeObjectiveRows.length
-          ? (objective || "Active outcomes for the current push.")
-          : objectiveRows.length
-            ? "No active objective rows. Completed objective context is listed in the history below."
-            : "No objective rows tagged in the backlog yet.";
-      document.getElementById("objective-summary").textContent = objectiveRows.length
-        ? `${activeObjectiveRows.length} active · ${completedObjectiveCount} completed`
-        : "No objective rows";
-      document.getElementById("objectives-table-body").innerHTML = activeObjectiveRows.length
-        ? activeObjectiveRows.map(renderObjectiveRow).join("")
-        : `<tr><td colspan="3"><div class="empty">No active objective rows. Completed objective context moves to the history below.</div></td></tr>`;
-      applyProgressBars(document.getElementById("objectives-panel"));
     }
 
     function taskTone(task) {
@@ -1923,53 +1764,7 @@ __BLACKDOG_STYLES__
       const lines = nextRows();
       document.getElementById("status-next-lines").innerHTML = lines.length
         ? lines.map(nextLine).join("")
-        : `<div class="status-next-line"><strong>No queued work</strong><span>The tracked objective work is complete.</span></div>`;
-    }
-
-    function parseReleaseGate(entry, fallbackLabel) {
-      const raw = String(entry || "").trim();
-      const explicit = raw.match(/^\\[(x|X| )\\]\\s*(.*)$/);
-      if (explicit) {
-        return {
-          label: explicit[2] || fallbackLabel,
-          passed: explicit[1].toLowerCase() === "x",
-          explicit: true,
-        };
-      }
-      const trackedProgress = progressMetrics(trackedTasks);
-      return {
-        label: raw || fallbackLabel,
-        passed: trackedProgress.total > 0 && trackedProgress.remaining === 0,
-        explicit: false,
-      };
-    }
-
-    function releaseGateRows() {
-      const releaseGates = Array.isArray(snapshot.release_gates) ? snapshot.release_gates : [];
-      return releaseGates.map((entry, index) => parseReleaseGate(entry, `Gate ${index + 1}`));
-    }
-
-    function renderReleaseGateRow(row) {
-      const gateState = row.passed
-        ? `<span class="gate-status gate-status-passed"><span class="gate-mark" aria-hidden="true">&#10003;</span>Passed</span>`
-        : `<span class="gate-status gate-status-open"><span class="gate-mark" aria-hidden="true">&#9711;</span>Open</span>`;
-      return `
-        <tr>
-          <td class="gate-copy">${escapeHtml(row.label)}</td>
-          <td class="gate-status-cell">${gateState}</td>
-        </tr>
-      `;
-    }
-
-    function renderReleaseGatesPanel() {
-      const gateRows = releaseGateRows();
-      const passedCount = gateRows.filter((row) => row.passed).length;
-      document.getElementById("release-gates-summary").textContent = gateRows.length
-        ? `${passedCount}/${gateRows.length} passed`
-        : "No gates";
-      document.getElementById("release-gates-table-body").innerHTML = gateRows.length
-        ? gateRows.map(renderReleaseGateRow).join("")
-        : `<tr><td colspan="2"><div class="empty">Add release gates to the backlog header to track them here.</div></td></tr>`;
+        : `<div class="status-next-line"><strong>No queued work</strong><span>All active lanes are waiting on completion.</span></div>`;
     }
 
     function detailBlock(label, content, options = {}) {
@@ -2140,73 +1935,6 @@ __BLACKDOG_STYLES__
       return Number.isNaN(parsed) ? 0 : parsed;
     }
 
-    function completionSweep(task) {
-      return String(task.latest_result_run_id || task.latest_run_id || "direct");
-    }
-
-    function completionSweepLabel(task) {
-      const sweep = completionSweep(task);
-      if (sweep === "direct") {
-        return "Direct updates";
-      }
-      return `Sweep ${sweep}`;
-    }
-
-    function completedObjectiveGroup(task) {
-      const objectiveId = String(task.objective || "").trim();
-      const objectiveTitle = String(task.objective_title || "").trim();
-      if (objectiveId) {
-        return {
-          key: objectiveId,
-          id: objectiveId,
-          title: objectiveTitle && objectiveTitle !== objectiveId ? objectiveTitle : objectiveId
-        };
-      }
-      if (objectiveTitle && objectiveTitle !== "Unassigned") {
-        return {
-          key: `title:${objectiveTitle}`,
-          id: "",
-          title: objectiveTitle
-        };
-      }
-      return {
-        key: "unassigned",
-        id: "",
-        title: "Unassigned objective"
-      };
-    }
-
-    function groupedCompletedTasks(tasks) {
-      const groups = [];
-      for (const task of tasks) {
-        const key = completionSweep(task);
-        const label = completionSweepLabel(task);
-        const existing = groups[groups.length - 1];
-        if (!existing || existing.key !== key) {
-          groups.push({ key, label, tasks: [task] });
-          continue;
-        }
-        existing.tasks.push(task);
-      }
-      return groups;
-    }
-
-    function groupedCompletedObjectives(tasks) {
-      const groups = [];
-      const groupsByKey = new Map();
-      for (const task of tasks) {
-        const objective = completedObjectiveGroup(task);
-        let group = groupsByKey.get(objective.key);
-        if (!group) {
-          group = { ...objective, tasks: [] };
-          groupsByKey.set(objective.key, group);
-          groups.push(group);
-        }
-        group.tasks.push(task);
-      }
-      return groups;
-    }
-
     function renderCompletedCard(task) {
       const meta = [
         completionStamp(task) ? formatTimestamp(completionStamp(task)) : "",
@@ -2230,37 +1958,13 @@ __BLACKDOG_STYLES__
 
     function renderCompletedPanel() {
       document.getElementById("completed-copy").textContent =
-        "Completed work stays visible here, grouped by sweep and objective so finished outcomes keep their context.";
+        "Completed work stays visible here.";
       const visibleCompleted = completedTasks.slice(0, 60);
-      const grouped = groupedCompletedTasks(visibleCompleted);
       document.getElementById("completed-summary").textContent = visibleCompleted.length
         ? `Showing ${visibleCompleted.length} of ${completedTasks.length}`
         : "No completed tasks";
-      document.getElementById("completed-history-scroll").innerHTML = grouped.length
-        ? grouped.map((group) => `
-            <section class="completed-group" data-sweep="${escapeHtml(group.key)}">
-              <div class="completed-group-head">
-                <span class="completed-group-label">${escapeHtml(group.label)}</span>
-                <span class="section-meta">${escapeHtml(pluralize(group.tasks.length, "task"))}</span>
-              </div>
-              <div class="completed-objective-stack">
-                ${groupedCompletedObjectives(group.tasks).map((objectiveGroup) => `
-                  <section class="completed-objective-group" data-objective-key="${escapeHtml(objectiveGroup.key)}">
-                    <div class="completed-objective-head">
-                      <div class="completed-objective-copy">
-                        ${objectiveGroup.id ? `<span class="completed-objective-key">${escapeHtml(objectiveGroup.id)}</span>` : ""}
-                        <span class="completed-objective-title">${escapeHtml(objectiveGroup.title)}</span>
-                      </div>
-                      <span class="section-meta">${escapeHtml(pluralize(objectiveGroup.tasks.length, "task"))}</span>
-                    </div>
-                    <div class="results-grid">
-                      ${objectiveGroup.tasks.map(renderCompletedCard).join("")}
-                    </div>
-                  </section>
-                `).join("")}
-              </div>
-            </section>
-          `).join("")
+      document.getElementById("completed-history-scroll").innerHTML = visibleCompleted.length
+        ? `<div class="results-grid">${visibleCompleted.map(renderCompletedCard).join("")}</div>`
         : `<div class="empty">Completed tasks will appear here once work lands.</div>`;
     }
 
@@ -2335,8 +2039,6 @@ __BLACKDOG_STYLES__
     autoReloadEnabled = readAutoReloadPreference();
     startAutoReloadTimer();
     renderStatusPanel();
-    renderObjectivesTable();
-    renderReleaseGatesPanel();
     renderExecutionMap();
     renderCompletedPanel();
     wireStaticEvents();
