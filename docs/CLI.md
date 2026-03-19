@@ -76,7 +76,7 @@ product development.
 - `blackdog backlog new NAME`
 - `blackdog backlog remove NAME`
 - `blackdog backlog reset`
-- `blackdog add --title ... --bucket ... --why ... --evidence ... --safe-first-slice ...`
+- `blackdog add --title ... --bucket ... --why ... --evidence ... --safe-first-slice ... [--task-shaping JSON_OBJECT]`
 - `blackdog plan`
 - `blackdog summary`
 - `blackdog next`
@@ -128,7 +128,7 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 
 ### Structured results
 
-- `blackdog result record --id TASK --actor NAME --status success|blocked|partial ...`
+- `blackdog result record --id TASK --actor NAME --status success|blocked|partial --what-changed ... --task-shaping-telemetry JSON_OBJECT ...`
 
 ### Coverage reporting
 
@@ -149,7 +149,7 @@ For delegated ergonomics reviews, use:
 When child work happens, prefer the generated protocol helper in the child
 workspace (`blackdog-child`) for protocol operations:
 
-- `blackdog-child result record --status ...`
+- `blackdog-child result record --status ... --task-shaping-telemetry JSON_OBJECT`
 - `blackdog-child inbox list ...`
 - `blackdog-child release --note ...`
 

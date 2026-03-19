@@ -359,6 +359,7 @@ def _build_result_index(paths: ProjectPaths, results: list[dict[str, Any]]) -> d
             "latest_result_validation": list(row.get("validation") or []),
             "latest_result_residual": list(row.get("residual") or []),
             "latest_result_needs_user_input": bool(row.get("needs_user_input")),
+            "latest_result_task_shaping_telemetry": dict(row.get("task_shaping_telemetry") or {}),
         }
     for task_id, count in counts.items():
         index.setdefault(
@@ -377,6 +378,7 @@ def _build_result_index(paths: ProjectPaths, results: list[dict[str, Any]]) -> d
                 "latest_result_validation": [],
                 "latest_result_residual": [],
                 "latest_result_needs_user_input": False,
+                "latest_result_task_shaping_telemetry": {},
             },
         )
         index[task_id]["result_count"] = count
@@ -1086,6 +1088,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "paths": list(task.payload.get("paths") or []),
             "checks": list(task.payload.get("checks") or []),
             "docs": list(task.payload.get("docs") or []),
+            "task_shaping": task.payload.get("task_shaping"),
             "predecessor_ids": list(task.predecessor_ids),
             "lane_plan_index": lane_info.get("lane_plan_index", task.lane_order if task.lane_order is not None else 9999),
             "lane_position": lane_info.get("lane_position"),
@@ -1110,6 +1113,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "latest_result_validation": result_info.get("latest_result_validation") or [],
             "latest_result_residual": result_info.get("latest_result_residual") or [],
             "latest_result_needs_user_input": bool(result_info.get("latest_result_needs_user_input")),
+            "latest_result_task_shaping_telemetry": result_info.get("latest_result_task_shaping_telemetry") or {},
             "result_count": int(result_info.get("result_count") or 0),
             "latest_run_id": run_info.get("run_id"),
             "latest_run_status": run_info.get("run_status"),

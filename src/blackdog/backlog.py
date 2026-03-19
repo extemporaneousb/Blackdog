@@ -34,10 +34,100 @@ RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 EFFORT_ORDER = {"S": 0, "M": 1, "L": 2}
 UNASSIGNED_OBJECTIVE_KEY = "__unassigned__"
 UNASSIGNED_OBJECTIVE_TITLE = "Unassigned"
+TASK_SHAPING_DEFAULTS = {
+    "estimated_elapsed_minutes": None,
+    "estimated_active_minutes": None,
+    "estimated_touched_paths": [],
+    "estimated_validation_minutes": None,
+    "estimated_worktrees": 1,
+    "estimated_handoffs": 0,
+    "parallelizable_groups": 0,
+}
 
 
 class BacklogError(RuntimeError):
     pass
+
+
+def _coerce_optional_int(value: Any, *, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise BacklogError(f"task_shaping.{field} must be a non-negative integer or null")
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise BacklogError(f"task_shaping.{field} must be a non-negative integer or null")
+        candidate = int(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            candidate = int(text)
+        except ValueError as exc:
+            raise BacklogError(f"task_shaping.{field} must be a non-negative integer or null") from exc
+    else:
+        raise BacklogError(f"task_shaping.{field} must be a non-negative integer or null")
+    if candidate < 0:
+        raise BacklogError(f"task_shaping.{field} must be a non-negative integer or null")
+    return candidate
+
+
+def _coerce_task_shaping_touched_paths(value: Any, fallback_paths: list[str]) -> list[str]:
+    if value is None:
+        raw_values: list[Any] = list(fallback_paths)
+    elif isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_values = list(value)
+    else:
+        raise BacklogError("task_shaping.estimated_touched_paths must be an array of paths or null")
+
+    normalized = []
+    for item in raw_values:
+        if not isinstance(item, str):
+            raise BacklogError("task_shaping.estimated_touched_paths must contain non-empty strings")
+        text = item.strip()
+        if text:
+            normalized.append(text)
+    return _unique_ordered(normalized)
+
+
+def _coerce_task_shaping(task_shaping: dict[str, Any] | None, *, fallback_paths: list[str]) -> dict[str, Any]:
+    if task_shaping is None:
+        payload = {}
+    elif isinstance(task_shaping, dict):
+        payload = dict(task_shaping)
+    else:
+        raise BacklogError("task_shaping must be an object")
+    touched_paths = _coerce_task_shaping_touched_paths(
+        payload.get("estimated_touched_paths"),
+        fallback_paths=fallback_paths,
+    )
+    return {
+        "estimated_elapsed_minutes": _coerce_optional_int(
+            payload.get("estimated_elapsed_minutes"), field="estimated_elapsed_minutes"
+        ),
+        "estimated_active_minutes": _coerce_optional_int(
+            payload.get("estimated_active_minutes"), field="estimated_active_minutes"
+        ),
+        "estimated_touched_paths": touched_paths,
+        "estimated_validation_minutes": _coerce_optional_int(
+            payload.get("estimated_validation_minutes"), field="estimated_validation_minutes"
+        ),
+        "estimated_worktrees": _coerce_optional_int(payload.get("estimated_worktrees"), field="estimated_worktrees")
+        if payload.get("estimated_worktrees") is not None
+        else int(TASK_SHAPING_DEFAULTS["estimated_worktrees"]),
+        "estimated_handoffs": _coerce_optional_int(payload.get("estimated_handoffs"), field="estimated_handoffs")
+        if payload.get("estimated_handoffs") is not None
+        else int(TASK_SHAPING_DEFAULTS["estimated_handoffs"]),
+        "parallelizable_groups": _coerce_optional_int(payload.get("parallelizable_groups"), field="parallelizable_groups")
+        if payload.get("parallelizable_groups") is not None
+        else int(TASK_SHAPING_DEFAULTS["parallelizable_groups"]),
+        **{key: value for key, value in payload.items() if key not in TASK_SHAPING_DEFAULTS},
+    }
 
 
 @dataclass(frozen=True)
@@ -250,6 +340,10 @@ def validate_task_payload(task: dict[str, Any], profile: Profile) -> None:
         raise BacklogError("approval_reason is required when requires_approval=true")
     if not str(task["safe_first_slice"]).strip():
         raise BacklogError("safe_first_slice must be non-empty")
+    task["task_shaping"] = _coerce_task_shaping(
+        task.get("task_shaping"),
+        fallback_paths=task["paths"],
+    )
 
 
 def validate_plan_payload(plan: dict[str, Any], *, task_ids: set[str]) -> None:
@@ -589,6 +683,7 @@ def build_view_model(
                 "objective": objective_id,
                 "domains": task.payload.get("domains", []),
                 "safe_first_slice": task.payload["safe_first_slice"],
+                "task_shaping": task.payload["task_shaping"],
             }
         )
     lanes: dict[str, dict[str, Any]] = {}
@@ -672,6 +767,7 @@ def build_plan_view(
                     "epic_title": task.epic_title or "Unplanned",
                     "priority": task.payload["priority"],
                     "risk": task.payload["risk"],
+                    "task_shaping": task.payload["task_shaping"],
                 }
             )
         lanes.append(
@@ -954,6 +1050,7 @@ def seed_tune_task(profile: Profile) -> tuple[dict[str, Any], bool]:
             domains=template["domains"],
             packages=template["packages"],
             affected_paths=template["paths"],
+            task_shaping=None,
             objective=template["objective"],
             requires_approval=template["requires_approval"],
             approval_reason=template["approval_reason"],
@@ -1101,6 +1198,7 @@ def add_task(
     domains: list[str],
     packages: list[str],
     affected_paths: list[str],
+    task_shaping: dict[str, Any] | None,
     objective: str,
     requires_approval: bool,
     approval_reason: str,
@@ -1127,6 +1225,7 @@ def add_task(
             "checks": checks or list(profile.validation_commands),
             "docs": docs or list(profile.doc_routing_defaults),
             "objective": objective,
+            "task_shaping": task_shaping,
             "domains": domains,
             "requires_approval": requires_approval,
             "approval_reason": approval_reason,

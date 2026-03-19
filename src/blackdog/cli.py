@@ -168,6 +168,18 @@ def _env_required(value: str | None, env_var: str, *, arg_name: str, command: st
     raise BacklogError(f"{command} requires --{arg_name} (or set ${env_var})")
 
 
+def _parse_json_object(value: str | None, *, command: str, flag: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise BacklogError(f"{command} requires valid JSON for {flag}; parse failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise BacklogError(f"{command} requires {flag} to be a JSON object")
+    return payload
+
+
 def _parse_trace_command(command: str) -> tuple[dict[str, str], list[str]]:
     parts = shlex.split(command)
     if not parts:
@@ -428,6 +440,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         domains=args.domain,
         packages=args.package,
         affected_paths=args.affected_path,
+        task_shaping=_parse_json_object(args.task_shaping, command="add", flag="--task-shaping"),
         objective=args.objective or "",
         requires_approval=args.requires_approval,
         approval_reason=args.approval_reason or "",
@@ -795,6 +808,11 @@ def cmd_result_record(args: argparse.Namespace) -> int:
         needs_user_input=args.needs_user_input,
         followup_candidates=args.followup,
         run_id=args.run_id,
+        task_shaping_telemetry=_parse_json_object(
+            args.task_shaping_telemetry,
+            command="result record",
+            flag="--task-shaping-telemetry",
+        ),
     )
     _emit_render(profile)
     print(str(result_path))
@@ -951,6 +969,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--safe-first-slice", required=True)
     p_add.add_argument("--path", action="append", default=[])
     p_add.add_argument("--affected-path", action="append", default=[])
+    p_add.add_argument("--task-shaping", default=None)
     p_add.add_argument("--check", action="append", default=[])
     p_add.add_argument("--doc", action="append", default=[])
     p_add.add_argument("--domain", action="append", default=[])
@@ -1121,6 +1140,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_result_record.add_argument("--validation", action="append", default=[])
     p_result_record.add_argument("--residual", action="append", default=[])
     p_result_record.add_argument("--followup", action="append", default=[])
+    p_result_record.add_argument("--task-shaping-telemetry", default=None)
     p_result_record.add_argument("--needs-user-input", action="store_true")
     p_result_record.set_defaults(func=cmd_result_record)
 

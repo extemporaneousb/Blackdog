@@ -300,7 +300,12 @@ def record_task_result(
     followup_candidates: list[str],
     run_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    task_shaping_telemetry: dict[str, Any] | None = None,
 ) -> Path:
+    if metadata is not None and not isinstance(metadata, dict):
+        raise StoreError("metadata must be an object when present")
+    if task_shaping_telemetry is not None and not isinstance(task_shaping_telemetry, dict):
+        raise StoreError("task_shaping_telemetry must be an object when present")
     result_dir = paths.results_dir / task_id
     result_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
@@ -319,6 +324,7 @@ def record_task_result(
         "needs_user_input": needs_user_input,
         "followup_candidates": followup_candidates,
         "metadata": metadata or {},
+        "task_shaping_telemetry": task_shaping_telemetry or {},
     }
     atomic_write_text(result_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     append_event(

@@ -138,6 +138,7 @@ Each task block requires:
 - `requires_approval`
 - `approval_reason`
 - `safe_first_slice`
+- `task_shaping`
 
 ## Planning model
 
@@ -266,9 +267,11 @@ Required keys:
 - `residual`
 - `needs_user_input`
 - `followup_candidates`
+- `task_shaping_telemetry`
 - `metadata`
 
-`metadata` is optional in older rows and now includes structured child protocol telemetry for supervisor-launched runs.
+`task_shaping_telemetry` stores measured task-shaping fields for this result row.
+`metadata` is optional in older rows and continues to carry child-launch metadata.
 
 ## `<control_dir>/supervisor-runs/*/<task-id>/metadata.json`
 
@@ -643,6 +646,8 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `latest_result_href`
 - `latest_result_dir_href`
 - `latest_result_preview`
+- `task_shaping`
+- `latest_result_task_shaping_telemetry`
 - `result_count`
 - `latest_run_status`
 - `run_dir_href`

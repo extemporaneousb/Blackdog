@@ -971,6 +971,7 @@ class BlackdogCliTests(unittest.TestCase):
                     objective="",
                     requires_approval=False,
                     approval_reason="",
+                    task_shaping=None,
                     epic_id=None,
                     epic_title="Concurrency",
                     lane_id=None,
@@ -1292,9 +1293,30 @@ class BlackdogCliTests(unittest.TestCase):
     def test_claim_complete_and_result_record(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
+        task_shaping = json.dumps(
+            {
+                "estimated_elapsed_minutes": 30,
+                "estimated_active_minutes": 20,
+                "estimated_touched_paths": ["README.md"],
+                "estimated_validation_minutes": 8,
+                "estimated_worktrees": 1,
+                "estimated_handoffs": 1,
+                "parallelizable_groups": 1,
+            }
+        )
+        task_shaping_telemetry = json.dumps(
+            {
+                "estimated_elapsed_minutes": 25,
+                "estimated_active_minutes": 18,
+                "estimated_touched_paths": ["README.md"],
+                "estimated_validation_minutes": 7,
+                "estimated_worktrees": 1,
+                "estimated_handoffs": 0,
+                "parallelizable_groups": 1,
+            }
+        )
         for title in ("First task", "Second task"):
-            run_cli(
-                "add",
+            args = [
                 "--project-root",
                 str(self.root),
                 "--title",
@@ -1315,6 +1337,12 @@ class BlackdogCliTests(unittest.TestCase):
                 "Serial lane",
                 "--wave",
                 "0",
+            ]
+            if title == "First task":
+                args.extend(["--task-shaping", task_shaping])
+            run_cli(
+                "add",
+                *args,
             )
 
         next_payload = subprocess.run(
@@ -1352,6 +1380,13 @@ class BlackdogCliTests(unittest.TestCase):
             "Second task still open.",
             "--followup",
             "Continue the lane.",
+            "--task-shaping-telemetry",
+            task_shaping_telemetry,
+        )
+        result_payload = sorted((paths.results_dir / first_id).glob("*.json"))[-1].read_text(encoding="utf-8")
+        self.assertEqual(
+            json.loads(result_payload)["task_shaping_telemetry"]["estimated_elapsed_minutes"],
+            25,
         )
 
         events = json.loads(
@@ -1368,6 +1403,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("claim", event_types)
         self.assertIn("complete", event_types)
         self.assertIn("task_result", event_types)
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        task = next(row for row in snapshot["tasks"] if row["id"] == first_id)
+        self.assertEqual(task["task_shaping"]["estimated_elapsed_minutes"], 30)
+        self.assertEqual(task["latest_result_task_shaping_telemetry"]["estimated_elapsed_minutes"], 25)
         rendered = paths.html_file.read_text(encoding="utf-8")
         self.assertIn("Completed Tasks", rendered)
         self.assertIn(first_id, rendered)
@@ -2221,11 +2260,13 @@ class BlackdogCliTests(unittest.TestCase):
                     "actor": "codex",
                     "result_file": result_file,
                     "what_changed": ["Added coverage regression."],
+                    "task_shaping_telemetry": {"estimated_elapsed_minutes": 14, "estimated_active_minutes": 5},
                 },
             ],
         )
         self.assertEqual(sorted(result_index), ["TASK-1"])
         self.assertEqual(result_index["TASK-1"]["result_count"], 1)
+        self.assertEqual(result_index["TASK-1"]["latest_result_task_shaping_telemetry"]["estimated_active_minutes"], 5)
 
         objective_rows = _build_objective_snapshot_rows(
             [
