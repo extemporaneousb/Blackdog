@@ -30,6 +30,7 @@ from .config import ConfigError, load_profile
 from .scaffold import (
     ScaffoldError,
     bootstrap_project,
+    create_project,
     remove_named_backlog,
     render_project_html,
     reset_default_backlog,
@@ -376,6 +377,34 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
                 "project_root": str(profile.paths.project_root),
                 "profile": str(profile.paths.profile_file),
                 "skill_file": str(skill_file),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_create_project(args: argparse.Namespace) -> int:
+    profile, skill_file, venv_dir, source_root = create_project(
+        Path(args.project_root),
+        project_name=args.project_name or Path(args.project_root).resolve().name,
+        blackdog_source=Path(args.blackdog_source) if args.blackdog_source else None,
+        objectives=args.objective,
+        push_objective=args.push_objective,
+        non_negotiables=args.non_negotiable,
+        evidence_requirements=args.evidence_requirement,
+        release_gates=args.release_gate,
+    )
+    print(
+        json.dumps(
+            {
+                "project_root": str(profile.paths.project_root),
+                "profile": str(profile.paths.profile_file),
+                "skill_file": str(skill_file),
+                "venv": str(venv_dir),
+                "blackdog_cli": str(venv_dir / "bin" / "blackdog"),
+                "blackdog_skill_cli": str(venv_dir / "bin" / "blackdog-skill"),
+                "blackdog_source": str(source_root),
             },
             indent=2,
         )
@@ -913,6 +942,20 @@ def cmd_inbox_resolve(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Blackdog CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_create_project = subparsers.add_parser(
+        "create-project",
+        help="Create a new git repo, install Blackdog into a repo-local .VE, and bootstrap the project scaffold",
+    )
+    p_create_project.add_argument("--project-root", required=True)
+    p_create_project.add_argument("--project-name", default=None)
+    p_create_project.add_argument("--blackdog-source", default=None)
+    p_create_project.add_argument("--objective", action="append", default=[])
+    p_create_project.add_argument("--push-objective", action="append", default=[])
+    p_create_project.add_argument("--non-negotiable", action="append", default=[])
+    p_create_project.add_argument("--evidence-requirement", action="append", default=[])
+    p_create_project.add_argument("--release-gate", action="append", default=[])
+    p_create_project.set_defaults(func=cmd_create_project)
 
     p_bootstrap = subparsers.add_parser("bootstrap", help="Initialize backlog artifacts and generate the project-local Blackdog skill")
     p_bootstrap.add_argument("--project-root", default=".")

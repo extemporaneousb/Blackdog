@@ -9,8 +9,8 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## CLI Entry Points
 
-- Blackdog CLI: `blackdog`
-- Skill refresh CLI: `blackdog-skill`
+- Blackdog CLI: `./.VE/bin/blackdog`
+- Skill refresh CLI: `./.VE/bin/blackdog-skill`
 
 ## Core Paths
 
@@ -30,17 +30,23 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 - Codex discovers this skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repo.
 - Open or refresh the repo in Codex after bootstrap so the skill appears in the available skill list.
 
+## Host Project Creation
+
+- When the user asks to create a brand-new Blackdog repo at a filesystem path, run `./.VE/bin/blackdog create-project --project-root /abs/path --project-name "Repo Name"` from this checkout.
+- `create-project` creates the target directory, initializes git, bootstraps a repo-local `.VE`, installs Blackdog from the current checkout, and runs bootstrap so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/blackdog/`.
+- Use `./.VE/bin/blackdog bootstrap` instead when the target repo already exists or already has its own Python environment prepared.
+
 ## Standard Flow
 
-1. Run `blackdog validate`.
-2. Run `blackdog summary`.
-3. Inspect runnable work with `blackdog next`.
-4. Before any repo edit you intend to keep, run `blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-5. Run `blackdog coverage --output coverage/latest.json` to collect shipping-surface validation coverage evidence before large surface edits.
-6. Claim one task with `blackdog claim --agent <agent-name>`, then record structured output with `blackdog result record ...`.
+1. Run `./.VE/bin/blackdog validate`.
+2. Run `./.VE/bin/blackdog summary`.
+3. Inspect runnable work with `./.VE/bin/blackdog next`.
+4. Before any repo edit you intend to keep, run `./.VE/bin/blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `./.VE/bin/blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
+5. Run `./.VE/bin/blackdog coverage --output coverage/latest.json` to collect shipping-surface validation coverage evidence before large surface edits.
+6. Claim one task with `./.VE/bin/blackdog claim --agent <agent-name>`, then record structured output with `./.VE/bin/blackdog result record ...`.
 7. Complete or release the task through the CLI for direct work.
-8. Use `blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
-9. Check `blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
+8. Use `./.VE/bin/blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
+9. Check `./.VE/bin/blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 10. Open `@git-common/blackdog/backlog-index.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
 ## Task Shaping
@@ -83,7 +89,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `@git-common/blackdog`.
-- Regenerate this skill after profile changes with `blackdog-skill refresh backlog --project-root .`.
+- Regenerate this skill after profile changes with `./.VE/bin/blackdog-skill refresh backlog --project-root .`.
 
 ## Repo Defaults
 

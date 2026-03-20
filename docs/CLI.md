@@ -8,6 +8,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 
 ### Project setup
 
+- `blackdog create-project --project-root PATH --project-name NAME`
 - `blackdog bootstrap --project-root PATH --project-name NAME`
 - `blackdog init --project-root PATH --project-name NAME`
 - `blackdog validate`
@@ -19,11 +20,19 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
 - `blackdog worktree cleanup --id TASK|--path PATH`
 
-Use `blackdog bootstrap` for normal host-repo adoption. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
+Use `blackdog create-project` when you want Blackdog to create a brand-new git repo, install itself into that repo's `.VE`, and bootstrap the local contract in one step. Use `blackdog bootstrap` for normal host-repo adoption into an existing repo. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
 
 ### Installation and host bootstrap
 
-For a fresh host repo, install Blackdog first using one of:
+For a brand-new host repo from the current Blackdog checkout:
+
+```bash
+blackdog create-project --project-root /path/to/repo --project-name "Repo Name"
+```
+
+`create-project` expects a new or empty target directory. It creates the directory, initializes git, creates `.VE/`, installs Blackdog from the current checkout into that environment, and then runs the existing bootstrap scaffold so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/blackdog/`.
+
+For an existing host repo, install Blackdog first using one of:
 
 - `python -m pip install -e /path/to/blackdog`
 - `python -m pip install git+<github-url>`

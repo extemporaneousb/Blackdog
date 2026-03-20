@@ -5,6 +5,8 @@ from pathlib import Path
 import os
 import shlex
 import shutil
+import subprocess
+import sys
 
 from .backlog import (
     render_initial_backlog,
@@ -17,6 +19,72 @@ from .ui import build_ui_snapshot, render_static_html
 
 class ScaffoldError(RuntimeError):
     pass
+
+
+def _run_command(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise ScaffoldError(f"Command not found while scaffolding project: {command[0]}") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        message = f"Command failed while scaffolding project: {shlex.join(command)}"
+        if detail:
+            message += f"\n{detail}"
+        raise ScaffoldError(message) from exc
+
+
+def _default_blackdog_source() -> Path:
+    source_root = Path(__file__).resolve().parents[2]
+    if not (source_root / "pyproject.toml").is_file():
+        raise ScaffoldError(
+            "Cannot infer a local Blackdog source checkout from the current runtime; "
+            "pass --blackdog-source PATH."
+        )
+    return source_root
+
+
+def _ensure_new_project_root(project_root: Path) -> None:
+    if project_root.exists():
+        if not project_root.is_dir():
+            raise ScaffoldError(f"Project root exists but is not a directory: {project_root}")
+        if any(project_root.iterdir()):
+            raise ScaffoldError(
+                f"Refusing to create a new project in non-empty directory: {project_root}. "
+                "Use `blackdog bootstrap` for an existing repo."
+            )
+        return
+    project_root.mkdir(parents=True, exist_ok=True)
+
+
+def _initialize_git_repo(project_root: Path) -> None:
+    _run_command(["git", "init", str(project_root)])
+    _run_command(["git", "-C", str(project_root), "symbolic-ref", "HEAD", "refs/heads/main"])
+    git_env = os.environ.copy()
+    git_env.update(
+        {
+            "GIT_AUTHOR_NAME": "Blackdog",
+            "GIT_AUTHOR_EMAIL": "blackdog@example.com",
+            "GIT_COMMITTER_NAME": "Blackdog",
+            "GIT_COMMITTER_EMAIL": "blackdog@example.com",
+        }
+    )
+    _run_command(
+        ["git", "-C", str(project_root), "commit", "--allow-empty", "-m", "Initialize repository"],
+        env=git_env,
+    )
 
 
 def _ensure_runtime_dirs(profile: Profile) -> None:
@@ -185,6 +253,44 @@ def bootstrap_project(
         skill_file = generate_project_skill(profile, force=force)
     render_project_html(profile)
     return profile, skill_file
+
+
+def create_project(
+    project_root: Path,
+    *,
+    project_name: str,
+    blackdog_source: Path | None = None,
+    objectives: list[str] | None = None,
+    push_objective: list[str] | None = None,
+    non_negotiables: list[str] | None = None,
+    evidence_requirements: list[str] | None = None,
+    release_gates: list[str] | None = None,
+) -> tuple[Profile, Path, Path, Path]:
+    root = project_root.resolve()
+    _ensure_new_project_root(root)
+    _initialize_git_repo(root)
+
+    venv_dir = root / ".VE"
+    _run_command([str(Path(sys.executable).resolve()), "-m", "venv", str(venv_dir)], cwd=root)
+    venv_python = venv_dir / "bin" / "python"
+    if not venv_python.is_file():
+        raise ScaffoldError(f"Expected virtualenv python at {venv_python}")
+
+    source_root = blackdog_source.resolve() if blackdog_source is not None else _default_blackdog_source()
+    if not (source_root / "pyproject.toml").is_file():
+        raise ScaffoldError(f"Blackdog source path does not look like a project root: {source_root}")
+
+    _run_command([str(venv_python), "-m", "pip", "install", "-e", str(source_root)], cwd=root)
+    profile, skill_file = bootstrap_project(
+        root,
+        project_name=project_name,
+        objectives=objectives,
+        push_objective=push_objective,
+        non_negotiables=non_negotiables,
+        evidence_requirements=evidence_requirements,
+        release_gates=release_gates,
+    )
+    return profile, skill_file, venv_dir, source_root
 
 
 def refresh_project_skill(profile: Profile) -> Path:
@@ -356,6 +462,12 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 - UI discovery file: `{skill_discovery_path}`
 - Codex discovers this skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repo.
 - Open or refresh the repo in Codex after bootstrap so the skill appears in the available skill list.
+
+## Host Project Creation
+
+- When the user asks to create a brand-new Blackdog repo at a filesystem path, run `{cli_command} create-project --project-root /abs/path --project-name "Repo Name"` from this checkout.
+- `create-project` creates the target directory, initializes git, bootstraps a repo-local `.VE`, installs Blackdog from the current checkout, and runs bootstrap so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/blackdog/`.
+- Use `{cli_command} bootstrap` instead when the target repo already exists or already has its own Python environment prepared.
 
 ## Standard Flow
 

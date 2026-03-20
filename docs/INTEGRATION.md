@@ -4,6 +4,7 @@ This document describes the current integration path for adopting Blackdog in an
 
 ## What exists today
 
+- a single command that creates a brand-new host repo from the current Blackdog checkout, installs Blackdog into a repo-local `.VE`, and bootstraps the repo contract
 - a one-command repo bootstrap once Blackdog is installed in the local Python environment
 - repo-local profile in `blackdog.toml`
 - baseline `AGENTS.md` contract file on first bootstrap when absent
@@ -17,11 +18,25 @@ This document describes the current integration path for adopting Blackdog in an
 
 ## What does not exist yet
 
-- a single command that both installs Blackdog into a host environment and bootstraps the repo from scratch
 - richer active-run steering beyond simple stop control messages
 - a write-enabled runtime UI for approvals or steering from the browser
 
-## Fresh install operator flow
+## Fresh repo creation flow
+
+1. Run `blackdog create-project --project-root /path/to/repo --project-name "Repo Name"` from the current Blackdog checkout.
+2. Verify the created repo now includes:
+   - `.git/`
+   - `.VE/`
+   - `blackdog.toml`
+   - `AGENTS.md` (generated when absent)
+   - `.codex/skills/blackdog/SKILL.md`
+   - `.codex/skills/blackdog/agents/openai.yaml`
+   - runtime artifacts under the resolved control root (`backlog.md`, `task-results/`, and related state files)
+3. Review `blackdog.toml` and tailor the generated `AGENTS.md` contract before committing the initial scaffold.
+
+`create-project` is for a brand-new or empty target directory. It initializes git, creates a repo-local `.VE/`, installs Blackdog from the current checkout into that environment, and then runs the normal bootstrap flow.
+
+## Existing repo install and bootstrap flow
 
 1. Install Blackdog into a local Python environment available to the host repo.
    Today that can be an editable checkout or a Git install such as `python -m pip install -e /path/to/blackdog` or `python -m pip install git+<github-url>`.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta
+import io
 import json
 import os
 import re
@@ -20,6 +22,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from blackdog import backlog as backlog_module
+from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
 from blackdog.backlog import load_backlog, render_backlog_plan_block, render_task_section
 from blackdog.cli import main as blackdog_main
@@ -1127,6 +1130,60 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(second_payload["skill_file"], payload["skill_file"])
 
+    def test_create_project_initializes_git_repo_and_bootstraps_skill(self) -> None:
+        target = self.root / "child-demo"
+        install_commands: list[list[str]] = []
+        real_run_command = scaffold_module._run_command
+
+        def fake_run_command(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None):
+            if len(command) >= 3 and command[1:3] == ["-m", "venv"]:
+                venv_dir = Path(command[3])
+                bin_dir = venv_dir / "bin"
+                bin_dir.mkdir(parents=True, exist_ok=True)
+                for name in ("python", "blackdog", "blackdog-skill"):
+                    script = bin_dir / name
+                    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                    script.chmod(0o755)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if len(command) >= 4 and command[1:4] == ["-m", "pip", "install"]:
+                install_commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return real_run_command(command, cwd=cwd, env=env)
+
+        stdout = io.StringIO()
+        with patch("blackdog.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
+            exit_code = run_cli(
+                "create-project",
+                "--project-root",
+                str(target),
+                "--project-name",
+                "Child Demo",
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(Path(payload["project_root"]).resolve(), target.resolve())
+        self.assertEqual(Path(payload["venv"]).resolve(), (target / ".VE").resolve())
+        self.assertEqual(Path(payload["blackdog_source"]).resolve(), ROOT.resolve())
+        self.assertTrue((target / ".git").exists())
+        self.assertTrue((target / "blackdog.toml").exists())
+        self.assertTrue((target / ".codex/skills/blackdog/SKILL.md").exists())
+        self.assertTrue((target / ".codex/skills/blackdog/references/task-shaping.md").exists())
+        self.assertTrue((target / ".VE/bin/blackdog").exists())
+        self.assertTrue((target / ".VE/bin/blackdog-skill").exists())
+        self.assertEqual(len(install_commands), 1)
+        self.assertEqual(install_commands[0][-2:], ["-e", str(ROOT.resolve())])
+        branch = subprocess.run(
+            ["git", "-C", str(target), "symbolic-ref", "--short", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(branch, "main")
+        skill_text = (target / ".codex/skills/blackdog/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("create-project", skill_text)
+        self.assertIn("./.VE/bin/blackdog", skill_text)
+
     def test_bootstrap_writes_baseline_agents_md_only_if_missing(self) -> None:
         payload = json.loads(
             subprocess.run(
@@ -1589,6 +1646,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("## Task Shaping", refreshed_text)
         self.assertIn("Default to one lane and one task", refreshed_text)
         self.assertIn("references/task-shaping.md", refreshed_text)
+        self.assertIn("create-project", refreshed_text)
         self.assertIn("## Docs to Review", refreshed_text)
         self.assertIn("`AGENTS.md`", refreshed_text)
         self.assertIn("doc_routing_defaults", refreshed_text)
