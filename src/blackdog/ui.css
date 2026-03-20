@@ -110,6 +110,13 @@ h3 {
   color: var(--muted);
 }
 
+.hero-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
 .brand-lockup {
   display: grid;
   gap: 8px;
@@ -120,6 +127,34 @@ h3 {
   font: 600 clamp(1rem, 1.5vw, 1.18rem)/1.05 "Iowan Old Style", "Baskerville", serif;
   letter-spacing: 0.16em;
   text-transform: lowercase;
+}
+
+.repo-root-badge {
+  margin-left: auto;
+  min-width: 0;
+  max-width: min(54%, 52rem);
+  padding: 10px 12px;
+  border: 1px solid rgba(23, 26, 25, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.34);
+  display: grid;
+  gap: 4px;
+  text-align: right;
+}
+
+.repo-root-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.repo-root-value {
+  color: var(--ink);
+  font: 600 0.82rem/1.35 "SF Mono", "Menlo", monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .hero-controls {
@@ -709,6 +744,7 @@ dialog::backdrop {
 
   .toolbar-topline,
   .reader-head,
+  .hero-head,
   .wave-head,
   .completed-group-head,
   .task-card-top,
@@ -723,6 +759,13 @@ dialog::backdrop {
 
   .meta-item {
     width: 100%;
+  }
+
+  .repo-root-badge {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    text-align: left;
   }
 }
 

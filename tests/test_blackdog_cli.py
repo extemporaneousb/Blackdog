@@ -4373,6 +4373,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Time since last update", updated_html)
         self.assertIn("Total time on sweep", updated_html)
         self.assertIn("Total time on backlog", updated_html)
+        self.assertIn("Repo directory", updated_html)
+        self.assertIn(str(self.root), updated_html)
         self.assertLess(
             updated_html.index('renderMetaItem("Time since last check"'),
             updated_html.index('renderMetaItem("Time since last update"'),
@@ -4390,6 +4392,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(">Demo<", updated_html)
         self.assertIn("blackdog backlog", updated_html)
         self.assertIn('id="hero-meta-line"', updated_html)
+        self.assertIn('id="repo-root-badge"', updated_html)
         self.assertIn('id="hero-reload-controls"', updated_html)
         self.assertIn('id="hero-links"', updated_html)
         self.assertIn('id="queue-stats"', updated_html)

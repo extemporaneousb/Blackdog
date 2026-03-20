@@ -1294,9 +1294,12 @@ __BLACKDOG_STYLES__
     <div class="page-shell">
       <section id="top-band" class="panel-row panel-row-top" data-panel="hero">
         <article id="hero-panel" class="panel control-panel">
-          <div class="brand-lockup">
-            <h1 id="project-name">__BLACKDOG_TITLE__</h1>
-            <p id="product-name" class="brand-subtitle">blackdog backlog</p>
+          <div class="hero-head">
+            <div class="brand-lockup">
+              <h1 id="project-name">__BLACKDOG_TITLE__</h1>
+              <p id="product-name" class="brand-subtitle">blackdog backlog</p>
+            </div>
+            <div id="repo-root-badge" class="repo-root-badge"></div>
           </div>
           <div id="hero-meta-line" class="meta-line"></div>
           <div id="hero-reload-controls" class="hero-controls"></div>
@@ -1709,6 +1712,7 @@ __BLACKDOG_STYLES__
       const headers = snapshot.headers || {};
       const activity = snapshot.last_activity || {};
       const overallProgress = progressMetrics(trackedTasks);
+      const repoRoot = snapshot.project_root || headers["Repo root"] || "";
       const metaItems = [
         renderMetaItem("Active Branch", heroHighlights.branch || headers["Target branch"] || "", { mono: true }),
         renderMetaItem("Commit", heroHighlights.commit || headers["Target commit"] || "", { mono: true }),
@@ -1717,6 +1721,12 @@ __BLACKDOG_STYLES__
         renderMetaItem("Total time on sweep", heroHighlights.total_time_on_sweep || "0s"),
         renderMetaItem("Total time on backlog", heroHighlights.total_time_on_backlog || "0s"),
       ].filter(Boolean);
+      document.getElementById("repo-root-badge").innerHTML = repoRoot
+        ? `
+          <span class="repo-root-label">Repo directory</span>
+          <span class="repo-root-value">${escapeHtml(repoRoot)}</span>
+        `
+        : "";
       document.getElementById("hero-meta-line").innerHTML = metaItems
         .join("");
       document.getElementById("hero-note").textContent = activity.summary
