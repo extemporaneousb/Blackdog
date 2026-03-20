@@ -49,7 +49,8 @@ exist. Richer write-enabled runtime steering still does not.
    - By default, `paths.control_dir = "@git-common/blackdog"` resolves
      to `<git-common-dir>/blackdog`, so every worktree in the repo
      sees the same `backlog.md`, `backlog-state.json`, `events.jsonl`,
-     `inbox.jsonl`, `task-results/`, `backlog-index.html`, and
+     `inbox.jsonl`, `task-results/`, the repo-branded backlog HTML
+     file, the compatibility `backlog-index.html` alias, and
      `supervisor-runs/`.
 	 
    - `blackdog.toml` stays repo-local, but runtime state is no longer
@@ -185,8 +186,9 @@ service:
 
 - CLI commands write backlog/state/events/inbox/task-result artifacts
 - supervisor runs write run artifacts and rerender the static HTML
-- `blackdog render` rebuilds `backlog-index.html` by embedding the
-  current snapshot JSON directly in the file
+- `blackdog render` rebuilds the repo-branded backlog HTML file (and
+  refreshes the compatibility `backlog-index.html` alias) by embedding
+  the current snapshot JSON directly in the file
 - the page runs only local filtering and dialog behavior in the
   browser; it does not fetch, stream, or post state
 - task cards link directly to on-disk artifacts such as result JSON,

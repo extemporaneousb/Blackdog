@@ -66,6 +66,14 @@ def default_id_prefix(project_name: str) -> str:
     return letters[:5]
 
 
+def default_html_file_name(project_name: str, backlog_name: str | None = None) -> str:
+    parts = [slugify(project_name)]
+    if backlog_name:
+        parts.append(slugify(backlog_name))
+    parts.append("backlog")
+    return "-".join(parts) + ".html"
+
+
 @dataclass(frozen=True)
 class ProjectPaths:
     project_root: Path
@@ -117,7 +125,7 @@ def named_backlog_paths(profile: Profile, name: str) -> ProjectPaths:
         events_file=backlog_dir / "events.jsonl",
         results_dir=backlog_dir / "task-results",
         inbox_file=backlog_dir / "inbox.jsonl",
-        html_file=backlog_dir / "backlog-index.html",
+        html_file=backlog_dir / default_html_file_name(profile.project_name, name),
         skill_dir=profile.paths.skill_dir,
         worktrees_dir=profile.paths.worktrees_dir,
         supervisor_runs_dir=backlog_dir / "supervisor-runs",
@@ -166,7 +174,7 @@ def _resolve_path_value(project_root: Path, value: str) -> Path:
     return _resolve_rel(project_root, value)
 
 
-def _default_control_paths(control_dir: Path) -> dict[str, Path]:
+def _default_control_paths(control_dir: Path, *, project_name: str, backlog_name: str | None = None) -> dict[str, Path]:
     return {
         "backlog_dir": control_dir,
         "backlog_file": control_dir / "backlog.md",
@@ -174,7 +182,7 @@ def _default_control_paths(control_dir: Path) -> dict[str, Path]:
         "events_file": control_dir / "events.jsonl",
         "results_dir": control_dir / "task-results",
         "inbox_file": control_dir / "inbox.jsonl",
-        "html_file": control_dir / "backlog-index.html",
+        "html_file": control_dir / default_html_file_name(project_name, backlog_name),
         "supervisor_runs_dir": control_dir / "supervisor-runs",
     }
 
@@ -190,13 +198,13 @@ def _ensure_control_root_layout(paths: ProjectPaths) -> None:
     _prune_stale_git_worktrees(paths.project_root)
 
 
-def _paths_from_raw(project_root: Path, raw_paths: dict[str, str]) -> ProjectPaths:
+def _paths_from_raw(project_root: Path, raw_paths: dict[str, str], *, project_name: str) -> ProjectPaths:
     control_dir = (
         _resolve_path_value(project_root, str(raw_paths["control_dir"]))
         if "control_dir" in raw_paths
         else None
     )
-    control_defaults = _default_control_paths(control_dir) if control_dir is not None else {}
+    control_defaults = _default_control_paths(control_dir, project_name=project_name) if control_dir is not None else {}
 
     def resolve_runtime_path(key: str) -> Path:
         if key in raw_paths:
@@ -262,7 +270,8 @@ def load_profile(project_root: Path | None = None) -> Profile:
                 + ", ".join(missing_runtime)
             )
 
-    paths = _paths_from_raw(root, raw_paths)
+    project_name = str(project.get("name") or root.name)
+    paths = _paths_from_raw(root, raw_paths, project_name=project_name)
     _ensure_control_root_layout(paths)
     raw_launch_command = supervisor.get("launch_command") or list(DEFAULT_SUPERVISOR_COMMAND)
     if isinstance(raw_launch_command, str):
@@ -278,7 +287,7 @@ def load_profile(project_root: Path | None = None) -> Profile:
     if max_parallel < 1:
         raise ConfigError("supervisor.max_parallel must be at least 1")
     return Profile(
-        project_name=str(project.get("name") or root.name),
+        project_name=project_name,
         profile_version=int(project.get("profile_version") or 1),
         id_prefix=str(ids.get("prefix") or default_id_prefix(str(project.get("name") or root.name))),
         id_digest_length=int(ids.get("digest_length") or 10),

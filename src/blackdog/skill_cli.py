@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .config import ConfigError, load_profile
-from .scaffold import ScaffoldError, bootstrap_project, refresh_project_skill
+from .scaffold import ScaffoldError, bootstrap_project, refresh_project_scaffold
 
 
 def cmd_new_backlog(args: argparse.Namespace) -> int:
@@ -31,17 +31,8 @@ def cmd_new_backlog(args: argparse.Namespace) -> int:
 def cmd_refresh_backlog(args: argparse.Namespace) -> int:
     root = Path(args.project_root).resolve()
     profile = load_profile(root)
-    skill_file = refresh_project_skill(profile)
-    print(
-        json.dumps(
-            {
-                "project_root": str(root),
-                "profile": str(profile.paths.profile_file),
-                "skill_file": str(skill_file),
-            },
-            indent=2,
-        )
-    )
+    report = refresh_project_scaffold(profile, render_html=False)
+    print(json.dumps(report, indent=2))
     return 0
 
 

@@ -6,6 +6,8 @@ This document describes the current integration path for adopting Blackdog in an
 
 - a single command that creates a brand-new host repo from the current Blackdog checkout, installs Blackdog into a repo-local `.VE`, and bootstraps the repo contract
 - a one-command repo bootstrap once Blackdog is installed in the local Python environment
+- a non-destructive repo refresh flow that regenerates branded host artifacts without clobbering locally modified managed files
+- a source-checkout update flow that reinstalls Blackdog into another repo's `.VE` and then runs that refresh step
 - repo-local profile in `blackdog.toml`
 - baseline `AGENTS.md` contract file on first bootstrap when absent
 - mutable backlog/runtime artifacts under a shared git control root
@@ -54,17 +56,29 @@ This document describes the current integration path for adopting Blackdog in an
    Set `taxonomy.doc_routing_defaults` to the minimum repo docs agents must review before making kept changes; Blackdog emits that list into the generated project-local skill.
 5. Commit `blackdog.toml` and the project-local skill scaffold if they are part of the repo's working contract.
    Do not plan around checking in mutable runtime files; Blackdog now defaults to a shared local control root outside the built artifact.
-6. If you later change `blackdog.toml`, regenerate the tailored skill with `blackdog-skill refresh backlog --project-root /path/to/repo`.
+6. If you later change `blackdog.toml` or update the installed Blackdog package, regenerate the tailored host artifacts with `blackdog refresh --project-root /path/to/repo`.
+   `blackdog-skill refresh backlog` remains as a compatibility wrapper around the managed skill refresh flow.
+   If any managed skill file was locally modified, refresh keeps that file in place and writes a `*.blackdog-new` sidecar beside it instead of overwriting it.
 7. In each fresh git worktree, create that worktree's own `.VE/` (or equivalent repo-local environment) before running repo-local commands. Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
 8. Treat implementation edits in the primary worktree as a contract violation. Start with `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-9. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog coverage`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work. Open `backlog-index.html` directly and reload it when you want the latest state.
+9. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog coverage`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work. Open the repo-branded backlog HTML file (by default `<project-slug>-backlog.html`) directly and reload it when you want the latest state; Blackdog also refreshes `backlog-index.html` as a compatibility alias.
+
+## Source checkout update flow
+
+When you are sitting in a Blackdog source checkout and want to push that version into another repo that already uses Blackdog:
+
+1. Run `blackdog update-repo /path/to/repo`.
+2. Blackdog reinstalls itself into the host repo's `.VE`.
+3. Blackdog then runs the same non-destructive refresh flow described above, regenerating the branded board and managed project-local skill files.
 
 ## How the Blackdog skill appears in Codex
 
-Bootstrap and skill refresh generate two files under `.codex/skills/blackdog/`:
+Bootstrap and refresh generate these managed files under `.codex/skills/blackdog/`:
 
 - `SKILL.md`: repo-local operating instructions tailored from `blackdog.toml`
 - `agents/openai.yaml`: UI-facing metadata for skill list and default prompts
+- `references/task-shaping.md`: task-shaping guidance emitted from Blackdog's built-in reference text
+- `.blackdog-managed.json`: last-generated hashes for the managed skill files so refresh can tell when a local edit should be preserved instead of overwritten
 
 Codex discovers a repo skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repository.
 The `blackdog` skill usually appears after bootstrap once the repo is opened (or rescanned) in Codex.

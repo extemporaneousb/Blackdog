@@ -4,6 +4,12 @@ Mutable runtime state now lives under one shared local control root across workt
 
 The near-term contract is intentionally one format. The default backlog lives at `<control_dir>/...`, and any named backlog lives at `<control_dir>/backlogs/<slug>/...` using the exact same file set. Blackdog does not use a separate test-only schema.
 
+By default, the rendered HTML board is repo-branded:
+
+- default backlog: `<control_dir>/<project-slug>-backlog.html`
+- named backlog: `<control_dir>/backlogs/<slug>/<project-slug>-<slug>-backlog.html`
+- compatibility alias: `backlog-index.html` beside the rendered HTML file
+
 ## `blackdog.toml`
 
 Repo-local profile file.
@@ -81,7 +87,8 @@ Each named backlog reuses the same artifact layout as the default backlog root:
 - `events.jsonl`
 - `inbox.jsonl`
 - `task-results/`
-- `backlog-index.html`
+- `<project-slug>-<slug>-backlog.html`
+- `backlog-index.html` (compatibility alias)
 - `supervisor-runs/`
 
 These named roots are created and removed with `blackdog backlog new NAME` and `blackdog backlog remove NAME`. The default CLI still operates on the default backlog unless a command explicitly targets a named root in the future.
@@ -157,6 +164,20 @@ Clarifications:
 - completed tasks stay in the current execution map for the rest of that active supervisor run, then disappear on the next run's opening sweep if they are still done
 
 In practice: `epic` answers "why this cluster exists", `lane` answers "which ordered slot the task is currently in", `wave` answers "which concurrent lane group is currently open", and `task` is the unit an agent actually executes.
+
+## `.codex/skills/blackdog/.blackdog-managed.json`
+
+Project-local managed-skill manifest.
+
+Written by `blackdog bootstrap`, `blackdog refresh`, `blackdog update-repo`, and `blackdog-skill refresh backlog`.
+
+Schema:
+
+- `schema_version`
+- `files`
+  - `<relative path>` → `{ "sha256": "<generated-content-hash>" }`
+
+Blackdog uses this manifest to tell whether a managed skill file still matches the last generated version. If the file diverged locally, refresh leaves it in place and writes a `*.blackdog-new` sidecar beside it instead of overwriting it.
 
 ## `<control_dir>/backlog-state.json`
 
@@ -352,7 +373,7 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
 
 Canonical static-page snapshot payload.
 
-This is the same JSON payload embedded into `backlog-index.html`.
+This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias).
 Representative top-level keys include:
 
 - `project_name`
@@ -574,7 +595,7 @@ Current keys:
 
 ## Static HTML snapshot contract
 
-Embedded by `blackdog render` into `backlog-index.html` and printable with `blackdog snapshot`.
+Embedded by `blackdog render` into the repo-branded backlog HTML file and the compatibility `backlog-index.html` alias, and printable with `blackdog snapshot`.
 
 Top-level keys:
 

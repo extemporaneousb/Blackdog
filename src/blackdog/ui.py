@@ -1275,7 +1275,7 @@ def _snapshot_json(snapshot: dict[str, Any]) -> str:
     return json.dumps(snapshot, indent=2, sort_keys=True).replace("</", "<\\/")
 
 
-def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
+def render_static_html(snapshot: dict[str, Any], output_path: Path) -> str:
     title = html_lib.escape(str(snapshot["project_name"]))
     stylesheet = _ui_stylesheet()
     template = """<!doctype html>
@@ -1283,7 +1283,7 @@ def render_static_html(snapshot: dict[str, Any], output_path: Path) -> None:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>__BLACKDOG_TITLE__ Backlog</title>
+  <title>__BLACKDOG_PAGE_TITLE__</title>
   <style>
 __BLACKDOG_STYLES__
   </style>
@@ -1294,7 +1294,10 @@ __BLACKDOG_STYLES__
     <div class="page-shell">
       <section id="top-band" class="panel-row panel-row-top" data-panel="hero">
         <article id="hero-panel" class="panel control-panel">
-          <h1 id="project-name">Blackdog Backlog</h1>
+          <div class="brand-lockup">
+            <h1 id="project-name">__BLACKDOG_TITLE__</h1>
+            <p id="product-name" class="brand-subtitle">blackdog backlog</p>
+          </div>
           <div id="hero-meta-line" class="meta-line"></div>
           <div id="hero-reload-controls" class="hero-controls"></div>
           <p id="hero-note" class="hero-note"></p>
@@ -2030,8 +2033,10 @@ __BLACKDOG_STYLES__
 </html>
 """
     html = (
-        template.replace("__BLACKDOG_TITLE__", title)
+        template.replace("__BLACKDOG_PAGE_TITLE__", f"{title} blackdog backlog")
+        .replace("__BLACKDOG_TITLE__", title)
         .replace("__BLACKDOG_STYLES__", stylesheet)
         .replace("__BLACKDOG_SNAPSHOT__", _snapshot_json(snapshot))
     )
     output_path.write_text(html, encoding="utf-8")
+    return html

@@ -611,6 +611,7 @@ class BlackdogCliTests(unittest.TestCase):
         paths = self.runtime_paths()
         self.assertTrue((self.root / "blackdog.toml").exists())
         self.assertTrue(paths.backlog_file.exists())
+        self.assertEqual(paths.html_file.name, "demo-backlog.html")
 
         run_cli(
             "add",
@@ -647,6 +648,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(len(payload["next_rows"]), 1)
         self.assertTrue(paths.html_file.exists())
+        self.assertTrue(paths.html_file.with_name("backlog-index.html").exists())
 
     def test_tune_command_creates_stable_self_tuning_task(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1613,7 +1615,6 @@ class BlackdogCliTests(unittest.TestCase):
             script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             script.chmod(0o755)
         skill_file = self.root / ".codex/skills/blackdog/SKILL.md"
-        skill_file.write_text("stale skill text\n", encoding="utf-8")
 
         payload = json.loads(
             subprocess.run(
@@ -1635,6 +1636,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         self.assertEqual(Path(payload["skill_file"]).resolve(), skill_file.resolve())
+        self.assertIn(str(skill_file.resolve()), [str(Path(path).resolve()) for path in payload["managed"]["updated"]])
         refreshed_text = skill_file.read_text(encoding="utf-8")
         self.assertIn("Use the project-local Blackdog backlog contract", refreshed_text)
         self.assertIn("./.VE/bin/blackdog", refreshed_text)
@@ -1642,11 +1644,13 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Control root:", refreshed_text)
         self.assertIn("@git-common", refreshed_text)
         self.assertIn("`make test`", refreshed_text)
+        self.assertIn("Run `./.VE/bin/blackdog refresh`", refreshed_text)
         self.assertIn("Before any repo edit you intend to keep", refreshed_text)
         self.assertIn("## Task Shaping", refreshed_text)
         self.assertIn("Default to one lane and one task", refreshed_text)
         self.assertIn("references/task-shaping.md", refreshed_text)
         self.assertIn("create-project", refreshed_text)
+        self.assertIn("update-repo", refreshed_text)
         self.assertIn("## Docs to Review", refreshed_text)
         self.assertIn("`AGENTS.md`", refreshed_text)
         self.assertIn("doc_routing_defaults", refreshed_text)
@@ -1657,6 +1661,85 @@ class BlackdogCliTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("estimated_elapsed_minutes", task_shaping_reference)
         self.assertIn("parallel time saved", task_shaping_reference)
+
+    def test_refresh_preserves_locally_modified_skill_scaffold(self) -> None:
+        run_cli("bootstrap", "--project-root", str(self.root), "--project-name", "Inbox Demo")
+        skill_file = self.root / ".codex/skills/blackdog/SKILL.md"
+        custom_text = skill_file.read_text(encoding="utf-8") + "\nLocal customization.\n"
+        skill_file.write_text(custom_text, encoding="utf-8")
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "refresh",
+                    "--project-root",
+                    str(self.root),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        candidate = skill_file.with_name("SKILL.md.blackdog-new")
+        self.assertEqual(skill_file.read_text(encoding="utf-8"), custom_text)
+        self.assertTrue(candidate.exists())
+        self.assertIn("Use the project-local Blackdog backlog contract", candidate.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [
+                {"path": str(Path(row["path"]).resolve()), "candidate": str(Path(row["candidate"]).resolve())}
+                for row in payload["managed"]["preserved_local"]
+            ],
+            [{"path": str(skill_file.resolve()), "candidate": str(candidate.resolve())}],
+        )
+
+    def test_update_repo_reinstalls_source_and_refreshes_target(self) -> None:
+        run_cli("bootstrap", "--project-root", str(self.root), "--project-name", "Update Demo")
+        ve_bin = self.root / ".VE" / "bin"
+        ve_bin.mkdir(parents=True, exist_ok=True)
+        python_bin = ve_bin / "python"
+        python_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        python_bin.chmod(0o755)
+        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
+            '"PYTHONPATH=src python3 -m unittest discover -s tests -p \'test_*.py\'"',
+            '"make test"',
+        )
+        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+
+        install_commands: list[list[str]] = []
+        real_run_command = scaffold_module._run_command
+
+        def fake_run_command(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None):
+            if len(command) >= 4 and command[1:4] == ["-m", "pip", "install"]:
+                install_commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return real_run_command(command, cwd=cwd, env=env)
+
+        stdout = io.StringIO()
+        with patch("blackdog.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
+            exit_code = run_cli(
+                "update-repo",
+                str(self.root),
+                "--blackdog-source",
+                str(ROOT),
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(len(install_commands), 1)
+        self.assertEqual(install_commands[0][-2:], ["-e", str(ROOT.resolve())])
+        self.assertEqual(Path(payload["blackdog_source"]).resolve(), ROOT.resolve())
+        self.assertEqual(Path(payload["venv_python"]).resolve(), python_bin.resolve())
+        self.assertIn(
+            str((self.root / ".codex/skills/blackdog/SKILL.md").resolve()),
+            [str(Path(path).resolve()) for path in payload["managed"]["updated"]],
+        )
+        self.assertEqual(Path(payload["html_file"]).name, "update-demo-backlog.html")
 
     def test_plan_summary_reports_epics_lanes_and_waves(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2502,7 +2585,8 @@ class BlackdogCliTests(unittest.TestCase):
 
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         html = paths.html_file.read_text(encoding="utf-8")
-        self.assertIn("Blackdog Backlog", html)
+        self.assertIn(">Demo<", html)
+        self.assertIn("blackdog backlog", html)
         self.assertIn('id="hero-panel"', html)
         self.assertIn('id="status-panel"', html)
         self.assertIn('id="queue-stats"', html)
@@ -2886,7 +2970,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn("fetch(", html)
         self.assertIn('id="blackdog-snapshot"', html)
         self.assertIn('id="hero-panel"', html)
-        self.assertIn("Blackdog Backlog", html)
+        self.assertIn(">Demo<", html)
+        self.assertIn("blackdog backlog", html)
         self.assertIn('id="status-panel"', html)
         self.assertIn('id="hero-meta-line"', html)
         self.assertIn('id="hero-reload-controls"', html)
@@ -4302,7 +4387,8 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertNotIn("Git head", updated_html)
         self.assertNotIn("Blackdog runtime", updated_html)
-        self.assertIn("Blackdog Backlog", updated_html)
+        self.assertIn(">Demo<", updated_html)
+        self.assertIn("blackdog backlog", updated_html)
         self.assertIn('id="hero-meta-line"', updated_html)
         self.assertIn('id="hero-reload-controls"', updated_html)
         self.assertIn('id="hero-links"', updated_html)

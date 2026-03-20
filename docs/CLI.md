@@ -10,6 +10,8 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 
 - `blackdog create-project --project-root PATH --project-name NAME`
 - `blackdog bootstrap --project-root PATH --project-name NAME`
+- `blackdog refresh [--project-root PATH]`
+- `blackdog update-repo PATH [--blackdog-source PATH]`
 - `blackdog init --project-root PATH --project-name NAME`
 - `blackdog validate`
 - `blackdog render`
@@ -20,7 +22,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
 - `blackdog worktree cleanup --id TASK|--path PATH`
 
-Use `blackdog create-project` when you want Blackdog to create a brand-new git repo, install itself into that repo's `.VE`, and bootstrap the local contract in one step. Use `blackdog bootstrap` for normal host-repo adoption into an existing repo. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
+Use `blackdog create-project` when you want Blackdog to create a brand-new git repo, install itself into that repo's `.VE`, and bootstrap the local contract in one step. Use `blackdog bootstrap` for normal host-repo adoption into an existing repo. Use `blackdog refresh` when the host repo already has Blackdog installed and you want to regenerate the branded board plus managed project-local skill files without overwriting locally modified managed files. Use `blackdog update-repo` from a Blackdog source checkout when you want to reinstall Blackdog into another repo's `.VE` and immediately run that same refresh flow. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
 
 ### Installation and host bootstrap
 
@@ -48,9 +50,27 @@ Bootstrap creates the project-local discovery files under:
 
 - `.codex/skills/blackdog/SKILL.md`
 - `.codex/skills/blackdog/agents/openai.yaml`
+- `.codex/skills/blackdog/.blackdog-managed.json`
 
 Codex surfaces the `blackdog` skill from the `agents/openai.yaml` file in the opened repository tree.
 If the repo was open before bootstrap, reopen the repo (or restart the Codex session) so discovery picks up the new files.
+
+After bootstrap, the default rendered board lives at `<control_dir>/<project-slug>-backlog.html`.
+Blackdog also keeps a compatibility copy at `<control_dir>/backlog-index.html` so older bookmarks and docs do not break immediately.
+
+When the installed Blackdog package changes, run:
+
+```bash
+blackdog refresh
+```
+
+`refresh` rewrites the managed project-local skill files when they still match the last generated version and preserves locally modified managed files by leaving them in place and writing `*.blackdog-new` sidecars beside them.
+
+From a Blackdog source checkout, you can push the latest source into another repo-local `.VE` and refresh that host repo in one step:
+
+```bash
+blackdog update-repo /path/to/repo
+```
 
 `blackdog worktree ...` is the implementation-work entrypoint. WTAM is the implementation model:
 
@@ -131,9 +151,9 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 
 `blackdog supervise report` is the operator metrics surface. It reads historical supervisor events/status/results and summarizes startup friction (launch pressure/failures), retry pressure (task re-run rate), output-shape consistency (expected artifact presence), and landing outcomes (landing failures and success). This report is read-only and intended for quick ergonomics diagnostics across the most recent runs.
 
-`blackdog snapshot` prints the canonical JSON contract embedded into the static `backlog-index.html` page. That payload drives the current board: the `Backlog Control` hero, `Status` counters (running, waiting, blocked, last sweep completed, completed today, completed all-time), the live `Execution Map`, and completed-task list. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights (`branch`, `commit`, `latest_run`, `time_since_last_check`, `time_since_last_update`, `total_time_on_sweep`, `total_time_on_backlog`), `content_updated_at` (derived from the latest snapshot event timestamp), the board-facing `last_checked_at` (derived from the latest supervisor check heartbeat), the raw `supervisor_last_checked_at` heartbeat when available, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, stdout-derived model-response excerpts, landed-commit metadata, open inbox messages, direct artifact links, focus-task summaries, and recent task-result summaries.
+`blackdog snapshot` prints the canonical JSON contract embedded into the static repo-branded backlog HTML page (by default `<project-slug>-backlog.html`, with a compatibility copy at `backlog-index.html`). That payload drives the current board: the project-branded hero, `Status` counters (running, waiting, blocked, last sweep completed, completed today, completed all-time), the live `Execution Map`, and completed-task list. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights (`branch`, `commit`, `latest_run`, `time_since_last_check`, `time_since_last_update`, `total_time_on_sweep`, `total_time_on_backlog`), `content_updated_at` (derived from the latest snapshot event timestamp), the board-facing `last_checked_at` (derived from the latest supervisor check heartbeat), the raw `supervisor_last_checked_at` heartbeat when available, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, stdout-derived model-response excerpts, landed-commit metadata, open inbox messages, direct artifact links, focus-task summaries, and recent task-result summaries.
 
-`blackdog render` writes the static `backlog-index.html` page under the configured control root. Blackdog CLI writes and active supervisor runs rerender that page as part of normal state changes, including supervisor exit after landed task-state updates. The page embeds the current snapshot JSON directly, renders a wider control/status top band, the live execution map, and a completed-task card list, keeps artifact navigation as plain links, and opens execution/history cards in the task reader. When a child run captured `stdout.log` and a landed commit, the reader also shows the inline model response plus a landed-commit link or message. Operators can still reload the file manually, and the hero header now includes an optional 30-second auto-reload toggle with a visible countdown.
+`blackdog render` writes the static repo-branded backlog HTML page under the configured control root and refreshes the compatibility `backlog-index.html` copy beside it. Blackdog CLI writes and active supervisor runs rerender that page as part of normal state changes, including supervisor exit after landed task-state updates. The page embeds the current snapshot JSON directly, renders a wider control/status top band, the live execution map, and a completed-task card list, keeps artifact navigation as plain links, and opens execution/history cards in the task reader. When a child run captured `stdout.log` and a landed commit, the reader also shows the inline model response plus a landed-commit link or message. Operators can still reload the file manually, and the hero header now includes an optional 30-second auto-reload toggle with a visible countdown.
 
 ### Structured results
 
@@ -189,4 +209,4 @@ before changing launch settings or child startup contract details.
 
 `blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/blackdog/`.
 
-`blackdog-skill refresh backlog` regenerates `SKILL.md` and `agents/openai.yaml` from the current `blackdog.toml` profile without rebuilding backlog/runtime files. Use it after changing validation commands, taxonomy, or other repo-local contract details that agents should see.
+`blackdog-skill refresh backlog` remains as a compatibility wrapper around the managed skill refresh flow. It regenerates the project-local skill files from the current `blackdog.toml` profile without rebuilding backlog/runtime files, preserves locally modified managed files by writing `*.blackdog-new` sidecars, and is now usually superseded by `blackdog refresh`.

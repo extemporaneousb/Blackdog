@@ -31,11 +31,13 @@ from .scaffold import (
     ScaffoldError,
     bootstrap_project,
     create_project,
+    refresh_project_scaffold,
     remove_named_backlog,
     render_project_html,
     reset_default_backlog,
     scaffold_named_backlog,
     scaffold_project,
+    update_project_repo,
 )
 from .store import (
     StoreError,
@@ -409,6 +411,22 @@ def cmd_create_project(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
+    return 0
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    report = refresh_project_scaffold(profile)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def cmd_update_repo(args: argparse.Namespace) -> int:
+    report = update_project_repo(
+        Path(args.project_root),
+        blackdog_source=Path(args.blackdog_source) if args.blackdog_source else None,
+    )
+    print(json.dumps(report, indent=2))
     return 0
 
 
@@ -967,6 +985,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_bootstrap.add_argument("--evidence-requirement", action="append", default=[])
     p_bootstrap.add_argument("--release-gate", action="append", default=[])
     p_bootstrap.set_defaults(func=cmd_bootstrap)
+
+    p_refresh = subparsers.add_parser(
+        "refresh",
+        help="Refresh the project-local Blackdog skill scaffold and branded HTML without overwriting locally modified managed files",
+    )
+    p_refresh.add_argument("--project-root", default=".")
+    p_refresh.set_defaults(func=cmd_refresh)
+
+    p_update_repo = subparsers.add_parser(
+        "update-repo",
+        help="Reinstall Blackdog into another repo's .VE and refresh that repo's project-local scaffold",
+    )
+    p_update_repo.add_argument("project_root")
+    p_update_repo.add_argument("--blackdog-source", default=None)
+    p_update_repo.set_defaults(func=cmd_update_repo)
 
     p_init = subparsers.add_parser("init", help="Initialize repo-local Blackdog files without generating a project skill")
     p_init.add_argument("--project-root", default=".")

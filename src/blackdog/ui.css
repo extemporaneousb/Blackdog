@@ -110,6 +110,18 @@ h3 {
   color: var(--muted);
 }
 
+.brand-lockup {
+  display: grid;
+  gap: 8px;
+}
+
+.brand-subtitle {
+  color: var(--accent);
+  font: 600 clamp(1rem, 1.5vw, 1.18rem)/1.05 "Iowan Old Style", "Baskerville", serif;
+  letter-spacing: 0.16em;
+  text-transform: lowercase;
+}
+
 .hero-controls {
   display: flex;
   flex-wrap: wrap;

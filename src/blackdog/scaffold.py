@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import hashlib
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+from typing import Any
 
-from .backlog import (
-    render_initial_backlog,
-    refresh_backlog_headers,
-)
+from .backlog import render_initial_backlog, refresh_backlog_headers
 from .config import GIT_COMMON_TOKEN, _git_common_dir, load_profile, named_backlog_paths, write_default_profile, Profile
 from .store import append_event, default_state, save_state
 from .ui import build_ui_snapshot, render_static_html
@@ -19,6 +19,10 @@ from .ui import build_ui_snapshot, render_static_html
 
 class ScaffoldError(RuntimeError):
     pass
+
+
+MANAGED_SKILL_MANIFEST = ".blackdog-managed.json"
+MANAGED_SKILL_PREVIEW_SUFFIX = ".blackdog-new"
 
 
 def _run_command(
@@ -294,14 +298,24 @@ def create_project(
 
 
 def refresh_project_skill(profile: Profile) -> Path:
-    return generate_project_skill(profile, force=True)
+    report = refresh_project_scaffold(profile, render_html=False)
+    return Path(report["skill_file"])
 
 
 def render_project_html(profile: Profile) -> Path:
     refresh_backlog_headers(profile)
     snapshot = build_ui_snapshot(profile)
-    render_static_html(snapshot, profile.paths.html_file)
+    rendered_html = render_static_html(snapshot, profile.paths.html_file)
+    for alias_path in legacy_html_aliases(profile):
+        alias_path.write_text(rendered_html, encoding="utf-8")
     return profile.paths.html_file
+
+
+def legacy_html_aliases(profile: Profile) -> list[Path]:
+    legacy_path = profile.paths.html_file.with_name("backlog-index.html")
+    if legacy_path.resolve() == profile.paths.html_file.resolve():
+        return []
+    return [legacy_path]
 
 
 def _preferred_cli_command(project_root: Path, executable: str) -> str:
@@ -390,7 +404,45 @@ If consolidation repeatedly produces tasks that are too large, split later at th
 """
 
 
-def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
+def _blackdog_managed_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _managed_skill_manifest_path(skill_dir: Path) -> Path:
+    return skill_dir / MANAGED_SKILL_MANIFEST
+
+
+def _load_managed_skill_manifest(skill_dir: Path) -> dict[str, dict[str, str]]:
+    manifest_path = _managed_skill_manifest_path(skill_dir)
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    files = payload.get("files")
+    if not isinstance(files, dict):
+        return {}
+    manifest: dict[str, dict[str, str]] = {}
+    for relative_path, row in files.items():
+        if not isinstance(relative_path, str) or not isinstance(row, dict):
+            continue
+        sha256 = row.get("sha256")
+        if isinstance(sha256, str) and sha256:
+            manifest[relative_path] = {"sha256": sha256}
+    return manifest
+
+
+def _save_managed_skill_manifest(skill_dir: Path, files: dict[str, dict[str, str]]) -> Path:
+    manifest_path = _managed_skill_manifest_path(skill_dir)
+    manifest_path.write_text(
+        json.dumps({"schema_version": 1, "files": files}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def _project_skill_bundle(profile: Profile) -> dict[Path, str]:
     skill_dir = profile.paths.skill_dir
     agents_dir = skill_dir / "agents"
     references_dir = skill_dir / "references"
@@ -399,8 +451,6 @@ def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
     skill_file = skill_dir / "SKILL.md"
     agent_file = agents_dir / "openai.yaml"
     task_shaping_reference_file = references_dir / "task-shaping.md"
-    if skill_file.exists() and not force:
-        raise ScaffoldError(f"Refusing to overwrite {skill_file}; pass --force to replace it")
     skill_name = "blackdog"
     display_name = "Blackdog"
     cli_command = _preferred_cli_command(profile.paths.project_root, "blackdog")
@@ -469,6 +519,12 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 - `create-project` creates the target directory, initializes git, bootstraps a repo-local `.VE`, installs Blackdog from the current checkout, and runs bootstrap so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/blackdog/`.
 - Use `{cli_command} bootstrap` instead when the target repo already exists or already has its own Python environment prepared.
 
+## Repo Refresh
+
+- Run `{cli_command} refresh` after updating the installed Blackdog package when you want to regenerate the project-local skill files and repo-branded HTML board.
+- `refresh` keeps locally modified managed files in place and writes `*.blackdog-new` sidecars with the regenerated version when a managed file has diverged.
+- From a Blackdog source checkout, run `blackdog update-repo /abs/path/to/host-repo` to reinstall Blackdog into that repo's `.VE` and then run the same refresh flow.
+
 ## Standard Flow
 
 1. Run `{cli_command} validate`.
@@ -518,7 +574,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `{control_root}`.
-- Regenerate this skill after profile changes with `{skill_command} refresh backlog --project-root .`.
+- Regenerate this skill after profile changes with `{cli_command} refresh` or `{skill_command} refresh backlog --project-root .`.
 
 ## Repo Defaults
 
@@ -533,7 +589,115 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
   short_description: "Project-local backlog control via Blackdog"
   default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to shape this request into measurable, consolidated backlog work and then review, claim, supervise, or report it through the repo CLI."
 """
-    skill_file.write_text(skill_text, encoding="utf-8")
-    agent_file.write_text(agent_text, encoding="utf-8")
-    task_shaping_reference_file.write_text(_task_shaping_reference_text(), encoding="utf-8")
+    return {
+        skill_file: skill_text,
+        agent_file: agent_text,
+        task_shaping_reference_file: _task_shaping_reference_text(),
+    }
+
+
+def _write_managed_skill_bundle(
+    skill_dir: Path,
+    bundle: dict[Path, str],
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    previous_manifest = _load_managed_skill_manifest(skill_dir)
+    next_manifest: dict[str, dict[str, str]] = {}
+    report: dict[str, Any] = {
+        "created": [],
+        "updated": [],
+        "unchanged": [],
+        "preserved_local": [],
+    }
+    for path in sorted(bundle, key=lambda item: str(item)):
+        content = bundle[path]
+        relative_path = path.relative_to(skill_dir).as_posix()
+        preview_path = path.with_name(path.name + MANAGED_SKILL_PREVIEW_SUFFIX)
+        existing_text: str | None = None
+        if path.exists():
+            try:
+                existing_text = path.read_text(encoding="utf-8")
+            except OSError:
+                existing_text = None
+        new_hash = _blackdog_managed_hash(content)
+        if force:
+            path.write_text(content, encoding="utf-8")
+            preview_path.unlink(missing_ok=True)
+            if existing_text is None:
+                report["created"].append(str(path))
+            elif existing_text == content:
+                report["unchanged"].append(str(path))
+            else:
+                report["updated"].append(str(path))
+            next_manifest[relative_path] = {"sha256": new_hash}
+            continue
+        if existing_text is None:
+            path.write_text(content, encoding="utf-8")
+            preview_path.unlink(missing_ok=True)
+            report["created"].append(str(path))
+            next_manifest[relative_path] = {"sha256": new_hash}
+            continue
+        if existing_text == content:
+            preview_path.unlink(missing_ok=True)
+            report["unchanged"].append(str(path))
+            next_manifest[relative_path] = {"sha256": new_hash}
+            continue
+        existing_hash = _blackdog_managed_hash(existing_text)
+        managed_row = previous_manifest.get(relative_path)
+        if managed_row is not None and managed_row.get("sha256") == existing_hash:
+            path.write_text(content, encoding="utf-8")
+            preview_path.unlink(missing_ok=True)
+            report["updated"].append(str(path))
+            next_manifest[relative_path] = {"sha256": new_hash}
+            continue
+        preview_path.write_text(content, encoding="utf-8")
+        report["preserved_local"].append({"path": str(path), "candidate": str(preview_path)})
+        if managed_row is not None:
+            next_manifest[relative_path] = managed_row
+    manifest_path = _save_managed_skill_manifest(skill_dir, next_manifest)
+    report["manifest_file"] = str(manifest_path)
+    return report
+
+
+def generate_project_skill(profile: Profile, *, force: bool = False) -> Path:
+    bundle = _project_skill_bundle(profile)
+    skill_file = profile.paths.skill_dir / "SKILL.md"
+    if skill_file.exists() and not force:
+        raise ScaffoldError(f"Refusing to overwrite {skill_file}; pass --force to replace it")
+    _write_managed_skill_bundle(profile.paths.skill_dir, bundle, force=True)
     return skill_file
+
+
+def refresh_project_scaffold(profile: Profile, *, render_html: bool = True) -> dict[str, Any]:
+    _ensure_baseline_agents_file(profile.paths.project_root)
+    bundle = _project_skill_bundle(profile)
+    managed = _write_managed_skill_bundle(profile.paths.skill_dir, bundle, force=False)
+    html_file = render_project_html(profile) if render_html else profile.paths.html_file
+    return {
+        "project_root": str(profile.paths.project_root),
+        "profile": str(profile.paths.profile_file),
+        "skill_file": str(profile.paths.skill_dir / "SKILL.md"),
+        "html_file": str(html_file),
+        "legacy_html_files": [str(path) for path in legacy_html_aliases(profile)],
+        "managed": managed,
+    }
+
+
+def update_project_repo(project_root: Path, *, blackdog_source: Path | None = None) -> dict[str, Any]:
+    root = project_root.resolve()
+    venv_python = root / ".VE" / "bin" / "python"
+    if not venv_python.is_file():
+        raise ScaffoldError(f"Target repo is missing a repo-local virtualenv: {venv_python}")
+    source_root = blackdog_source.resolve() if blackdog_source is not None else _default_blackdog_source()
+    if not (source_root / "pyproject.toml").is_file():
+        raise ScaffoldError(f"Blackdog source path does not look like a project root: {source_root}")
+    _run_command([str(venv_python), "-m", "pip", "install", "-e", str(source_root)], cwd=root)
+    profile_file = root / "blackdog.toml"
+    if not profile_file.exists():
+        raise ScaffoldError(f"Target repo is missing a Blackdog profile: {profile_file}")
+    profile = load_profile(root)
+    report = refresh_project_scaffold(profile)
+    report["venv_python"] = str(venv_python)
+    report["blackdog_source"] = str(source_root)
+    return report
