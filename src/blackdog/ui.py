@@ -4,7 +4,7 @@ from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import html as html_lib
 import json
 import os
@@ -23,7 +23,7 @@ from .store import load_events, load_inbox, load_state, load_task_results, now_i
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 6
+UI_SNAPSHOT_SCHEMA_VERSION = 7
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
@@ -141,6 +141,152 @@ def _read_artifact_text(path: Path | None, *, char_limit: int = EMBEDDED_RESPONS
     if truncated:
         text = text[:char_limit].rstrip() + "\n\n[truncated in reader; open Stdout for the full response]"
     return text, truncated
+
+
+def _safe_markdown_href(raw: str) -> str | None:
+    href = str(raw or "").strip()
+    if not href:
+        return None
+    parsed = urlsplit(href)
+    scheme = parsed.scheme.lower()
+    if scheme and scheme not in {"http", "https", "mailto"}:
+        return None
+    if href.lower().startswith(("javascript:", "data:", "vbscript:")):
+        return None
+    return href
+
+
+def _render_markdown_inline(text: str) -> str:
+    tokens: dict[str, str] = {}
+
+    def stash(html: str) -> str:
+        token = f"@@BLACKDOGTOKEN{len(tokens)}@@"
+        tokens[token] = html
+        return token
+
+    def replace_code(match: re.Match[str]) -> str:
+        return stash(f"<code>{html_lib.escape(match.group(1))}</code>")
+
+    def replace_link(match: re.Match[str]) -> str:
+        label = _render_markdown_inline(match.group(1))
+        raw_href = match.group(2).strip().split()[0]
+        href = _safe_markdown_href(raw_href)
+        if href is None:
+            return match.group(0)
+        return stash(
+            f'<a class="text-link" href="{html_lib.escape(href, quote=True)}">{label}</a>'
+        )
+
+    def replace_strong(match: re.Match[str]) -> str:
+        return stash(f"<strong>{_render_markdown_inline(match.group(2))}</strong>")
+
+    def replace_em(match: re.Match[str]) -> str:
+        return stash(f"<em>{_render_markdown_inline(match.group(2))}</em>")
+
+    rendered = re.sub(r"`([^`\n]+)`", replace_code, text)
+    rendered = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, rendered)
+    rendered = re.sub(r"(\*\*|__)(.+?)\1", replace_strong, rendered)
+    rendered = re.sub(r"(\*|_)(.+?)\1", replace_em, rendered)
+    rendered = html_lib.escape(rendered)
+    for token, html in tokens.items():
+        rendered = rendered.replace(token, html)
+    return rendered
+
+
+def _render_markdown_html(text: str | None, *, wrap: bool = True) -> str | None:
+    if text is None:
+        return None
+    normalized = str(text).replace("\r\n", "\n").strip()
+    if not normalized:
+        return None
+
+    blocks: list[str] = []
+    lines = normalized.split("\n")
+    paragraph: list[str] = []
+    index = 0
+
+    def flush_paragraph() -> None:
+        if not paragraph:
+            return
+        body = "<br>".join(_render_markdown_inline(line) for line in paragraph)
+        blocks.append(f"<p>{body}</p>")
+        paragraph.clear()
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if line.startswith("```"):
+            flush_paragraph()
+            fence_language = line[3:].strip()
+            code_lines: list[str] = []
+            index += 1
+            while index < len(lines) and not lines[index].startswith("```"):
+                code_lines.append(lines[index])
+                index += 1
+            code = html_lib.escape("\n".join(code_lines))
+            language_attr = (
+                f' data-language="{html_lib.escape(fence_language, quote=True)}"' if fence_language else ""
+            )
+            blocks.append(
+                f'<pre class="detail-pre detail-pre-code"{language_attr}><code>{code}</code></pre>'
+            )
+            if index < len(lines):
+                index += 1
+            continue
+        if not stripped:
+            flush_paragraph()
+            index += 1
+            continue
+        heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+        if heading_match is not None:
+            flush_paragraph()
+            level = len(heading_match.group(1))
+            blocks.append(f"<h{level}>{_render_markdown_inline(heading_match.group(2).strip())}</h{level}>")
+            index += 1
+            continue
+        if re.match(r"^[-*+]\s+.+$", stripped):
+            flush_paragraph()
+            items: list[str] = []
+            while index < len(lines):
+                current = lines[index].strip()
+                match = re.match(r"^[-*+]\s+(.+)$", current)
+                if match is None:
+                    break
+                items.append(f"<li>{_render_markdown_inline(match.group(1).strip())}</li>")
+                index += 1
+            blocks.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        if re.match(r"^\d+\.\s+.+$", stripped):
+            flush_paragraph()
+            items = []
+            while index < len(lines):
+                current = lines[index].strip()
+                match = re.match(r"^\d+\.\s+(.+)$", current)
+                if match is None:
+                    break
+                items.append(f"<li>{_render_markdown_inline(match.group(1).strip())}</li>")
+                index += 1
+            blocks.append("<ol>" + "".join(items) + "</ol>")
+            continue
+        if stripped.startswith(">"):
+            flush_paragraph()
+            quote_lines: list[str] = []
+            while index < len(lines) and lines[index].strip().startswith(">"):
+                quote_lines.append(re.sub(r"^\s*>\s?", "", lines[index]).rstrip())
+                index += 1
+            quote_html = _render_markdown_html("\n".join(quote_lines), wrap=False) or ""
+            blocks.append(f"<blockquote>{quote_html}</blockquote>")
+            continue
+        paragraph.append(stripped)
+        index += 1
+
+    flush_paragraph()
+    body = "".join(blocks)
+    if not body:
+        return None
+    if not wrap:
+        return body
+    return f'<div class="detail-markdown">{body}</div>'
 
 
 def _find_run_dir(paths: ProjectPaths, run_id: str) -> Path | None:
@@ -637,22 +783,30 @@ def _build_hero_highlights(
     contract: dict[str, Any],
     headers: dict[str, Any],
     tasks: list[dict[str, Any]],
-    events: list[dict[str, Any]],
-    content_updated_at: str | None,
-    last_checked_at: str | None,
-    generated_at: str,
 ) -> dict[str, str]:
-    generated_time = _parse_iso(generated_at) or datetime.now().astimezone()
-    latest_sweep_at = _latest_event_at(events, event_type="supervisor_run_sweep") or _latest_event_at(events) or content_updated_at or generated_at
-    backlog_started_at = _latest_event_at(events, prefer_oldest=True) or content_updated_at or generated_at
+    total_task_seconds = sum(int(task.get("total_compute_seconds") or 0) for task in tasks)
+    active_task_seconds = sum(int(task.get("active_compute_seconds") or 0) for task in tasks)
+    completed_task_seconds = sum(
+        int(task.get("total_compute_seconds") or 0)
+        for task in tasks
+        if str(task.get("status") or "") == "done"
+    )
+    completed_task_samples = [
+        int(task.get("total_compute_seconds") or 0)
+        for task in tasks
+        if str(task.get("status") or "") == "done" and int(task.get("total_compute_seconds") or 0) > 0
+    ]
+    average_completed_seconds = (
+        round(sum(completed_task_samples) / len(completed_task_samples)) if completed_task_samples else None
+    )
     return {
         "branch": _branch_summary(contract, tasks) or "",
         "commit": _short_commit(headers.get("Target commit")) or "",
         "latest_run": _latest_run_summary(tasks),
-        "time_since_last_check": _duration_label(last_checked_at, generated_time),
-        "time_since_last_update": _duration_label(content_updated_at, generated_time),
-        "total_time_on_sweep": _duration_label(latest_sweep_at, generated_time),
-        "total_time_on_backlog": _duration_label(backlog_started_at, generated_time),
+        "active_task_time": _format_duration(active_task_seconds) or "0s",
+        "completed_task_time": _format_duration(completed_task_seconds) or "0s",
+        "average_completed_task_time": _format_duration(average_completed_seconds) or "0s",
+        "total_task_time": _format_duration(total_task_seconds) or "0s",
     }
 
 
@@ -1150,6 +1304,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "run_elapsed_seconds": run_info.get("elapsed_seconds"),
             "run_elapsed_label": run_info.get("elapsed_label"),
             "model_response": run_info.get("model_response"),
+            "model_response_html": _render_markdown_html(run_info.get("model_response")),
             "model_response_truncated": bool(run_info.get("model_response_truncated")),
             "landed_commit": run_info.get("landed_commit"),
             "landed_commit_short": run_info.get("landed_commit_short"),
@@ -1218,10 +1373,6 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             contract=workspace_contract,
             headers=headers,
             tasks=focus_tasks,
-            events=events,
-            content_updated_at=content_updated_at,
-            last_checked_at=last_checked_at,
-            generated_at=generated_at,
         ),
         "last_activity": last_activity,
         "counts": summary["counts"],
@@ -1716,10 +1867,10 @@ __BLACKDOG_STYLES__
       const metaItems = [
         renderMetaItem("Active Branch", heroHighlights.branch || headers["Target branch"] || "", { mono: true }),
         renderMetaItem("Commit", heroHighlights.commit || headers["Target commit"] || "", { mono: true }),
-        renderMetaItem("Time since last check", heroHighlights.time_since_last_check || "0s"),
-        renderMetaItem("Time since last update", heroHighlights.time_since_last_update || "0s"),
-        renderMetaItem("Total time on sweep", heroHighlights.total_time_on_sweep || "0s"),
-        renderMetaItem("Total time on backlog", heroHighlights.total_time_on_backlog || "0s"),
+        renderMetaItem("Active task time", heroHighlights.active_task_time || "0s"),
+        renderMetaItem("Completed task time", heroHighlights.completed_task_time || "0s"),
+        renderMetaItem("Average completed task", heroHighlights.average_completed_task_time || "0s"),
+        renderMetaItem("Total task time", heroHighlights.total_task_time || "0s"),
       ].filter(Boolean);
       document.getElementById("repo-root-badge").innerHTML = repoRoot
         ? `
@@ -1996,7 +2147,7 @@ __BLACKDOG_STYLES__
         detailBlock("Sequence", detailList(sequenceRows)),
         detailBlock("Safe First Slice", paragraphBlock(task.safe_first_slice)),
         detailBlock("Runtime", detailList(runtimeRows)),
-        detailBlock("Model Response", preBlock(task.model_response), { wide: true }),
+        detailBlock("Model Response", task.model_response_html || preBlock(task.model_response), { wide: true }),
         detailBlock("Landed Commit", commitBlock(task), { wide: true }),
         detailBlock("Why", paragraphBlock(task.why)),
         detailBlock("Evidence", paragraphBlock(task.evidence)),

@@ -11,7 +11,7 @@ import subprocess
 import textwrap
 
 from .config import Profile, ProjectPaths, slugify
-from .store import atomic_write_text, claim_is_active, load_state, locked_path, save_state
+from .store import atomic_write_text, claim_is_active, load_events, load_state, load_task_results, locked_path, save_state
 
 
 TASK_BLOCK_RE = re.compile(r"```json backlog-task\n(.*?)\n```", re.S)
@@ -949,6 +949,368 @@ def refresh_backlog_headers(profile: Profile) -> None:
             atomic_write_text(profile.paths.backlog_file, updated)
 
 
+def _parse_runtime_iso(value: Any) -> datetime | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _rounded_minutes(seconds: int | None) -> int | None:
+    if seconds is None:
+        return None
+    return max(0, int(round(seconds / 60.0)))
+
+
+def _task_runtime_row(task_id: str) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "claim_count": 0,
+        "claim_actors": set(),
+        "result_count": 0,
+        "total_task_seconds": 0,
+        "active_task_seconds": None,
+        "worktree_keys": set(),
+        "run_attempt_keys": set(),
+        "landing_failures": 0,
+        "estimated_active_minutes": None,
+        "estimated_elapsed_minutes": None,
+        "latest_result": None,
+        "latest_result_has_actual_task_telemetry": False,
+    }
+
+
+def _runtime_int(value: Any) -> int | None:
+    try:
+        return _coerce_optional_int(value, field="runtime")
+    except BacklogError:
+        return None
+
+
+def _result_has_actual_task_telemetry(row: dict[str, Any]) -> bool:
+    telemetry = row.get("task_shaping_telemetry") if isinstance(row.get("task_shaping_telemetry"), dict) else {}
+    for key in ("actual_task_minutes", "actual_task_seconds", "actual_active_minutes", "actual_elapsed_minutes"):
+        if _runtime_int(telemetry.get(key)) is not None:
+            return True
+    return False
+
+
+def _runtime_target_branch(
+    *,
+    task_id: str,
+    events: list[dict[str, Any]],
+    fallback: str | None,
+) -> str | None:
+    for event in sorted(events, key=lambda row: str(row.get("at") or ""), reverse=True):
+        if str(event.get("task_id") or "") != task_id:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        target_branch = str(payload.get("target_branch") or "").strip()
+        if target_branch:
+            return target_branch
+    return fallback
+
+
+def _runtime_changed_paths(cwd: Path, *, target_branch: str | None) -> list[str]:
+    commands: list[tuple[str, ...]] = [
+        ("diff", "--name-only"),
+        ("diff", "--name-only", "--cached"),
+        ("ls-files", "--others", "--exclude-standard"),
+    ]
+    if target_branch:
+        commands.append(("diff", "--name-only", f"{target_branch}...HEAD"))
+    changed: list[str] = []
+    for args in commands:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            continue
+        for line in completed.stdout.splitlines():
+            item = line.strip()
+            if item:
+                changed.append(item)
+    return _unique_ordered(changed)
+
+
+def _task_runtime_rows(
+    *,
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    events: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    open_claims: dict[str, datetime] = {}
+    latest_results: dict[str, dict[str, Any]] = {}
+
+    for row in results:
+        task_id = str(row.get("task_id") or "")
+        if not task_id:
+            continue
+        current = rows.setdefault(task_id, _task_runtime_row(task_id))
+        current["result_count"] += 1
+        if task_id not in latest_results:
+            latest_results[task_id] = row
+            current["latest_result"] = row
+            current["latest_result_has_actual_task_telemetry"] = _result_has_actual_task_telemetry(row)
+
+    for event in sorted(events, key=lambda row: str(row.get("at") or "")):
+        task_id = str(event.get("task_id") or "")
+        if not task_id:
+            continue
+        current = rows.setdefault(task_id, _task_runtime_row(task_id))
+        event_type = str(event.get("type") or "")
+        event_at = _parse_runtime_iso(event.get("at"))
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event_type == "claim" and event_at is not None:
+            current["claim_count"] += 1
+            actor = str(event.get("actor") or "").strip()
+            if actor:
+                current["claim_actors"].add(actor)
+            open_claims[task_id] = event_at
+        elif event_type in {"release", "complete"}:
+            started_at = open_claims.pop(task_id, None)
+            if started_at is not None and event_at is not None:
+                current["total_task_seconds"] += max(0, int((event_at - started_at).total_seconds()))
+        if event_type == "worktree_start":
+            branch = str(payload.get("branch") or "").strip()
+            worktree_path = str(payload.get("worktree_path") or "").strip()
+            if branch:
+                current["worktree_keys"].add(branch)
+            elif worktree_path:
+                current["worktree_keys"].add(worktree_path)
+        elif event_type in {"child_launch", "child_launch_failed"}:
+            run_id = str(payload.get("run_id") or event.get("event_id") or "").strip()
+            if run_id:
+                current["run_attempt_keys"].add(run_id)
+            workspace = str(payload.get("workspace") or "").strip()
+            branch = str(payload.get("branch") or "").strip()
+            if branch:
+                current["worktree_keys"].add(branch)
+            elif workspace:
+                current["worktree_keys"].add(workspace)
+        elif event_type in {"child_finish", "worktree_land"} and payload.get("land_error"):
+            current["landing_failures"] += 1
+
+    for task_id, entry in state.get("task_claims", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        current = rows.setdefault(str(task_id), _task_runtime_row(str(task_id)))
+        status = str(entry.get("status") or "")
+        claimed_at = _parse_runtime_iso(entry.get("claimed_at"))
+        if status == "claimed" and claimed_at is not None:
+            current["active_task_seconds"] = max(0, int((datetime.now().astimezone() - claimed_at).total_seconds()))
+
+    for task in snapshot.tasks.values():
+        current = rows.setdefault(task.id, _task_runtime_row(task.id))
+        latest_result = latest_results.get(task.id)
+        latest_telemetry = (
+            latest_result.get("task_shaping_telemetry")
+            if isinstance((latest_result or {}).get("task_shaping_telemetry"), dict)
+            else {}
+        )
+        task_shaping = task.payload.get("task_shaping") if isinstance(task.payload.get("task_shaping"), dict) else {}
+        current["estimated_active_minutes"] = _runtime_int(
+            latest_telemetry.get("estimated_active_minutes")
+            if latest_telemetry.get("estimated_active_minutes") is not None
+            else task_shaping.get("estimated_active_minutes")
+        )
+        current["estimated_elapsed_minutes"] = _runtime_int(
+            latest_telemetry.get("estimated_elapsed_minutes")
+            if latest_telemetry.get("estimated_elapsed_minutes") is not None
+            else task_shaping.get("estimated_elapsed_minutes")
+        )
+        total_task_seconds = int(current.get("total_task_seconds") or 0)
+        active_task_seconds = (
+            int(current["active_task_seconds"]) if current.get("active_task_seconds") is not None else None
+        )
+        if active_task_seconds is not None:
+            total_task_seconds += active_task_seconds
+        current["total_task_seconds"] = total_task_seconds
+        current["actual_task_seconds"] = total_task_seconds if current["claim_count"] or total_task_seconds else None
+        current["actual_task_minutes"] = _rounded_minutes(current["actual_task_seconds"])
+        current["actual_reclaim_count"] = max(0, int(current["claim_count"]) - 1)
+        current["actual_worktrees_used"] = len(current["worktree_keys"]) or (1 if current["claim_count"] else 0)
+        current["actual_retry_count"] = max(0, len(current["run_attempt_keys"]) - 1)
+        current["actual_handoffs"] = max(0, len(current["claim_actors"]) - 1)
+    return rows
+
+
+def enrich_result_task_shaping_telemetry(
+    profile: Profile,
+    *,
+    task_id: str,
+    task_shaping_telemetry: dict[str, Any] | None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    events = load_events(profile.paths)
+    results = load_task_results(profile.paths)
+    runtime_rows = _task_runtime_rows(snapshot=snapshot, state=state, events=events, results=results)
+    runtime = runtime_rows.get(task_id, _task_runtime_row(task_id))
+    task = snapshot.tasks.get(task_id)
+    task_shaping = task.payload.get("task_shaping") if task and isinstance(task.payload.get("task_shaping"), dict) else {}
+    merged = dict(task_shaping_telemetry or {})
+
+    for key in (
+        "estimated_elapsed_minutes",
+        "estimated_active_minutes",
+        "estimated_touched_paths",
+        "estimated_validation_minutes",
+        "estimated_worktrees",
+        "estimated_handoffs",
+        "parallelizable_groups",
+    ):
+        if key not in merged and task_shaping.get(key) is not None:
+            merged[key] = task_shaping.get(key)
+
+    if runtime.get("actual_task_seconds") is not None:
+        merged.setdefault("actual_task_seconds", runtime["actual_task_seconds"])
+        merged.setdefault("actual_task_minutes", runtime["actual_task_minutes"])
+        merged.setdefault("actual_active_minutes", runtime["actual_task_minutes"])
+    merged.setdefault("claim_count", runtime.get("claim_count", 0))
+    merged.setdefault("actual_reclaim_count", runtime.get("actual_reclaim_count", 0))
+    merged.setdefault("actual_worktrees_used", runtime.get("actual_worktrees_used", 0))
+    merged.setdefault("actual_retry_count", runtime.get("actual_retry_count", 0))
+    merged.setdefault("actual_handoffs", runtime.get("actual_handoffs", 0))
+    merged.setdefault("actual_landing_failures", runtime.get("landing_failures", 0))
+
+    if cwd is not None:
+        target_branch = _runtime_target_branch(
+            task_id=task_id,
+            events=events,
+            fallback=snapshot.headers.get("Target branch"),
+        )
+        changed_paths = _runtime_changed_paths(cwd, target_branch=target_branch)
+        if changed_paths:
+            merged.setdefault("changed_paths", changed_paths)
+            merged.setdefault("actual_touched_paths", changed_paths)
+            merged.setdefault("actual_touched_path_count", len(changed_paths))
+
+    return merged
+
+
+def build_tune_analysis(profile: Profile) -> dict[str, Any]:
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    events = load_events(profile.paths)
+    results = load_task_results(profile.paths)
+    runtime_rows = _task_runtime_rows(snapshot=snapshot, state=state, events=events, results=results)
+
+    result_files = len(results)
+    tasks_with_recorded_compute = sum(1 for row in runtime_rows.values() if row.get("actual_task_seconds") is not None)
+    completed_tasks_with_recorded_compute = sum(
+        1
+        for task_id, row in runtime_rows.items()
+        if row.get("actual_task_seconds") is not None and task_done(task_id, state)
+    )
+    results_with_actual_task_telemetry = sum(1 for row in results if _result_has_actual_task_telemetry(row))
+    total_task_minutes = sum(int(row.get("actual_task_minutes") or 0) for row in runtime_rows.values())
+    completed_task_minutes = [
+        int(row.get("actual_task_minutes") or 0)
+        for task_id, row in runtime_rows.items()
+        if row.get("actual_task_minutes") is not None and task_done(task_id, state)
+    ]
+    average_completed_task_minutes = (
+        round(sum(completed_task_minutes) / len(completed_task_minutes)) if completed_task_minutes else None
+    )
+
+    sample_rows: list[dict[str, Any]] = []
+    for task in snapshot.tasks.values():
+        runtime = runtime_rows.get(task.id)
+        if runtime is None:
+            continue
+        actual_minutes = runtime.get("actual_task_minutes")
+        estimate_minutes = runtime.get("estimated_active_minutes")
+        if estimate_minutes is None:
+            estimate_minutes = runtime.get("estimated_elapsed_minutes")
+        if actual_minutes is None or estimate_minutes is None:
+            continue
+        delta_minutes = int(actual_minutes) - int(estimate_minutes)
+        sample_rows.append(
+            {
+                "task_id": task.id,
+                "title": task.title,
+                "estimate_minutes": int(estimate_minutes),
+                "actual_minutes": int(actual_minutes),
+                "delta_minutes": delta_minutes,
+            }
+        )
+
+    mean_absolute_error = (
+        round(sum(abs(row["delta_minutes"]) for row in sample_rows) / len(sample_rows), 2) if sample_rows else None
+    )
+    underestimated_tasks = sum(1 for row in sample_rows if row["delta_minutes"] > 0)
+    overestimated_tasks = sum(1 for row in sample_rows if row["delta_minutes"] < 0)
+    retry_total = sum(int(row.get("actual_retry_count") or 0) for row in runtime_rows.values())
+    landing_failures = sum(int(row.get("landing_failures") or 0) for row in runtime_rows.values())
+    coverage_gaps: list[str] = []
+    if tasks_with_recorded_compute and len(sample_rows) < max(5, tasks_with_recorded_compute // 4):
+        coverage_gaps.append("Most completed tasks still lack both an estimate snapshot and a comparable actual task-time sample.")
+    if result_files and results_with_actual_task_telemetry < max(5, result_files // 4):
+        coverage_gaps.append("Most structured results still lack explicit actual task-time telemetry fields.")
+
+    enough_data = bool(tasks_with_recorded_compute or retry_total or landing_failures)
+    if not enough_data:
+        recommendation = {
+            "focus": "collect_task_time_history",
+            "summary": "Collect claim-derived task-time history before attempting backlog tuning.",
+        }
+    elif coverage_gaps:
+        recommendation = {
+            "focus": "task_shaping_coverage",
+            "summary": "Increase estimate and actual task-time coverage so tune can compare more completed work with the same contract.",
+        }
+    elif mean_absolute_error is not None and mean_absolute_error >= 10:
+        recommendation = {
+            "focus": "task_time_calibration",
+            "summary": "Recorded task time is diverging from stored estimates; recalibrate active-minute defaults against the task history.",
+        }
+    elif landing_failures:
+        recommendation = {
+            "focus": "landing_failures",
+            "summary": "Tune the WTAM flow around repeated landing failures before expanding more parallel work.",
+        }
+    elif retry_total:
+        recommendation = {
+            "focus": "retry_pressure",
+            "summary": "Tune task boundaries and queue sequencing to reduce repeat attempts on the same task ids.",
+        }
+    else:
+        recommendation = {
+            "focus": "backlog_health",
+            "summary": "Task-time history is stable enough to review for the next smaller calibration win.",
+        }
+
+    return {
+        "enough_data": enough_data,
+        "result_files": result_files,
+        "tasks_with_recorded_compute": tasks_with_recorded_compute,
+        "completed_tasks_with_recorded_compute": completed_tasks_with_recorded_compute,
+        "results_with_actual_task_telemetry": results_with_actual_task_telemetry,
+        "estimated_time_samples": len(sample_rows),
+        "total_task_minutes": total_task_minutes,
+        "average_completed_task_minutes": average_completed_task_minutes,
+        "timing_mean_absolute_error_minutes": mean_absolute_error,
+        "underestimated_tasks": underestimated_tasks,
+        "overestimated_tasks": overestimated_tasks,
+        "retry_total": retry_total,
+        "landing_failures": landing_failures,
+        "coverage_gaps": coverage_gaps,
+        "recommendation": recommendation,
+        "top_timing_outliers": sorted(sample_rows, key=lambda row: abs(row["delta_minutes"]), reverse=True)[:3],
+    }
+
+
 def _unique_ordered(items: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -962,6 +1324,7 @@ def _unique_ordered(items: list[str]) -> list[str]:
 
 
 def _tune_task_payload(profile: Profile) -> dict[str, Any]:
+    analysis = build_tune_analysis(profile)
     paths = _unique_ordered(
         [
             str(profile.paths.backlog_file),
@@ -987,6 +1350,32 @@ def _tune_task_payload(profile: Profile) -> dict[str, Any]:
             *profile.doc_routing_defaults,
         ]
     )
+    evidence_bits = [
+        f"{analysis['tasks_with_recorded_compute']} tasks with recorded task time",
+        f"{analysis['estimated_time_samples']} estimate-vs-actual timing samples",
+        f"{analysis['retry_total']} retries",
+        f"{analysis['landing_failures']} landing failures",
+        f"{analysis['results_with_actual_task_telemetry']}/{analysis['result_files']} results with explicit actual telemetry",
+    ]
+    safe_first_slice = [
+        (
+            "1. Review the recorded runtime history for "
+            f"{analysis['tasks_with_recorded_compute']} task(s) with task-time data "
+            f"and {analysis['estimated_time_samples']} comparable estimate samples."
+        ),
+    ]
+    if analysis["coverage_gaps"]:
+        safe_first_slice.append(
+            "2. Confirm the current coverage gaps and make sure new result rows preserve both estimate snapshots and actual task time."
+        )
+    else:
+        safe_first_slice.append(
+            "2. Compare recorded task time against the current estimate contract and identify the largest recurrent mismatch."
+        )
+    safe_first_slice.append(
+        "3. Draft one concrete tuning task focused on "
+        f"{analysis['recommendation']['focus'].replace('_', ' ')}: {analysis['recommendation']['summary']}"
+    )
     return {
         "title": "Auto-tune runtime contract and backlog health",
         "bucket": "skills",
@@ -1000,20 +1389,15 @@ def _tune_task_payload(profile: Profile) -> dict[str, Any]:
         "packages": [],
         "objective": "TUNING",
         "why": (
-            "Analyze the historical backlog runtime footprint and local profile/skill contract, "
-            "then propose one next-slice tuning task."
+            "Analyze the recorded task-time history, runtime outcomes, and the local profile/skill contract, "
+            "then propose the next highest-confidence tuning slice."
         ),
         "evidence": (
-            "Use this task to review backlog drift, event cadence, result patterns, and control-surface coverage "
-            "so self-tuning can improve repo-local backlog health."
+            "Runtime history currently shows "
+            + ", ".join(evidence_bits)
+            + ". Use this task to turn those signals into one concrete repo-local tuning task."
         ),
-        "safe_first_slice": textwrap.dedent(
-            """\
-            1. Review backlog history, state, and event/activity logs for recurring failure or delay patterns.
-            2. Validate profile, skill, and review-doc contracts against real runtime behavior.
-            3. Draft one concrete tuning task with the highest-confidence repo-local impact.
-            """
-        ).strip(),
+        "safe_first_slice": "\n".join(safe_first_slice),
         "requires_approval": False,
         "approval_reason": "",
         "epic_title": "Self-tuning queue",

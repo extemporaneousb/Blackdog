@@ -16,9 +16,11 @@ from typing import Any
 from .backlog import (
     BacklogError,
     add_task,
+    build_tune_analysis,
     build_plan_view,
     build_view_model,
     classify_task_status,
+    enrich_result_task_shaping_telemetry,
     seed_tune_task,
     load_backlog,
     next_runnable_tasks,
@@ -844,6 +846,16 @@ def cmd_result_record(args: argparse.Namespace) -> int:
     )
     task_id = _env_required(args.id, "BLACKDOG_TASK_ID", arg_name="id", command="result record")
     actor = _env_required(args.actor, "BLACKDOG_AGENT_NAME", arg_name="actor", command="result record")
+    task_shaping_telemetry = enrich_result_task_shaping_telemetry(
+        profile,
+        task_id=task_id,
+        task_shaping_telemetry=_parse_json_object(
+            args.task_shaping_telemetry,
+            command="result record",
+            flag="--task-shaping-telemetry",
+        ),
+        cwd=Path.cwd(),
+    )
     result_path = record_task_result(
         profile.paths,
         task_id=task_id,
@@ -855,11 +867,7 @@ def cmd_result_record(args: argparse.Namespace) -> int:
         needs_user_input=args.needs_user_input,
         followup_candidates=args.followup,
         run_id=args.run_id,
-        task_shaping_telemetry=_parse_json_object(
-            args.task_shaping_telemetry,
-            command="result record",
-            flag="--task-shaping-telemetry",
-        ),
+        task_shaping_telemetry=task_shaping_telemetry,
     )
     _emit_render(profile)
     print(str(result_path))
@@ -909,6 +917,7 @@ def cmd_coverage(args: argparse.Namespace) -> int:
 
 def cmd_tune(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
+    analysis = build_tune_analysis(profile)
     payload, created = seed_tune_task(profile)
     if created:
         append_event(
@@ -919,7 +928,7 @@ def cmd_tune(args: argparse.Namespace) -> int:
             payload={"title": payload["title"], "bucket": payload["bucket"]},
         )
     _emit_render(profile)
-    print(json.dumps(payload, indent=2))
+    print(json.dumps({**payload, "created": created, "tune_analysis": analysis}, indent=2))
     return 0
 
 

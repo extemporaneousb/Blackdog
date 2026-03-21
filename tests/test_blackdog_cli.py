@@ -61,6 +61,7 @@ from blackdog.ui import (
     _pid_alive,
     _progress_for_task_rows,
     _read_artifact_text,
+    _render_markdown_html,
     _result_preview,
     _short_commit,
     _title_label,
@@ -654,6 +655,81 @@ class BlackdogCliTests(unittest.TestCase):
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
         profile = load_profile(self.root)
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Historical task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need one completed task so tune can read recorded task time.",
+            "--evidence",
+            "Tune should use existing runtime history instead of a static template.",
+            "--safe-first-slice",
+            "Record one completed task with task-shaping data.",
+            "--path",
+            "README.md",
+            "--task-shaping",
+            json.dumps({"estimated_active_minutes": 12, "estimated_elapsed_minutes": 15}),
+            "--epic-title",
+            "History",
+            "--lane-title",
+            "Tune input",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Historical task"]
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-historical-claim",
+                "type": "claim",
+                "at": "2026-03-17T09:00:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-historical-complete",
+                "type": "complete",
+                "at": "2026-03-17T09:18:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {"note": "done"},
+            },
+        )
+        record_task_result(
+            paths,
+            task_id=task_id,
+            actor="codex",
+            status="success",
+            what_changed=["Recorded baseline history for tune."],
+            validation=["make test"],
+            residual=[],
+            needs_user_input=False,
+            followup_candidates=[],
+        )
+        save_state(
+            paths.state_file,
+            {
+                "schema_version": 1,
+                "approval_tasks": {},
+                "task_claims": {
+                    task_id: {
+                        "status": "done",
+                        "title": "Historical task",
+                        "claimed_by": "codex",
+                        "claimed_at": "2026-03-17T09:00:00-07:00",
+                        "completed_at": "2026-03-17T09:18:00-07:00",
+                    }
+                },
+            },
+        )
 
         tune_payload = json.loads(
             subprocess.run(
@@ -682,7 +758,12 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(str(paths.results_dir), tune_payload["paths"])
         self.assertIn(str(paths.profile_file), tune_payload["paths"])
         self.assertIn(str(paths.skill_dir / "SKILL.md"), tune_payload["paths"])
-        self.assertIn("Review backlog history", tune_payload["safe_first_slice"])
+        self.assertTrue(tune_payload["created"])
+        self.assertTrue(tune_payload["tune_analysis"]["enough_data"])
+        self.assertEqual(tune_payload["tune_analysis"]["tasks_with_recorded_compute"], 1)
+        self.assertEqual(tune_payload["tune_analysis"]["estimated_time_samples"], 1)
+        self.assertEqual(tune_payload["tune_analysis"]["recommendation"]["focus"], "task_shaping_coverage")
+        self.assertIn("recorded runtime history", tune_payload["safe_first_slice"].lower())
 
         summary = json.loads(
             subprocess.run(
@@ -710,6 +791,8 @@ class BlackdogCliTests(unittest.TestCase):
             ).stdout
         )
         self.assertEqual(rerun_payload["id"], tune_payload["id"])
+        self.assertFalse(rerun_payload["created"])
+        self.assertEqual(rerun_payload["tune_analysis"]["tasks_with_recorded_compute"], 1)
         task_added_rows = [row for row in load_events(paths) if row["type"] == "task_added" and row.get("task_id") == tune_payload["id"]]
         self.assertEqual(len(task_added_rows), 1)
 
@@ -1447,6 +1530,7 @@ class BlackdogCliTests(unittest.TestCase):
             json.loads(result_payload)["task_shaping_telemetry"]["estimated_elapsed_minutes"],
             25,
         )
+        self.assertIn("actual_task_minutes", json.loads(result_payload)["task_shaping_telemetry"])
 
         events = json.loads(
             subprocess.run(
@@ -1472,6 +1556,171 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Added the first slice.", rendered)
         self.assertNotIn('id="objectives-panel"', rendered)
         self.assertNotIn('id="release-gates-panel"', rendered)
+
+    def test_result_record_auto_enriches_task_shaping_telemetry(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Telemetry-enriched result",
+            "--bucket",
+            "core",
+            "--why",
+            "Result rows should capture the task-time facts Blackdog already knows.",
+            "--evidence",
+            "Tune should not depend on operators copying timing metadata by hand.",
+            "--safe-first-slice",
+            "Record a result and inspect the saved task-shaping telemetry.",
+            "--path",
+            "README.md",
+            "--task-shaping",
+            json.dumps({"estimated_active_minutes": 12, "estimated_elapsed_minutes": 20}),
+            "--epic-title",
+            "Telemetry",
+            "--lane-title",
+            "Result enrichment",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Telemetry-enriched result"]
+        paths = self.runtime_paths()
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-claim-1",
+                "type": "claim",
+                "at": "2026-03-18T10:00:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-release-1",
+                "type": "release",
+                "at": "2026-03-18T10:05:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {"note": "pause"},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-claim-2",
+                "type": "claim",
+                "at": "2026-03-18T10:10:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-complete-2",
+                "type": "complete",
+                "at": "2026-03-18T10:25:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {"note": "done"},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-worktree",
+                "type": "worktree_start",
+                "at": "2026-03-18T09:59:00-07:00",
+                "actor": "codex",
+                "task_id": task_id,
+                "payload": {
+                    "branch": "agent/telemetry-enriched-result",
+                    "target_branch": "main",
+                    "worktree_path": str(self.root),
+                },
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-launch-1",
+                "type": "child_launch",
+                "at": "2026-03-18T10:00:30-07:00",
+                "actor": "supervisor",
+                "task_id": task_id,
+                "payload": {"run_id": "run-1", "branch": "agent/telemetry-enriched-result", "target_branch": "main"},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-finish-1",
+                "type": "child_finish",
+                "at": "2026-03-18T10:04:30-07:00",
+                "actor": "supervisor",
+                "task_id": task_id,
+                "payload": {"run_id": "run-1", "land_error": "dirty primary"},
+            },
+        )
+        append_jsonl(
+            paths.events_file,
+            {
+                "event_id": "evt-enriched-launch-2",
+                "type": "child_launch",
+                "at": "2026-03-18T10:11:00-07:00",
+                "actor": "supervisor",
+                "task_id": task_id,
+                "payload": {"run_id": "run-2", "branch": "agent/telemetry-enriched-result", "target_branch": "main"},
+            },
+        )
+        (self.root / "README.md").write_text("telemetry enrichment\n", encoding="utf-8")
+
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "result",
+                "record",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_id,
+                "--actor",
+                "codex",
+                "--status",
+                "success",
+                "--what-changed",
+                "Recorded auto telemetry.",
+                "--task-shaping-telemetry",
+                json.dumps({"comparison_note": "operator note"}),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        payload = json.loads(sorted((paths.results_dir / task_id).glob("*.json"))[-1].read_text(encoding="utf-8"))
+        telemetry = payload["task_shaping_telemetry"]
+        self.assertEqual(telemetry["estimated_active_minutes"], 12)
+        self.assertEqual(telemetry["estimated_elapsed_minutes"], 20)
+        self.assertEqual(telemetry["actual_task_seconds"], 1200)
+        self.assertEqual(telemetry["actual_task_minutes"], 20)
+        self.assertEqual(telemetry["actual_active_minutes"], 20)
+        self.assertEqual(telemetry["claim_count"], 2)
+        self.assertEqual(telemetry["actual_reclaim_count"], 1)
+        self.assertEqual(telemetry["actual_worktrees_used"], 1)
+        self.assertEqual(telemetry["actual_retry_count"], 1)
+        self.assertEqual(telemetry["actual_landing_failures"], 1)
+        self.assertEqual(telemetry["comparison_note"], "operator note")
+        self.assertIn("README.md", telemetry["changed_paths"])
+        self.assertEqual(telemetry["actual_touched_path_count"], len(telemetry["changed_paths"]))
 
     def test_claim_records_reported_pid_without_a_lease_timeout(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2235,10 +2484,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotEqual(snapshot["last_checked_at"], snapshot["content_updated_at"])
         run_cli("render", "--project-root", str(self.root), "--actor", "tester")
         rendered_html = paths.html_file.read_text(encoding="utf-8")
-        self.assertIn("Time since last check", rendered_html)
-        self.assertIn("Time since last update", rendered_html)
-        self.assertIn("Total time on sweep", rendered_html)
-        self.assertIn("Total time on backlog", rendered_html)
+        self.assertIn("Active task time", rendered_html)
+        self.assertIn("Completed task time", rendered_html)
+        self.assertIn("Average completed task", rendered_html)
+        self.assertIn("Total task time", rendered_html)
         rendered_snapshot = html_snapshot(paths.html_file)
         snapshot_last_checked = datetime.fromisoformat(snapshot["last_checked_at"])
         snapshot_content_updated = datetime.fromisoformat(snapshot["content_updated_at"])
@@ -2276,6 +2525,14 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("[truncated in reader; open Stdout for the full response]", text)
         with patch("pathlib.Path.read_text", side_effect=OSError()):
             self.assertEqual(_read_artifact_text(artifact_path), (None, False))
+
+        markdown_html = _render_markdown_html(
+            "# Header\n\nVisit [Docs](https://example.com).\n\n- First item\n- `code`\n\n> quoted"
+        )
+        self.assertIn("<h1>Header</h1>", markdown_html)
+        self.assertIn('href="https://example.com"', markdown_html)
+        self.assertIn("<ul><li>First item</li><li><code>code</code></li></ul>", markdown_html)
+        self.assertIn("<blockquote><p>quoted</p></blockquote>", markdown_html)
 
     def test_ui_helper_supervisor_freshness_and_timestamp_selection(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -2938,10 +3195,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(first_task, snapshot["hero_highlights"]["latest_run"])
         self.assertIn("Running", snapshot["hero_highlights"]["latest_run"])
         self.assertIn("supervisor/child-01", snapshot["hero_highlights"]["latest_run"])
-        self.assertIn("time_since_last_check", snapshot["hero_highlights"])
-        self.assertIn("time_since_last_update", snapshot["hero_highlights"])
-        self.assertIn("total_time_on_sweep", snapshot["hero_highlights"])
-        self.assertIn("total_time_on_backlog", snapshot["hero_highlights"])
+        self.assertIn("active_task_time", snapshot["hero_highlights"])
+        self.assertIn("completed_task_time", snapshot["hero_highlights"])
+        self.assertIn("average_completed_task_time", snapshot["hero_highlights"])
+        self.assertIn("total_task_time", snapshot["hero_highlights"])
         self.assertEqual(snapshot["active_tasks"][0]["id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
@@ -3014,21 +3271,21 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("supervisor-runs/20260314-120000-liverun1", html)
         self.assertIn('document.getElementById("hero-progress-detail").textContent = heroProgressSummary(overallProgress);', html)
         self.assertIn('renderMetaItem("Active Branch"', html)
-        self.assertIn('renderMetaItem("Time since last check"', html)
-        self.assertIn('renderMetaItem("Time since last update"', html)
-        self.assertIn('renderMetaItem("Total time on sweep"', html)
-        self.assertIn('renderMetaItem("Total time on backlog"', html)
+        self.assertIn('renderMetaItem("Active task time"', html)
+        self.assertIn('renderMetaItem("Completed task time"', html)
+        self.assertIn('renderMetaItem("Average completed task"', html)
+        self.assertIn('renderMetaItem("Total task time"', html)
         self.assertLess(
-            html.index('renderMetaItem("Time since last check"'),
-            html.index('renderMetaItem("Time since last update"'),
+            html.index('renderMetaItem("Active task time"'),
+            html.index('renderMetaItem("Completed task time"'),
         )
         self.assertLess(
-            html.index('renderMetaItem("Time since last update"'),
-            html.index('renderMetaItem("Total time on sweep"'),
+            html.index('renderMetaItem("Completed task time"'),
+            html.index('renderMetaItem("Average completed task"'),
         )
         self.assertLess(
-            html.index('renderMetaItem("Total time on sweep"'),
-            html.index('renderMetaItem("Total time on backlog"'),
+            html.index('renderMetaItem("Average completed task"'),
+            html.index('renderMetaItem("Total task time"'),
         )
         self.assertNotIn('id="release-gates-list"', html)
         self.assertNotIn('class="eyebrow"', html)
@@ -3096,8 +3353,10 @@ class BlackdogCliTests(unittest.TestCase):
         run_dir = paths.supervisor_runs_dir / f"20260317-120000-{run_id}" / task_id
         run_dir.mkdir(parents=True)
         model_response = (
+            "# Summary\n\n"
             "1. What changed: threaded the completed-task reader through the child stdout artifact.\n"
-            "2. Why: operators need the actual model response without leaving the board."
+            "2. Why: operators need the actual model response without leaving the board.\n\n"
+            "See [full notes](https://example.com/reader)."
         )
         (run_dir / "stdout.log").write_text(model_response, encoding="utf-8")
         record_task_result(
@@ -3136,6 +3395,8 @@ class BlackdogCliTests(unittest.TestCase):
         task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
 
         self.assertEqual(task["model_response"], model_response)
+        self.assertIn("<h1>Summary</h1>", task["model_response_html"])
+        self.assertIn('href="https://example.com/reader"', task["model_response_html"])
         self.assertFalse(task["model_response_truncated"])
         self.assertEqual(task["landed_commit"], landed_commit)
         self.assertEqual(task["landed_commit_short"], landed_commit[:12])
@@ -3161,7 +3422,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn('detailBlock("Latest Result Changes"', html)
         self.assertNotIn('detailBlock("Latest Result Validation"', html)
         self.assertNotIn('detailBlock("Latest Result Residual"', html)
-        self.assertIn('detailBlock("Model Response", preBlock(task.model_response), { wide: true })', html)
+        self.assertIn('detailBlock("Model Response", task.model_response_html || preBlock(task.model_response), { wide: true })', html)
         self.assertIn('detailBlock("Landed Commit", commitBlock(task), { wide: true })', html)
         self.assertIn('class="result-chips"', html)
 
@@ -4369,23 +4630,23 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn('<h2>Status</h2>', updated_html)
         self.assertIn("Active Branch", updated_html)
         self.assertIn("Commit", updated_html)
-        self.assertIn("Time since last check", updated_html)
-        self.assertIn("Time since last update", updated_html)
-        self.assertIn("Total time on sweep", updated_html)
-        self.assertIn("Total time on backlog", updated_html)
+        self.assertIn("Active task time", updated_html)
+        self.assertIn("Completed task time", updated_html)
+        self.assertIn("Average completed task", updated_html)
+        self.assertIn("Total task time", updated_html)
         self.assertIn("Repo directory", updated_html)
         self.assertIn(str(self.root), updated_html)
         self.assertLess(
-            updated_html.index('renderMetaItem("Time since last check"'),
-            updated_html.index('renderMetaItem("Time since last update"'),
+            updated_html.index('renderMetaItem("Active task time"'),
+            updated_html.index('renderMetaItem("Completed task time"'),
         )
         self.assertLess(
-            updated_html.index('renderMetaItem("Time since last update"'),
-            updated_html.index('renderMetaItem("Total time on sweep"'),
+            updated_html.index('renderMetaItem("Completed task time"'),
+            updated_html.index('renderMetaItem("Average completed task"'),
         )
         self.assertLess(
-            updated_html.index('renderMetaItem("Total time on sweep"'),
-            updated_html.index('renderMetaItem("Total time on backlog"'),
+            updated_html.index('renderMetaItem("Average completed task"'),
+            updated_html.index('renderMetaItem("Total task time"'),
         )
         self.assertNotIn("Git head", updated_html)
         self.assertNotIn("Blackdog runtime", updated_html)

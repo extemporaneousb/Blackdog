@@ -291,7 +291,22 @@ Required keys:
 - `task_shaping_telemetry`
 - `metadata`
 
-`task_shaping_telemetry` stores measured task-shaping fields for this result row.
+`task_shaping_telemetry` stores measured or auto-derived task-shaping fields for this result row.
+Current auto-filled keys may include:
+
+- estimate snapshot fields such as `estimated_active_minutes`,
+  `estimated_elapsed_minutes`, `estimated_touched_paths`,
+  `estimated_validation_minutes`, `estimated_worktrees`,
+  `estimated_handoffs`, and `parallelizable_groups`
+- claim-derived runtime facts such as `actual_task_seconds`,
+  `actual_task_minutes`, `actual_active_minutes`, `claim_count`,
+  `actual_reclaim_count`, `actual_worktrees_used`,
+  `actual_retry_count`, `actual_handoffs`, and
+  `actual_landing_failures`
+- best-effort changed-path capture via `changed_paths`,
+  `actual_touched_paths`, and `actual_touched_path_count` when
+  `result record` runs inside a git checkout with visible task changes
+
 `metadata` is optional in older rows and continues to carry child-launch metadata.
 
 ## `<control_dir>/supervisor-runs/*/<task-id>/metadata.json`
@@ -686,6 +701,7 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `target_branch`
 - `child_agent`
 - `model_response`
+- `model_response_html`
 - `model_response_truncated`
 - `landed_commit`
 - `landed_commit_short`
@@ -728,10 +744,10 @@ Current `hero_highlights` keys summarize the hero's workspace/activity strip:
 - `branch`
 - `commit`
 - `latest_run`
-- `time_since_last_check`
-- `time_since_last_update`
-- `total_time_on_sweep`
-- `total_time_on_backlog`
+- `active_task_time`
+- `completed_task_time`
+- `average_completed_task_time`
+- `total_task_time`
 
 Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projection:
 
