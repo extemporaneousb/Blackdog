@@ -14,6 +14,7 @@ This document describes the current integration path for adopting Blackdog in an
 - project-local skill scaffold under `.codex/skills/blackdog/`
 - a branch-backed `blackdog worktree` lifecycle for implementation tasks
 - CLI support for task intake, claims, approvals, comments, inbox messaging, task results, and HTML rendering
+- a repo-aware `blackdog prompt` command that rewrites prompts against the host repo contract for low/medium/high complexity
 - an initial supervisor runner that can launch child commands against runnable tasks, with a default preference for the desktop Codex exec runtime
 - a supervisor run that drains active work, refreshes repo-local status views, and honors inbox `stop` messages
 - a static backlog index that embeds the current snapshot JSON and links directly to artifact files on disk
@@ -61,7 +62,7 @@ This document describes the current integration path for adopting Blackdog in an
    If any managed skill file was locally modified, refresh keeps that file in place and writes a `*.blackdog-new` sidecar beside it instead of overwriting it.
 7. In each fresh git worktree, create that worktree's own `.VE/` (or equivalent repo-local environment) before running repo-local commands. Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
 8. Treat implementation edits in the primary worktree as a contract violation. Start with `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-9. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog coverage`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work. Open the repo-branded backlog HTML file (by default `<project-slug>-backlog.html`) directly and reload it when you want the latest state; Blackdog also refreshes `backlog-index.html` as a compatibility alias.
+9. Use `blackdog validate`, `blackdog summary`, `blackdog next`, `blackdog prompt`, `blackdog tune --no-task`, `blackdog coverage`, `blackdog worktree preflight|start|land|cleanup`, `blackdog claim`, `blackdog result record`, and `blackdog render` during normal work. Open the repo-branded backlog HTML file (by default `<project-slug>-backlog.html`) directly and reload it when you want the latest state; Blackdog also refreshes `backlog-index.html` as a compatibility alias.
 
 ## Source checkout update flow
 
@@ -77,6 +78,7 @@ Bootstrap and refresh generate these managed files under `.codex/skills/blackdog
 
 - `SKILL.md`: repo-local operating instructions tailored from `blackdog.toml`
 - `agents/openai.yaml`: UI-facing metadata for skill list and default prompts
+- `blackdog prompt`: repo-aware prompt rewriting for host-repo requests and derived skills
 - `references/task-shaping.md`: task-shaping guidance emitted from Blackdog's built-in reference text
 - `.blackdog-managed.json`: last-generated hashes for the managed skill files so refresh can tell when a local edit should be preserved instead of overwritten
 
@@ -113,6 +115,8 @@ Today, Blackdog works best as a coordinating contract used by a foreground agent
 For implementation tasks, the intended operator model is now explicit and hard-gated: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
 
 The generated skill should mirror that hard gate and enumerate the repo docs from `taxonomy.doc_routing_defaults` so agents see both the worktree contract and the required review set before they edit.
+
+When a host repo builds additional skills on top of Blackdog, prefer routing those skills through `blackdog prompt` or `blackdog tune --no-task` first. That lets the repo-local profile, doc routing, validation defaults, and WTAM rules shape the final prompt before the higher-level skill starts work.
 
 Delegated child runs use the same lifecycle: the coordinating supervisor stays in the primary worktree, launches each child in a branch-backed task worktree, expects a commit on that branch, and lands it through the primary worktree after a successful run. WTAM is the only kept-change implementation path.
 

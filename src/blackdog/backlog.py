@@ -43,6 +43,38 @@ TASK_SHAPING_DEFAULTS = {
     "estimated_handoffs": 0,
     "parallelizable_groups": 0,
 }
+PROMPT_COMPLEXITY_PROFILES = {
+    "low": {
+        "label": "Low",
+        "summary": "Keep the prompt lean and execution-biased for bounded work.",
+        "doc_limit": 2,
+        "include_why": False,
+        "include_evidence": False,
+        "include_task_shaping": False,
+        "include_validation": True,
+        "include_prompt_tuning": False,
+    },
+    "medium": {
+        "label": "Medium",
+        "summary": "Carry enough repo context to avoid avoidable retries without bloating the prompt.",
+        "doc_limit": 4,
+        "include_why": True,
+        "include_evidence": True,
+        "include_task_shaping": True,
+        "include_validation": True,
+        "include_prompt_tuning": True,
+    },
+    "high": {
+        "label": "High",
+        "summary": "Front-load repo policy, routed docs, validation, and tuning context for multi-surface work.",
+        "doc_limit": 8,
+        "include_why": True,
+        "include_evidence": True,
+        "include_task_shaping": True,
+        "include_validation": True,
+        "include_prompt_tuning": True,
+    },
+}
 
 
 class BacklogError(RuntimeError):
@@ -1195,7 +1227,217 @@ def enrich_result_task_shaping_telemetry(
             merged.setdefault("actual_touched_paths", changed_paths)
             merged.setdefault("actual_touched_path_count", len(changed_paths))
 
+    context_metrics = _task_context_metrics(task, runtime)
+    for key, value in context_metrics.items():
+        if value is None:
+            continue
+        merged.setdefault(key, value)
+
     return merged
+
+
+def _task_context_metrics(task: TaskInfo | None, runtime: dict[str, Any]) -> dict[str, Any]:
+    payload = task.payload if task else {}
+    task_shaping = payload.get("task_shaping") if isinstance(payload.get("task_shaping"), dict) else {}
+    paths = [str(item).strip() for item in payload.get("paths", []) if str(item).strip()]
+    docs = [str(item).strip() for item in payload.get("docs", []) if str(item).strip()]
+    checks = [str(item).strip() for item in payload.get("checks", []) if str(item).strip()]
+    domains = [str(item).strip() for item in payload.get("domains", []) if str(item).strip()]
+    objective = str(payload.get("objective") or "").strip()
+    why = str(getattr(getattr(task, "narrative", None), "why", "") or "").strip()
+    evidence = str(getattr(getattr(task, "narrative", None), "evidence", "") or "").strip()
+    safe_first_slice = str(payload.get("safe_first_slice") or "").strip()
+    estimate_field_count = sum(
+        1
+        for key in (
+            "estimated_elapsed_minutes",
+            "estimated_active_minutes",
+            "estimated_touched_paths",
+            "estimated_validation_minutes",
+            "estimated_worktrees",
+            "estimated_handoffs",
+            "parallelizable_groups",
+        )
+        if task_shaping.get(key) not in (None, [], {})
+    )
+    context_packet = {
+        "objective": objective,
+        "why": why,
+        "evidence": evidence,
+        "safe_first_slice": safe_first_slice,
+        "docs": docs,
+        "checks": checks,
+        "paths": paths,
+        "domains": domains,
+        "task_shaping": {
+            key: task_shaping.get(key)
+            for key in (
+                "estimated_elapsed_minutes",
+                "estimated_active_minutes",
+                "estimated_validation_minutes",
+                "estimated_worktrees",
+                "estimated_handoffs",
+                "parallelizable_groups",
+            )
+        },
+    }
+    packet_bytes = len(json.dumps(context_packet, sort_keys=True))
+    misstep_total = (
+        int(runtime.get("actual_reclaim_count") or 0)
+        + int(runtime.get("actual_retry_count") or 0)
+        + int(runtime.get("landing_failures") or runtime.get("actual_landing_failures") or 0)
+    )
+    actual_touched_path_count = runtime.get("actual_touched_path_count")
+    context_efficiency_ratio = None
+    if actual_touched_path_count is not None and paths:
+        context_efficiency_ratio = round(int(actual_touched_path_count) / max(len(paths), 1), 2)
+
+    estimate_minutes = runtime.get("estimated_active_minutes")
+    if estimate_minutes is None:
+        estimate_minutes = runtime.get("estimated_elapsed_minutes")
+    if estimate_minutes is None:
+        estimate_minutes = task_shaping.get("estimated_active_minutes")
+    if estimate_minutes is None:
+        estimate_minutes = task_shaping.get("estimated_elapsed_minutes")
+    actual_minutes = runtime.get("actual_task_minutes")
+    document_routing_value_score = 0
+    if docs:
+        document_routing_value_score += 1
+    if docs and misstep_total == 0:
+        document_routing_value_score += 1
+    if docs and actual_minutes is not None and estimate_minutes is not None and abs(int(actual_minutes) - int(estimate_minutes)) <= 15:
+        document_routing_value_score += 1
+
+    context_packet_score = (
+        min(len(docs), 3)
+        + min(len(checks), 2)
+        + min(len(paths), 3)
+        + min(len(domains), 2)
+        + (1 if objective else 0)
+        + (1 if why else 0)
+        + (1 if evidence else 0)
+        + (1 if safe_first_slice else 0)
+        + min(estimate_field_count, 3)
+    )
+    return {
+        "context_doc_count": len(docs),
+        "context_check_count": len(checks),
+        "context_path_count": len(paths),
+        "context_domain_count": len(domains),
+        "context_has_objective": bool(objective),
+        "context_has_why": bool(why),
+        "context_has_evidence": bool(evidence),
+        "context_has_safe_first_slice": bool(safe_first_slice),
+        "context_estimate_field_count": estimate_field_count,
+        "context_packet_score": context_packet_score,
+        "context_packet_bytes": packet_bytes,
+        "misstep_total": misstep_total,
+        "document_routing_value_score": document_routing_value_score,
+        "context_efficiency_ratio": context_efficiency_ratio,
+    }
+
+
+def build_prompt_profiles(profile: Profile, *, analysis: dict[str, Any]) -> dict[str, Any]:
+    base_docs = _unique_ordered(
+        [
+            "AGENTS.md",
+            *profile.doc_routing_defaults,
+            ".codex/skills/blackdog/SKILL.md",
+            ".codex/skills/blackdog/agents/openai.yaml",
+            "docs/INTEGRATION.md",
+        ]
+    )
+    validation_commands = list(profile.validation_commands)
+    focus = analysis["recommendation"]["focus"]
+    focus_summary = analysis["recommendation"]["summary"]
+    profiles: dict[str, Any] = {}
+    for name, config in PROMPT_COMPLEXITY_PROFILES.items():
+        routed_docs = base_docs[: config["doc_limit"]]
+        sections = ["Goal", "Repo contract", "Target paths"]
+        if config["include_why"]:
+            sections.append("Why it matters")
+        if config["include_evidence"]:
+            sections.append("Evidence")
+        if config["include_task_shaping"]:
+            sections.append("Task-shaping expectations")
+        if config["include_validation"]:
+            sections.append("Validation")
+        if config["include_prompt_tuning"]:
+            sections.append("Prompt-tuning focus")
+        profiles[name] = {
+            "complexity": name,
+            "label": config["label"],
+            "summary": config["summary"],
+            "routed_docs": routed_docs,
+            "validation_commands": validation_commands if config["include_validation"] else [],
+            "recommended_sections": sections,
+            "focus": {
+                "category": focus,
+                "summary": focus_summary,
+            },
+            "context_budget": {
+                "doc_limit": config["doc_limit"],
+                "include_task_shaping": config["include_task_shaping"],
+                "include_validation": config["include_validation"],
+            },
+        }
+    return profiles
+
+
+def build_prompt_improvement(profile: Profile, *, prompt_text: str, complexity: str, analysis: dict[str, Any]) -> dict[str, Any]:
+    if complexity not in PROMPT_COMPLEXITY_PROFILES:
+        raise BacklogError(f"Unsupported prompt complexity: {complexity}")
+    prompt = prompt_text.strip()
+    if not prompt:
+        raise BacklogError("Prompt text is required for prompt tuning.")
+    profiles = build_prompt_profiles(profile, analysis=analysis)
+    selected = profiles[complexity]
+    lines = [
+        f"You are working in the {profile.project_name} repo under the local Blackdog contract.",
+        "Use the repo-local Blackdog CLI when available and keep kept implementation changes in a branch-backed task worktree.",
+        "",
+        f"Complexity profile: {selected['label']}",
+        selected["summary"],
+        "",
+        "Repo-specific operating rules:",
+        "- Review the routed docs before kept edits.",
+        "- If implementation is needed, start with `blackdog worktree preflight` and move to a task worktree before editing.",
+        "- Prefer the local backlog/runtime contract over ad hoc coordination.",
+    ]
+    if selected["routed_docs"]:
+        lines.extend(["", "Routed docs:"])
+        lines.extend(f"- {item}" for item in selected["routed_docs"])
+    if selected["validation_commands"]:
+        lines.extend(["", "Validation defaults:"])
+        lines.extend(f"- {item}" for item in selected["validation_commands"])
+    lines.extend(["", "Required prompt sections:"])
+    lines.extend(f"- {item}" for item in selected["recommended_sections"])
+    lines.extend(
+        [
+            "",
+            "Prompt-tuning focus:",
+            f"- {selected['focus']['category']}: {selected['focus']['summary']}",
+            "",
+            "User request:",
+            prompt,
+        ]
+    )
+    improved_prompt = "\n".join(lines).strip()
+    return {
+        "project_name": profile.project_name,
+        "complexity": complexity,
+        "original_prompt": prompt,
+        "improved_prompt": improved_prompt,
+        "prompt_profile": selected,
+        "tune_focus": analysis["recommendation"],
+        "tuning_categories": analysis["categories"],
+        "context_budget": {
+            "doc_limit": selected["context_budget"]["doc_limit"],
+            "validation_count": len(selected["validation_commands"]),
+            "routed_doc_count": len(selected["routed_docs"]),
+            "packet_bytes": len(improved_prompt.encode("utf-8")),
+        },
+    }
 
 
 def build_tune_analysis(profile: Profile) -> dict[str, Any]:
@@ -1252,7 +1494,21 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
     underestimated_tasks = sum(1 for row in sample_rows if row["delta_minutes"] > 0)
     overestimated_tasks = sum(1 for row in sample_rows if row["delta_minutes"] < 0)
     retry_total = sum(int(row.get("actual_retry_count") or 0) for row in runtime_rows.values())
+    reclaim_total = sum(int(row.get("actual_reclaim_count") or 0) for row in runtime_rows.values())
     landing_failures = sum(int(row.get("landing_failures") or 0) for row in runtime_rows.values())
+    context_rows = [_task_context_metrics(task, runtime_rows.get(task.id, _task_runtime_row(task.id))) for task in snapshot.tasks.values()]
+    completed_context_rows = [
+        _task_context_metrics(task, runtime_rows.get(task.id, _task_runtime_row(task.id)))
+        for task in snapshot.tasks.values()
+        if task_done(task.id, state)
+    ]
+
+    def _average(values: list[int | float | None]) -> float | None:
+        filtered = [float(value) for value in values if value is not None]
+        if not filtered:
+            return None
+        return round(sum(filtered) / len(filtered), 2)
+
     coverage_gaps: list[str] = []
     if tasks_with_recorded_compute and len(sample_rows) < max(5, tasks_with_recorded_compute // 4):
         coverage_gaps.append("Most completed tasks still lack both an estimate snapshot and a comparable actual task-time sample.")
@@ -1291,6 +1547,38 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
             "summary": "Task-time history is stable enough to review for the next smaller calibration win.",
         }
 
+    categories = {
+        "time": {
+            "tasks_with_recorded_compute": tasks_with_recorded_compute,
+            "completed_tasks_with_recorded_compute": completed_tasks_with_recorded_compute,
+            "estimated_time_samples": len(sample_rows),
+            "total_task_minutes": total_task_minutes,
+            "average_completed_task_minutes": average_completed_task_minutes,
+            "timing_mean_absolute_error_minutes": mean_absolute_error,
+            "underestimated_tasks": underestimated_tasks,
+            "overestimated_tasks": overestimated_tasks,
+        },
+        "missteps": {
+            "retry_total": retry_total,
+            "reclaim_total": reclaim_total,
+            "landing_failures": landing_failures,
+            "tasks_with_missteps": sum(1 for row in runtime_rows.values() if int(row.get("actual_retry_count") or 0) or int(row.get("actual_reclaim_count") or 0) or int(row.get("landing_failures") or 0)),
+        },
+        "document_use_value": {
+            "completed_tasks_with_routed_docs": sum(1 for row in completed_context_rows if int(row.get("context_doc_count") or 0) > 0),
+            "average_routed_doc_count": _average([row.get("context_doc_count") for row in completed_context_rows]),
+            "positive_proxy_tasks": sum(1 for row in completed_context_rows if int(row.get("document_routing_value_score") or 0) >= 2),
+            "average_document_routing_value_score": _average([row.get("document_routing_value_score") for row in completed_context_rows]),
+        },
+        "context_efficiency": {
+            "tasks_with_context_metrics": len(context_rows),
+            "tasks_with_estimate_context": sum(1 for row in context_rows if int(row.get("context_estimate_field_count") or 0) > 0),
+            "average_context_packet_score": _average([row.get("context_packet_score") for row in context_rows]),
+            "average_context_packet_bytes": _average([row.get("context_packet_bytes") for row in context_rows]),
+            "average_context_efficiency_ratio": _average([row.get("context_efficiency_ratio") for row in completed_context_rows]),
+        },
+    }
+
     return {
         "enough_data": enough_data,
         "result_files": result_files,
@@ -1304,8 +1592,10 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
         "underestimated_tasks": underestimated_tasks,
         "overestimated_tasks": overestimated_tasks,
         "retry_total": retry_total,
+        "reclaim_total": reclaim_total,
         "landing_failures": landing_failures,
         "coverage_gaps": coverage_gaps,
+        "categories": categories,
         "recommendation": recommendation,
         "top_timing_outliers": sorted(sample_rows, key=lambda row: abs(row["delta_minutes"]), reverse=True)[:3],
     }

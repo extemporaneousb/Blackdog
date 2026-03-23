@@ -538,6 +538,12 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 9. Check `{cli_command} inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
 10. Open `{html_path}` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
 
+## Prompt Tuning
+
+- Use `{cli_command} prompt --complexity low|medium|high "..."` when you want Blackdog to rewrite a request against this repo's local docs, validation defaults, and WTAM contract before turning it into backlog work.
+- `prompt` is intended to help repo-local skills that build on top of Blackdog reuse the same contract and tuning guidance instead of re-explaining the repo from scratch.
+- Use `{cli_command} tune --no-task` when you want direct tuning guidance without automatically seeding a backlog task.
+
 ## Task Shaping
 
 - Treat a new user request as one candidate deliverable first. Default to one lane and one task unless there is a measured reason to split it.
@@ -587,7 +593,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
     agent_text = f"""interface:
   display_name: "{display_name}"
   short_description: "Project-local backlog control via Blackdog"
-  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to shape this request into measurable, consolidated backlog work and then review, claim, supervise, or report it through the repo CLI."
+  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to shape this request into measurable, consolidated backlog work, tune repo-local prompts when needed, and then review, claim, supervise, or report it through the repo CLI."
 """
     return {
         skill_file: skill_text,

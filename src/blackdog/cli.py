@@ -16,6 +16,8 @@ from typing import Any
 from .backlog import (
     BacklogError,
     add_task,
+    build_prompt_improvement,
+    build_prompt_profiles,
     build_tune_analysis,
     build_plan_view,
     build_view_model,
@@ -915,11 +917,40 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     return 0 if status == "passed" else 1
 
 
+def _resolve_prompt_text(raw_parts: list[str]) -> str:
+    text = " ".join(raw_parts).strip()
+    if text:
+        return text
+    if not sys.stdin.isatty():
+        return sys.stdin.read().strip()
+    raise BacklogError("prompt requires text arguments or piped stdin")
+
+
+def cmd_prompt(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    analysis = build_tune_analysis(profile)
+    prompt_payload = build_prompt_improvement(
+        profile,
+        prompt_text=_resolve_prompt_text(args.prompt),
+        complexity=args.complexity,
+        analysis=analysis,
+    )
+    if args.format == "json":
+        print(json.dumps(prompt_payload, indent=2))
+    else:
+        print(prompt_payload["improved_prompt"])
+    return 0
+
+
 def cmd_tune(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     analysis = build_tune_analysis(profile)
-    payload, created = seed_tune_task(profile)
-    if created:
+    prompt_profiles = build_prompt_profiles(profile, analysis=analysis)
+    payload: dict[str, Any] = {}
+    created = False
+    if not args.no_task:
+        payload, created = seed_tune_task(profile)
+    if created and payload:
         append_event(
             profile.paths,
             event_type="task_added",
@@ -928,7 +959,18 @@ def cmd_tune(args: argparse.Namespace) -> int:
             payload={"title": payload["title"], "bucket": payload["bucket"]},
         )
     _emit_render(profile)
-    print(json.dumps({**payload, "created": created, "tune_analysis": analysis}, indent=2))
+    print(
+        json.dumps(
+            {
+                **payload,
+                "created": created,
+                "task_created": created,
+                "tune_analysis": analysis,
+                "prompt_profiles": prompt_profiles,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -1091,9 +1133,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_snapshot.add_argument("--project-root", default=None)
     p_snapshot.set_defaults(func=cmd_snapshot)
 
-    p_tune = subparsers.add_parser("tune", help="Seed a self-tuning backlog analysis task")
+    p_prompt = subparsers.add_parser("prompt", help="Rewrite a prompt against the local repo contract")
+    p_prompt.add_argument("--project-root", default=None)
+    p_prompt.add_argument("--complexity", choices=("low", "medium", "high"), default="medium")
+    p_prompt.add_argument("--format", choices=("text", "json"), default="text")
+    p_prompt.add_argument("prompt", nargs=argparse.REMAINDER)
+    p_prompt.set_defaults(func=cmd_prompt)
+
+    p_tune = subparsers.add_parser("tune", help="Analyze self-tuning guidance and optionally seed a task")
     p_tune.add_argument("--project-root", default=None)
     p_tune.add_argument("--actor", default="blackdog")
+    p_tune.add_argument("--no-task", action="store_true")
     p_tune.set_defaults(func=cmd_tune)
 
     p_worktree = subparsers.add_parser("worktree", help="Branch-backed worktree lifecycle for implementation tasks")

@@ -306,6 +306,20 @@ Current auto-filled keys may include:
 - best-effort changed-path capture via `changed_paths`,
   `actual_touched_paths`, and `actual_touched_path_count` when
   `result record` runs inside a git checkout with visible task changes
+- prompt/context metrics derived from the task contract such as
+  `context_doc_count`, `context_check_count`, `context_path_count`,
+  `context_domain_count`, `context_has_objective`,
+  `context_has_why`, `context_has_evidence`,
+  `context_has_safe_first_slice`, `context_estimate_field_count`,
+  `context_packet_score`, `context_packet_bytes`,
+  `context_efficiency_ratio`, `misstep_total`, and
+  `document_routing_value_score`
+
+These newer context and document-routing fields are intentionally proxy
+signals. They measure how much structured context Blackdog routed into a
+task and how that context lined up with retries, land failures, and
+estimate drift; they do not claim to prove that an agent literally read
+or cited a specific doc.
 
 `metadata` is optional in older rows and continues to carry child-launch metadata.
 

@@ -178,14 +178,14 @@ def install_model_backed_supervisor_launcher(
     script_body: str,
     *,
     commit_message: str,
-    use_low_effort: bool = True,
+    effort: str | None = "low",
 ) -> Path:
     launcher_script = root / "codex"
     launcher_script.write_text(script_body.strip() + "\n", encoding="utf-8")
     launcher_script.chmod(0o755)
     launch_args = ["exec", "--dangerously-bypass-approvals-and-sandbox"]
-    if use_low_effort:
-        launch_args.extend(["--effort", "low"])
+    if effort:
+        launch_args.extend(["--effort", effort])
     profile_text = (root / "blackdog.toml").read_text(encoding="utf-8")
     rendered_launch_command = ", ".join(json.dumps(arg) for arg in [str(launcher_script), *launch_args])
     profile_text, replaced = re.subn(
@@ -763,6 +763,13 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(tune_payload["tune_analysis"]["tasks_with_recorded_compute"], 1)
         self.assertEqual(tune_payload["tune_analysis"]["estimated_time_samples"], 1)
         self.assertEqual(tune_payload["tune_analysis"]["recommendation"]["focus"], "task_shaping_coverage")
+        self.assertIn("time", tune_payload["tune_analysis"]["categories"])
+        self.assertIn("missteps", tune_payload["tune_analysis"]["categories"])
+        self.assertIn("document_use_value", tune_payload["tune_analysis"]["categories"])
+        self.assertIn("context_efficiency", tune_payload["tune_analysis"]["categories"])
+        self.assertIn("low", tune_payload["prompt_profiles"])
+        self.assertIn("medium", tune_payload["prompt_profiles"])
+        self.assertIn("high", tune_payload["prompt_profiles"])
         self.assertIn("recorded runtime history", tune_payload["safe_first_slice"].lower())
 
         summary = json.loads(
@@ -795,6 +802,63 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(rerun_payload["tune_analysis"]["tasks_with_recorded_compute"], 1)
         task_added_rows = [row for row in load_events(paths) if row["type"] == "task_added" and row.get("task_id") == tune_payload["id"]]
         self.assertEqual(len(task_added_rows), 1)
+
+        no_task_payload = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "tune", "--project-root", str(self.root), "--no-task"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertFalse(no_task_payload["created"])
+        self.assertNotIn("id", no_task_payload)
+        self.assertIn("prompt_profiles", no_task_payload)
+
+    def test_prompt_command_rewrites_prompt_for_complexity_levels(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        outputs: dict[str, dict[str, object]] = {}
+        for complexity in ("low", "medium", "high"):
+            payload = json.loads(
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "blackdog.cli",
+                        "prompt",
+                        "--project-root",
+                        str(self.root),
+                        "--complexity",
+                        complexity,
+                        "--format",
+                        "json",
+                        "Need",
+                        "a",
+                        "prompt",
+                        "that",
+                        "sets",
+                        "up",
+                        "a",
+                        "host-repo",
+                        "task.",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=cli_env(),
+                    cwd=self.root,
+                ).stdout
+            )
+            outputs[complexity] = payload
+            self.assertEqual(payload["complexity"], complexity)
+            self.assertIn("Demo", payload["improved_prompt"])
+            self.assertIn("AGENTS.md", payload["improved_prompt"])
+            self.assertIn("blackdog worktree preflight", payload["improved_prompt"])
+            self.assertIn("Need a prompt that sets up a host-repo task.", payload["improved_prompt"])
+            self.assertIn("tuning_categories", payload)
+        self.assertLess(outputs["low"]["context_budget"]["packet_bytes"], outputs["high"]["context_budget"]["packet_bytes"])
 
     def test_coverage_command_runs_specified_command_and_writes_output(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -1719,6 +1783,14 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(telemetry["actual_retry_count"], 1)
         self.assertEqual(telemetry["actual_landing_failures"], 1)
         self.assertEqual(telemetry["comparison_note"], "operator note")
+        self.assertEqual(telemetry["context_doc_count"], 5)
+        self.assertEqual(telemetry["context_check_count"], 1)
+        self.assertEqual(telemetry["context_path_count"], 1)
+        self.assertTrue(telemetry["context_has_why"])
+        self.assertTrue(telemetry["context_has_evidence"])
+        self.assertTrue(telemetry["context_has_safe_first_slice"])
+        self.assertGreaterEqual(telemetry["context_packet_score"], 1)
+        self.assertEqual(telemetry["misstep_total"], 3)
         self.assertIn("README.md", telemetry["changed_paths"])
         self.assertEqual(telemetry["actual_touched_path_count"], len(telemetry["changed_paths"]))
 
@@ -7336,7 +7408,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 """,
             commit_message="Checkpoint model-backed convergence launcher",
-            use_low_effort=True,
+            effort="low",
         )
 
         implementation_titles = [
@@ -7477,6 +7549,151 @@ if __name__ == "__main__":
         for task_id in all_task_ids:
             self.assertEqual(snapshot_tasks[task_id]["operator_status"], "Complete")
             self.assertEqual(snapshot_tasks[task_id]["latest_result_status"], "success")
+
+    def test_supervise_run_preserves_reporting_contract_across_effort_levels(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        launcher_script = """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    effort = "unset"
+    if "--effort" in args:
+        index = args.index("--effort")
+        if index + 1 < len(args):
+            effort = args[index + 1]
+    file_name = f"{task_id}-{effort}.txt"
+    Path(file_name).write_text(effort + "\\n", encoding="utf-8")
+    subprocess.run(["git", "add", file_name], check=True)
+    subprocess.run(["git", "commit", "-m", f"Record {task_id} effort {effort}"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"completed {task_id} with effort {effort}",
+            "--validation",
+            f"effort={effort}",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+        for effort in ("low", "medium", "high"):
+            with self.subTest(effort=effort):
+                install_model_backed_supervisor_launcher(
+                    self.root,
+                    launcher_script,
+                    commit_message=f"Checkpoint launcher for {effort} reporting contract",
+                    effort=effort,
+                )
+                title = f"Effort reporting {effort}"
+                run_cli(
+                    "add",
+                    "--project-root",
+                    str(self.root),
+                    "--title",
+                    title,
+                    "--bucket",
+                    "core",
+                    "--why",
+                    "Need to prove reporting stays valid across configured effort levels.",
+                    "--evidence",
+                    "The result payload should keep the same telemetry contract regardless of model effort.",
+                    "--safe-first-slice",
+                    "Run one child and inspect the saved task-result telemetry.",
+                    "--path",
+                    "README.md",
+                    "--doc",
+                    "AGENTS.md",
+                    "--check",
+                    "make test",
+                    "--task-shaping",
+                    json.dumps({"estimated_active_minutes": 5, "estimated_elapsed_minutes": 8}),
+                    "--epic-title",
+                    "Effort contract",
+                    "--lane-title",
+                    f"Effort {effort}",
+                    "--wave",
+                    "0",
+                )
+                task_id = task_ids_by_title(self.root)[title]
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "blackdog.cli",
+                        "supervise",
+                        "run",
+                        "--project-root",
+                        str(self.root),
+                        "--actor",
+                        "supervisor",
+                        "--id",
+                        task_id,
+                        "--count",
+                        "1",
+                        "--poll-interval-seconds",
+                        "0",
+                        "--format",
+                        "json",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=cli_env(),
+                    cwd=self.root,
+                )
+                stdout, stderr = process.communicate(timeout=20)
+                self.assertEqual(process.returncode, 0, stderr)
+                payload = json.loads(stdout)
+                self.assertEqual(payload["final_status"], "idle")
+                self.assertEqual(len(payload["children"]), 1)
+                launch_command = payload["children"][0]["launch_command"]
+                self.assertIn("--effort", launch_command)
+                self.assertEqual(launch_command[launch_command.index("--effort") + 1], effort)
+
+                result_rows = [row for row in load_task_results(self.runtime_paths()) if row["task_id"] == task_id]
+                self.assertEqual(len(result_rows), 1)
+                telemetry = result_rows[0]["task_shaping_telemetry"]
+                self.assertEqual(telemetry["context_doc_count"], 1)
+                self.assertEqual(telemetry["context_check_count"], 1)
+                self.assertEqual(telemetry["context_path_count"], 1)
+                self.assertIn("misstep_total", telemetry)
+                self.assertIn("actual_task_minutes", telemetry)
 
     def test_supervise_run_performs_a_second_round_convergence_optimization_funnel(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -7755,7 +7972,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 """,
             commit_message="Checkpoint model-backed convergence funnel launcher",
-            use_low_effort=True,
+            effort="low",
         )
 
         implementation_titles = [

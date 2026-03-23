@@ -17,6 +17,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog render`
 - `blackdog snapshot`
 - `blackdog coverage [--command CMD] [--output FILE]`
+- `blackdog prompt [--complexity low|medium|high] [--format text|json] PROMPT...`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
@@ -109,6 +110,7 @@ product development.
 - `blackdog plan`
 - `blackdog summary`
 - `blackdog next`
+- `blackdog prompt`
 - `blackdog tune`
 - `blackdog supervise run`
 - `blackdog supervise status`
@@ -121,7 +123,9 @@ product development.
 - `blackdog comment --actor NAME --id TASK --body ...`
 - `blackdog events`
 
-`blackdog tune` seeds one stable self-tuning task and now prints both the task payload and a `tune_analysis` summary. That summary uses recorded task time, estimate coverage, retry pressure, landing failures, and explicit task-shaping telemetry coverage to decide whether Blackdog has enough local history to tune effectively and which runtime gap should be addressed first.
+`blackdog prompt` rewrites a raw prompt against the local repo contract. It emits low/medium/high complexity prompt profiles derived from the repo profile, routed docs, validation defaults, and the latest tune recommendation so host-repo skills can reuse Blackdog's repo-local guidance instead of rebuilding it from scratch.
+
+`blackdog tune` now does direct tuning as well as optional backlog seeding. It still prints the stable self-tuning task payload when task creation is enabled, but it also emits a `tune_analysis` summary plus low/medium/high `prompt_profiles`. The analysis now groups runtime signals into `time`, `missteps`, `document_use_value`, and `context_efficiency`, then uses those categories to decide which runtime gap should be addressed first. Pass `--no-task` when you want the tuning guidance without automatically seeding a backlog task.
 
 `blackdog backlog new NAME` creates a separate backlog artifact set under the configured control root. It uses the same file layout as the default backlog and is intended for scratch queues, test fixtures, or alternate operator views without polluting the default backlog.
 
@@ -161,7 +165,7 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 
 - `blackdog result record --id TASK --actor NAME --status success|blocked|partial --what-changed ... --task-shaping-telemetry JSON_OBJECT ...`
 
-`result record` now merges operator-supplied `--task-shaping-telemetry` with the runtime facts Blackdog can derive automatically: the current task-shaping estimate snapshot, aggregate task time derived from claims, reclaim count, worktree count, retry count, landing-failure count, and best-effort changed-paths from the current git checkout.
+`result record` now merges operator-supplied `--task-shaping-telemetry` with the runtime facts Blackdog can derive automatically: the current task-shaping estimate snapshot, aggregate task time derived from claims, reclaim count, worktree count, retry count, landing-failure count, best-effort changed-paths from the current git checkout, and prompt-tuning/context metrics derived from the task contract (`context_doc_count`, `context_check_count`, `context_path_count`, `context_packet_score`, `misstep_total`, and related fields).
 
 ### Coverage reporting
 
