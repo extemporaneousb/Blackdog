@@ -58,7 +58,9 @@ from .store import (
     record_task_result,
     resolve_message,
     save_state,
+    save_tracked_installs,
     send_message,
+    load_tracked_installs,
 )
 from .supervisor import (
     SupervisorError,
@@ -185,6 +187,126 @@ def _parse_json_object(value: str | None, *, command: str, flag: str) -> dict[st
     if not isinstance(payload, dict):
         raise BacklogError(f"{command} requires {flag} to be a JSON object")
     return payload
+
+
+def _normalize_repo_roots(raw_paths: list[str]) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        root = Path(raw).expanduser().resolve()
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots
+
+
+def _tracked_install_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    rows = registry.get("repos") if isinstance(registry.get("repos"), list) else []
+    return {
+        str(row.get("project_root")): row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("project_root") or "").strip()
+    }
+
+
+def _build_tracked_install_row(project_root: Path) -> dict[str, Any]:
+    profile = load_profile(project_root)
+    cli_candidate = (project_root / ".VE" / "bin" / "blackdog").resolve()
+    return {
+        "project_root": str(project_root),
+        "project_name": profile.project_name,
+        "profile_file": str(profile.paths.profile_file),
+        "control_dir": str(profile.paths.control_dir),
+        "blackdog_cli": str(cli_candidate) if cli_candidate.exists() else "",
+        "added_at": now_iso(),
+        "last_update": {},
+        "last_observation": {},
+    }
+
+
+def _resolve_tracked_install_targets(profile, *, raw_targets: list[str], all_tracked: bool) -> list[Path]:
+    explicit = _normalize_repo_roots(raw_targets)
+    if explicit:
+        return explicit
+    registry = load_tracked_installs(profile.paths)
+    targets = _normalize_repo_roots(
+        [str(row.get("project_root")) for row in registry.get("repos", []) if isinstance(row, dict)]
+    )
+    if targets:
+        return targets
+    if all_tracked:
+        raise BacklogError("No tracked installs are registered.")
+    raise BacklogError("Provide one or more repo paths, or register installs first with `blackdog installs add`.")
+
+
+def _observe_tracked_install(project_root: Path, *, next_limit: int) -> dict[str, Any]:
+    profile = load_profile(project_root)
+    snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    view = build_view_model(
+        profile,
+        snapshot,
+        state,
+        events=load_events(profile.paths, limit=20),
+        messages=load_inbox(profile.paths),
+        results=load_task_results(profile.paths),
+    )
+    analysis = build_tune_analysis(profile)
+    return {
+        "project_root": str(project_root),
+        "project_name": profile.project_name,
+        "profile_file": str(profile.paths.profile_file),
+        "control_dir": str(profile.paths.control_dir),
+        "html_file": str(profile.paths.html_file),
+        "counts": view["counts"],
+        "next_rows": view["next_rows"][:next_limit],
+        "tune_recommendation": analysis["recommendation"],
+        "tune_categories": analysis["categories"],
+        "observed_at": now_iso(),
+    }
+
+
+def _render_tracked_installs_list(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No tracked installs.\n"
+    lines: list[str] = []
+    for row in rows:
+        lines.append(f"{row['project_name']} {row['project_root']}")
+        last_update = row.get("last_update") if isinstance(row.get("last_update"), dict) else {}
+        last_observation = row.get("last_observation") if isinstance(row.get("last_observation"), dict) else {}
+        if last_update.get("at"):
+            lines.append(f"  update: {last_update.get('status', 'unknown')} @ {last_update['at']}")
+        if last_observation.get("at"):
+            lines.append(
+                f"  observe: {last_observation.get('tune_focus', 'unknown')} @ {last_observation['at']}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _render_tracked_install_observations(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No observations.\n"
+    lines: list[str] = []
+    for row in rows:
+        counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+        recommendation = row.get("tune_recommendation") if isinstance(row.get("tune_recommendation"), dict) else {}
+        lines.append(f"{row['project_name']} {row['project_root']}")
+        lines.append(
+            "  counts:"
+            f" ready={counts.get('ready', 0)} claimed={counts.get('claimed', 0)}"
+            f" done={counts.get('done', 0)} waiting={counts.get('waiting', 0)}"
+        )
+        lines.append(
+            f"  tune: {recommendation.get('focus', 'unknown')} - {recommendation.get('summary', '')}".rstrip()
+        )
+        next_rows = row.get("next_rows") if isinstance(row.get("next_rows"), list) else []
+        for next_row in next_rows:
+            if not isinstance(next_row, dict):
+                continue
+            lines.append(f"  next: {next_row.get('id', '')} {next_row.get('title', '')}".rstrip())
+    return "\n".join(lines) + "\n"
 
 
 def _parse_trace_command(command: str) -> tuple[dict[str, str], list[str]]:
@@ -431,6 +553,138 @@ def cmd_update_repo(args: argparse.Namespace) -> int:
         blackdog_source=Path(args.blackdog_source) if args.blackdog_source else None,
     )
     print(json.dumps(report, indent=2))
+    return 0
+
+
+def cmd_installs_add(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    registry = load_tracked_installs(profile.paths)
+    index = _tracked_install_index(registry)
+    added: list[dict[str, Any]] = []
+    for root in _normalize_repo_roots(args.repo):
+        row = _build_tracked_install_row(root)
+        existing = index.get(str(root))
+        if existing:
+            row["added_at"] = existing.get("added_at") or row["added_at"]
+            if isinstance(existing.get("last_update"), dict):
+                row["last_update"] = existing["last_update"]
+            if isinstance(existing.get("last_observation"), dict):
+                row["last_observation"] = existing["last_observation"]
+        index[str(root)] = row
+        added.append(row)
+    registry["repos"] = list(index.values())
+    installs_file = save_tracked_installs(profile.paths, registry)
+    payload = {"installs_file": str(installs_file), "repos": added}
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def cmd_installs_list(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    registry = load_tracked_installs(profile.paths)
+    rows = registry.get("repos") if isinstance(registry.get("repos"), list) else []
+    if args.format == "json":
+        print(json.dumps({"installs_file": str(profile.paths.control_dir / "tracked-installs.json"), "repos": rows}, indent=2))
+    else:
+        print(_render_tracked_installs_list(rows), end="")
+    return 0
+
+
+def cmd_installs_remove(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    registry = load_tracked_installs(profile.paths)
+    removed_keys = {str(root) for root in _normalize_repo_roots(args.repo)}
+    rows = [row for row in registry.get("repos", []) if isinstance(row, dict) and str(row.get("project_root")) not in removed_keys]
+    registry["repos"] = rows
+    installs_file = save_tracked_installs(profile.paths, registry)
+    print(json.dumps({"installs_file": str(installs_file), "removed": sorted(removed_keys)}, indent=2))
+    return 0
+
+
+def cmd_installs_update(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    registry = load_tracked_installs(profile.paths)
+    index = _tracked_install_index(registry)
+    source_root = Path(args.blackdog_source).expanduser().resolve() if args.blackdog_source else profile.paths.project_root
+    rows: list[dict[str, Any]] = []
+    for target in _resolve_tracked_install_targets(profile, raw_targets=args.repo, all_tracked=args.all):
+        try:
+            report = update_project_repo(target, blackdog_source=source_root)
+            row = {
+                "project_root": str(target),
+                "status": "success",
+                "updated_at": now_iso(),
+                "report": report,
+            }
+        except (ScaffoldError, ConfigError, BacklogError, StoreError) as exc:
+            row = {
+                "project_root": str(target),
+                "status": "error",
+                "updated_at": now_iso(),
+                "error": str(exc),
+            }
+        tracked = index.get(str(target))
+        if tracked is not None:
+            tracked["last_update"] = {
+                "at": row["updated_at"],
+                "status": row["status"],
+                "blackdog_source": str(source_root),
+                **({"error": row["error"]} if row.get("error") else {}),
+            }
+        rows.append(row)
+    registry["repos"] = list(index.values())
+    save_tracked_installs(profile.paths, registry)
+    print(json.dumps({"blackdog_source": str(source_root), "repos": rows}, indent=2))
+    return 0
+
+
+def cmd_installs_observe(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    registry = load_tracked_installs(profile.paths)
+    index = _tracked_install_index(registry)
+    rows: list[dict[str, Any]] = []
+    for target in _resolve_tracked_install_targets(profile, raw_targets=args.repo, all_tracked=args.all):
+        try:
+            observation = _observe_tracked_install(target, next_limit=args.next_limit)
+            row = {
+                "project_root": str(target),
+                "status": "success",
+                **observation,
+            }
+        except (ConfigError, BacklogError, StoreError) as exc:
+            row = {
+                "project_root": str(target),
+                "status": "error",
+                "observed_at": now_iso(),
+                "error": str(exc),
+            }
+        tracked = index.get(str(target))
+        if tracked is not None and row["status"] == "success":
+            tracked["last_observation"] = {
+                "at": row["observed_at"],
+                "counts": row["counts"],
+                "next_rows": row["next_rows"],
+                "tune_focus": row["tune_recommendation"]["focus"],
+                "tune_summary": row["tune_recommendation"]["summary"],
+            }
+        rows.append(row)
+    registry["repos"] = list(index.values())
+    save_tracked_installs(profile.paths, registry)
+    if args.format == "json":
+        improvement_candidates = [
+            {
+                "project_root": row["project_root"],
+                "project_name": row.get("project_name", ""),
+                "focus": row["tune_recommendation"]["focus"],
+                "summary": row["tune_recommendation"]["summary"],
+            }
+            for row in rows
+            if row.get("status") == "success"
+        ]
+        print(json.dumps({"repos": rows, "blackdog_improvement_candidates": improvement_candidates}, indent=2))
+    else:
+        successful = [row for row in rows if row.get("status") == "success"]
+        print(_render_tracked_install_observations(successful), end="")
     return 0
 
 
@@ -1051,6 +1305,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_update_repo.add_argument("project_root")
     p_update_repo.add_argument("--blackdog-source", default=None)
     p_update_repo.set_defaults(func=cmd_update_repo)
+
+    p_installs = subparsers.add_parser(
+        "installs",
+        help="Maintain a machine-local registry of Blackdog repos and observe/update them from this checkout",
+    )
+    installs_subparsers = p_installs.add_subparsers(dest="installs_command", required=True)
+    p_installs_add = installs_subparsers.add_parser("add", help="Register one or more Blackdog repos in the local install registry")
+    p_installs_add.add_argument("--project-root", default=None)
+    p_installs_add.add_argument("repo", nargs="+")
+    p_installs_add.set_defaults(func=cmd_installs_add)
+    p_installs_list = installs_subparsers.add_parser("list", help="List tracked Blackdog repos from the local install registry")
+    p_installs_list.add_argument("--project-root", default=None)
+    p_installs_list.add_argument("--format", choices=("text", "json"), default="text")
+    p_installs_list.set_defaults(func=cmd_installs_list)
+    p_installs_remove = installs_subparsers.add_parser("remove", help="Remove one or more repos from the local install registry")
+    p_installs_remove.add_argument("--project-root", default=None)
+    p_installs_remove.add_argument("repo", nargs="+")
+    p_installs_remove.set_defaults(func=cmd_installs_remove)
+    p_installs_update = installs_subparsers.add_parser("update", help="Push this Blackdog checkout into tracked repos")
+    p_installs_update.add_argument("--project-root", default=None)
+    p_installs_update.add_argument("--all", action="store_true")
+    p_installs_update.add_argument("--blackdog-source", default=None)
+    p_installs_update.add_argument("repo", nargs="*")
+    p_installs_update.set_defaults(func=cmd_installs_update)
+    p_installs_observe = installs_subparsers.add_parser(
+        "observe",
+        help="Summarize tracked host backlog/tune state so this checkout can mine local repo intelligence",
+    )
+    p_installs_observe.add_argument("--project-root", default=None)
+    p_installs_observe.add_argument("--all", action="store_true")
+    p_installs_observe.add_argument("--format", choices=("text", "json"), default="text")
+    p_installs_observe.add_argument("--next-limit", type=int, default=3)
+    p_installs_observe.add_argument("repo", nargs="*")
+    p_installs_observe.set_defaults(func=cmd_installs_observe)
 
     p_init = subparsers.add_parser("init", help="Initialize repo-local Blackdog files without generating a project skill")
     p_init.add_argument("--project-root", default=".")

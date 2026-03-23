@@ -72,6 +72,19 @@ When you are sitting in a Blackdog source checkout and want to push that version
 2. Blackdog reinstalls itself into the host repo's `.VE`.
 3. Blackdog then runs the same non-destructive refresh flow described above, regenerating the branded board and managed project-local skill files.
 
+## Multi-repo local development checkout
+
+If one Blackdog development checkout manages several local host repos on the same machine, register them from that dev checkout with:
+
+- `blackdog installs add /abs/path/to/repo ...`
+- `blackdog installs list`
+- `blackdog installs update --all`
+- `blackdog installs observe --all`
+
+That tracked-install registry is machine-local state under the development checkout's control root. It is the right place to remember "these are the local repos I manage from this Blackdog checkout" because those paths are operator-specific, not host-repo contract.
+
+`installs update` pushes the current Blackdog source into each tracked repo through the existing `update-repo` path. `installs observe` reads each tracked repo's backlog summary and tune recommendation so the development checkout can compare host-repo friction points and mine Blackdog improvement candidates across local repos.
+
 ## How the Blackdog skill appears in Codex
 
 Bootstrap and refresh generate these managed files under `.codex/skills/blackdog/`:

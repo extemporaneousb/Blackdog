@@ -179,6 +179,34 @@ Schema:
 
 Blackdog uses this manifest to tell whether a managed skill file still matches the last generated version. If the file diverged locally, refresh leaves it in place and writes a `*.blackdog-new` sidecar beside it instead of overwriting it.
 
+## `<control_dir>/tracked-installs.json`
+
+Machine-local registry of Blackdog repos tracked from one development checkout.
+
+This file is not part of a host repo's shared contract. It lives under the current checkout's shared control root so one local Blackdog development repo can remember which host repos it manages on that machine.
+
+Schema:
+
+- `schema_version`
+- `repos`
+  - `project_root`
+  - `project_name`
+  - `profile_file`
+  - `control_dir`
+  - `blackdog_cli`
+  - `added_at`
+  - `last_update`
+    - `at`
+    - `status`
+    - `blackdog_source`
+    - optional `error`
+  - `last_observation`
+    - `at`
+    - `counts`
+    - `next_rows`
+    - `tune_focus`
+    - `tune_summary`
+
 ## `<control_dir>/backlog-state.json`
 
 Structured execution state.

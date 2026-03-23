@@ -34,6 +34,7 @@ from blackdog.store import (
     load_events,
     load_inbox,
     load_jsonl,
+    load_tracked_installs,
     load_task_results,
     record_task_result,
     resolve_message,
@@ -589,20 +590,18 @@ class BlackdogCliTests(unittest.TestCase):
     def runtime_paths(self):
         return load_profile(self.root).paths
 
+    def init_git_repo(self, root: Path) -> None:
+        subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.email", "blackdog@example.com"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name", "Blackdog Test"], check=True, capture_output=True, text=True)
+        (root / ".gitignore").write_text("", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", ".gitignore"], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-m", "Initial test commit"], check=True, capture_output=True, text=True)
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        subprocess.run(["git", "init", "-b", "main", str(self.root)], check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "blackdog@example.com"], check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "Blackdog Test"], check=True, capture_output=True, text=True)
-        (self.root / ".gitignore").write_text("", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", ".gitignore"], check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-m", "Initial test commit"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        self.init_git_repo(self.root)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -650,6 +649,91 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(len(payload["next_rows"]), 1)
         self.assertTrue(paths.html_file.exists())
         self.assertTrue(paths.html_file.with_name("backlog-index.html").exists())
+
+    def test_installs_registry_persists_and_observes_host_repos(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        host_one = self.root / "host-one"
+        host_two = self.root / "host-two"
+        host_one.mkdir()
+        host_two.mkdir()
+        self.init_git_repo(host_one)
+        self.init_git_repo(host_two)
+        run_cli("bootstrap", "--project-root", str(host_one), "--project-name", "Host One")
+        run_cli("bootstrap", "--project-root", str(host_two), "--project-name", "Host Two")
+        run_cli(
+            "add",
+            "--project-root",
+            str(host_one),
+            "--title",
+            "Host backlog task",
+            "--bucket",
+            "core",
+            "--why",
+            "Observation should surface runnable host work.",
+            "--evidence",
+            "The local install report needs next-task visibility.",
+            "--safe-first-slice",
+            "Add one host task.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Host work",
+            "--lane-title",
+            "Host lane",
+            "--wave",
+            "0",
+        )
+
+        run_cli("installs", "add", "--project-root", str(self.root), str(host_one), str(host_two))
+        registry = load_tracked_installs(self.runtime_paths())
+        self.assertEqual(len(registry["repos"]), 2)
+        self.assertEqual({row["project_name"] for row in registry["repos"]}, {"Host One", "Host Two"})
+
+        observed = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "installs", "observe", "--project-root", str(self.root), "--all", "--format", "json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(len(observed["repos"]), 2)
+        host_one_row = next(row for row in observed["repos"] if row["project_name"] == "Host One")
+        self.assertEqual(host_one_row["counts"]["ready"], 1)
+        self.assertEqual(host_one_row["next_rows"][0]["title"], "Host backlog task")
+        self.assertIn("focus", host_one_row["tune_recommendation"])
+        self.assertTrue(observed["blackdog_improvement_candidates"])
+
+        refreshed_registry = load_tracked_installs(self.runtime_paths())
+        tracked_host_one = next(row for row in refreshed_registry["repos"] if row["project_name"] == "Host One")
+        self.assertEqual(tracked_host_one["last_observation"]["counts"]["ready"], 1)
+        self.assertEqual(tracked_host_one["last_observation"]["next_rows"][0]["title"], "Host backlog task")
+
+    def test_installs_update_uses_registry_targets_and_records_status(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        host = self.root / "host-update"
+        host.mkdir()
+        self.init_git_repo(host)
+        run_cli("bootstrap", "--project-root", str(host), "--project-name", "Host Update")
+        run_cli("installs", "add", "--project-root", str(self.root), str(host))
+
+        with patch("blackdog.cli.update_project_repo") as mock_update:
+            mock_update.return_value = {"project_root": str(host), "status": "ok"}
+            with redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(run_cli("installs", "update", "--project-root", str(self.root), "--all"), 0)
+            payload = json.loads(stdout.getvalue())
+        self.assertEqual(len(payload["repos"]), 1)
+        self.assertEqual(payload["repos"][0]["status"], "success")
+        mock_update.assert_called_once()
+        called_root = mock_update.call_args.kwargs["blackdog_source"]
+        self.assertEqual(called_root.resolve(), self.root.resolve())
+
+        registry = load_tracked_installs(self.runtime_paths())
+        row = registry["repos"][0]
+        self.assertEqual(row["last_update"]["status"], "success")
+        self.assertEqual(Path(row["last_update"]["blackdog_source"]).resolve(), self.root.resolve())
 
     def test_tune_command_creates_stable_self_tuning_task(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

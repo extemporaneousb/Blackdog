@@ -50,7 +50,8 @@ exist. Richer write-enabled runtime steering still does not.
      to `<git-common-dir>/blackdog`, so every worktree in the repo
      sees the same `backlog.md`, `backlog-state.json`, `events.jsonl`,
      `inbox.jsonl`, `task-results/`, the repo-branded backlog HTML
-     file, the compatibility `backlog-index.html` alias, and
+     file, the compatibility `backlog-index.html` alias,
+     `tracked-installs.json`, and
      `supervisor-runs/`.
 	 
    - `blackdog.toml` stays repo-local, but runtime state is no longer
@@ -106,6 +107,12 @@ exist. Richer write-enabled runtime steering still does not.
 This layout resolves mutable runtime files from one shared git control
 root rather than repo-root runtime directories, so the working tree no
 longer carries duplicate execution state.
+
+For a Blackdog development checkout that manages multiple local host
+repos, that same control root now also carries a machine-local tracked
+install registry. It lets one development repo remember which local
+Blackdog repos it should update and observe without checking that
+developer-computer knowledge into any host repo.
 
 The current supervisor launcher assumes an exec-capable Codex
 runtime. With default settings, Blackdog prefers the desktop Codex.app

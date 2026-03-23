@@ -12,6 +12,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog bootstrap --project-root PATH --project-name NAME`
 - `blackdog refresh [--project-root PATH]`
 - `blackdog update-repo PATH [--blackdog-source PATH]`
+- `blackdog installs add|list|remove|update|observe ...`
 - `blackdog init --project-root PATH --project-name NAME`
 - `blackdog validate`
 - `blackdog render`
@@ -72,6 +73,17 @@ From a Blackdog source checkout, you can push the latest source into another rep
 ```bash
 blackdog update-repo /path/to/repo
 ```
+
+When you maintain multiple local Blackdog repos from one development checkout, register them in a machine-local install registry and operate on them as a set:
+
+```bash
+blackdog installs add /path/to/repo-one /path/to/repo-two
+blackdog installs list
+blackdog installs update --all
+blackdog installs observe --all
+```
+
+`blackdog installs add` stores repo roots under the shared control root for the current development checkout. `installs update` pushes the current Blackdog source into those tracked repos by calling the same `update-repo` flow per target. `installs observe` reads each tracked repo's backlog and tune state so the dev checkout can mine local host-repo intelligence without baking those machine-local paths into the skill scaffold or the host repos themselves.
 
 `blackdog worktree ...` is the implementation-work entrypoint. WTAM is the implementation model:
 
