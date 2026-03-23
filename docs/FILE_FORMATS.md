@@ -298,11 +298,16 @@ Current auto-filled keys may include:
   `estimated_elapsed_minutes`, `estimated_touched_paths`,
   `estimated_validation_minutes`, `estimated_worktrees`,
   `estimated_handoffs`, and `parallelizable_groups`
+- estimate provenance fields such as `estimate_source`,
+  `estimate_basis_effort`, and `estimate_basis_sample_size`
 - claim-derived runtime facts such as `actual_task_seconds`,
-  `actual_task_minutes`, `actual_active_minutes`, `claim_count`,
-  `actual_reclaim_count`, `actual_worktrees_used`,
+  `actual_task_minutes`, `actual_active_minutes`,
+  `actual_elapsed_minutes`, `claim_count`, `actual_reclaim_count`,
+  `actual_worktrees_used`,
   `actual_retry_count`, `actual_handoffs`, and
   `actual_landing_failures`
+- estimate-vs-actual comparison fields such as
+  `estimate_delta_minutes` and `estimate_accuracy_ratio`
 - best-effort changed-path capture via `changed_paths`,
   `actual_touched_paths`, and `actual_touched_path_count` when
   `result record` runs inside a git checkout with visible task changes
@@ -320,6 +325,11 @@ signals. They measure how much structured context Blackdog routed into a
 task and how that context lined up with retries, land failures, and
 estimate drift; they do not claim to prove that an agent literally read
 or cited a specific doc.
+
+When new tasks are added without explicit estimate values, Blackdog now
+seeds task-shaping defaults from completed-history calibration and
+stores the provenance fields above so later tune runs can distinguish
+history-backed estimates from fallback defaults.
 
 `metadata` is optional in older rows and continues to carry child-launch metadata.
 

@@ -125,7 +125,11 @@ product development.
 
 `blackdog prompt` rewrites a raw prompt against the local repo contract. It emits low/medium/high complexity prompt profiles derived from the repo profile, routed docs, validation defaults, and the latest tune recommendation so host-repo skills can reuse Blackdog's repo-local guidance instead of rebuilding it from scratch.
 
+The prompt profiles now also carry calibrated task-shaping defaults by effort (`S`/`M`/`L`) derived from completed work in the repo. That lets tune improve prompt generation, not just reporting: prompts can ask for explicit estimate snapshots that match the repo's observed task history instead of generic defaults.
+
 `blackdog tune` now does direct tuning as well as optional backlog seeding. It still prints the stable self-tuning task payload when task creation is enabled, but it also emits a `tune_analysis` summary plus low/medium/high `prompt_profiles`. The analysis now groups runtime signals into `time`, `missteps`, `document_use_value`, and `context_efficiency`, then uses those categories to decide which runtime gap should be addressed first. Pass `--no-task` when you want the tuning guidance without automatically seeding a backlog task.
+
+`blackdog add` now auto-seeds missing task-shaping estimates from the repo's completed task history. When you omit `--task-shaping` or leave estimate fields blank, Blackdog preserves comparable fields like `estimated_elapsed_minutes`, `estimated_active_minutes`, `estimated_validation_minutes`, and `estimated_touched_paths` so future `tune` runs can compare new work against the same contract instead of mostly reporting coverage gaps.
 
 `blackdog backlog new NAME` creates a separate backlog artifact set under the configured control root. It uses the same file layout as the default backlog and is intended for scratch queues, test fixtures, or alternate operator views without polluting the default backlog.
 

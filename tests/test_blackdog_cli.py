@@ -767,6 +767,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("missteps", tune_payload["tune_analysis"]["categories"])
         self.assertIn("document_use_value", tune_payload["tune_analysis"]["categories"])
         self.assertIn("context_efficiency", tune_payload["tune_analysis"]["categories"])
+        self.assertIn("calibration", tune_payload["tune_analysis"]["categories"])
+        self.assertIn("calibration", tune_payload["tune_analysis"])
         self.assertIn("low", tune_payload["prompt_profiles"])
         self.assertIn("medium", tune_payload["prompt_profiles"])
         self.assertIn("high", tune_payload["prompt_profiles"])
@@ -858,6 +860,8 @@ class BlackdogCliTests(unittest.TestCase):
             self.assertIn("blackdog worktree preflight", payload["improved_prompt"])
             self.assertIn("Need a prompt that sets up a host-repo task.", payload["improved_prompt"])
             self.assertIn("tuning_categories", payload)
+            self.assertIn("calibrated_task_shape_defaults", payload["prompt_profile"])
+            self.assertIn("Calibrated task-shaping defaults by effort", payload["improved_prompt"])
         self.assertLess(outputs["low"]["context_budget"]["packet_bytes"], outputs["high"]["context_budget"]["packet_bytes"])
 
     def test_coverage_command_runs_specified_command_and_writes_output(self) -> None:
@@ -1777,11 +1781,14 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(telemetry["actual_task_seconds"], 1200)
         self.assertEqual(telemetry["actual_task_minutes"], 20)
         self.assertEqual(telemetry["actual_active_minutes"], 20)
+        self.assertEqual(telemetry["actual_elapsed_minutes"], 20)
         self.assertEqual(telemetry["claim_count"], 2)
         self.assertEqual(telemetry["actual_reclaim_count"], 1)
         self.assertEqual(telemetry["actual_worktrees_used"], 1)
         self.assertEqual(telemetry["actual_retry_count"], 1)
         self.assertEqual(telemetry["actual_landing_failures"], 1)
+        self.assertEqual(telemetry["estimate_delta_minutes"], 0)
+        self.assertEqual(telemetry["estimate_accuracy_ratio"], 1.0)
         self.assertEqual(telemetry["comparison_note"], "operator note")
         self.assertEqual(telemetry["context_doc_count"], 5)
         self.assertEqual(telemetry["context_check_count"], 1)
@@ -1793,6 +1800,137 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(telemetry["misstep_total"], 3)
         self.assertIn("README.md", telemetry["changed_paths"])
         self.assertEqual(telemetry["actual_touched_path_count"], len(telemetry["changed_paths"]))
+
+    def test_add_auto_seeds_task_shaping_from_completed_effort_history(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        histories = (
+            ("Medium history A", "2026-03-18T09:00:00-07:00", "2026-03-18T10:20:00-07:00", 80, 50, 15),
+            ("Medium history B", "2026-03-18T11:00:00-07:00", "2026-03-18T12:40:00-07:00", 100, 60, 15),
+        )
+        for title, claimed_at, completed_at, estimate_elapsed, estimate_active, validation_minutes in histories:
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--effort",
+                "M",
+                "--why",
+                "Need comparable history.",
+                "--evidence",
+                "Tune should learn from completed medium tasks.",
+                "--safe-first-slice",
+                "Record a representative medium task.",
+                "--path",
+                "README.md",
+                "--task-shaping",
+                json.dumps(
+                    {
+                        "estimated_elapsed_minutes": estimate_elapsed,
+                        "estimated_active_minutes": estimate_active,
+                        "estimated_validation_minutes": validation_minutes,
+                    }
+                ),
+                "--epic-title",
+                "Telemetry",
+                "--lane-title",
+                "History",
+                "--wave",
+                "0",
+            )
+            task_id = task_ids_by_title(self.root)[title]
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"{task_id}-claim",
+                    "type": "claim",
+                    "at": claimed_at,
+                    "actor": "codex",
+                    "task_id": task_id,
+                    "payload": {},
+                },
+            )
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"{task_id}-complete",
+                    "type": "complete",
+                    "at": completed_at,
+                    "actor": "codex",
+                    "task_id": task_id,
+                    "payload": {"note": "done"},
+                },
+            )
+            record_task_result(
+                paths,
+                task_id=task_id,
+                actor="codex",
+                status="success",
+                what_changed=["Recorded history."],
+                validation=[],
+                residual=[],
+                needs_user_input=False,
+                followup_candidates=[],
+                task_shaping_telemetry={
+                    "estimated_elapsed_minutes": estimate_elapsed,
+                    "estimated_active_minutes": estimate_active,
+                    "estimated_validation_minutes": validation_minutes,
+                    "actual_task_minutes": estimate_elapsed,
+                    "actual_elapsed_minutes": estimate_elapsed,
+                },
+            )
+            state = load_profile(self.root).paths.state_file
+            payload = json.loads(state.read_text(encoding="utf-8"))
+            payload["task_claims"][task_id] = {
+                "status": "done",
+                "title": title,
+                "claimed_by": "codex",
+                "claimed_at": claimed_at,
+                "completed_at": completed_at,
+                "completed_by": "codex",
+            }
+            save_state(state, payload)
+
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Auto-seeded medium task",
+            "--bucket",
+            "core",
+            "--effort",
+            "M",
+            "--why",
+            "New tasks should inherit calibrated estimate coverage.",
+            "--evidence",
+            "Tune should stop blocking on missing estimate snapshots for new medium tasks.",
+            "--safe-first-slice",
+            "Add one medium task without explicit task shaping and inspect the stored defaults.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Telemetry",
+            "--lane-title",
+            "History",
+            "--wave",
+            "0",
+        )
+        profile = load_profile(self.root)
+        snapshot = load_backlog(profile.paths, profile)
+        task = snapshot.tasks[task_ids_by_title(self.root)["Auto-seeded medium task"]]
+        task_shaping = task.payload["task_shaping"]
+        self.assertEqual(task_shaping["estimated_elapsed_minutes"], 90)
+        self.assertEqual(task_shaping["estimated_active_minutes"], 55)
+        self.assertEqual(task_shaping["estimated_validation_minutes"], 15)
+        self.assertEqual(task_shaping["estimated_touched_paths"], ["README.md"])
+        self.assertEqual(task_shaping["estimate_source"], "history")
+        self.assertEqual(task_shaping["estimate_basis_effort"], "M")
+        self.assertEqual(task_shaping["estimate_basis_sample_size"], 2)
 
     def test_claim_records_reported_pid_without_a_lease_timeout(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

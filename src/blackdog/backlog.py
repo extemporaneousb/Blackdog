@@ -43,6 +43,23 @@ TASK_SHAPING_DEFAULTS = {
     "estimated_handoffs": 0,
     "parallelizable_groups": 0,
 }
+EFFORT_TASK_SHAPING_BASELINES = {
+    "S": {
+        "estimated_elapsed_minutes": 30,
+        "estimated_active_minutes": 20,
+        "estimated_validation_minutes": 5,
+    },
+    "M": {
+        "estimated_elapsed_minutes": 90,
+        "estimated_active_minutes": 55,
+        "estimated_validation_minutes": 15,
+    },
+    "L": {
+        "estimated_elapsed_minutes": 180,
+        "estimated_active_minutes": 105,
+        "estimated_validation_minutes": 25,
+    },
+}
 PROMPT_COMPLEXITY_PROFILES = {
     "low": {
         "label": "Low",
@@ -160,6 +177,22 @@ def _coerce_task_shaping(task_shaping: dict[str, Any] | None, *, fallback_paths:
         else int(TASK_SHAPING_DEFAULTS["parallelizable_groups"]),
         **{key: value for key, value in payload.items() if key not in TASK_SHAPING_DEFAULTS},
     }
+
+
+def _rounded_task_minutes(value: int | float | None) -> int | None:
+    if value is None:
+        return None
+    return max(5, int(round(float(value) / 5.0) * 5))
+
+
+def _median_int(values: list[int | float | None]) -> int | None:
+    filtered = sorted(int(value) for value in values if value is not None)
+    if not filtered:
+        return None
+    middle = len(filtered) // 2
+    if len(filtered) % 2:
+        return filtered[middle]
+    return int(round((filtered[middle - 1] + filtered[middle]) / 2.0))
 
 
 @dataclass(frozen=True)
@@ -1174,6 +1207,175 @@ def _task_runtime_rows(
     return rows
 
 
+def _build_task_shaping_calibration(
+    *,
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    events: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    runtime_rows = _task_runtime_rows(snapshot=snapshot, state=state, events=events, results=results)
+    ratio_samples: list[float] = []
+    effort_profiles: dict[str, dict[str, Any]] = {}
+
+    for effort in sorted(VALID_EFFORTS, key=lambda item: EFFORT_ORDER[item]):
+        actual_samples: list[int] = []
+        estimated_elapsed_samples: list[int] = []
+        estimated_active_samples: list[int] = []
+        validation_samples: list[int] = []
+        path_count_samples: list[int] = []
+        check_count_samples: list[int] = []
+        doc_count_samples: list[int] = []
+
+        for task in snapshot.tasks.values():
+            if str(task.payload.get("effort") or "") != effort or not task_done(task.id, state):
+                continue
+            runtime = runtime_rows.get(task.id, _task_runtime_row(task.id))
+            task_shaping = task.payload.get("task_shaping") if isinstance(task.payload.get("task_shaping"), dict) else {}
+            actual_minutes = _runtime_int(runtime.get("actual_task_minutes"))
+            estimated_elapsed = _runtime_int(
+                runtime.get("estimated_elapsed_minutes")
+                if runtime.get("estimated_elapsed_minutes") is not None
+                else task_shaping.get("estimated_elapsed_minutes")
+            )
+            estimated_active = _runtime_int(
+                runtime.get("estimated_active_minutes")
+                if runtime.get("estimated_active_minutes") is not None
+                else task_shaping.get("estimated_active_minutes")
+            )
+            validation_minutes = _runtime_int(task_shaping.get("estimated_validation_minutes"))
+            if actual_minutes is not None:
+                actual_samples.append(actual_minutes)
+            if estimated_elapsed is not None:
+                estimated_elapsed_samples.append(estimated_elapsed)
+            if estimated_active is not None:
+                estimated_active_samples.append(estimated_active)
+            if validation_minutes is not None:
+                validation_samples.append(validation_minutes)
+            path_count_samples.append(len(task.payload.get("paths", [])))
+            check_count_samples.append(len(task.payload.get("checks", [])))
+            doc_count_samples.append(len(task.payload.get("docs", [])))
+            if estimated_elapsed and estimated_active:
+                ratio_samples.append(max(0.1, min(1.0, float(estimated_active) / float(estimated_elapsed))))
+
+        baseline = EFFORT_TASK_SHAPING_BASELINES[effort]
+        seeded_elapsed = _rounded_task_minutes(
+            _median_int(
+                [
+                    _median_int(actual_samples),
+                    _median_int(estimated_elapsed_samples),
+                    int(baseline["estimated_elapsed_minutes"]),
+                ]
+            )
+        )
+        if seeded_elapsed is None:
+            seeded_elapsed = int(baseline["estimated_elapsed_minutes"])
+        effort_profiles[effort] = {
+            "completed_sample_size": len(actual_samples),
+            "estimate_sample_size": len(estimated_elapsed_samples),
+            "median_actual_task_minutes": _median_int(actual_samples),
+            "median_estimated_elapsed_minutes": _median_int(estimated_elapsed_samples),
+            "median_estimated_active_minutes": _median_int(estimated_active_samples),
+            "median_validation_minutes": _median_int(validation_samples),
+            "median_path_count": _median_int(path_count_samples) or 1,
+            "median_check_count": _median_int(check_count_samples) or 1,
+            "median_doc_count": _median_int(doc_count_samples) or 0,
+            "seeded_elapsed_minutes": seeded_elapsed,
+        }
+
+    default_active_ratio = _median_int([round(sample * 100) for sample in ratio_samples])
+    active_ratio = (
+        max(0.1, min(1.0, float(default_active_ratio) / 100.0))
+        if default_active_ratio is not None
+        else 0.62
+    )
+    for effort, stats in effort_profiles.items():
+        baseline = EFFORT_TASK_SHAPING_BASELINES[effort]
+        seeded_elapsed = int(stats["seeded_elapsed_minutes"])
+        seeded_active = _rounded_task_minutes(
+            _median_int(
+                [
+                    stats["median_estimated_active_minutes"],
+                    int(baseline["estimated_active_minutes"]),
+                    _rounded_task_minutes(seeded_elapsed * active_ratio),
+                ]
+            )
+        )
+        if seeded_active is None:
+            seeded_active = int(baseline["estimated_active_minutes"])
+        seeded_validation = _rounded_task_minutes(
+            _median_int(
+                [
+                    stats["median_validation_minutes"],
+                    int(baseline["estimated_validation_minutes"]),
+                    _rounded_task_minutes(max(5, seeded_elapsed * 0.15)),
+                ]
+            )
+        )
+        if seeded_validation is None:
+            seeded_validation = int(baseline["estimated_validation_minutes"])
+        stats["seeded_active_minutes"] = min(seeded_elapsed, seeded_active)
+        stats["seeded_validation_minutes"] = seeded_validation
+
+    return {
+        "default_active_ratio": round(active_ratio, 2),
+        "by_effort": effort_profiles,
+    }
+
+
+def _seed_task_shaping_from_calibration(
+    task_shaping: dict[str, Any] | None,
+    *,
+    effort: str,
+    risk: str,
+    paths: list[str],
+    checks: list[str],
+    docs: list[str],
+    domains: list[str],
+    calibration: dict[str, Any],
+) -> dict[str, Any]:
+    seeded = _coerce_task_shaping(task_shaping, fallback_paths=paths)
+    stats = calibration.get("by_effort", {}).get(effort, {})
+    baseline = EFFORT_TASK_SHAPING_BASELINES[effort]
+
+    seeded_elapsed = int(stats.get("seeded_elapsed_minutes") or baseline["estimated_elapsed_minutes"])
+    seeded_active = int(stats.get("seeded_active_minutes") or baseline["estimated_active_minutes"])
+    seeded_validation = int(stats.get("seeded_validation_minutes") or baseline["estimated_validation_minutes"])
+    median_path_count = max(1, int(stats.get("median_path_count") or 1))
+    median_check_count = max(1, int(stats.get("median_check_count") or 1))
+    median_doc_count = max(0, int(stats.get("median_doc_count") or 0))
+
+    complexity_multiplier = 1.0
+    if len(paths) > median_path_count:
+        complexity_multiplier += min(len(paths) - median_path_count, 4) * 0.12
+    if len(checks) > median_check_count:
+        complexity_multiplier += min(len(checks) - median_check_count, 3) * 0.08
+    if len(docs) > median_doc_count:
+        complexity_multiplier += min(len(docs) - median_doc_count, 3) * 0.04
+    if len(domains) > 2:
+        complexity_multiplier += min(len(domains) - 2, 3) * 0.05
+    if risk == "high":
+        complexity_multiplier += 0.15
+
+    if seeded.get("estimated_elapsed_minutes") is None:
+        seeded["estimated_elapsed_minutes"] = _rounded_task_minutes(seeded_elapsed * complexity_multiplier)
+    if seeded.get("estimated_active_minutes") is None:
+        seeded["estimated_active_minutes"] = min(
+            int(seeded["estimated_elapsed_minutes"]),
+            int(_rounded_task_minutes(seeded_active * complexity_multiplier) or seeded_active),
+        )
+    if seeded.get("estimated_validation_minutes") is None:
+        validation_floor = max(5, len(checks) * 5)
+        seeded["estimated_validation_minutes"] = max(
+            validation_floor,
+            int(_rounded_task_minutes(seeded_validation * max(1.0, complexity_multiplier - 0.05)) or seeded_validation),
+        )
+    seeded.setdefault("estimate_source", "history" if int(stats.get("completed_sample_size") or 0) else "defaults")
+    seeded.setdefault("estimate_basis_effort", effort)
+    seeded.setdefault("estimate_basis_sample_size", int(stats.get("completed_sample_size") or 0))
+    return seeded
+
+
 def enrich_result_task_shaping_telemetry(
     profile: Profile,
     *,
@@ -1208,6 +1410,7 @@ def enrich_result_task_shaping_telemetry(
         merged.setdefault("actual_task_seconds", runtime["actual_task_seconds"])
         merged.setdefault("actual_task_minutes", runtime["actual_task_minutes"])
         merged.setdefault("actual_active_minutes", runtime["actual_task_minutes"])
+        merged.setdefault("actual_elapsed_minutes", runtime["actual_task_minutes"])
     merged.setdefault("claim_count", runtime.get("claim_count", 0))
     merged.setdefault("actual_reclaim_count", runtime.get("actual_reclaim_count", 0))
     merged.setdefault("actual_worktrees_used", runtime.get("actual_worktrees_used", 0))
@@ -1232,6 +1435,13 @@ def enrich_result_task_shaping_telemetry(
         if value is None:
             continue
         merged.setdefault(key, value)
+
+    estimate_minutes = _runtime_int(merged.get("estimated_elapsed_minutes"))
+    actual_minutes = _runtime_int(merged.get("actual_elapsed_minutes"))
+    if estimate_minutes is not None and actual_minutes is not None:
+        merged.setdefault("estimate_delta_minutes", int(actual_minutes) - int(estimate_minutes))
+        if estimate_minutes > 0:
+            merged.setdefault("estimate_accuracy_ratio", round(float(actual_minutes) / float(estimate_minutes), 2))
 
     return merged
 
@@ -1350,6 +1560,17 @@ def build_prompt_profiles(profile: Profile, *, analysis: dict[str, Any]) -> dict
     validation_commands = list(profile.validation_commands)
     focus = analysis["recommendation"]["focus"]
     focus_summary = analysis["recommendation"]["summary"]
+    calibration = analysis.get("calibration", {})
+    by_effort = calibration.get("by_effort", {})
+    calibrated_defaults = {
+        effort: {
+            "estimated_elapsed_minutes": stats.get("seeded_elapsed_minutes"),
+            "estimated_active_minutes": stats.get("seeded_active_minutes"),
+            "estimated_validation_minutes": stats.get("seeded_validation_minutes"),
+            "sample_size": stats.get("completed_sample_size", 0),
+        }
+        for effort, stats in by_effort.items()
+    }
     profiles: dict[str, Any] = {}
     for name, config in PROMPT_COMPLEXITY_PROFILES.items():
         routed_docs = base_docs[: config["doc_limit"]]
@@ -1375,6 +1596,13 @@ def build_prompt_profiles(profile: Profile, *, analysis: dict[str, Any]) -> dict
                 "category": focus,
                 "summary": focus_summary,
             },
+            "prompt_strategy": {
+                "keep_context_compact": bool(name == "low"),
+                "require_explicit_estimates": focus in {"task_shaping_coverage", "task_time_calibration"},
+                "require_result_runtime_capture": True,
+                "prefer_repo_routed_docs": True,
+            },
+            "calibrated_task_shape_defaults": calibrated_defaults,
             "context_budget": {
                 "doc_limit": config["doc_limit"],
                 "include_task_shaping": config["include_task_shaping"],
@@ -1410,6 +1638,20 @@ def build_prompt_improvement(profile: Profile, *, prompt_text: str, complexity: 
     if selected["validation_commands"]:
         lines.extend(["", "Validation defaults:"])
         lines.extend(f"- {item}" for item in selected["validation_commands"])
+    calibrated_defaults = selected.get("calibrated_task_shape_defaults") or {}
+    if calibrated_defaults:
+        lines.extend(["", "Calibrated task-shaping defaults by effort:"])
+        for effort in ("S", "M", "L"):
+            defaults = calibrated_defaults.get(effort) or {}
+            elapsed = defaults.get("estimated_elapsed_minutes")
+            active = defaults.get("estimated_active_minutes")
+            validation = defaults.get("estimated_validation_minutes")
+            sample_size = defaults.get("sample_size")
+            if elapsed is None or active is None:
+                continue
+            lines.append(
+                f"- {effort}: elapsed {elapsed}m, active {active}m, validation {validation}m, sample size {sample_size}"
+            )
     lines.extend(["", "Required prompt sections:"])
     lines.extend(f"- {item}" for item in selected["recommended_sections"])
     lines.extend(
@@ -1417,6 +1659,7 @@ def build_prompt_improvement(profile: Profile, *, prompt_text: str, complexity: 
             "",
             "Prompt-tuning focus:",
             f"- {selected['focus']['category']}: {selected['focus']['summary']}",
+            f"- Require explicit estimate and runtime capture: {selected['prompt_strategy']['require_explicit_estimates']}",
             "",
             "User request:",
             prompt,
@@ -1447,6 +1690,7 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
     events = load_events(profile.paths)
     results = load_task_results(profile.paths)
     runtime_rows = _task_runtime_rows(snapshot=snapshot, state=state, events=events, results=results)
+    calibration = _build_task_shaping_calibration(snapshot=snapshot, state=state, events=events, results=results)
 
     result_files = len(results)
     tasks_with_recorded_compute = sum(1 for row in runtime_rows.values() if row.get("actual_task_seconds") is not None)
@@ -1514,6 +1758,7 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
         coverage_gaps.append("Most completed tasks still lack both an estimate snapshot and a comparable actual task-time sample.")
     if result_files and results_with_actual_task_telemetry < max(5, result_files // 4):
         coverage_gaps.append("Most structured results still lack explicit actual task-time telemetry fields.")
+    calibration_ready = len(sample_rows) >= max(3, tasks_with_recorded_compute // 5) if tasks_with_recorded_compute else False
 
     enough_data = bool(tasks_with_recorded_compute or retry_total or landing_failures)
     if not enough_data:
@@ -1525,6 +1770,11 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
         recommendation = {
             "focus": "task_shaping_coverage",
             "summary": "Increase estimate and actual task-time coverage so tune can compare more completed work with the same contract.",
+        }
+    elif not calibration_ready:
+        recommendation = {
+            "focus": "task_time_calibration",
+            "summary": "Coverage is improving, but Blackdog still needs more comparable estimate-vs-actual samples before tightening prompt defaults.",
         }
     elif mean_absolute_error is not None and mean_absolute_error >= 10:
         recommendation = {
@@ -1577,6 +1827,11 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
             "average_context_packet_bytes": _average([row.get("context_packet_bytes") for row in context_rows]),
             "average_context_efficiency_ratio": _average([row.get("context_efficiency_ratio") for row in completed_context_rows]),
         },
+        "calibration": {
+            "calibration_ready": calibration_ready,
+            "default_active_ratio": calibration.get("default_active_ratio"),
+            "effort_profiles": calibration.get("by_effort", {}),
+        },
     }
 
     return {
@@ -1594,6 +1849,8 @@ def build_tune_analysis(profile: Profile) -> dict[str, Any]:
         "retry_total": retry_total,
         "reclaim_total": reclaim_total,
         "landing_failures": landing_failures,
+        "calibration_ready": calibration_ready,
+        "calibration": calibration,
         "coverage_gaps": coverage_gaps,
         "categories": categories,
         "recommendation": recommendation,
@@ -1884,6 +2141,10 @@ def add_task(
 ) -> dict[str, Any]:
     with locked_path(profile.paths.backlog_file):
         snapshot = load_backlog(profile.paths, profile)
+        state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+        events = load_events(profile.paths)
+        results = load_task_results(profile.paths)
+        calibration = _build_task_shaping_calibration(snapshot=snapshot, state=state, events=events, results=results)
         task_id = make_task_id(profile, bucket=bucket, title=title, paths=paths)
         if task_id in snapshot.tasks:
             raise BacklogError(f"Task id already exists: {task_id}")
@@ -1899,7 +2160,16 @@ def add_task(
             "checks": checks or list(profile.validation_commands),
             "docs": docs or list(profile.doc_routing_defaults),
             "objective": objective,
-            "task_shaping": task_shaping,
+            "task_shaping": _seed_task_shaping_from_calibration(
+                task_shaping,
+                effort=effort,
+                risk=risk,
+                paths=paths,
+                checks=checks or list(profile.validation_commands),
+                docs=docs or list(profile.doc_routing_defaults),
+                domains=domains,
+                calibration=calibration,
+            ),
             "domains": domains,
             "requires_approval": requires_approval,
             "approval_reason": approval_reason,
