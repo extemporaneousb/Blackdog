@@ -118,7 +118,7 @@ When FORCE is non-nil, refresh the cached snapshot."
 
 (defun blackdog-read-task (&optional prompt snapshot root)
   "Read one task from SNAPSHOT or ROOT with PROMPT."
-  (let* ((snapshot (or snapshot (blackdog-snapshot root)))
+  (let* ((snapshot (or snapshot (blackdog-snapshot root t)))
          (candidates (blackdog-task-candidates snapshot))
          (choice (completing-read (or prompt "Task: ") candidates nil t)))
     (cdr (assoc choice candidates))))

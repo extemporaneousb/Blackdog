@@ -146,6 +146,7 @@ Suggested prefix: `C-c b`
 - `C-c b A`: search the Blackdog control dir
 - `C-c b m`: open Magit status for a task
 - `C-c b d`: open branch diff for a task
+- `C-c b .`: open the transient dispatch menu
 - `C-c b g`: refresh the current Blackdog buffer
 
 Inside the dashboard:
@@ -185,7 +186,7 @@ Then load Blackdog from this checkout:
 ```elisp
 (use-package blackdog
   :load-path "/Users/bullard/Work/Blackdog/editors/emacs/lisp"
-  :bind (("C-c b" . blackdog-dispatch)))
+  :bind-keymap (("C-c b" . blackdog-prefix-map)))
 ```
 
 If you prefer a variable:
@@ -194,7 +195,7 @@ If you prefer a variable:
 (let ((blackdog-root "/Users/bullard/Work/Blackdog"))
   (use-package blackdog
     :load-path (list (expand-file-name "editors/emacs/lisp" blackdog-root))
-    :bind (("C-c b" . blackdog-dispatch))))
+    :bind-keymap (("C-c b" . blackdog-prefix-map))))
 ```
 
 ## Testing Plan

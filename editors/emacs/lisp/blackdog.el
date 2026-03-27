@@ -34,6 +34,8 @@
     (define-key map (kbd "A") #'blackdog-search-artifacts)
     (define-key map (kbd "m") #'blackdog-magit-status-for-task)
     (define-key map (kbd "d") #'blackdog-magit-diff-for-task)
+    (define-key map (kbd ".") #'blackdog-dispatch)
+    (define-key map (kbd "?") #'blackdog-dispatch)
     (define-key map (kbd "g") #'blackdog-refresh)
     map)
   "Prefix keymap for Blackdog commands.")

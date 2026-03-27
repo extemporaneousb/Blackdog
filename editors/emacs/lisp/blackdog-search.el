@@ -110,7 +110,7 @@
   "Prompt for one task artifact from ROOT and open it."
   (interactive)
   (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root))
+         (snapshot (blackdog-snapshot root t))
          (candidates (blackdog-artifact-candidates snapshot root)))
     (unless candidates
       (user-error "No task artifacts available"))

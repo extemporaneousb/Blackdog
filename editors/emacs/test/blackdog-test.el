@@ -25,6 +25,7 @@
 (require 'blackdog-artifacts)
 (require 'blackdog-runs)
 (require 'blackdog-magit)
+(require 'blackdog)
 (require 'blackdog-search)
 (require 'blackdog-task)
 
@@ -259,6 +260,20 @@
       (blackdog-find-task blackdog-test-root)
       (should (equal "TASK-1" (alist-get 'id opened))))))
 
+(ert-deftest blackdog-read-task-refreshes-live-snapshot ()
+  (let ((forced nil))
+    (cl-letf (((symbol-function #'blackdog-snapshot)
+               (lambda (&optional _root force)
+                 (setq forced force)
+                 '((tasks . (((id . "TASK-1")
+                              (title . "First task")
+                              (operator_status . "Ready")))))))
+              ((symbol-function #'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (caar collection))))
+      (blackdog-read-task "Task: " nil blackdog-test-root)
+      (should forced))))
+
 (ert-deftest blackdog-artifact-candidates-include-run-dir ()
   (let* ((snapshot '((control_dir . "/tmp/blackdog")
                      (tasks . (((id . "TASK-1")
@@ -294,6 +309,26 @@
                  (setq opened href))))
       (blackdog-find-artifact blackdog-test-root)
       (should (equal "notes/analysis.txt" opened)))))
+
+(ert-deftest blackdog-find-artifact-refreshes-live-snapshot ()
+  (let ((forced nil))
+    (cl-letf (((symbol-function #'blackdog-snapshot)
+               (lambda (&optional _root force)
+                 (setq forced force)
+                 '((control_dir . "/tmp/blackdog")
+                   (tasks . (((id . "TASK-1")
+                              (title . "First task")
+                              (operator_status . "Ready")
+                              (links . (((label . "Notebook")
+                                         (href . "notes/analysis.txt"))))))))))
+              ((symbol-function #'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (caar collection)))
+              ((symbol-function #'blackdog-open-href)
+               (lambda (&rest _args)
+                 nil)))
+      (blackdog-find-artifact blackdog-test-root)
+      (should forced))))
 
 (ert-deftest blackdog-project-file-candidates-are-project-relative ()
   (cl-letf (((symbol-function #'project-current)
@@ -344,6 +379,12 @@
           (blackdog-search-artifacts blackdog-test-root "prompt")
           (should (equal (list control-dir "prompt") captured)))
       (delete-directory control-dir t))))
+
+(ert-deftest blackdog-prefix-map-exposes-dispatch-shortcut ()
+  (should (eq 'blackdog-dispatch
+              (lookup-key blackdog-prefix-map (kbd "."))))
+  (should (eq 'blackdog-dispatch
+              (lookup-key blackdog-prefix-map (kbd "?")))))
 
 (ert-deftest blackdog-snapshot-live-loads-the-project ()
   (let ((command (blackdog-test--cli-command)))
