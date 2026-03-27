@@ -117,3 +117,4 @@ This repo uses a top-level `.VE/` virtual environment for local Blackdog develop
 
 See [docs/INDEX.md](docs/INDEX.md) for the full document map.
 See [docs/CHARTER.md](docs/CHARTER.md) for the product charter and [docs/INTEGRATION.md](docs/INTEGRATION.md) for host-repo setup guidance.
+See [docs/EMACS.md](docs/EMACS.md) for the local Emacs 30+ workbench architecture, keybindings, and installation notes.
