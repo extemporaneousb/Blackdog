@@ -81,6 +81,7 @@ The initial package layout is:
 - `editors/emacs/lisp/blackdog-task.el`
 - `editors/emacs/lisp/blackdog-results.el`
 - `editors/emacs/lisp/blackdog-runs.el`
+- `editors/emacs/lisp/blackdog-search.el`
 - `editors/emacs/lisp/blackdog-magit.el`
 - `editors/emacs/test/blackdog-test.el`
 
@@ -139,7 +140,10 @@ Suggested prefix: `C-c b`
 - `C-c b u`: open run artifacts
 - `C-c b r`: open results
 - `C-c b t`: jump to a task by completion
-- `C-c b a`: grep/search artifacts
+- `C-c b a`: jump to an artifact by completion
+- `C-c b f`: jump to a project file by completion
+- `C-c b s`: search the repo root
+- `C-c b A`: search the Blackdog control dir
 - `C-c b m`: open Magit status for a task
 - `C-c b d`: open branch diff for a task
 - `C-c b g`: refresh the current Blackdog buffer
@@ -204,6 +208,7 @@ If you prefer a variable:
 
 - fixture-driven ERT tests for dashboard rows, task reader rendering, and result buffers
 - live smoke tests that open snapshot-backed buffers against this repo
+- direct ERT coverage for task/artifact completion, project-aware file navigation, and search root selection
 
 ### Git integration
 

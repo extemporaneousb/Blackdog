@@ -17,6 +17,7 @@
 (require 'blackdog-runs)
 (require 'blackdog-artifacts)
 (require 'blackdog-magit)
+(require 'blackdog-search)
 
 (ignore-errors
   (require 'transient))
@@ -27,7 +28,10 @@
     (define-key map (kbd "u") #'blackdog-runs-open)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
-    (define-key map (kbd "a") #'blackdog-search-artifacts)
+    (define-key map (kbd "a") #'blackdog-find-artifact)
+    (define-key map (kbd "f") #'blackdog-find-project-file)
+    (define-key map (kbd "s") #'blackdog-search-project)
+    (define-key map (kbd "A") #'blackdog-search-artifacts)
     (define-key map (kbd "m") #'blackdog-magit-status-for-task)
     (define-key map (kbd "d") #'blackdog-magit-diff-for-task)
     (define-key map (kbd "g") #'blackdog-refresh)
@@ -50,21 +54,6 @@
   (interactive)
   (blackdog-magit-diff-task (blackdog-read-task)))
 
-(defun blackdog-search-artifacts (&optional root)
-  "Search the Blackdog control dir for ROOT.
-
-Use `consult-ripgrep' when available and fall back to `rgrep'."
-  (interactive)
-  (let* ((root (or root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root))
-         (control-dir (blackdog-control-dir snapshot root)))
-    (cond
-     ((fboundp 'consult-ripgrep)
-      (consult-ripgrep control-dir))
-     (t
-      (let ((default-directory control-dir))
-        (call-interactively #'rgrep))))))
-
 (if (featurep 'transient)
     (transient-define-prefix blackdog-dispatch ()
       "Dispatch Blackdog commands."
@@ -72,9 +61,12 @@ Use `consult-ripgrep' when available and fall back to `rgrep'."
         ("b" "Dashboard" blackdog-dashboard)
         ("u" "Runs" blackdog-runs-open)
         ("r" "Results" blackdog-results-open)
-        ("t" "Task" blackdog-find-task)]
+        ("t" "Task" blackdog-find-task)
+        ("a" "Artifact" blackdog-find-artifact)
+        ("f" "Project file" blackdog-find-project-file)]
        ["Search"
-        ("a" "Artifacts" blackdog-search-artifacts)
+        ("s" "Project grep" blackdog-search-project)
+        ("A" "Artifact grep" blackdog-search-artifacts)
         ("g" "Refresh" blackdog-refresh)]
        ["Git"
         ("m" "Magit status" blackdog-magit-status-for-task)

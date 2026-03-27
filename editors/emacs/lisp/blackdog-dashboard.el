@@ -10,6 +10,7 @@
 
 (require 'blackdog-core)
 (require 'blackdog-results)
+(require 'blackdog-search)
 (require 'blackdog-task)
 (require 'magit-section)
 (require 'subr-x)
@@ -74,13 +75,6 @@
           blackdog-buffer-root)))
       (_ (when section
            (magit-section-toggle section))))))
-
-(defun blackdog-find-task ()
-  "Prompt for one task and open its reader."
-  (interactive)
-  (blackdog-task-view
-   (blackdog-read-task "Task: " nil blackdog-buffer-root)
-   blackdog-buffer-root))
 
 (defun blackdog-dashboard--insert-hero (snapshot)
   "Insert the hero banner from SNAPSHOT."
