@@ -27,6 +27,7 @@
 (require 'blackdog-magit)
 (require 'blackdog)
 (require 'blackdog-search)
+(require 'blackdog-spec)
 (require 'blackdog-task)
 
 (defconst blackdog-test-has-magit-section
@@ -52,6 +53,54 @@
 
 (defconst blackdog-test-run-id "20260327-140022-8df46a17"
   "Supervisor run directory name for the Emacs fixture set.")
+
+(defconst blackdog-test-spec-sample
+  "# Blackdog Spec
+
+Title: Spec task
+Bucket: integration
+Priority: P1
+Risk: medium
+Effort: M
+Objective: Spec-driven operator workflow
+
+## Analysis
+Capture a spec before creating the task.
+
+## Why
+Operators need a reusable spec buffer.
+
+## Evidence
+The Emacs workflow needs a draft add payload.
+
+## Safe First Slice
+Create the buffer and emit a draft task payload.
+
+## Code Paths
+- editors/emacs/lisp/blackdog-spec.el
+- editors/emacs/templates/blackdog-spec.md
+
+## Data Paths
+- data/spec-input.json
+
+## Checks
+- make test
+
+## Docs
+- AGENTS.md
+- docs/FILE_FORMATS.md
+
+## Domains
+- docs
+- results
+
+## Packages
+- emacs
+
+## Prompt Notes
+Mention the current backlog lane and code/data attachments.
+"
+  "Sample spec fixture used by the spec-mode tests.")
 
 (defconst blackdog-test-fixture-candidate-clis
   (list (expand-file-name ".VE/bin/blackdog" blackdog-test-root)
@@ -384,7 +433,61 @@
   (should (eq 'blackdog-dispatch
               (lookup-key blackdog-prefix-map (kbd "."))))
   (should (eq 'blackdog-dispatch
-              (lookup-key blackdog-prefix-map (kbd "?")))))
+              (lookup-key blackdog-prefix-map (kbd "?"))))
+  (should (eq 'blackdog-spec-new
+              (lookup-key blackdog-prefix-map (kbd "n")))))
+
+(ert-deftest blackdog-spec-new-loads-template ()
+  (let ((buffer nil))
+    (unwind-protect
+        (progn
+          (setq buffer (blackdog-spec-new blackdog-test-root))
+          (with-current-buffer buffer
+            (should (eq major-mode 'blackdog-spec-mode))
+            (should (string-match-p "^# Blackdog Spec" (buffer-string)))
+            (should (string-match-p "^Bucket: integration$" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest blackdog-spec-add-path-inserts-under-code-paths ()
+  (with-temp-buffer
+    (insert blackdog-test-spec-sample)
+    (blackdog-spec-mode)
+    (blackdog-spec-add-path blackdog-test-root "Code Paths" "docs/EMACS.md")
+    (should (string-match-p
+             "## Code Paths\n- editors/emacs/lisp/blackdog-spec.el\n- editors/emacs/templates/blackdog-spec.md\n- docs/EMACS.md"
+             (buffer-string)))))
+
+(ert-deftest blackdog-spec-current-payload-builds-draft-data ()
+  (with-temp-buffer
+    (insert blackdog-test-spec-sample)
+    (blackdog-spec-mode)
+    (let ((payload (blackdog-spec-current-payload)))
+      (should (equal "Spec task" (alist-get 'title payload)))
+      (should (equal "Spec-driven operator workflow" (alist-get 'objective payload)))
+      (should (equal '("editors/emacs/lisp/blackdog-spec.el"
+                       "editors/emacs/templates/blackdog-spec.md")
+                     (alist-get 'code_paths payload)))
+      (should (equal '("data/spec-input.json")
+                     (alist-get 'data_paths payload)))
+      (should (equal '("editors/emacs/lisp/blackdog-spec.el"
+                       "editors/emacs/templates/blackdog-spec.md"
+                       "data/spec-input.json")
+                     (alist-get 'paths payload))))))
+
+(ert-deftest blackdog-spec-add-command-includes-task-fields ()
+  (with-temp-buffer
+    (insert blackdog-test-spec-sample)
+    (blackdog-spec-mode)
+    (let ((command (blackdog-spec--add-command nil blackdog-test-root)))
+      (should (string-match-p "blackdog[^ ]* add" command))
+      (should (string-match-p "--project-root" command))
+      (should (string-match-p "--title" command))
+      (should (string-match-p "Spec\\\\ task" command))
+      (should (string-match-p "--path" command))
+      (should (string-match-p "editors/emacs/lisp/blackdog-spec.el" command))
+      (should (string-match-p "--doc" command))
+      (should (string-match-p "docs/FILE_FORMATS.md" command)))))
 
 (ert-deftest blackdog-snapshot-live-loads-the-project ()
   (let ((command (blackdog-test--cli-command)))

@@ -82,7 +82,9 @@ The initial package layout is:
 - `editors/emacs/lisp/blackdog-results.el`
 - `editors/emacs/lisp/blackdog-runs.el`
 - `editors/emacs/lisp/blackdog-search.el`
+- `editors/emacs/lisp/blackdog-spec.el`
 - `editors/emacs/lisp/blackdog-magit.el`
+- `editors/emacs/templates/blackdog-spec.md`
 - `editors/emacs/test/blackdog-test.el`
 
 Later backlog tasks will extend this with:
@@ -132,6 +134,19 @@ The task reader is a separate buffer with:
 - clickable prompt/stdout/stderr/diff/result metadata/run links
 - Magit status and diff commands
 
+The spec workflow adds an editable `Blackdog-Spec` buffer that keeps:
+
+- task metadata (`title`, `bucket`, `priority`, `risk`, `effort`, `objective`)
+- analysis, why, evidence, and safe-first-slice notes
+- separate code-path and data-path sections
+- prompt notes that stay attached to the task draft without being forced into the backlog payload
+
+`blackdog-spec-draft-task` renders that spec into:
+
+- a draft `blackdog add` payload
+- a ready-to-run `blackdog add` command
+- prompt context that carries analysis, code paths, data paths, and prompt notes together
+
 ## Keybindings
 
 Suggested prefix: `C-c b`
@@ -141,6 +156,7 @@ Suggested prefix: `C-c b`
 - `C-c b r`: open results
 - `C-c b t`: jump to a task by completion
 - `C-c b a`: jump to an artifact by completion
+- `C-c b n`: create a new spec buffer
 - `C-c b f`: jump to a project file by completion
 - `C-c b s`: search the repo root
 - `C-c b A`: search the Blackdog control dir
@@ -171,6 +187,11 @@ Inside the task reader:
 - `M`: open metadata artifact
 - `F`: open result artifact
 - `R`: open run artifact directory
+
+Inside a spec buffer:
+
+- `C-c C-c`: render the current spec into a draft Blackdog task payload and `blackdog add` command
+- `C-c C-p`: add a code or data path to the current spec
 
 ## Installation With use-package
 
@@ -210,6 +231,7 @@ If you prefer a variable:
 - fixture-driven ERT tests for dashboard rows, task reader rendering, and result buffers
 - live smoke tests that open snapshot-backed buffers against this repo
 - direct ERT coverage for task/artifact completion, project-aware file navigation, and search root selection
+- spec-buffer coverage for template loading, path capture, and draft task command generation
 
 ### Git integration
 
