@@ -80,6 +80,7 @@ The initial package layout is:
 - `editors/emacs/lisp/blackdog-dashboard.el`
 - `editors/emacs/lisp/blackdog-task.el`
 - `editors/emacs/lisp/blackdog-results.el`
+- `editors/emacs/lisp/blackdog-runs.el`
 - `editors/emacs/lisp/blackdog-magit.el`
 - `editors/emacs/test/blackdog-test.el`
 
@@ -127,7 +128,7 @@ The task reader is a separate buffer with:
 - safe first slice and why
 - latest result preview, what changed, validation, residual
 - clickable project paths
-- clickable prompt/stdout/stderr/diff/result links
+- clickable prompt/stdout/stderr/diff/result metadata/run links
 - Magit status and diff commands
 
 ## Keybindings
@@ -135,6 +136,7 @@ The task reader is a separate buffer with:
 Suggested prefix: `C-c b`
 
 - `C-c b b`: open dashboard
+- `C-c b u`: open run artifacts
 - `C-c b r`: open results
 - `C-c b t`: jump to a task by completion
 - `C-c b a`: grep/search artifacts
@@ -156,8 +158,14 @@ Inside the task reader:
 - `g`: refresh
 - `m`: Magit status
 - `d`: Magit diff
-- `p`: open prompt artifact link
+- `p`: open prompt artifact
 - `r`: open latest result artifact
+- `O`: open stdout artifact
+- `E`: open stderr artifact
+- `D`: open diff artifact
+- `M`: open metadata artifact
+- `F`: open result artifact
+- `R`: open run artifact directory
 
 ## Installation With use-package
 

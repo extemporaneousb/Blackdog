@@ -9,7 +9,7 @@
 ;;; Code:
 
 (require 'blackdog-core)
-(require 'cl-lib)
+(require 'blackdog-artifacts)
 (require 'button)
 (require 'subr-x)
 
@@ -29,6 +29,12 @@
     (define-key map (kbd "d") #'blackdog-task-view-magit-diff)
     (define-key map (kbd "p") #'blackdog-task-view-open-prompt)
     (define-key map (kbd "r") #'blackdog-task-view-open-result)
+    (define-key map (kbd "O") #'blackdog-task-open-stdout)
+    (define-key map (kbd "E") #'blackdog-task-open-stderr)
+    (define-key map (kbd "D") #'blackdog-task-open-diff)
+    (define-key map (kbd "M") #'blackdog-task-open-metadata)
+    (define-key map (kbd "F") #'blackdog-task-open-result)
+    (define-key map (kbd "R") #'blackdog-task-open-run)
     map)
   "Keymap for `blackdog-task-view-mode'.")
 
@@ -99,10 +105,7 @@
                                   (alist-get 'checks task))
       (blackdog-task--insert-list "Docs"
                                   (alist-get 'docs task))
-      (blackdog-task--insert-link-list "Artifacts"
-                                       (alist-get 'links task)
-                                       snapshot
-                                       root)
+      (blackdog-task--insert-artifact-links "Artifacts" task)
       (blackdog-task--insert-activity "Activity"
                                       (alist-get 'activity task))
       (goto-char (point-min)))))
@@ -156,21 +159,25 @@
       (insert "\n"))
     (insert "\n")))
 
-(defun blackdog-task--insert-link-list (title links snapshot root)
-  "Insert TITLE with clickable artifact LINKS from SNAPSHOT and ROOT."
-  (when links
-    (insert (format "%s\n" title))
-    (dolist (link links)
-      (let ((label (alist-get 'label link))
-            (href (alist-get 'href link)))
-        (insert "- ")
-        (insert-text-button
-         label
-         'follow-link t
-         'action (lambda (_button)
-                   (blackdog-open-href href snapshot root t)))
-        (insert "\n")))
-    (insert "\n")))
+(defun blackdog-task--insert-artifact-links (title task)
+  "Insert TITLE with canonical artifact links from TASK."
+  (let ((links (blackdog-task-artifacts-links task)))
+    (when links
+      (insert (format "%s\n" title))
+      (dolist (link links)
+        (let* ((artifact (alist-get 'artifact link))
+               (label (alist-get 'label link))
+               (href (alist-get 'href link)))
+          (insert "- ")
+          (insert-text-button
+           label
+           'follow-link t
+           'action (lambda (_button)
+                     (if artifact
+                         (blackdog-task-open-artifact artifact task nil t)
+                       (blackdog-open-href href nil blackdog-buffer-root t))))
+          (insert "\n")))
+      (insert "\n"))))
 
 (defun blackdog-task--insert-activity (title activity)
   "Insert TITLE with ACTIVITY rows."
@@ -183,36 +190,18 @@
                       (or (alist-get 'message row) ""))))
     (insert "\n")))
 
-(defun blackdog-task--current-task ()
-  "Return the task described by `blackdog-task-id` in this buffer."
-  (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root))
-
-(defun blackdog-task--link-label-to-href (links label)
-  "Return the href for LABEL from LINKS."
-  (cl-some (lambda (link)
-             (when (string-equal label (alist-get 'label link))
-               (alist-get 'href link)))
-           links))
-
-(defun blackdog-task--artifact-href (task key)
-  "Resolve artifact HREF for TASK from KEY."
-  (or (alist-get key task)
-      (let ((links (alist-get 'links task)))
-        (pcase key
-          ('latest_result_href
-           (or (blackdog-task--link-label-to-href links "Result")
-               (blackdog-task--link-label-to-href links "Result Dir")))
-          ('diff_href
-           (blackdog-task--link-label-to-href links "Diff"))
-          ('prompt_href
-           (blackdog-task--link-label-to-href links "Prompt"))
-          (_ nil)))))
+(defun blackdog-task--task-for-action (&optional task)
+  "Return TASK or the current task buffer's task."
+  (or task
+      blackdog-task-data
+      (and blackdog-task-id
+           (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root))))
 
 (defun blackdog-task--insert-quick-links (task)
   "Insert quick artifact links for TASK."
-  (let ((result-href (blackdog-task--artifact-href task 'latest_result_href))
-        (diff-href (blackdog-task--artifact-href task 'diff_href))
-        (prompt-href (blackdog-task--artifact-href task 'prompt_href)))
+  (let ((result-href (blackdog-task-artifact-href task 'result))
+        (diff-href (blackdog-task-artifact-href task 'diff))
+        (prompt-href (blackdog-task-artifact-href task 'prompt)))
     (when (or result-href diff-href prompt-href)
       (insert "Artifact Links\n")
       (when prompt-href
@@ -244,35 +233,29 @@
 (defun blackdog-task-view-open-result (&optional task)
   "Open the latest result artifact for TASK."
   (interactive)
-  (let* ((task (or task (blackdog-task--current-task)))
-         (href (blackdog-task--artifact-href task 'latest_result_href)))
+  (let ((task (blackdog-task--task-for-action task)))
     (unless task
       (user-error "No task selected"))
-    (unless href
-      (user-error "No result link for task %s" (alist-get 'id task)))
-    (blackdog-open-href href nil blackdog-buffer-root t)))
+    (blackdog-task-open-result task)))
 
 (defun blackdog-task-view-open-prompt (&optional task)
   "Open the prompt artifact for TASK."
   (interactive)
-  (let* ((task (or task (blackdog-task--current-task)))
-         (href (blackdog-task--artifact-href task 'prompt_href)))
+  (let ((task (blackdog-task--task-for-action task)))
     (unless task
       (user-error "No task selected"))
-    (unless href
-      (user-error "No prompt link for task %s" (alist-get 'id task)))
-    (blackdog-open-href href nil blackdog-buffer-root t)))
+    (blackdog-task-open-prompt task)))
 
 (defun blackdog-task-view-open-diff (&optional task)
   "Open the latest diff artifact for TASK."
   (interactive)
-  (let* ((task (or task (blackdog-task--current-task)))
-         (href (blackdog-task--artifact-href task 'diff_href)))
+  (let ((task (blackdog-task--task-for-action task)))
     (unless task
       (user-error "No task selected"))
-    (if href
-        (blackdog-open-href href nil blackdog-buffer-root t)
-      (blackdog-task-view-magit-diff task blackdog-buffer-root))))
+    (if (blackdog-task-artifact-href task 'diff)
+        (blackdog-task-open-diff task)
+      (require 'blackdog-magit)
+      (blackdog-magit-diff-task task blackdog-buffer-root))))
 
 (provide 'blackdog-task)
 

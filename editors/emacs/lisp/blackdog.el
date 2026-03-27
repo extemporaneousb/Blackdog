@@ -14,6 +14,8 @@
 (require 'blackdog-core)
 (require 'blackdog-results)
 (require 'blackdog-task)
+(require 'blackdog-runs)
+(require 'blackdog-artifacts)
 (require 'blackdog-magit)
 
 (ignore-errors
@@ -22,6 +24,7 @@
 (defvar blackdog-prefix-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "b") #'blackdog-dashboard)
+    (define-key map (kbd "u") #'blackdog-runs-open)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
     (define-key map (kbd "a") #'blackdog-search-artifacts)
@@ -67,6 +70,7 @@ Use `consult-ripgrep' when available and fall back to `rgrep'."
       "Dispatch Blackdog commands."
       [["Views"
         ("b" "Dashboard" blackdog-dashboard)
+        ("u" "Runs" blackdog-runs-open)
         ("r" "Results" blackdog-results-open)
         ("t" "Task" blackdog-find-task)]
        ["Search"

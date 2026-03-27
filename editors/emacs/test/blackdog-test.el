@@ -22,6 +22,8 @@
   (add-to-list 'load-path blackdog-test-lisp-dir))
 
 (require 'blackdog-core)
+(require 'blackdog-artifacts)
+(require 'blackdog-runs)
 (require 'blackdog-magit)
 (require 'blackdog-task)
 
@@ -127,6 +129,52 @@
     (should (string-match-p "TASK-1" (caar candidates)))
     (should (string-match-p "First task" (caar candidates)))))
 
+(ert-deftest blackdog-task-artifact-href-prefers-direct-href ()
+  (let ((task '((id . "TASK-1")
+                (prompt_href . "prompt-direct.txt")
+                (links . (((label . "Prompt") (href . "prompt-link.txt")))))))
+    (should (equal "prompt-direct.txt"
+                   (blackdog-task-artifact-href task 'prompt)))
+    (should (equal "prompt-link.txt" (blackdog-task--artifact-link-from-label task "Prompt")))))
+
+(ert-deftest blackdog-task-artifact-href-falls-back-to-links ()
+  (let ((task '((id . "TASK-1")
+                (links . (((label . "Prompt") (href . "prompt-link.txt")))))))
+    (should (equal "prompt-link.txt"
+                   (blackdog-task-artifact-href task 'prompt)))
+    (should (equal "prompt-link.txt"
+                   (alist-get 'href
+                              (seq-find (lambda (row)
+                                          (string= (alist-get 'label row) "Prompt"))
+                                        (blackdog-task-artifacts-links task)))))))
+
+(ert-deftest blackdog-task-artifacts-links-merges-and-sorts ()
+  (let ((task nil)
+        (rows nil))
+    (setq task '((id . "TASK-1")
+                 (stdout_href . "stdout.txt")
+                 (links . (((label . "Prompt") (href . "prompt.txt"))
+                           ((label . "Extra") (href . "extra.txt"))))))
+    (setq rows (blackdog-task-artifacts-links task))
+    (should (seq-find (lambda (row)
+                        (and (eq 'stdout (alist-get 'artifact row))
+                             (string= "stdout.txt" (alist-get 'href row))))
+                      rows))
+    (should (seq-find (lambda (row)
+                        (and (eq 'prompt (alist-get 'artifact row))
+                             (string= "prompt.txt" (alist-get 'href row))))
+                      rows))
+    (should (string= "Extra"
+                     (alist-get 'label (elt rows 0))))
+    (should (string= "Prompt"
+                     (alist-get 'label (elt rows 1))))))
+
+(ert-deftest blackdog-runs--run-id-normalizes-directories ()
+  (should (equal "BLACK-123"
+                 (blackdog-runs--run-id '((run_dir_href . "supervisor-runs/20260327-000001-abc123/BLACK-123")))))
+  (should (equal "BLACK-123"
+                 (blackdog-runs--run-id '((run_dir_href . "supervisor-runs/20260327-000001-abc123/BLACK-123/"))))))
+
 (ert-deftest blackdog-magit-parses-worktree-porcelain ()
   (let* ((porcelain (mapconcat
                      #'identity
@@ -218,8 +266,8 @@
         (blackdog-task-view-refresh)
         (should (string-match-p "Artifact Links" (buffer-string)))
         (should (string-match-p "Prompt" (buffer-string)))
-        (should-not (string-match-p "Diff" (buffer-string)))
-        (kill-buffer buffer))))
+        (should-not (string-match-p "Diff" (buffer-string)))))
+    (kill-buffer buffer)))
 
 (ert-deftest blackdog-task-view-open-prompt-and-result-commands ()
   (let ((opened nil)
@@ -229,24 +277,22 @@
                     (cons 'diff_href "supervisor-runs/changes.diff"))))
     (cl-letf (((symbol-function #'blackdog-open-href)
                (lambda (href &optional _snapshot _root _other-window)
-                 (setq opened href))))
+                 (setq opened href)))
+              ((symbol-function #'blackdog-magit-diff-task)
+               (lambda (_task _root)
+                 (setq opened :magit-diff))))
       (blackdog-task-view-open-prompt task)
       (should (equal "supervisor-runs/prompt.txt" opened))
       (blackdog-task-view-open-result task)
       (should (equal "task-results/BLACK-1234/result.json" opened))
-      (let ((magit-called nil))
-          (cl-letf (((symbol-function #'blackdog-task-view-magit-diff)
-                     (lambda (_task _root)
-                       (setq magit-called t))))
-            (blackdog-task-view-open-diff task)
-            (should (equal "supervisor-runs/changes.diff" opened))
-            (should (eq nil magit-called))))))
+      (blackdog-task-view-open-diff task)
+      (should (equal "supervisor-runs/changes.diff" opened)))))
 
 (ert-deftest blackdog-dashboard-renders-sections ()
   (skip-unless blackdog-test-has-magit-section)
   (skip-unless (file-exists-p
                 (expand-file-name "blackdog-snapshot.json" blackdog-test-fixture-root)))
-(let* ((snapshot (blackdog-test-load-snapshot))
+  (let* ((snapshot (blackdog-test-load-snapshot))
          (buffer (generate-new-buffer " *Blackdog Dashboard Test*")))
     (cl-letf (((symbol-function #'blackdog-snapshot)
                (lambda (&optional _root _force) snapshot)))
@@ -254,13 +300,14 @@
         (blackdog-dashboard-mode)
         (setq-local blackdog-buffer-root blackdog-test-root)
         (blackdog-dashboard-refresh)
-        (should (string-match-p "Overview" (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "Objectives" (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "Board Tasks" (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "Queue" (buffer-string))))
-      (kill-buffer buffer))))
-)
-)
+        (should (string-match-p "Overview"
+                                (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Objectives"
+                                (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Board Tasks"
+                                (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Ready:" (buffer-string)))))
+    (kill-buffer buffer)))
 
 (provide 'blackdog-test)
 
