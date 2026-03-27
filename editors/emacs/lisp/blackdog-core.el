@@ -29,6 +29,11 @@ fall back to `blackdog' on PATH."
   :group 'blackdog)
 
 (defvar blackdog--snapshot-cache (make-hash-table :test #'equal))
+(defvar blackdog--telemetry-command-table (make-hash-table :test #'equal))
+(defvar blackdog--telemetry-total-calls 0)
+(defvar blackdog--telemetry-failed-calls 0)
+(defvar blackdog--telemetry-last-call nil)
+(defvar blackdog--telemetry-last-error nil)
 (defvar-local blackdog-buffer-root nil)
 (defvar-local blackdog-refresh-function nil)
 
@@ -53,17 +58,22 @@ fall back to `blackdog' on PATH."
 (defun blackdog--call (root &rest args)
   "Run Blackdog in ROOT with ARGS and return stdout."
   (let ((default-directory root)
-        (buffer (generate-new-buffer " *blackdog*")))
+        (buffer (generate-new-buffer " *blackdog*"))
+        (started-at (float-time))
+        status
+        output)
     (unwind-protect
-        (let ((status (apply #'process-file (blackdog-command root) nil buffer nil args)))
+        (progn
+          (setq status (apply #'process-file (blackdog-command root) nil buffer nil args))
           (with-current-buffer buffer
-            (let ((output (buffer-string)))
-              (if (zerop status)
-                  output
-                (error "blackdog %s failed (%s): %s"
-                       (string-join args " ")
-                       status
-                       (string-trim output))))))
+            (setq output (buffer-string)))
+          (blackdog--record-telemetry root args status output (- (float-time) started-at))
+          (if (zerop status)
+              output
+            (error "blackdog %s failed (%s): %s"
+                   (string-join args " ")
+                   status
+                   (string-trim output))))
       (kill-buffer buffer))))
 
 (defun blackdog--call-json (root &rest args)
@@ -165,6 +175,81 @@ When OTHER-WINDOW is non-nil, use another window."
     (blackdog-clear-cache root)
     (when (functionp blackdog-refresh-function)
       (funcall blackdog-refresh-function))))
+
+(defun blackdog-clear-telemetry ()
+  "Reset the session-local Emacs telemetry counters."
+  (interactive)
+  (setq blackdog--telemetry-total-calls 0
+        blackdog--telemetry-failed-calls 0
+        blackdog--telemetry-last-call nil
+        blackdog--telemetry-last-error nil)
+  (clrhash blackdog--telemetry-command-table))
+
+(defun blackdog--telemetry-label (args)
+  "Return a readable label for Blackdog ARGS."
+  (let* ((prefix (seq-take args (min 2 (length args))))
+         (filtered (seq-filter (lambda (arg)
+                                 (not (string-prefix-p "--" arg)))
+                               prefix)))
+    (string-join (or filtered prefix) " ")))
+
+(defun blackdog--record-telemetry (root args status output duration)
+  "Record one Blackdog CLI telemetry sample for ROOT, ARGS, STATUS, OUTPUT, and DURATION."
+  (let* ((label (blackdog--telemetry-label args))
+         (row (copy-tree (or (gethash label blackdog--telemetry-command-table)
+                             '((count . 0)
+                               (failures . 0)
+                               (total_duration . 0.0)
+                               (last_duration . 0.0)
+                               (last_status . 0)
+                               (last_at . "")))))
+         (at (format-time-string "%FT%T%z")))
+    (setf (alist-get 'count row) (1+ (alist-get 'count row 0)))
+    (setf (alist-get 'total_duration row)
+          (+ (alist-get 'total_duration row 0.0) duration))
+    (setf (alist-get 'last_duration row) duration)
+    (setf (alist-get 'last_status row) status)
+    (setf (alist-get 'last_at row) at)
+    (when (not (zerop status))
+      (setf (alist-get 'failures row) (1+ (alist-get 'failures row 0))))
+    (puthash label row blackdog--telemetry-command-table)
+    (setq blackdog--telemetry-total-calls (1+ blackdog--telemetry-total-calls))
+    (setq blackdog--telemetry-last-call
+          `((label . ,label)
+            (root . ,root)
+            (status . ,status)
+            (duration . ,duration)
+            (at . ,at)))
+    (when (not (zerop status))
+      (setq blackdog--telemetry-failed-calls (1+ blackdog--telemetry-failed-calls))
+      (setq blackdog--telemetry-last-error
+            `((label . ,label)
+              (status . ,status)
+              (message . ,(string-trim output))
+              (at . ,at))))))
+
+(defun blackdog-telemetry-session-summary ()
+  "Return session-local Emacs telemetry as an alist."
+  (let (commands)
+    (maphash (lambda (label row)
+               (push `((label . ,label)
+                       (count . ,(alist-get 'count row 0))
+                       (failures . ,(alist-get 'failures row 0))
+                       (average_duration . ,(/ (alist-get 'total_duration row 0.0)
+                                              (max 1 (alist-get 'count row 1))))
+                       (last_duration . ,(alist-get 'last_duration row 0.0))
+                       (last_status . ,(alist-get 'last_status row 0))
+                       (last_at . ,(alist-get 'last_at row "")))
+                     commands))
+             blackdog--telemetry-command-table)
+    `((total_calls . ,blackdog--telemetry-total-calls)
+      (failed_calls . ,blackdog--telemetry-failed-calls)
+      (last_call . ,blackdog--telemetry-last-call)
+      (last_error . ,blackdog--telemetry-last-error)
+      (commands . ,(sort commands
+                         (lambda (left right)
+                           (> (alist-get 'count left 0)
+                              (alist-get 'count right 0))))))))
 
 (provide 'blackdog-core)
 

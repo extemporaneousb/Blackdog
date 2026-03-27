@@ -83,6 +83,7 @@ The initial package layout is:
 - `editors/emacs/lisp/blackdog-runs.el`
 - `editors/emacs/lisp/blackdog-search.el`
 - `editors/emacs/lisp/blackdog-spec.el`
+- `editors/emacs/lisp/blackdog-telemetry.el`
 - `editors/emacs/lisp/blackdog-magit.el`
 - `editors/emacs/templates/blackdog-spec.md`
 - `editors/emacs/test/blackdog-test.el`
@@ -147,6 +148,12 @@ The spec workflow adds an editable `Blackdog-Spec` buffer that keeps:
 - a ready-to-run `blackdog add` command
 - prompt context that carries analysis, code paths, data paths, and prompt notes together
 
+The telemetry workflow adds a read-only `Blackdog-Telemetry` buffer that combines:
+
+- session-local Emacs instrumentation for Blackdog CLI latency and failures
+- `blackdog supervise status --format json` summaries for the current supervisor actor
+- `blackdog supervise report --format json` summaries for startup, retry, output-shape, and landing health
+
 ## Keybindings
 
 Suggested prefix: `C-c b`
@@ -157,6 +164,7 @@ Suggested prefix: `C-c b`
 - `C-c b t`: jump to a task by completion
 - `C-c b a`: jump to an artifact by completion
 - `C-c b n`: create a new spec buffer
+- `C-c b v`: open telemetry and supervisor health
 - `C-c b f`: jump to a project file by completion
 - `C-c b s`: search the repo root
 - `C-c b A`: search the Blackdog control dir
@@ -192,6 +200,11 @@ Inside a spec buffer:
 
 - `C-c C-c`: render the current spec into a draft Blackdog task payload and `blackdog add` command
 - `C-c C-p`: add a code or data path to the current spec
+
+Inside the telemetry buffer:
+
+- `g`: refresh local and supervisor telemetry
+- `c`: clear the current Emacs session counters and refresh
 
 ## Installation With use-package
 
@@ -232,6 +245,7 @@ If you prefer a variable:
 - live smoke tests that open snapshot-backed buffers against this repo
 - direct ERT coverage for task/artifact completion, project-aware file navigation, and search root selection
 - spec-buffer coverage for template loading, path capture, and draft task command generation
+- telemetry coverage for CLI call instrumentation and supervisor summary rendering
 
 ### Git integration
 

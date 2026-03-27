@@ -19,6 +19,7 @@
 (require 'blackdog-magit)
 (require 'blackdog-search)
 (require 'blackdog-spec)
+(require 'blackdog-telemetry)
 
 (ignore-errors
   (require 'transient))
@@ -31,6 +32,7 @@
     (define-key map (kbd "t") #'blackdog-find-task)
     (define-key map (kbd "a") #'blackdog-find-artifact)
     (define-key map (kbd "n") #'blackdog-spec-new)
+    (define-key map (kbd "v") #'blackdog-telemetry-open)
     (define-key map (kbd "f") #'blackdog-find-project-file)
     (define-key map (kbd "s") #'blackdog-search-project)
     (define-key map (kbd "A") #'blackdog-search-artifacts)
@@ -68,6 +70,7 @@
         ("t" "Task" blackdog-find-task)
         ("a" "Artifact" blackdog-find-artifact)
         ("n" "New spec" blackdog-spec-new)
+        ("v" "Telemetry" blackdog-telemetry-open)
         ("f" "Project file" blackdog-find-project-file)]
        ["Search"
         ("s" "Project grep" blackdog-search-project)
