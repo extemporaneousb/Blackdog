@@ -10,6 +10,17 @@
 (require 'cl-lib)
 (require 'json)
 (require 'ert)
+
+(defconst blackdog-test-lisp-dir
+  (expand-file-name
+   "../lisp/"
+   (file-name-directory (or load-file-name (buffer-file-name)))
+   )
+  "Directory containing the Emacs package source under editors/emacs.")
+
+(when (file-directory-p blackdog-test-lisp-dir)
+  (add-to-list 'load-path blackdog-test-lisp-dir))
+
 (require 'blackdog-core)
 (require 'blackdog-magit)
 
@@ -29,6 +40,18 @@
 
 (defconst blackdog-test-run-id "20260327-140022-8df46a17"
   "Supervisor run directory name for the Emacs fixture set.")
+
+(defconst blackdog-test-fixture-candidate-clis
+  (list (expand-file-name ".VE/bin/blackdog" blackdog-test-root)
+        (executable-find "blackdog"))
+  "Candidate Blackdog CLI commands for test execution.")
+
+(defun blackdog-test--cli-command ()
+  "Return a best-effort Blackdog command for integration-style tests."
+  (or (let ((env-value (getenv "BLACKDOG_TEST_BLACKDOG_COMMAND")))
+        (and (stringp env-value) (file-executable-p env-value) env-value))
+      (seq-find #'file-executable-p
+                (seq-filter #'identity blackdog-test-fixture-candidate-clis))))
 
 (defun blackdog-test--read-json (path)
   "Read PATH as JSON and return an alist with string keys."
@@ -111,10 +134,13 @@
     (should (equal "/tmp/two" (alist-get "agent/task" pairs nil nil #'string=)))))
 
 (ert-deftest blackdog-snapshot-live-loads-the-project ()
-  (let ((snapshot (blackdog-snapshot blackdog-test-root t)))
-    (should (equal "Blackdog" (alist-get 'project_name snapshot)))
-    (should (alist-get 'tasks snapshot))
-    (should (alist-get 'control_dir snapshot))))
+  (let ((command (blackdog-test--cli-command)))
+    (skip-unless command)
+    (let ((blackdog-default-command command)
+          (snapshot (blackdog-snapshot blackdog-test-root t)))
+      (should (equal "Blackdog" (alist-get 'project_name snapshot)))
+      (should (alist-get 'tasks snapshot))
+      (should (alist-get 'control_dir snapshot)))))
 
 (ert-deftest blackdog-test-snapshot-fixture-shape ()
   (skip-unless (file-exists-p (expand-file-name "blackdog-snapshot.json"
