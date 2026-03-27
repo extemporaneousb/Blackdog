@@ -23,6 +23,14 @@
 
 (require 'blackdog-core)
 (require 'blackdog-magit)
+(require 'blackdog-task)
+
+(defconst blackdog-test-has-magit-section
+  (locate-library "magit-section")
+  "Non-nil when magit-section can be loaded in this test environment.")
+
+(when blackdog-test-has-magit-section
+  (require 'blackdog-dashboard))
 
 (defconst blackdog-test-root
   (expand-file-name
@@ -190,6 +198,69 @@
              (blackdog-test-run-task-file blackdog-test-run-id blackdog-test-task-id "stderr.log")))
     (should (file-exists-p
              (blackdog-test-run-task-file blackdog-test-run-id blackdog-test-task-id "prompt.txt")))))
+
+(ert-deftest blackdog-task-view-inserts-quick-links ()
+  (let ((task nil)
+        (buffer (generate-new-buffer " *Blackdog Task Test*")))
+    (setq task (list (cons 'id blackdog-test-task-id)
+                     (cons 'title "Snapshot task")
+                     (cons 'links (list (list (cons 'label "Prompt")
+                                              (cons 'href "supervisor-runs/prompt.txt"))))))
+    (cl-letf (((symbol-function #'blackdog-snapshot)
+               (lambda (&optional _root _force) (list (cons 'tasks nil))))
+              ((symbol-function #'blackdog-task-by-id)
+               (lambda (_task-id &optional _snapshot _root) task)))
+      (with-current-buffer buffer
+        (blackdog-task-view-mode)
+        (setq-local blackdog-buffer-root blackdog-test-root)
+        (setq-local blackdog-task-id blackdog-test-task-id)
+        (setq-local blackdog-task-data task)
+        (blackdog-task-view-refresh)
+        (should (string-match-p "Artifact Links" (buffer-string)))
+        (should (string-match-p "Prompt" (buffer-string)))
+        (should-not (string-match-p "Diff" (buffer-string)))
+        (kill-buffer buffer))))
+
+(ert-deftest blackdog-task-view-open-prompt-and-result-commands ()
+  (let ((opened nil)
+        (task (list (cons 'id "BLACK-1234")
+                    (cons 'prompt_href "supervisor-runs/prompt.txt")
+                    (cons 'latest_result_href "task-results/BLACK-1234/result.json")
+                    (cons 'diff_href "supervisor-runs/changes.diff"))))
+    (cl-letf (((symbol-function #'blackdog-open-href)
+               (lambda (href &optional _snapshot _root _other-window)
+                 (setq opened href))))
+      (blackdog-task-view-open-prompt task)
+      (should (equal "supervisor-runs/prompt.txt" opened))
+      (blackdog-task-view-open-result task)
+      (should (equal "task-results/BLACK-1234/result.json" opened))
+      (let ((magit-called nil))
+          (cl-letf (((symbol-function #'blackdog-task-view-magit-diff)
+                     (lambda (_task _root)
+                       (setq magit-called t))))
+            (blackdog-task-view-open-diff task)
+            (should (equal "supervisor-runs/changes.diff" opened))
+            (should (eq nil magit-called))))))
+
+(ert-deftest blackdog-dashboard-renders-sections ()
+  (skip-unless blackdog-test-has-magit-section)
+  (skip-unless (file-exists-p
+                (expand-file-name "blackdog-snapshot.json" blackdog-test-fixture-root)))
+(let* ((snapshot (blackdog-test-load-snapshot))
+         (buffer (generate-new-buffer " *Blackdog Dashboard Test*")))
+    (cl-letf (((symbol-function #'blackdog-snapshot)
+               (lambda (&optional _root _force) snapshot)))
+      (with-current-buffer buffer
+        (blackdog-dashboard-mode)
+        (setq-local blackdog-buffer-root blackdog-test-root)
+        (blackdog-dashboard-refresh)
+        (should (string-match-p "Overview" (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Objectives" (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Board Tasks" (buffer-substring-no-properties (point-min) (point-max))))
+        (should (string-match-p "Queue" (buffer-string))))
+      (kill-buffer buffer))))
+)
+)
 
 (provide 'blackdog-test)
 

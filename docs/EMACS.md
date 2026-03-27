@@ -156,6 +156,8 @@ Inside the task reader:
 - `g`: refresh
 - `m`: Magit status
 - `d`: Magit diff
+- `p`: open prompt artifact link
+- `r`: open latest result artifact
 
 ## Installation With use-package
 
