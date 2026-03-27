@@ -1,0 +1,38 @@
+{
+  "child_agent": "supervisor/emacs/child-01",
+  "launch_command": [
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "-m",
+    "gpt-5.3-codex-spark",
+    "-c",
+    "model_reasoning_effort=high"
+  ],
+  "launch_command_strategy": "profile",
+  "launched_at": "2026-03-27T14:00:24-07:00",
+  "metadata_file": "/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/metadata.json",
+  "prompt_file": "/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/prompt.txt",
+  "prompt_hash": "ff5768ca89562080e5334560180752ec7e23b37ec178c93d3022f86841e4cc1e",
+  "prompt_template_hash": "be592e8743e414fcaad368c949b904da24e791b2a8dfbe9e598367d059251307",
+  "prompt_template_version": 2,
+  "protocol_command": "/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child",
+  "run_id": "8df46a17",
+  "stderr_file": "/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/stderr.log",
+  "stdout_file": "/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/stdout.log",
+  "task_id": "BLACK-5036e0095a",
+  "workspace": "/Users/bullard/Work/.worktrees/wt-black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17",
+  "workspace_mode": "git-worktree",
+  "worktree_spec": {
+    "base_commit": "43ea53b0e8b7ca720b7ffd08a027cdb95c30f0d8",
+    "base_ref": "main",
+    "branch": "agent/black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17",
+    "current_worktree": "/Users/bullard/Work/Blackdog",
+    "primary_worktree": "/Users/bullard/Work/Blackdog",
+    "target_branch": "main",
+    "task_id": "BLACK-5036e0095a",
+    "task_slug": "black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests",
+    "task_title": "Capture Blackdog snapshot, result, and supervisor fixtures for Emacs tests",
+    "worktree_path": "/Users/bullard/Work/.worktrees/wt-black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17"
+  }
+}

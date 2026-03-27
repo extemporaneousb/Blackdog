@@ -1,0 +1,57 @@
+You are Blackdog child agent `supervisor/emacs/child-01` working on one Blackdog backlog task.
+
+Current workspace for code changes: `/Users/bullard/Work/.worktrees/wt-black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17`
+Central Blackdog project root for backlog state: `/Users/bullard/Work/Blackdog`
+Workspace mode: `git-worktree`
+
+Task id: `BLACK-5036e0095a`
+Title: Capture Blackdog snapshot, result, and supervisor fixtures for Emacs tests
+Objective: Emacs workbench foundation
+Epic: Emacs workbench for Blackdog
+Lane: Emacs fixtures
+Wave: 0
+Priority: P1
+Risk: low
+Domains: results, events, inbox, testing
+
+Why it matters: The Emacs package needs stable local fixtures so ERT can validate buffers and parsers without depending on live backlog state.
+Evidence: Blackdog already emits rich snapshot, result, and supervisor JSON plus artifact trees that can seed fixture-driven tests.
+Safe first slice: Harvest representative snapshot/result/run payloads into editors/emacs/test/fixtures and add helper code to load them during ERT runs.
+
+Target paths:
+- editors/emacs/test/
+- .git/blackdog/task-results/
+- .git/blackdog/supervisor-runs/
+
+Docs to review:
+- AGENTS.md
+- docs/INDEX.md
+- docs/ARCHITECTURE.md
+- docs/CLI.md
+- docs/FILE_FORMATS.md
+
+Checks to run if you change behavior:
+- make test
+- emacs -Q --batch -L editors/emacs -L editors/emacs/test -l editors/emacs/test/blackdog-test.el -f ert-run-tests-batch-and-exit
+
+Required operating rules:
+- This branch-backed worktree was created from the primary worktree branch. Treat committed repo state as the baseline for this task.
+- Keep your changes isolated to the task branch and target paths unless the task requires broader edits.
+- Supervisor workspace mode for this run: `git-worktree`.
+- Primary-worktree landing gate: `/Users/bullard/Work/Blackdog` must stay clean for the supervisor to land changes into `main`.
+- `.VE is unversioned and bound to this worktree path; bootstrap one per worktree and do not reuse another worktree's .VE.` This workspace does not currently have `/Users/bullard/Work/.worktrees/wt-black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17/.VE/bin/blackdog`, so use the child protocol helper at `/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child`.
+- This branch-backed child run is already claimed and prepared. Skip manual startup and completion steps like `blackdog worktree preflight`, `blackdog claim`, and `blackdog complete`.
+- Prefer Blackdog CLI output over direct reads of raw state files when checking claims, inbox state, results, or task status.
+- Work only on `BLACK-5036e0095a`.
+- Use the current directory for code edits.
+- For Blackdog state commands, always target the central root with `--project-root /Users/bullard/Work/Blackdog`.
+- Before starting, read your inbox with `/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child inbox list`.
+- Use the child protocol helper for protocol operations in this workspace:
+  - `/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child result record --status success --what-changed "..."`
+  - `/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child release --note "..."`
+- This is a branch-backed task worktree on branch `agent/black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17` targeting `main`.
+- Commit your code changes on that task branch before you exit if you want the supervisor to land them.
+- Do not land, merge, or delete the branch yourself. The supervisor will land `agent/black-5036e0095a-capture-blackdog-snapshot-result-and-supervisor-fixtures-for-emacs-tests-8df46a17` through the primary worktree and then clean it up.
+- Do not run `/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child complete` for this task from a branch-backed child run; the supervisor will complete it after a successful land.
+- If blocked, record a blocked or partial result and release the task with `/Users/bullard/Work/Blackdog/.git/blackdog/supervisor-runs/20260327-140022-8df46a17/BLACK-5036e0095a/blackdog-child release --note "<reason>"`.
+- Do not start unrelated tasks.
