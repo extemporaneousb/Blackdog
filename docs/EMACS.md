@@ -7,7 +7,7 @@ Blackdog already has the right local data model for Emacs:
 - the shared control dir is the artifact store for prompts, diffs, stdout/stderr, results, and inbox state.
 - Git worktrees and task branches are the source of truth for code-state navigation.
 
-This document defines the first Emacs 30+ package that sits on top of those surfaces.
+This document describes the shipped Emacs 30+ package that sits on top of those surfaces and how to run it as a local operator cockpit in this repo.
 
 ## Design Goals
 
@@ -16,6 +16,17 @@ This document defines the first Emacs 30+ package that sits on top of those surf
 - use Magit idioms where the operator already expects them
 - keep optional packages optional and degrade cleanly to built-in completion/search where possible
 - dogfood the package against this repo first, then grow the workflow surface by backlog task
+
+## Current Feature Surface
+
+- dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
+- read-only task reader with task metadata, latest result summaries, clickable project paths, and clickable prompt/stdout/stderr/diff/metadata/result/run artifacts
+- tabulated listings for latest results and supervisor run directories
+- Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
+- minibuffer completion for task, artifact, and project-file lookup
+- incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
+- spec-first authoring buffers that turn analysis notes into a draft `blackdog add` payload and ready-to-run CLI command
+- telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status` and `blackdog supervise report` summaries
 
 ## Frameworks To Leverage
 
@@ -37,6 +48,21 @@ This document defines the first Emacs 30+ package that sits on top of those surf
 
 - `magit`: use for worktree status, branch range diffs, and commit inspection.
 - `forge`: not a dependency, but a useful model for how a Magit-adjacent package can expose queue-like local objects and drill into detail buffers.
+
+## Dependency Tiers
+
+| Tier | Packages | Why |
+| --- | --- | --- |
+| Required runtime | Emacs 30+, Blackdog CLI in the repo worktree | Core snapshot, task, artifact, result, run, search, spec, and telemetry commands shell out to `blackdog` and use built-in Emacs libraries. |
+| Recommended | `magit` | Provides `magit-status`, `magit-diff-range`, and `magit-section`; the dashboard and Magit task actions are built around those surfaces. |
+| Recommended | `transient` | Enables `blackdog-dispatch`; without it the prefix map still works, but `.` and `?` raise a clear error. |
+| Optional | `consult` | Upgrades project and artifact grep to live `consult-ripgrep`. |
+| Optional | `embark` | Adds minibuffer actions on task and artifact candidates without package-specific code. |
+
+Notes:
+
+- `magit-section` is currently pulled in through the `magit` package and is required for `blackdog-dashboard`.
+- The package loads without Magit or Transient installed, but the commands that depend on them stay unavailable until those packages are present.
 
 ## Architecture
 
@@ -73,7 +99,7 @@ That gives the right behavior for both active WTAM work and landed historical ta
 
 ## Package Layout
 
-The initial package layout is:
+The current package layout is:
 
 - `editors/emacs/lisp/blackdog-core.el`
 - `editors/emacs/lisp/blackdog.el`
@@ -88,14 +114,53 @@ The initial package layout is:
 - `editors/emacs/templates/blackdog-spec.md`
 - `editors/emacs/test/blackdog-test.el`
 
-Later backlog tasks will extend this with:
+If you package this outside the repo checkout, keep `lisp/` and `templates/` together. The spec workflow resolves `blackdog-spec.md` relative to `blackdog-spec.el` unless you set `blackdog-spec-template-file`.
 
-- artifact/thread buffers
-- spec buffers and templates
-- telemetry buffers
-- richer search/navigation helpers
+## Operator Workflows
 
-## UI Mock
+### Daily queue pass
+
+1. Open the dashboard with `C-c b b`.
+2. Expand sections with Magit motion and hit `RET` on a task to open the task reader.
+3. Use `m` for task-local Magit status or `d` for the task diff.
+4. Use `r` and `u` from the prefix map to move into result and run listings.
+
+### Task inspection and diff reading
+
+For an active WTAM task:
+
+1. `blackdog-magit-status-task` resolves the task branch to a live worktree with `git worktree list --porcelain`.
+2. `blackdog-magit-diff-task` opens `target_branch..task_branch` in Magit when both branches still exist.
+
+For a landed or cleaned-up task:
+
+1. `blackdog-magit-status-task` falls back to the repo root when the task worktree no longer exists.
+2. `blackdog-magit-diff-task` falls back to the saved `changes.diff` artifact when the task branch is gone.
+
+That is the intended worktree-diff reading model: prefer live Git state while the task is active, then prefer the immutable saved diff once the task has been landed and cleaned up.
+
+### Artifact and search pass
+
+- `C-c b a` opens prompt/stdout/stderr/diff/metadata/result/run artifacts through minibuffer completion.
+- `C-c b A` searches the Blackdog control dir, which is the right place to grep old results, diffs, prompts, and supervisor artifacts.
+- `C-c b f` and `C-c b s` stay in project code and docs.
+
+### Spec-first task shaping
+
+1. `C-c b n` opens a `Blackdog-Spec` buffer seeded from the bundled template.
+2. Fill in the metadata and analysis sections.
+3. Use `C-c C-p` to append code or data paths.
+4. Use `C-c C-c` to render a draft payload plus a ready-to-run `blackdog add` command.
+
+This is intentionally spec-driven but still CLI-authoritative: Emacs helps assemble the task, while Blackdog still owns the durable write.
+
+### Telemetry and supervision
+
+1. `C-c b v` opens the telemetry buffer.
+2. `g` refreshes local counters plus `blackdog supervise status/report`.
+3. `c` clears the in-session command counters so you can measure one workflow pass cleanly.
+
+## UI Mocks
 
 ```text
 *Blackdog: Blackdog*
@@ -126,14 +191,76 @@ Recent Results
   [success] BLACK-e429db183d  Added a machine-local tracked install registry...
 ```
 
-The task reader is a separate buffer with:
+```text
+*Blackdog Task: BLACK-62291a1166*
 
-- status, lane, wave, branch, target
-- safe first slice and why
-- latest result preview, what changed, validation, residual
-- clickable project paths
-- clickable prompt/stdout/stderr/diff/result metadata/run links
-- Magit status and diff commands
+BLACK-62291a1166  Implement spec-driven buffers that link analyses, tasks, prompts, code, and data
+
+Status         Completed
+Objective      Emacs workbench
+Lane           Authoring
+Wave           2
+Priority       P1
+Risk           medium
+Branch         agent/black-62291a1166-...
+Target         main
+Latest Result  success
+
+Artifact Links
+- Prompt
+- Diff
+- Result
+
+Safe First Slice
+Create the buffer and emit a draft task payload.
+
+What Changed
+- Added blackdog-spec.el and the bundled spec template.
+
+Paths
+- editors/emacs/lisp/blackdog-spec.el
+- editors/emacs/templates/blackdog-spec.md
+```
+
+```text
+*Blackdog Results*
+
+Task           Status     Actor                Recorded                  Title
+BLACK-781...   success    codex                2026-03-27T16:44:22Z      Expose supervisor telemetry...
+BLACK-622...   success    codex                2026-03-27T16:35:05Z      Implement spec-driven buffers...
+```
+
+```text
+*Blackdog Spec*
+
+Title: Spec task
+Bucket: integration
+Priority: P1
+Risk: medium
+Effort: M
+Objective: Spec-driven operator workflow
+
+## Analysis
+Capture a spec before creating the task.
+
+## Code Paths
+- editors/emacs/lisp/blackdog-spec.el
+```
+
+```text
+*Blackdog Telemetry*
+
+Session
+Calls: 12  Failures: 1  Last error: blackdog supervise report ...
+
+Supervisor Status
+Actor: supervisor/emacs  Running: 0  Ready: 1  Waiting: 1
+
+Supervisor Report
+Startup healthy
+Landing healthy
+Retry pressure low
+```
 
 The spec workflow adds an editable `Blackdog-Spec` buffer that keeps:
 
@@ -158,66 +285,93 @@ The telemetry workflow adds a read-only `Blackdog-Telemetry` buffer that combine
 
 Suggested prefix: `C-c b`
 
-- `C-c b b`: open dashboard
-- `C-c b u`: open run artifacts
-- `C-c b r`: open results
-- `C-c b t`: jump to a task by completion
-- `C-c b a`: jump to an artifact by completion
-- `C-c b n`: create a new spec buffer
-- `C-c b v`: open telemetry and supervisor health
-- `C-c b f`: jump to a project file by completion
-- `C-c b s`: search the repo root
-- `C-c b A`: search the Blackdog control dir
-- `C-c b m`: open Magit status for a task
-- `C-c b d`: open branch diff for a task
-- `C-c b .`: open the transient dispatch menu
-- `C-c b g`: refresh the current Blackdog buffer
+### Prefix map
 
-Inside the dashboard:
+| Key | Command | Purpose |
+| --- | --- | --- |
+| `C-c b b` | `blackdog-dashboard` | Open the Magit-style dashboard. |
+| `C-c b u` | `blackdog-runs-open` | Browse supervisor run directories. |
+| `C-c b r` | `blackdog-results-open` | Browse latest task results. |
+| `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
+| `C-c b a` | `blackdog-find-artifact` | Open a prompt/diff/result/run artifact from completion. |
+| `C-c b n` | `blackdog-spec-new` | Start a new spec-first task draft. |
+| `C-c b v` | `blackdog-telemetry-open` | Open CLI and supervisor telemetry. |
+| `C-c b f` | `blackdog-find-project-file` | Jump to a repo file. |
+| `C-c b s` | `blackdog-search-project` | Search the repo root. |
+| `C-c b A` | `blackdog-search-artifacts` | Search the Blackdog control dir. |
+| `C-c b m` | `blackdog-magit-status-for-task` | Open Magit status for a task. |
+| `C-c b d` | `blackdog-magit-diff-for-task` | Open the task diff or saved diff artifact. |
+| `C-c b .` | `blackdog-dispatch` | Open the Transient dispatch menu. |
+| `C-c b ?` | `blackdog-dispatch` | Same as `.`. |
+| `C-c b g` | `blackdog-refresh` | Refresh the current Blackdog buffer. |
 
-- `RET`: open the task reader or toggle a section
-- `g`: refresh
-- `r`: jump to results
-- `s`: jump to a task
-- `q`: quit window
+### Dashboard keys
 
-Inside the task reader:
+| Key | Purpose |
+| --- | --- |
+| `RET` | Open the task/result at point or toggle the current section. |
+| `g` | Refresh the snapshot-backed buffer. |
+| `r` | Jump to results. |
+| `s` | Jump to a task by completion. |
+| `q` | Quit the window. |
 
-- `RET`: open the button at point
-- `g`: refresh
-- `m`: Magit status
-- `d`: Magit diff
-- `p`: open prompt artifact
-- `r`: open latest result artifact
-- `O`: open stdout artifact
-- `E`: open stderr artifact
-- `D`: open diff artifact
-- `M`: open metadata artifact
-- `F`: open result artifact
-- `R`: open run artifact directory
+### Task reader keys
 
-Inside a spec buffer:
+| Key | Purpose |
+| --- | --- |
+| `RET` | Open the button at point. |
+| `g` | Refresh the task reader from a fresh snapshot. |
+| `m` | Open Magit status for the task. |
+| `d` | Open a live Magit diff or saved diff artifact. |
+| `p` | Open the prompt artifact. |
+| `r` | Open the latest result artifact. |
+| `O` | Open stdout. |
+| `E` | Open stderr. |
+| `D` | Open diff. |
+| `M` | Open metadata. |
+| `F` | Open result JSON. |
+| `R` | Open the run artifact directory. |
 
-- `C-c C-c`: render the current spec into a draft Blackdog task payload and `blackdog add` command
-- `C-c C-p`: add a code or data path to the current spec
+### Results and runs
 
-Inside the telemetry buffer:
+| Buffer | Keys |
+| --- | --- |
+| Results | `RET` opens the task reader, `f` opens the result file, `g` refreshes. |
+| Runs | `RET` opens the run directory, `t` opens the task reader, `g` refreshes. |
 
-- `g`: refresh local and supervisor telemetry
-- `c`: clear the current Emacs session counters and refresh
+### Spec and telemetry
+
+| Buffer | Keys |
+| --- | --- |
+| Spec | `C-c C-c` renders the draft payload and CLI command, `C-c C-p` appends a code or data path. |
+| Telemetry | `g` refreshes supervisor and session data, `c` clears the session counters and refreshes. |
 
 ## Installation With use-package
 
-Install the Emacs-side dependencies you want from ELPA/MELPA:
+Install the Emacs-side dependencies you want from ELPA/MELPA first:
 
-- `transient`
 - `magit`
+- `transient`
 - `consult` (optional)
 - `embark` (optional)
 
 Then load Blackdog from this checkout:
 
 ```elisp
+(use-package magit
+  :ensure t)
+
+(use-package transient
+  :ensure t)
+
+(use-package consult
+  :ensure t
+  :defer t)
+
+(use-package embark
+  :ensure t
+  :defer t)
+
 (use-package blackdog
   :load-path "/Users/bullard/Work/Blackdog/editors/emacs/lisp"
   :bind-keymap (("C-c b" . blackdog-prefix-map)))
@@ -231,6 +385,39 @@ If you prefer a variable:
     :load-path (list (expand-file-name "editors/emacs/lisp" blackdog-root))
     :bind-keymap (("C-c b" . blackdog-prefix-map))))
 ```
+
+For a vendored install outside this repo layout, either keep the `templates/` directory next to `lisp/` or set:
+
+```elisp
+(setq blackdog-spec-template-file
+      "/path/to/blackdog/editors/emacs/templates/blackdog-spec.md")
+```
+
+After loading the package:
+
+1. Open a file inside a repo containing `blackdog.toml`.
+2. Run `C-c b b` to confirm the dashboard renders.
+3. Run `C-c b .` to confirm Transient is available.
+4. Run `C-c b m` on any task to confirm Magit integration is present.
+
+## Release Packaging For Emacs 30+
+
+The current release model is a local-use package loaded directly from a checkout or vendored subtree. There is no MELPA or GNU ELPA release contract yet.
+
+For an internal release bundle, ship:
+
+- `editors/emacs/lisp/*.el`
+- `editors/emacs/templates/blackdog-spec.md`
+- `editors/emacs/README.md`
+- `docs/EMACS.md`
+
+Recommended release checklist:
+
+1. Install the Blackdog CLI in the target worktree-local `.VE`.
+2. Install `magit` and `transient` in Emacs.
+3. Load the package through `use-package` or an equivalent `load-path` setup.
+4. Run the batch checks in the testing section below.
+5. Open the dashboard against a real repo and verify one live task diff plus one landed-task saved diff.
 
 ## Testing Plan
 
@@ -257,8 +444,26 @@ If you prefer a variable:
 - run the package against this repo while Blackdog supervisor is active
 - record refresh latency, missing-artifact failures, and workflow friction as follow-up backlog tasks
 
+## Development And Validation
+
+Run the package checks from the repo root:
+
+```bash
+make test-emacs
+emacs -Q --batch -L editors/emacs/lisp -L editors/emacs/test \
+  -l editors/emacs/test/blackdog-test.el \
+  -f ert-run-tests-batch-and-exit
+make test
+```
+
+Useful manual smoke checks:
+
+- `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../editors/emacs/lisp\") (require 'blackdog))"`
+- open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
+- verify `C-c b d` uses a live Magit diff for an active task and a saved `changes.diff` artifact for a landed task
+
 ## Implementation Notes
 
-- The first code slice keeps writes in the CLI and makes Emacs a high-signal operator cockpit.
-- The spec-driven workflow belongs in a later lane after the dashboard, results, Magit, and search surfaces have stabilized.
+- The current code keeps durable writes in the CLI and makes Emacs a high-signal operator cockpit.
 - The package should stay dependency-light: optional packages improve UX, but the package must remain usable with built-in completion plus Magit/Transient.
+- The next backlog candidates are write-enabled inbox/approval flows, a dedicated prompt/thread browser, richer minibuffer actions, and asynchronous refresh for larger control dirs.
