@@ -20,7 +20,7 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 ## Current Feature Surface
 
 - dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
-- read-only task reader with task metadata, latest result summaries, clickable project paths, and clickable prompt/stdout/stderr/diff/metadata/result/run artifacts
+- read-only task reader with task metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
 - Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
 - minibuffer completion for task, artifact, and project-file lookup
@@ -97,6 +97,16 @@ For a task row:
 
 That gives the right behavior for both active WTAM work and landed historical tasks.
 
+### Prompt and thread browsing
+
+For a task row:
+
+1. `prompt_href` points at the saved child prompt when a supervisor run produced one.
+2. `thread_href` points at the best available raw child transcript and currently prefers a non-empty `stderr.log`, then falls back to `stdout.log`.
+3. direct/manual WTAM tasks may not have a thread artifact, so the reader leaves thread browsing unavailable instead of guessing.
+
+The Emacs task reader uses dedicated prompt/thread buffers for those artifacts so operators can stay inside the workbench, while the raw files remain available through the artifact list and minibuffer artifact picker.
+
 ## Package Layout
 
 The current package layout is:
@@ -141,7 +151,7 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 
 ### Artifact and search pass
 
-- `C-c b a` opens prompt/stdout/stderr/diff/metadata/result/run artifacts through minibuffer completion.
+- `C-c b a` opens prompt/thread/stdout/stderr/diff/metadata/result/run artifacts through minibuffer completion.
 - `C-c b A` searches the Blackdog control dir, which is the right place to grep old results, diffs, prompts, and supervisor artifacts.
 - `C-c b f` and `C-c b s` stay in project code and docs.
 
@@ -323,7 +333,9 @@ Suggested prefix: `C-c b`
 | `g` | Refresh the task reader from a fresh snapshot. |
 | `m` | Open Magit status for the task. |
 | `d` | Open a live Magit diff or saved diff artifact. |
-| `p` | Open the prompt artifact. |
+| `p` | Browse the prompt in a read-only Blackdog buffer. |
+| `t` | Browse the best available child thread transcript. |
+| `P` | Open the raw prompt artifact. |
 | `r` | Open the latest result artifact. |
 | `O` | Open stdout. |
 | `E` | Open stderr. |
@@ -460,10 +472,11 @@ Useful manual smoke checks:
 
 - `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../editors/emacs/lisp\") (require 'blackdog))"`
 - open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
+- open one task and verify `p` renders the prompt browser and `t` renders the thread browser when supervisor artifacts exist
 - verify `C-c b d` uses a live Magit diff for an active task and a saved `changes.diff` artifact for a landed task
 
 ## Implementation Notes
 
 - The current code keeps durable writes in the CLI and makes Emacs a high-signal operator cockpit.
 - The package should stay dependency-light: optional packages improve UX, but the package must remain usable with built-in completion plus Magit/Transient.
-- The next backlog candidates are write-enabled inbox/approval flows, a dedicated prompt/thread browser, richer minibuffer actions, and asynchronous refresh for larger control dirs.
+- The next backlog candidates are write-enabled inbox/approval flows, richer minibuffer actions, and asynchronous refresh for larger control dirs.

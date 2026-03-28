@@ -23,7 +23,7 @@ from .store import load_events, load_inbox, load_state, load_task_results, now_i
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 7
+UI_SNAPSHOT_SCHEMA_VERSION = 8
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
@@ -294,11 +294,27 @@ def _find_run_dir(paths: ProjectPaths, run_id: str) -> Path | None:
     return matches[0].resolve() if matches else None
 
 
+def _best_thread_artifact(*candidates: Path) -> Path | None:
+    fallback: Path | None = None
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        if fallback is None:
+            fallback = candidate
+        try:
+            if candidate.stat().st_size > 0:
+                return candidate
+        except OSError:
+            continue
+    return fallback
+
+
 def _child_artifacts(paths: ProjectPaths, run_dir: Path | None, task_id: str) -> dict[str, Any]:
     if run_dir is None:
         return {
             "run_dir_href": None,
             "prompt_href": None,
+            "thread_href": None,
             "stdout_href": None,
             "stderr_href": None,
             "metadata_href": None,
@@ -309,12 +325,15 @@ def _child_artifacts(paths: ProjectPaths, run_dir: Path | None, task_id: str) ->
         }
     child_dir = run_dir / task_id
     stdout_path = child_dir / "stdout.log"
+    stderr_path = child_dir / "stderr.log"
+    thread_path = _best_thread_artifact(stderr_path, stdout_path)
     model_response, model_response_truncated = _read_artifact_text(stdout_path)
     return {
         "run_dir_href": _artifact_href(paths, child_dir, must_exist=True),
         "prompt_href": _artifact_href(paths, child_dir / "prompt.txt", must_exist=True),
+        "thread_href": _artifact_href(paths, thread_path, must_exist=True),
         "stdout_href": _artifact_href(paths, stdout_path, must_exist=True),
-        "stderr_href": _artifact_href(paths, child_dir / "stderr.log", must_exist=True),
+        "stderr_href": _artifact_href(paths, stderr_path, must_exist=True),
         "metadata_href": _artifact_href(paths, child_dir / "metadata.json", must_exist=True),
         "diff_href": _artifact_href(paths, child_dir / "changes.diff", must_exist=True),
         "diffstat_href": _artifact_href(paths, child_dir / "changes.stat.txt", must_exist=True),
@@ -577,6 +596,7 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
                 "finished_at": None,
                 "run_dir_href": None,
                 "prompt_href": None,
+                "thread_href": None,
                 "stdout_href": None,
                 "stderr_href": None,
                 "metadata_href": None,
@@ -1075,6 +1095,7 @@ def _task_links(task_row: dict[str, Any]) -> list[dict[str, str]]:
     ordered = [
         ("Commit", task_row.get("landed_commit_url")),
         ("Prompt", task_row.get("prompt_href")),
+        ("Thread", task_row.get("thread_href")),
         ("Stdout", task_row.get("stdout_href")),
         ("Stderr", task_row.get("stderr_href")),
         ("Metadata", task_row.get("metadata_href")),
@@ -1305,6 +1326,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "latest_run_at": run_info.get("last_event_at"),
             "run_dir_href": run_info.get("run_dir_href"),
             "prompt_href": run_info.get("prompt_href"),
+            "thread_href": run_info.get("thread_href"),
             "stdout_href": run_info.get("stdout_href"),
             "stderr_href": run_info.get("stderr_href"),
             "metadata_href": run_info.get("metadata_href"),

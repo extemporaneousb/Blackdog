@@ -4,7 +4,7 @@
 
 ;;; Commentary:
 
-;; Shared helpers for opening prompt/stdout/stderr/diff/result/run artifacts.
+;; Shared helpers for opening prompt/thread/stdout/stderr/diff/result/run artifacts.
 
 ;;; Code:
 
@@ -12,6 +12,7 @@
 
 (defconst blackdog-artifact-labels
   '((prompt . "Prompt")
+    (thread . "Thread")
     (stdout . "Stdout")
     (stderr . "Stderr")
     (diff . "Diff")
@@ -22,12 +23,15 @@
 (defun blackdog-task-artifact-href (task artifact)
   "Return the artifact HREF for TASK and ARTIFACT.
 
-ARTIFACT is one of `prompt', `stdout', `stderr', `diff', `metadata',
-`result', or `run'.
+ARTIFACT is one of `prompt', `thread', `stdout', `stderr', `diff',
+`metadata', `result', or `run'.
 
 Direct `*_href' fields from TASK take precedence over `links'."
   (or (pcase artifact
         ('prompt (alist-get 'prompt_href task))
+        ('thread (or (alist-get 'thread_href task)
+                     (alist-get 'stderr_href task)
+                     (alist-get 'stdout_href task)))
         ('stdout (alist-get 'stdout_href task))
         ('stderr (alist-get 'stderr_href task))
         ('diff (alist-get 'diff_href task))
@@ -56,7 +60,7 @@ Each row is an alist with `label' and `href'.
 Direct `*_href' fields are merged with `links' and normalized for task
 reader action lists."
   (let ((links (or (alist-get 'links task) nil)))
-    (dolist (artifact '(prompt stdout stderr diff metadata result))
+    (dolist (artifact '(prompt thread stdout stderr diff metadata result))
       (let ((href (blackdog-task-artifact-href task artifact)))
         (when href
           (let ((label (alist-get artifact blackdog-artifact-labels)))
@@ -103,6 +107,11 @@ task-view context.  ARTIFACT should match the symbols recognized by
   "Open TASK prompt artifact."
   (interactive)
   (blackdog-task-open-artifact 'prompt task nil t))
+
+(defun blackdog-task-open-thread (&optional task)
+  "Open TASK thread artifact."
+  (interactive)
+  (blackdog-task-open-artifact 'thread task nil t))
 
 (defun blackdog-task-open-stdout (&optional task)
   "Open TASK stdout artifact."

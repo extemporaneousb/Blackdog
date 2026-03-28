@@ -745,6 +745,7 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `latest_run_status`
 - `run_dir_href`
 - `prompt_href`
+- `thread_href`
 - `stdout_href`
 - `stderr_href`
 - `metadata_href`
@@ -773,6 +774,11 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 artifacts or to direct/manual landed artifacts under
 `task-results/<task-id>/`.
 
+`thread_href` points at the best available raw child transcript when
+supervisor run artifacts exist. Blackdog currently prefers a non-empty
+`stderr.log`, then falls back to `stdout.log`. Direct/manual WTAM tasks
+may not have a `thread_href`.
+
 Current `active_tasks[*]` keys summarize the operator-facing running/claimed view:
 
 - `id`
@@ -793,6 +799,7 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `task_branch`
 - `target_branch`
 - `prompt_href`
+- `thread_href`
 - `stdout_href`
 - `stderr_href`
 - `run_dir_href`

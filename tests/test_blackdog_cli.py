@@ -3505,9 +3505,12 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["active_tasks"][0]["id"], first_task)
         self.assertEqual(snapshot["active_tasks"][0]["target_branch"], "main")
         self.assertEqual(snapshot["active_tasks"][0]["prompt_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/prompt.txt")
+        self.assertEqual(snapshot["active_tasks"][0]["thread_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/stderr.log")
         self.assertEqual(snapshot["active_tasks"][0]["latest_run_status"], "running")
         self.assertEqual(graph_tasks[first_task]["latest_result_status"], "success")
         self.assertEqual(graph_tasks[first_task]["operator_status"], "Running")
+        self.assertEqual(graph_tasks[first_task]["thread_href"], f"supervisor-runs/20260314-120000-liverun1/{first_task}/stderr.log")
+        self.assertTrue(any(row["label"] == "Thread" for row in graph_tasks[first_task]["links"]))
         self.assertEqual(
             [row["key"] for row in graph_tasks[first_task]["card_status_chips"]],
             ["claimed", "running"],
@@ -3598,6 +3601,62 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn("function renderReleaseGatesPanel()", html)
         self.assertNotIn("data-objective-id", html)
         self.assertNotIn("Release Gates", html)
+
+    def test_build_task_run_artifacts_prefers_non_empty_stderr_for_thread_href(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        task_id = "BLACK-thread-contract"
+        child_dir = paths.supervisor_runs_dir / "20260327-120000-threadpref" / task_id
+        child_dir.mkdir(parents=True)
+        (child_dir / "stderr.log").write_text("thread transcript\n", encoding="utf-8")
+        (child_dir / "stdout.log").write_text("summary\n", encoding="utf-8")
+        events = [
+            {
+                "type": "worktree_start",
+                "task_id": task_id,
+                "at": "2026-03-27T12:00:00-07:00",
+                "payload": {
+                    "run_id": "threadpref",
+                    "branch": "agent/thread-contract",
+                    "target_branch": "main",
+                },
+            }
+        ]
+
+        rows = _build_task_run_artifacts(paths, events)
+
+        self.assertEqual(
+            rows[task_id]["thread_href"],
+            f"supervisor-runs/20260327-120000-threadpref/{task_id}/stderr.log",
+        )
+
+    def test_build_task_run_artifacts_falls_back_to_stdout_for_thread_href(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        task_id = "BLACK-thread-stdout"
+        child_dir = paths.supervisor_runs_dir / "20260327-120000-threadstdout" / task_id
+        child_dir.mkdir(parents=True)
+        (child_dir / "stderr.log").write_text("", encoding="utf-8")
+        (child_dir / "stdout.log").write_text("stdout transcript\n", encoding="utf-8")
+        events = [
+            {
+                "type": "worktree_start",
+                "task_id": task_id,
+                "at": "2026-03-27T12:00:00-07:00",
+                "payload": {
+                    "run_id": "threadstdout",
+                    "branch": "agent/thread-contract",
+                    "target_branch": "main",
+                },
+            }
+        ]
+
+        rows = _build_task_run_artifacts(paths, events)
+
+        self.assertEqual(
+            rows[task_id]["thread_href"],
+            f"supervisor-runs/20260327-120000-threadstdout/{task_id}/stdout.log",
+        )
 
     def test_completed_task_reader_exposes_model_response_and_commit_details(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

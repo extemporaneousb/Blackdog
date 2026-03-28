@@ -19,6 +19,8 @@
 (defvar-local blackdog-task-id nil)
 (defvar-local blackdog-task-data nil
   "Task alist currently rendered in `blackdog-task-view'.")
+(defvar-local blackdog-task-artifact-kind nil
+  "Artifact kind rendered in the current Blackdog artifact buffer.")
 
 (defvar blackdog-task-view-mode-map
   (let ((map (make-sparse-keymap)))
@@ -27,7 +29,9 @@
     (define-key map (kbd "RET") #'push-button)
     (define-key map (kbd "m") #'blackdog-task-view-magit-status)
     (define-key map (kbd "d") #'blackdog-task-view-magit-diff)
-    (define-key map (kbd "p") #'blackdog-task-view-open-prompt)
+    (define-key map (kbd "p") #'blackdog-task-view-browse-prompt)
+    (define-key map (kbd "t") #'blackdog-task-view-browse-thread)
+    (define-key map (kbd "P") #'blackdog-task-view-open-prompt)
     (define-key map (kbd "r") #'blackdog-task-view-open-result)
     (define-key map (kbd "O") #'blackdog-task-open-stdout)
     (define-key map (kbd "E") #'blackdog-task-open-stderr)
@@ -40,6 +44,23 @@
 
 (define-derived-mode blackdog-task-view-mode special-mode "Blackdog-Task"
   "Read-only task buffer for Blackdog."
+  (setq-local truncate-lines nil))
+
+(defvar blackdog-task-artifact-view-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "g") #'blackdog-task-artifact-view-refresh)
+    (define-key map (kbd "RET") #'push-button)
+    (define-key map (kbd "p") #'blackdog-task-view-browse-prompt)
+    (define-key map (kbd "t") #'blackdog-task-view-browse-thread)
+    (define-key map (kbd "o") #'blackdog-task-artifact-view-open-source)
+    (define-key map (kbd "m") #'blackdog-task-open-metadata)
+    (define-key map (kbd "r") #'blackdog-task-open-run)
+    map)
+  "Keymap for `blackdog-task-artifact-view-mode'.")
+
+(define-derived-mode blackdog-task-artifact-view-mode special-mode "Blackdog-Artifact"
+  "Read-only Blackdog prompt/thread browser."
   (setq-local truncate-lines nil))
 
 (defun blackdog-task-view (task &optional root)
@@ -124,6 +145,134 @@
   (let ((task (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root)))
     (blackdog-magit-diff-task task blackdog-buffer-root)))
 
+(defun blackdog-task-browse-artifact (artifact &optional task root)
+  "Open a read-only browser for TASK ARTIFACT from ROOT.
+
+ARTIFACT should be `prompt' or `thread'."
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (task-id (alist-get 'id task))
+         (buffer (get-buffer-create
+                  (format "*Blackdog %s: %s*"
+                          (capitalize (symbol-name artifact))
+                          task-id))))
+    (unless task
+      (user-error "No task selected"))
+    (with-current-buffer buffer
+      (blackdog-task-artifact-view-mode)
+      (setq-local blackdog-buffer-root root)
+      (setq-local blackdog-task-id task-id)
+      (setq-local blackdog-task-artifact-kind artifact)
+      (setq-local blackdog-refresh-function #'blackdog-task-artifact-view-refresh)
+      (blackdog-task-artifact-view-refresh))
+    (pop-to-buffer buffer)
+    buffer))
+
+(defun blackdog-task--artifact-kind-title (artifact)
+  "Return a display title for ARTIFACT."
+  (capitalize (symbol-name artifact)))
+
+(defun blackdog-task--artifact-source-label (task artifact)
+  "Return a display label for TASK ARTIFACT source."
+  (if (eq artifact 'thread)
+      (let ((thread-href (blackdog-task-artifact-href task 'thread)))
+        (cond
+         ((equal thread-href (blackdog-task-artifact-href task 'stderr)) "Stderr")
+         ((equal thread-href (blackdog-task-artifact-href task 'stdout)) "Stdout")
+         (t "Thread")))
+    (blackdog-task--artifact-kind-title artifact)))
+
+(defun blackdog-task--artifact-source-path (task artifact root snapshot)
+  "Return the resolved local path for TASK ARTIFACT under ROOT and SNAPSHOT."
+  (let ((target (blackdog-resolve-href
+                 (blackdog-task-artifact-href task artifact)
+                 snapshot
+                 root)))
+    (unless target
+      (user-error "No %s artifact for task %s"
+                  artifact
+                  (alist-get 'id task)))
+    (when (string-match-p "\\`https?://" target)
+      (user-error "%s browser only supports local artifacts" artifact))
+    target))
+
+(defun blackdog-task--insert-action-button (label action)
+  "Insert LABEL button bound to ACTION on the current line."
+  (insert "- ")
+  (insert-text-button label 'follow-link t 'action action)
+  (insert "\n"))
+
+(defun blackdog-task--insert-artifact-browser-actions (task artifact)
+  "Insert browser action links for TASK ARTIFACT."
+  (let ((prompt-href (blackdog-task-artifact-href task 'prompt))
+        (thread-href (blackdog-task-artifact-href task 'thread))
+        (metadata-href (blackdog-task-artifact-href task 'metadata))
+        (run-href (blackdog-task-artifact-href task 'run)))
+    (insert "Actions\n")
+    (when prompt-href
+      (blackdog-task--insert-action-button
+       "Browse Prompt"
+       (lambda (_button)
+         (blackdog-task-view-browse-prompt task))))
+    (when thread-href
+      (blackdog-task--insert-action-button
+       "Browse Thread"
+       (lambda (_button)
+         (blackdog-task-view-browse-thread task))))
+    (blackdog-task--insert-action-button
+     "Open Source"
+     (lambda (_button)
+       (blackdog-task-open-artifact artifact task nil t)))
+    (when metadata-href
+      (blackdog-task--insert-action-button
+       "Open Metadata"
+       (lambda (_button)
+         (blackdog-task-open-metadata task))))
+    (when run-href
+      (blackdog-task--insert-action-button
+       "Open Run"
+       (lambda (_button)
+         (blackdog-task-open-run task))))
+    (insert "\n")))
+
+(defun blackdog-task-artifact-view-refresh ()
+  "Refresh the current prompt/thread browser buffer."
+  (interactive)
+  (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
+         (snapshot (blackdog-snapshot root t))
+         (task (blackdog-task-by-id blackdog-task-id snapshot))
+         (artifact blackdog-task-artifact-kind)
+         (href (and task (blackdog-task-artifact-href task artifact))))
+    (unless task
+      (user-error "Task %s is no longer present" blackdog-task-id))
+    (unless href
+      (user-error "Task %s has no %s artifact" blackdog-task-id artifact))
+    (let* ((source-path (blackdog-task--artifact-source-path task artifact root snapshot))
+           (inhibit-read-only t))
+      (erase-buffer)
+      (setq-local blackdog-buffer-root root)
+      (setq-local blackdog-task-data task)
+      (insert (format "%s  %s\n\n"
+                      (alist-get 'id task)
+                      (blackdog-task--artifact-kind-title artifact)))
+      (blackdog-task--insert-pairs
+       `(("Task" . ,(alist-get 'title task))
+         ("Source Artifact" . ,(blackdog-task--artifact-source-label task artifact))
+         ("Source" . ,href)
+         ("Run" . ,(or (blackdog-task-artifact-href task 'run) ""))))
+      (blackdog-task--insert-artifact-browser-actions task artifact)
+      (insert (format "%s\n" (blackdog-task--artifact-kind-title artifact)))
+      (insert-file-contents source-path)
+      (goto-char (point-min)))))
+
+(defun blackdog-task-artifact-view-open-source ()
+  "Open the raw artifact source for the current prompt/thread browser."
+  (interactive)
+  (let ((task (blackdog-task--task-for-action)))
+    (unless task
+      (user-error "No task selected"))
+    (blackdog-task-open-artifact blackdog-task-artifact-kind task nil t)))
+
 (defun blackdog-task--insert-pairs (pairs)
   "Insert PAIRS as aligned key/value rows."
   (dolist (pair pairs)
@@ -201,8 +350,9 @@
   "Insert quick artifact links for TASK."
   (let ((result-href (blackdog-task-artifact-href task 'result))
         (diff-href (blackdog-task-artifact-href task 'diff))
-        (prompt-href (blackdog-task-artifact-href task 'prompt)))
-    (when (or result-href diff-href prompt-href)
+        (prompt-href (blackdog-task-artifact-href task 'prompt))
+        (thread-href (blackdog-task-artifact-href task 'thread)))
+    (when (or result-href diff-href prompt-href thread-href)
       (insert "Artifact Links\n")
       (when prompt-href
         (insert "- ")
@@ -210,7 +360,15 @@
          "Prompt"
          'follow-link t
          'action (lambda (_button)
-                   (blackdog-task-view-open-prompt task)))
+                   (blackdog-task-view-browse-prompt task)))
+        (insert "\n"))
+      (when thread-href
+        (insert "- ")
+        (insert-text-button
+         "Thread"
+         'follow-link t
+         'action (lambda (_button)
+                   (blackdog-task-view-browse-thread task)))
         (insert "\n"))
       (when diff-href
         (insert "- ")
@@ -245,6 +403,22 @@
     (unless task
       (user-error "No task selected"))
     (blackdog-task-open-prompt task)))
+
+(defun blackdog-task-view-browse-prompt (&optional task)
+  "Open a read-only prompt browser for TASK."
+  (interactive)
+  (let ((task (blackdog-task--task-for-action task)))
+    (unless task
+      (user-error "No task selected"))
+    (blackdog-task-browse-artifact 'prompt task blackdog-buffer-root)))
+
+(defun blackdog-task-view-browse-thread (&optional task)
+  "Open a read-only thread browser for TASK."
+  (interactive)
+  (let ((task (blackdog-task--task-for-action task)))
+    (unless task
+      (user-error "No task selected"))
+    (blackdog-task-browse-artifact 'thread task blackdog-buffer-root)))
 
 (defun blackdog-task-view-open-diff (&optional task)
   "Open the latest diff artifact for TASK."
