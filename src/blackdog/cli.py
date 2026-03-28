@@ -46,13 +46,18 @@ from .scaffold import (
 )
 from .store import (
     StoreError,
+    append_thread_entry,
     append_event,
     claim_is_active,
     claim_task_entry,
+    create_thread,
+    link_thread_task,
     load_events,
     load_inbox,
     load_state,
     load_task_results,
+    load_thread,
+    list_threads,
     locked_state,
     now_iso,
     record_comment,
@@ -1196,6 +1201,104 @@ def _resolve_prompt_text(raw_parts: list[str]) -> str:
     raise BacklogError("prompt requires text arguments or piped stdin")
 
 
+def _resolve_optional_body_text(value: str | None, *, command: str, required: bool) -> str | None:
+    if value is not None and str(value).strip():
+        return str(value)
+    if not sys.stdin.isatty():
+        body = sys.stdin.read()
+        if body.strip():
+            return body
+    if required:
+        raise BacklogError(f"{command} requires --body or piped stdin")
+    return None
+
+
+def _thread_prompt_source(thread: dict[str, Any]) -> str:
+    lines = [f"Conversation Thread\n{thread['title']}"]
+    for entry in thread.get("entries", []):
+        details = [str(entry.get("created_at") or "").strip()]
+        actor = str(entry.get("actor") or "").strip()
+        if actor:
+            details.append(actor)
+        task_id = str(entry.get("task_id") or "").strip()
+        if task_id:
+            details.append(f"task {task_id}")
+        duration_seconds = entry.get("duration_seconds")
+        if duration_seconds is not None:
+            details.append(f"duration {duration_seconds}s")
+        detail_text = " | ".join(part for part in details if part)
+        heading = f"## {str(entry.get('role') or 'message').capitalize()}"
+        if detail_text:
+            heading += f" ({detail_text})"
+        lines.extend(["", heading, str(entry.get("body") or "").strip()])
+    return "\n".join(lines).strip()
+
+
+def _thread_latest_user_body(thread: dict[str, Any]) -> str:
+    for entry in reversed(thread.get("entries", [])):
+        if str(entry.get("role") or "") == "user":
+            body = str(entry.get("body") or "").strip()
+            if body:
+                return body
+    return ""
+
+
+def _thread_task_defaults(thread: dict[str, Any]) -> dict[str, str]:
+    latest_user_body = _thread_latest_user_body(thread)
+    thread_id = str(thread.get("thread_id") or "").strip()
+    title = str(thread.get("title") or "").strip() or thread_id or "Conversation thread"
+    why = latest_user_body or f"Continue the work described in conversation thread {thread_id}."
+    evidence = (
+        f"Conversation thread {thread_id} is stored as a first-class runtime artifact with "
+        f"{int(thread.get('entry_count') or 0)} entries. Treat that conversation as the operator-authored source of truth."
+    )
+    safe_first_slice = (
+        f"Review conversation thread {thread_id}, inspect any referenced code or linked tasks, and execute the "
+        "smallest next slice implied by the latest user entry before broadening scope."
+    )
+    return {
+        "title": title,
+        "why": why,
+        "evidence": evidence,
+        "safe_first_slice": safe_first_slice,
+        "objective": title,
+    }
+
+
+def _render_thread_list_text(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No threads.\n"
+    lines = []
+    for row in rows:
+        lines.append(
+            f"{row['thread_id']}  {row['updated_at']}  "
+            f"[{row['entry_count']} entries / {len(row.get('task_ids', []))} tasks]  {row['title']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _render_thread_text(thread: dict[str, Any]) -> str:
+    lines = [
+        f"{thread['thread_id']}  {thread['title']}",
+        "",
+        f"Status: {thread['status']}",
+        f"Created: {thread['created_at']} by {thread['created_by']}",
+        f"Updated: {thread['updated_at']}",
+        f"Entries: {thread['entry_count']}",
+        f"Linked Tasks: {', '.join(thread.get('task_ids', [])) or '-'}",
+    ]
+    for entry in thread.get("entries", []):
+        header = f"{str(entry.get('role') or '').upper()}  {entry.get('created_at')}  {entry.get('actor')}"
+        duration_seconds = entry.get("duration_seconds")
+        if duration_seconds is not None:
+            header += f"  {duration_seconds}s"
+        task_id = str(entry.get("task_id") or "").strip()
+        if task_id:
+            header += f"  {task_id}"
+        lines.extend(["", header, "", str(entry.get("body") or "").rstrip()])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def cmd_prompt(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     analysis = build_tune_analysis(profile)
@@ -1209,6 +1312,132 @@ def cmd_prompt(args: argparse.Namespace) -> int:
         print(json.dumps(prompt_payload, indent=2))
     else:
         print(prompt_payload["improved_prompt"])
+    return 0
+
+
+def cmd_thread_new(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    thread = create_thread(
+        profile.paths,
+        title=args.title,
+        actor=args.actor,
+        body=_resolve_optional_body_text(args.body, command="thread new", required=False),
+    )
+    _emit_render(profile)
+    if args.format == "json":
+        print(json.dumps(thread, indent=2))
+    else:
+        print(_render_thread_text(thread), end="")
+    return 0
+
+
+def cmd_thread_list(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    rows = list_threads(profile.paths, task_id=args.task_id)
+    if args.format == "json":
+        print(json.dumps(rows, indent=2))
+    else:
+        print(_render_thread_list_text(rows), end="")
+    return 0
+
+
+def cmd_thread_show(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    thread = load_thread(profile.paths, args.id)
+    if args.format == "json":
+        print(json.dumps(thread, indent=2))
+    else:
+        print(_render_thread_text(thread), end="")
+    return 0
+
+
+def cmd_thread_append(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    thread = append_thread_entry(
+        profile.paths,
+        thread_id=args.id,
+        role=args.role,
+        actor=args.actor,
+        body=_resolve_optional_body_text(args.body, command="thread append", required=True) or "",
+        kind=args.kind,
+        task_id=args.task_id,
+        duration_seconds=args.duration_seconds,
+    )
+    _emit_render(profile)
+    if args.format == "json":
+        print(json.dumps(thread, indent=2))
+    else:
+        print(_render_thread_text(thread), end="")
+    return 0
+
+
+def cmd_thread_prompt(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    thread = load_thread(profile.paths, args.id)
+    analysis = build_tune_analysis(profile)
+    payload = build_prompt_improvement(
+        profile,
+        prompt_text=_thread_prompt_source(thread),
+        complexity=args.complexity,
+        analysis=analysis,
+    )
+    payload["thread_id"] = thread["thread_id"]
+    payload["thread_title"] = thread["title"]
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        print(payload["improved_prompt"])
+    return 0
+
+
+def cmd_thread_task(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    thread = load_thread(profile.paths, args.id)
+    defaults = _thread_task_defaults(thread)
+    task_payload = add_task(
+        profile,
+        title=args.title or defaults["title"],
+        bucket=args.bucket,
+        priority=args.priority,
+        risk=args.risk,
+        effort=args.effort,
+        why=defaults["why"],
+        evidence=defaults["evidence"],
+        safe_first_slice=defaults["safe_first_slice"],
+        paths=[],
+        checks=[],
+        docs=[],
+        domains=[],
+        packages=[],
+        affected_paths=[],
+        task_shaping=None,
+        objective=args.objective or defaults["objective"],
+        requires_approval=False,
+        approval_reason="",
+        epic_id=args.epic_id,
+        epic_title=args.epic_title,
+        lane_id=args.lane_id,
+        lane_title=args.lane_title,
+        wave=args.wave,
+    )
+    append_event(
+        profile.paths,
+        event_type="task_added",
+        actor=args.actor,
+        task_id=task_payload["id"],
+        payload={"title": task_payload["title"], "bucket": task_payload["bucket"]},
+    )
+    thread = link_thread_task(profile.paths, thread_id=thread["thread_id"], task_id=task_payload["id"], actor=args.actor)
+    _emit_render(profile)
+    print(
+        json.dumps(
+            {
+                "thread_id": thread["thread_id"],
+                "task": task_payload,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -1449,6 +1678,59 @@ def build_parser() -> argparse.ArgumentParser:
     p_prompt.add_argument("--format", choices=("text", "json"), default="text")
     p_prompt.add_argument("prompt", nargs=argparse.REMAINDER)
     p_prompt.set_defaults(func=cmd_prompt)
+
+    p_thread = subparsers.add_parser("thread", help="Manage freeform conversation threads")
+    thread_subparsers = p_thread.add_subparsers(dest="thread_command", required=True)
+    p_thread_new = thread_subparsers.add_parser("new", help="Create a new conversation thread")
+    p_thread_new.add_argument("--project-root", default=None)
+    p_thread_new.add_argument("--actor", required=True)
+    p_thread_new.add_argument("--title", required=True)
+    p_thread_new.add_argument("--body", default=None)
+    p_thread_new.add_argument("--format", choices=("text", "json"), default="json")
+    p_thread_new.set_defaults(func=cmd_thread_new)
+    p_thread_list = thread_subparsers.add_parser("list", help="List conversation threads")
+    p_thread_list.add_argument("--project-root", default=None)
+    p_thread_list.add_argument("--task-id", default=None)
+    p_thread_list.add_argument("--format", choices=("text", "json"), default="text")
+    p_thread_list.set_defaults(func=cmd_thread_list)
+    p_thread_show = thread_subparsers.add_parser("show", help="Show one conversation thread")
+    p_thread_show.add_argument("--project-root", default=None)
+    p_thread_show.add_argument("--id", required=True)
+    p_thread_show.add_argument("--format", choices=("text", "json"), default="json")
+    p_thread_show.set_defaults(func=cmd_thread_show)
+    p_thread_append = thread_subparsers.add_parser("append", help="Append one entry to a conversation thread")
+    p_thread_append.add_argument("--project-root", default=None)
+    p_thread_append.add_argument("--id", required=True)
+    p_thread_append.add_argument("--actor", required=True)
+    p_thread_append.add_argument("--role", choices=sorted({"assistant", "system", "user"}), default="user")
+    p_thread_append.add_argument("--kind", default="message")
+    p_thread_append.add_argument("--task-id", default=None)
+    p_thread_append.add_argument("--duration-seconds", type=int, default=None)
+    p_thread_append.add_argument("--body", default=None)
+    p_thread_append.add_argument("--format", choices=("text", "json"), default="json")
+    p_thread_append.set_defaults(func=cmd_thread_append)
+    p_thread_prompt = thread_subparsers.add_parser("prompt", help="Rewrite a saved conversation thread against the local repo contract")
+    p_thread_prompt.add_argument("--project-root", default=None)
+    p_thread_prompt.add_argument("--id", required=True)
+    p_thread_prompt.add_argument("--complexity", choices=("low", "medium", "high"), default="medium")
+    p_thread_prompt.add_argument("--format", choices=("text", "json"), default="text")
+    p_thread_prompt.set_defaults(func=cmd_thread_prompt)
+    p_thread_task = thread_subparsers.add_parser("task", help="Create one backlog task from a saved conversation thread")
+    p_thread_task.add_argument("--project-root", default=None)
+    p_thread_task.add_argument("--id", required=True)
+    p_thread_task.add_argument("--actor", required=True)
+    p_thread_task.add_argument("--title", default=None)
+    p_thread_task.add_argument("--objective", default=None)
+    p_thread_task.add_argument("--bucket", default="integration")
+    p_thread_task.add_argument("--priority", choices=sorted({"P1", "P2", "P3"}), default="P2")
+    p_thread_task.add_argument("--risk", choices=sorted({"low", "medium", "high"}), default="medium")
+    p_thread_task.add_argument("--effort", choices=sorted({"S", "M", "L"}), default="M")
+    p_thread_task.add_argument("--epic-id", default=None)
+    p_thread_task.add_argument("--epic-title", default=None)
+    p_thread_task.add_argument("--lane-id", default=None)
+    p_thread_task.add_argument("--lane-title", default=None)
+    p_thread_task.add_argument("--wave", type=int, default=None)
+    p_thread_task.set_defaults(func=cmd_thread_task)
 
     p_tune = subparsers.add_parser("tune", help="Analyze self-tuning guidance and optionally seed a task")
     p_tune.add_argument("--project-root", default=None)

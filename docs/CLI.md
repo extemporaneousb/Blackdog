@@ -19,6 +19,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog snapshot`
 - `blackdog coverage [--command CMD] [--output FILE]`
 - `blackdog prompt [--complexity low|medium|high] [--format text|json] PROMPT...`
+- `blackdog thread new|list|show|append|prompt|task ...`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
@@ -124,6 +125,7 @@ product development.
 - `blackdog summary`
 - `blackdog next`
 - `blackdog prompt`
+- `blackdog thread new|list|show|append|prompt|task`
 - `blackdog tune`
 - `blackdog supervise run`
 - `blackdog supervise status`
@@ -137,6 +139,14 @@ product development.
 - `blackdog events`
 
 `blackdog prompt` rewrites a raw prompt against the local repo contract. It emits low/medium/high complexity prompt profiles derived from the repo profile, routed docs, validation defaults, and the latest tune recommendation so host-repo skills can reuse Blackdog's repo-local guidance instead of rebuilding it from scratch.
+
+`blackdog thread ...` manages saved freeform conversation threads under the shared control root. Use it when the operator should write normal markdown conversation instead of filling a structured task-spec template:
+
+- `thread new` creates a conversation thread, optionally with the first user entry.
+- `thread append` adds one user/assistant/system entry, preserving timestamp, actor, optional task link, and optional response duration.
+- `thread prompt` rewrites the saved conversation thread against the repo-local prompt contract.
+- `thread task` creates one backlog task from the saved conversation and links that task back to the thread.
+- `thread list` and `thread show` are the read surfaces for Emacs and shell operators.
 
 The prompt profiles now also carry calibrated task-shaping defaults by effort (`S`/`M`/`L`) derived from completed work in the repo. That lets tune improve prompt generation, not just reporting: prompts can ask for explicit estimate snapshots that match the repo's observed task history instead of generic defaults.
 
@@ -187,6 +197,8 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 
 `blackdog snapshot` prints the canonical JSON contract embedded into the static repo-branded backlog HTML page (by default `<project-slug>-backlog.html`, with a compatibility copy at `backlog-index.html`). That payload drives the current board: the project-branded hero, `Status` counters (running, waiting, blocked, last sweep completed, completed today, completed all-time), the live `Execution Map`, and completed-task list. It includes repo identity (`project_name`, `project_root`, `control_dir`), the current WTAM workspace contract, render headers, hero highlights (`branch`, `commit`, `latest_run`, `active_task_time`, `completed_task_time`, `average_completed_task_time`, `total_task_time`), `content_updated_at` (derived from the latest snapshot event timestamp), the board-facing `last_checked_at` (derived from the latest supervisor check heartbeat), the raw `supervisor_last_checked_at` heartbeat when available, the latest recorded activity actor/timestamp, backlog counts, push/objective metadata, next-focus rows, graph nodes and dependency edges, per-task compute/result/run metadata, markdown-rendered model-response excerpts, landed-commit metadata, open inbox messages, direct artifact links, focus-task summaries, and recent task-result summaries.
 
+The snapshot now also includes project-level `threads` rows plus per-task conversation linkage (`conversation_threads`, `conversation_thread_ids`, and `primary_conversation_*` fields) so Emacs can move directly from a saved operator conversation to its derived task and back again.
+
 `blackdog render` writes the static repo-branded backlog HTML page under the configured control root and refreshes the compatibility `backlog-index.html` copy beside it. Blackdog CLI writes and active supervisor runs rerender that page as part of normal state changes, including supervisor exit after landed task-state updates. The page embeds the current snapshot JSON directly, renders a wider control/status top band, the live execution map, and a completed-task card list, keeps artifact navigation as plain links, and opens execution/history cards in the task reader. When a child run captured `stdout.log` and a landed commit, the reader also shows the inline model response plus a landed-commit link or message. Operators can still reload the file manually, and the hero header now includes an optional 30-second auto-reload toggle with a visible countdown.
 
 ### Structured results
@@ -194,6 +206,8 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 - `blackdog result record --id TASK --actor NAME --status success|blocked|partial --what-changed ... --task-shaping-telemetry JSON_OBJECT ...`
 
 `result record` now merges operator-supplied `--task-shaping-telemetry` with the runtime facts Blackdog can derive automatically: the current task-shaping estimate snapshot, aggregate task time derived from claims, reclaim count, worktree count, retry count, landing-failure count, best-effort changed-paths from the current git checkout, and prompt-tuning/context metrics derived from the task contract (`context_doc_count`, `context_check_count`, `context_path_count`, `context_packet_score`, `misstep_total`, and related fields).
+
+When a task is linked to one or more saved conversation threads, `result record` also appends an assistant entry to those threads using the result summary and any recorded runtime duration.
 
 ### Coverage reporting
 

@@ -34,6 +34,7 @@ from blackdog.store import (
     load_events,
     load_inbox,
     load_jsonl,
+    load_thread,
     load_tracked_installs,
     load_task_results,
     record_task_result,
@@ -649,6 +650,159 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(len(payload["next_rows"]), 1)
         self.assertTrue(paths.html_file.exists())
         self.assertTrue(paths.html_file.with_name("backlog-index.html").exists())
+
+    def test_thread_cli_creates_and_appends_entries(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        with redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(
+                run_cli(
+                    "thread",
+                    "new",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "operator",
+                    "--title",
+                    "Prompt discussion",
+                    "--body",
+                    "Need a freeform conversation flow in Emacs.",
+                    "--format",
+                    "json",
+                ),
+                0,
+            )
+        created = json.loads(stdout.getvalue())
+        thread_id = created["thread_id"]
+        self.assertTrue(thread_id.startswith("thread-"))
+        self.assertEqual(created["entry_count"], 1)
+        self.assertEqual(created["latest_entry_role"], "user")
+
+        with redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(
+                run_cli(
+                    "thread",
+                    "append",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    thread_id,
+                    "--actor",
+                    "codex",
+                    "--role",
+                    "assistant",
+                    "--duration-seconds",
+                    "125",
+                    "--body",
+                    "I can turn this into a durable conversation thread plus task-launch flow.",
+                    "--format",
+                    "json",
+                ),
+                0,
+            )
+        updated = json.loads(stdout.getvalue())
+        self.assertEqual(updated["entry_count"], 2)
+        self.assertEqual(updated["assistant_entry_count"], 1)
+        self.assertEqual(updated["latest_entry_role"], "assistant")
+        self.assertEqual(updated["entries"][-1]["duration_seconds"], 125)
+
+    def test_thread_task_links_thread_and_result_record_appends_assistant_entry(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        with redirect_stdout(io.StringIO()) as stdout:
+            run_cli(
+                "thread",
+                "new",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "operator",
+                "--title",
+                "Launch from conversation",
+                "--body",
+                "Create the task from this saved conversation instead of a structured spec.",
+                "--format",
+                "json",
+            )
+        thread_id = json.loads(stdout.getvalue())["thread_id"]
+
+        with redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(
+                run_cli(
+                    "thread",
+                    "task",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    thread_id,
+                    "--actor",
+                    "operator",
+                ),
+                0,
+            )
+        payload = json.loads(stdout.getvalue())
+        task_id = payload["task"]["id"]
+        thread = load_thread(paths, thread_id)
+        self.assertEqual(thread["task_ids"], [task_id])
+
+        record_task_result(
+            paths,
+            task_id=task_id,
+            actor="codex",
+            status="success",
+            what_changed=["Created the conversation-first launch path."],
+            validation=["make test-emacs"],
+            residual=["No live streaming reply yet."],
+            needs_user_input=False,
+            followup_candidates=[],
+            task_shaping_telemetry={"actual_task_seconds": 90},
+        )
+        thread = load_thread(paths, thread_id)
+        self.assertEqual(thread["entry_count"], 2)
+        self.assertEqual(thread["latest_entry_role"], "assistant")
+        self.assertEqual(thread["entries"][-1]["task_id"], task_id)
+        self.assertEqual(thread["entries"][-1]["duration_seconds"], 90)
+        self.assertIn("Created the conversation-first launch path.", thread["entries"][-1]["body"])
+
+    def test_thread_prompt_uses_saved_conversation(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        with redirect_stdout(io.StringIO()) as stdout:
+            run_cli(
+                "thread",
+                "new",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "operator",
+                "--title",
+                "Prompt preview",
+                "--body",
+                "Turn this freeform conversation into a repo-aware prompt.",
+                "--format",
+                "json",
+            )
+        thread_id = json.loads(stdout.getvalue())["thread_id"]
+
+        with redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(
+                run_cli(
+                    "thread",
+                    "prompt",
+                    "--project-root",
+                    str(self.root),
+                    "--id",
+                    thread_id,
+                    "--complexity",
+                    "low",
+                    "--format",
+                    "json",
+                ),
+                0,
+            )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["thread_id"], thread_id)
+        self.assertEqual(payload["thread_title"], "Prompt preview")
+        self.assertIn("Conversation Thread", payload["original_prompt"])
+        self.assertIn("Turn this freeform conversation", payload["original_prompt"])
 
     def test_installs_registry_persists_and_observes_host_repos(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3697,6 +3851,48 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn("function renderReleaseGatesPanel()", html)
         self.assertNotIn("data-objective-id", html)
         self.assertNotIn("Release Gates", html)
+
+    def test_snapshot_exposes_threads_and_task_conversation_links(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        with redirect_stdout(io.StringIO()) as stdout:
+            run_cli(
+                "thread",
+                "new",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "operator",
+                "--title",
+                "Conversation source",
+                "--body",
+                "Use this saved conversation to launch work.",
+                "--format",
+                "json",
+            )
+        thread_id = json.loads(stdout.getvalue())["thread_id"]
+        with redirect_stdout(io.StringIO()) as stdout:
+            run_cli(
+                "thread",
+                "task",
+                "--project-root",
+                str(self.root),
+                "--id",
+                thread_id,
+                "--actor",
+                "operator",
+            )
+        task_id = json.loads(stdout.getvalue())["task"]["id"]
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        self.assertEqual(snapshot["links"]["threads"], "threads")
+        self.assertEqual(len(snapshot["threads"]), 1)
+        self.assertEqual(snapshot["threads"][0]["id"], thread_id)
+        self.assertEqual(snapshot["threads"][0]["entries_href"], f"threads/{thread_id}/entries.jsonl")
+
+        task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
+        self.assertEqual(task["conversation_thread_count"], 1)
+        self.assertEqual(task["primary_conversation_thread_id"], thread_id)
+        self.assertEqual(task["primary_conversation_entries_href"], f"threads/{thread_id}/entries.jsonl")
 
     def test_build_task_run_artifacts_prefers_non_empty_stderr_for_thread_href(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

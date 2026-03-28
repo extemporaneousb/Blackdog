@@ -28,6 +28,7 @@
 (require 'blackdog)
 (require 'blackdog-search)
 (require 'blackdog-spec)
+(require 'blackdog-thread)
 (require 'blackdog-telemetry)
 (require 'blackdog-task)
 
@@ -180,6 +181,70 @@ Mention the current backlog lane and code/data attachments.
     (should (equal 1 (length candidates)))
     (should (string-match-p "TASK-1" (caar candidates)))
     (should (string-match-p "First task" (caar candidates)))))
+
+(ert-deftest blackdog-thread-derive-draft-prefers-markdown-heading ()
+  (let ((draft (blackdog-thread--derive-draft
+                "# Freeform prompt\n\nNeed this stored as a conversation thread.\n")))
+    (should (equal "Freeform prompt" (plist-get draft :title)))
+    (should (string-match-p "stored as a conversation thread"
+                            (plist-get draft :body)))))
+
+(ert-deftest blackdog-thread-candidates-include-id-and-title ()
+  (cl-letf (((symbol-function 'blackdog-thread-list)
+             (lambda (&optional _root _task-id)
+               '(((thread_id . "thread-1")
+                  (status . "open")
+                  (title . "Prompt discussion"))))))
+    (let ((candidates (blackdog-thread-candidates)))
+      (should (equal 1 (length candidates)))
+      (should (string-match-p "thread-1" (caar candidates)))
+      (should (string-match-p "Prompt discussion" (caar candidates))))))
+
+(ert-deftest blackdog-thread-compose-submit-creates-a-new-thread-from-heading ()
+  (let ((captured nil)
+        (opened nil))
+    (cl-letf (((symbol-function 'blackdog--call-json)
+               (lambda (_root &rest args)
+                 (setq captured args)
+                 '((thread_id . "thread-1")
+                   (title . "Freeform prompt")
+                   (status . "open")
+                   (created_at . "2026-03-28T12:00:00-07:00")
+                   (created_by . "tester")
+                   (updated_at . "2026-03-28T12:00:00-07:00")
+                   (entry_count . 1)
+                   (task_ids . nil)
+                   (entries . (((role . "user")
+                                (actor . "tester")
+                                (created_at . "2026-03-28T12:00:00-07:00")
+                                (body . "Need the prompt stored as a thread.")))))))
+              ((symbol-function 'blackdog-thread-view)
+               (lambda (thread &optional _root)
+                 (setq opened thread)))
+              ((symbol-function 'blackdog-clear-cache) #'ignore))
+      (with-temp-buffer
+        (blackdog-thread-compose-mode)
+        (setq-local blackdog-buffer-root blackdog-test-root)
+        (insert "# Freeform prompt\n\nNeed the prompt stored as a thread.\n")
+        (blackdog-thread-compose-submit))
+      (should (equal (list "thread" "new" "--actor" blackdog-default-agent "--title" "Freeform prompt" "--format" "json" "--body" "Need the prompt stored as a thread.")
+                     captured))
+      (should (equal "thread-1" (alist-get 'thread_id opened))))))
+
+(ert-deftest blackdog-task-open-conversation-uses-linked-thread ()
+  (let ((opened nil))
+    (cl-letf (((symbol-function 'blackdog-thread-view)
+               (lambda (thread &optional _root)
+                 (setq opened thread))))
+      (with-temp-buffer
+        (setq-local blackdog-buffer-root blackdog-test-root)
+        (setq-local blackdog-task-data
+                    '((id . "TASK-1")
+                      (conversation_threads . (((id . "thread-1")
+                                                (title . "Prompt discussion")
+                                                (entries_href . "threads/thread-1/entries.jsonl"))))))
+        (blackdog-task-open-conversation))
+      (should (equal "thread-1" (alist-get 'id opened))))))
 
 (ert-deftest blackdog-task-artifact-href-prefers-direct-href ()
   (let ((task '((id . "TASK-1")
@@ -560,8 +625,12 @@ Mention the current backlog lane and code/data attachments.
               (lookup-key blackdog-prefix-map (kbd "."))))
   (should (eq 'blackdog-dispatch
               (lookup-key blackdog-prefix-map (kbd "?"))))
-  (should (eq 'blackdog-spec-new
+  (should (eq 'blackdog-thread-compose-new
               (lookup-key blackdog-prefix-map (kbd "n"))))
+  (should (eq 'blackdog-spec-new
+              (lookup-key blackdog-prefix-map (kbd "N"))))
+  (should (eq 'blackdog-threads-open
+              (lookup-key blackdog-prefix-map (kbd "h"))))
   (should (eq 'blackdog-claim-task
               (lookup-key blackdog-prefix-map (kbd "c"))))
   (should (eq 'blackdog-launch-task

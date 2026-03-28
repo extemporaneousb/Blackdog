@@ -19,11 +19,11 @@ from .backlog import (
     sync_state_for_backlog,
 )
 from .config import Profile, ProjectPaths
-from .store import load_events, load_inbox, load_state, load_task_results, now_iso
+from .store import load_events, load_inbox, load_state, load_task_results, list_threads, now_iso
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 8
+UI_SNAPSHOT_SCHEMA_VERSION = 9
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
@@ -688,6 +688,46 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
     return rows
 
 
+def _build_thread_snapshot_rows(paths: ProjectPaths) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    rows: list[dict[str, Any]] = []
+    task_index: dict[str, list[dict[str, Any]]] = {}
+    for thread in list_threads(paths):
+        thread_id = str(thread.get("thread_id") or "")
+        row = {
+            "id": thread_id,
+            "title": str(thread.get("title") or ""),
+            "status": str(thread.get("status") or "open"),
+            "created_at": str(thread.get("created_at") or ""),
+            "created_by": str(thread.get("created_by") or ""),
+            "updated_at": str(thread.get("updated_at") or thread.get("created_at") or ""),
+            "entry_count": int(thread.get("entry_count") or 0),
+            "user_entry_count": int(thread.get("user_entry_count") or 0),
+            "assistant_entry_count": int(thread.get("assistant_entry_count") or 0),
+            "system_entry_count": int(thread.get("system_entry_count") or 0),
+            "latest_entry_at": thread.get("latest_entry_at"),
+            "latest_entry_role": thread.get("latest_entry_role"),
+            "latest_entry_actor": thread.get("latest_entry_actor"),
+            "latest_entry_preview": thread.get("latest_entry_preview") or "",
+            "task_ids": list(thread.get("task_ids") or []),
+            "thread_dir_href": _artifact_href(paths, thread.get("thread_dir"), must_exist=True),
+            "thread_file_href": _artifact_href(paths, thread.get("thread_file"), must_exist=True),
+            "entries_href": _artifact_href(paths, thread.get("entries_file"), must_exist=True),
+        }
+        rows.append(row)
+        task_summary = {
+            "id": row["id"],
+            "title": row["title"],
+            "updated_at": row["updated_at"],
+            "entry_count": row["entry_count"],
+            "latest_entry_preview": row["latest_entry_preview"],
+            "entries_href": row["entries_href"],
+            "thread_file_href": row["thread_file_href"],
+        }
+        for task_id in row["task_ids"]:
+            task_index.setdefault(str(task_id), []).append(task_summary)
+    return rows, task_index
+
+
 def _title_label(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1094,6 +1134,7 @@ def _build_task_timeline(events: list[dict[str, Any]]) -> dict[str, list[dict[st
 def _task_links(task_row: dict[str, Any]) -> list[dict[str, str]]:
     ordered = [
         ("Commit", task_row.get("landed_commit_url")),
+        ("Conversation", task_row.get("primary_conversation_entries_href")),
         ("Prompt", task_row.get("prompt_href")),
         ("Thread", task_row.get("thread_href")),
         ("Stdout", task_row.get("stdout_href")),
@@ -1237,6 +1278,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     task_timeline = _build_task_timeline(events)
     task_results = _build_result_index(profile.paths, results)
     task_runs = _build_task_run_artifacts(profile.paths, events)
+    threads, task_threads = _build_thread_snapshot_rows(profile.paths)
     summary = build_view_model(
         profile,
         snapshot,
@@ -1268,6 +1310,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         activity = task_activity.get(task.id, _empty_task_activity())
         result_info = task_results.get(task.id, {})
         run_info = task_runs.get(task.id, {})
+        conversation_threads = task_threads.get(task.id, [])
         lane_info = lane_positions.get(task.id, {})
         task_row = {
             "id": task.id,
@@ -1345,6 +1388,13 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "landed_commit_short": run_info.get("landed_commit_short"),
             "landed_commit_url": run_info.get("landed_commit_url"),
             "landed_commit_message": run_info.get("landed_commit_message"),
+            "conversation_threads": conversation_threads,
+            "conversation_thread_ids": [str(row.get("id") or "") for row in conversation_threads],
+            "conversation_thread_count": len(conversation_threads),
+            "primary_conversation_thread_id": conversation_threads[0]["id"] if conversation_threads else None,
+            "primary_conversation_thread_title": conversation_threads[0]["title"] if conversation_threads else None,
+            "primary_conversation_entries_href": conversation_threads[0].get("entries_href") if conversation_threads else None,
+            "primary_conversation_file_href": conversation_threads[0].get("thread_file_href") if conversation_threads else None,
         }
         task_row.update(_operator_status(task_row))
         task_row["card_status_chips"] = _card_status_chips(task_row)
@@ -1424,6 +1474,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "recent_results": recent_results,
         "recent_events": summary["recent_events"],
         "plan": plan,
+        "threads": threads,
         "tasks": tasks,
         "board_tasks": board_tasks,
         "graph": {
@@ -1438,6 +1489,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "events": _artifact_href(profile.paths, profile.paths.events_file, must_exist=True),
             "inbox": _artifact_href(profile.paths, profile.paths.inbox_file, must_exist=True),
             "results": _artifact_href(profile.paths, profile.paths.results_dir, must_exist=True),
+            "threads": _artifact_href(profile.paths, profile.paths.threads_dir, must_exist=True),
         },
         "grouping_guide": [
             {

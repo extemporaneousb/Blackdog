@@ -84,6 +84,7 @@ class ProjectPaths:
     state_file: Path
     events_file: Path
     results_dir: Path
+    threads_dir: Path
     inbox_file: Path
     html_file: Path
     skill_dir: Path
@@ -124,6 +125,7 @@ def named_backlog_paths(profile: Profile, name: str) -> ProjectPaths:
         state_file=backlog_dir / "backlog-state.json",
         events_file=backlog_dir / "events.jsonl",
         results_dir=backlog_dir / "task-results",
+        threads_dir=backlog_dir / "threads",
         inbox_file=backlog_dir / "inbox.jsonl",
         html_file=backlog_dir / default_html_file_name(profile.project_name, name),
         skill_dir=profile.paths.skill_dir,
@@ -181,6 +183,7 @@ def _default_control_paths(control_dir: Path, *, project_name: str, backlog_name
         "state_file": control_dir / "backlog-state.json",
         "events_file": control_dir / "events.jsonl",
         "results_dir": control_dir / "task-results",
+        "threads_dir": control_dir / "threads",
         "inbox_file": control_dir / "inbox.jsonl",
         "html_file": control_dir / default_html_file_name(project_name, backlog_name),
         "supervisor_runs_dir": control_dir / "supervisor-runs",
@@ -194,6 +197,7 @@ def _prune_stale_git_worktrees(project_root: Path) -> None:
 def _ensure_control_root_layout(paths: ProjectPaths) -> None:
     paths.control_dir.mkdir(parents=True, exist_ok=True)
     paths.results_dir.mkdir(parents=True, exist_ok=True)
+    paths.threads_dir.mkdir(parents=True, exist_ok=True)
     paths.supervisor_runs_dir.mkdir(parents=True, exist_ok=True)
     _prune_stale_git_worktrees(paths.project_root)
 
@@ -222,6 +226,7 @@ def _paths_from_raw(project_root: Path, raw_paths: dict[str, str], *, project_na
         state_file=resolve_runtime_path("state_file"),
         events_file=resolve_runtime_path("events_file"),
         results_dir=resolve_runtime_path("results_dir"),
+        threads_dir=resolve_runtime_path("threads_dir"),
         inbox_file=resolve_runtime_path("inbox_file"),
         html_file=resolve_runtime_path("html_file"),
         skill_dir=_resolve_path_value(project_root, str(raw_paths["skill_dir"])),

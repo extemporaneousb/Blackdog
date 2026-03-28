@@ -15,6 +15,8 @@
 
 (declare-function blackdog-magit-diff-task "blackdog-magit" (task &optional root))
 (declare-function blackdog-magit-status-task "blackdog-magit" (task &optional root))
+(declare-function blackdog-read-thread "blackdog-thread" (&optional prompt root task-id))
+(declare-function blackdog-thread-view "blackdog-thread" (thread &optional root))
 
 (defvar-local blackdog-task-id nil)
 (defvar-local blackdog-task-data nil
@@ -34,6 +36,7 @@
     (define-key map (kbd "k") #'blackdog-task-remove)
     (define-key map (kbd "m") #'blackdog-task-view-magit-status)
     (define-key map (kbd "d") #'blackdog-task-view-magit-diff)
+    (define-key map (kbd "h") #'blackdog-task-open-conversation)
     (define-key map (kbd "p") #'blackdog-task-view-browse-prompt)
     (define-key map (kbd "t") #'blackdog-task-view-browse-thread)
     (define-key map (kbd "P") #'blackdog-task-view-open-prompt)
@@ -132,6 +135,7 @@
                                   (alist-get 'checks task))
       (blackdog-task--insert-list "Docs"
                                   (alist-get 'docs task))
+      (blackdog-task--insert-conversation-links task root)
       (blackdog-task--insert-artifact-links "Artifacts" task)
       (blackdog-task--insert-activity "Activity"
                                       (alist-get 'activity task))
@@ -330,6 +334,24 @@ ARTIFACT should be `prompt' or `thread'."
          (funcall fn task)))))
   (insert "\n"))
 
+(defun blackdog-task--insert-conversation-links (task root)
+  "Insert linked conversation-thread buttons for TASK under ROOT."
+  (let ((threads (alist-get 'conversation_threads task)))
+    (when threads
+      (insert "Conversations\n")
+      (dolist (thread threads)
+        (let ((thread-id (alist-get 'id thread))
+              (title (alist-get 'title thread)))
+          (insert "- ")
+          (insert-text-button
+           (format "%s  %s" thread-id title)
+           'follow-link t
+           'action (lambda (_button)
+                     (require 'blackdog-thread)
+                     (blackdog-thread-view thread root)))
+          (insert "\n")))
+      (insert "\n"))))
+
 (defun blackdog-task--insert-artifact-links (title task)
   "Insert TITLE with canonical artifact links from TASK."
   (let ((links (blackdog-task-artifacts-links task)))
@@ -491,12 +513,21 @@ ARTIFACT should be `prompt' or `thread'."
 
 (defun blackdog-task--insert-quick-links (task)
   "Insert quick artifact links for TASK."
-  (let ((result-href (blackdog-task-artifact-href task 'result))
+  (let ((conversation-href (alist-get 'primary_conversation_entries_href task))
+        (result-href (blackdog-task-artifact-href task 'result))
         (diff-href (blackdog-task-artifact-href task 'diff))
         (prompt-href (blackdog-task-artifact-href task 'prompt))
         (thread-href (blackdog-task-artifact-href task 'thread)))
-    (when (or result-href diff-href prompt-href thread-href)
+    (when (or conversation-href result-href diff-href prompt-href thread-href)
       (insert "Artifact Links\n")
+      (when conversation-href
+        (insert "- ")
+        (insert-text-button
+         "Conversation"
+         'follow-link t
+         'action (lambda (_button)
+                   (blackdog-task-open-conversation task)))
+        (insert "\n"))
       (when prompt-href
         (insert "- ")
         (insert-text-button
@@ -530,6 +561,23 @@ ARTIFACT should be `prompt' or `thread'."
                    (blackdog-task-view-open-result task)))
         (insert "\n"))
       (insert "\n"))))
+
+(defun blackdog-task-open-conversation (&optional task root)
+  "Open one linked conversation thread for TASK under ROOT."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (threads (alist-get 'conversation_threads task))
+         (thread (cond
+                  ((null threads)
+                   (user-error "Task %s has no linked conversation thread" (alist-get 'id task)))
+                  ((= (length threads) 1)
+                   (car threads))
+                  (t
+                   (require 'blackdog-thread)
+                   (blackdog-read-thread "Conversation: " root (alist-get 'id task))))))
+    (require 'blackdog-thread)
+    (blackdog-thread-view thread root)))
 
 (defun blackdog-task-view-open-result (&optional task)
   "Open the latest result artifact for TASK."

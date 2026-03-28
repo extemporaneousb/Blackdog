@@ -39,6 +39,7 @@ Current keys:
     - `state_file`
     - `events_file`
     - `results_dir`
+    - `threads_dir`
     - `inbox_file`
     - `html_file`
     - `supervisor_runs_dir`
@@ -87,6 +88,7 @@ Each named backlog reuses the same artifact layout as the default backlog root:
 - `events.jsonl`
 - `inbox.jsonl`
 - `task-results/`
+- `threads/`
 - `<project-slug>-<slug>-backlog.html`
 - `backlog-index.html` (compatibility alias)
 - `supervisor-runs/`
@@ -121,6 +123,41 @@ The emitted schema includes:
 - `total_lines`
 - `covered_lines`
 - `coverage_percent`
+
+## `<control_dir>/threads/<thread-id>/...`
+
+Conversation-thread runtime artifacts.
+
+Each thread directory contains:
+
+- `thread.json`
+- `entries.jsonl`
+
+`thread.json` schema:
+
+- `schema_version`
+- `thread_id`
+- `title`
+- `status`
+- `created_at`
+- `created_by`
+- `task_ids`
+
+`entries.jsonl` rows:
+
+- `schema_version`
+- `entry_id`
+- `thread_id`
+- `role` (`user`, `assistant`, or `system`)
+- `kind`
+- `actor`
+- `body`
+- `created_at`
+- optional `duration_seconds`
+- optional `task_id`
+- `metadata`
+
+These files hold the freeform markdown conversation that Emacs uses for prompt authoring, prompt preview, and task launch.
 
 ## `<control_dir>/backlog.md`
 
@@ -247,6 +284,9 @@ Canonical event types include:
 - `render`
 - `message`
 - `message_resolved`
+- `thread_created`
+- `thread_entry_added`
+- `thread_task_linked`
 - `task_result`
 - `worktree_start`
 - `worktree_land`
@@ -718,6 +758,7 @@ Current `links` keys:
 - `events`
 - `inbox`
 - `results`
+- `threads`
 
 Current `graph` keys:
 
@@ -743,6 +784,13 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `task_shaping`
 - `latest_result_task_shaping_telemetry`
 - `result_count`
+- `conversation_threads`
+- `conversation_thread_ids`
+- `conversation_thread_count`
+- `primary_conversation_thread_id`
+- `primary_conversation_thread_title`
+- `primary_conversation_entries_href`
+- `primary_conversation_file_href`
 - `latest_run_status`
 - `run_dir_href`
 - `prompt_href`
@@ -805,6 +853,27 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `stderr_href`
 - `run_dir_href`
 
+Current `threads[*]` rows summarize saved project conversations:
+
+- `id`
+- `title`
+- `status`
+- `created_at`
+- `created_by`
+- `updated_at`
+- `entry_count`
+- `user_entry_count`
+- `assistant_entry_count`
+- `system_entry_count`
+- `latest_entry_at`
+- `latest_entry_role`
+- `latest_entry_actor`
+- `latest_entry_preview`
+- `task_ids`
+- `thread_dir_href`
+- `thread_file_href`
+- `entries_href`
+
 Current `hero_highlights` keys summarize the hero's workspace/activity strip:
 
 - `branch`
@@ -828,6 +897,7 @@ Layout projections:
 - `Backlog Control` uses `project_name`, `push_objective`, `content_updated_at`, `last_checked_at`, `last_activity`, `workspace_contract`, `headers`, `hero_highlights`, and `links`.
 - The control panel renders a compact branch/commit line, a fixed hero timing line (time since last check, time since last update, total time on sweep, total time on backlog), a progress bar, and artifact links.
 - The board does not render an objectives table or release-gate panel in the static snapshot.
+- `links.threads` points at the saved conversation-thread directory root.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
 - The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
 - `Completed Tasks` renders a flat list of the most recent completed cards by completion time.

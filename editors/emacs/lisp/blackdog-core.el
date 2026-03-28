@@ -156,6 +156,46 @@ When FORCE is non-nil, refresh the cached snapshot."
          (choice (completing-read (or prompt "Task: ") candidates nil t)))
     (cdr (assoc choice candidates))))
 
+(defun blackdog-thread-list (&optional root task-id)
+  "Return Blackdog conversation thread summaries for ROOT.
+
+When TASK-ID is non-nil, only return threads linked to that task."
+  (apply #'blackdog--call-json
+         (or root (blackdog-project-root))
+         (append (list "thread" "list" "--format" "json")
+                 (when task-id
+                   (list "--task-id" task-id)))))
+
+(defun blackdog-thread-show (thread-id &optional root)
+  "Return one Blackdog conversation thread THREAD-ID for ROOT."
+  (blackdog--call-json (or root (blackdog-project-root))
+                       "thread" "show" "--format" "json" "--id" thread-id))
+
+(defun blackdog-thread-candidates (&optional root task-id)
+  "Return completion candidates for conversation threads in ROOT."
+  (mapcar
+   (lambda (thread)
+     (cons (format "[%s] %s %s"
+                   (or (alist-get 'status thread) "open")
+                   (alist-get 'thread_id thread)
+                   (alist-get 'title thread))
+           thread))
+   (blackdog-thread-list root task-id)))
+
+(defun blackdog-read-thread (&optional prompt root task-id)
+  "Read one conversation thread from ROOT with PROMPT."
+  (let* ((candidates (blackdog-thread-candidates root task-id))
+         (choice (completing-read (or prompt "Thread: ") candidates nil t)))
+    (cdr (assoc choice candidates))))
+
+(defun blackdog-format-duration-seconds (seconds)
+  "Return a compact display string for SECONDS."
+  (when (numberp seconds)
+    (cond
+     ((< seconds 60) (format "%ss" seconds))
+     ((< seconds 3600) (format "%dm %02ds" (/ seconds 60) (% seconds 60)))
+     (t (format "%dh %02dm" (/ seconds 3600) (% (/ seconds 60) 60))))))
+
 (defun blackdog-resolve-href (href &optional snapshot root)
   "Resolve relative HREF against the control dir from SNAPSHOT or ROOT."
   (when (and href (not (string-empty-p href)))

@@ -18,6 +18,7 @@
 (require 'blackdog-artifacts)
 (require 'blackdog-magit)
 (require 'blackdog-search)
+(require 'blackdog-thread)
 (require 'blackdog-spec)
 (require 'blackdog-telemetry)
 
@@ -37,8 +38,11 @@
     (define-key map (kbd "u") #'blackdog-runs-open)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
+    (define-key map (kbd "T") #'blackdog-find-thread)
+    (define-key map (kbd "h") #'blackdog-threads-open)
     (define-key map (kbd "a") #'blackdog-find-artifact)
-    (define-key map (kbd "n") #'blackdog-spec-new)
+    (define-key map (kbd "n") #'blackdog-thread-compose-new)
+    (define-key map (kbd "N") #'blackdog-spec-new)
     (define-key map (kbd "v") #'blackdog-telemetry-open)
     (define-key map (kbd "f") #'blackdog-find-project-file)
     (define-key map (kbd "s") #'blackdog-search-project)
@@ -106,12 +110,15 @@
     (transient-define-prefix blackdog-dispatch ()
       "Dispatch Blackdog commands."
       [["Views"
-        ("b" "Dashboard" blackdog-dashboard)
+       ("b" "Dashboard" blackdog-dashboard)
+        ("h" "Threads" blackdog-threads-open)
         ("u" "Runs" blackdog-runs-open)
         ("r" "Results" blackdog-results-open)
         ("t" "Task" blackdog-find-task)
+        ("T" "Thread" blackdog-find-thread)
         ("a" "Artifact" blackdog-find-artifact)
-        ("n" "New spec" blackdog-spec-new)
+        ("n" "New thread" blackdog-thread-compose-new)
+        ("N" "New spec" blackdog-spec-new)
         ("v" "Telemetry" blackdog-telemetry-open)
         ("f" "Project file" blackdog-find-project-file)]
        ["Write"

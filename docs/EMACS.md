@@ -22,11 +22,13 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
 - read-only task reader with task metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
+- tabulated conversation-thread listing plus a dedicated thread reader with collapsible timestamped user/assistant/system entries
 - shared root-local snapshot caching so one queue pass can reuse the same snapshot across dashboard, task, result, run, and artifact views until the operator explicitly refreshes
 - Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
 - minibuffer completion for task, artifact, and project-file lookup
 - incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
-- spec-first authoring buffers that turn analysis notes into a `blackdog prompt` preview, a draft `blackdog add` payload, and direct create-or-launch actions
+- conversation-first authoring buffers that let the operator write freeform markdown, save it as a durable project-level thread, preview the repo-aware prompt rewrite, create a backlog task from that thread, and launch it immediately
+- legacy spec-first authoring buffers remain available for structured task drafting, but they are no longer the default entrypoint
 - task lifecycle commands for claim, claim-and-launch, release, complete, and remove without leaving Emacs
 - telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status`, `recover`, and `report` summaries
 - live supervisor monitor that can start one async `blackdog supervise run`, request a draining stop, open the latest run directory, and tail live child stdout/stderr artifacts from `supervisor-runs/`
@@ -90,6 +92,8 @@ The package should shell out to Blackdog CLI commands for any durable state chan
 
 The current package keeps write logic thin and CLI-authoritative. Emacs adds safe wrappers for prompt shaping, task capture, and core task lifecycle actions, while Blackdog still owns the durable state transitions and validation rules.
 
+Conversation threads are a first-class Blackdog runtime object, not just an Emacs buffer. Emacs shells out to `blackdog thread ...` for durable thread creation, entry append, prompt preview, and thread-to-task linking.
+
 ### Git / Worktree semantics
 
 For a task row:
@@ -112,6 +116,19 @@ For a task row:
 
 The Emacs task reader uses dedicated prompt/thread buffers for those artifacts so operators can stay inside the workbench, while the raw files remain available through the artifact list and minibuffer artifact picker.
 
+### Conversation-first prompt authoring
+
+The main operator flow now starts with a saved conversation thread:
+
+1. `C-c b n` opens a freeform markdown draft for a new conversation thread.
+2. `C-c C-c` saves that draft as a durable thread under the Blackdog control root.
+3. `a` from the thread reader appends a new user entry.
+4. `p` previews the repo-aware `blackdog prompt` rewrite for the saved conversation.
+5. `c` creates one backlog task from the thread.
+6. `w` creates that task and immediately launches its WTAM worktree.
+
+When a linked task later records a result, Blackdog appends an assistant entry to the saved conversation thread so the operator can review the request and the resulting response in one place.
+
 ## Package Layout
 
 The current package layout is:
@@ -123,13 +140,14 @@ The current package layout is:
 - `editors/emacs/lisp/blackdog-results.el`
 - `editors/emacs/lisp/blackdog-runs.el`
 - `editors/emacs/lisp/blackdog-search.el`
+- `editors/emacs/lisp/blackdog-thread.el`
 - `editors/emacs/lisp/blackdog-spec.el`
 - `editors/emacs/lisp/blackdog-telemetry.el`
 - `editors/emacs/lisp/blackdog-magit.el`
 - `editors/emacs/templates/blackdog-spec.md`
 - `editors/emacs/test/blackdog-test.el`
 
-If you package this outside the repo checkout, keep `lisp/` and `templates/` together. The spec workflow resolves `blackdog-spec.md` relative to `blackdog-spec.el` unless you set `blackdog-spec-template-file`.
+If you package this outside the repo checkout, keep `lisp/` and `templates/` together. The legacy spec workflow resolves `blackdog-spec.md` relative to `blackdog-spec.el` unless you set `blackdog-spec-template-file`.
 
 ## Operator Workflows
 
@@ -160,16 +178,20 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 - `C-c b A` searches the Blackdog control dir, which is the right place to grep old results, diffs, prompts, and supervisor artifacts.
 - `C-c b f` and `C-c b s` stay in project code and docs.
 
-### Spec-first task shaping
+### Conversation-first task shaping
 
-1. `C-c b n` opens a `Blackdog-Spec` buffer seeded from the bundled template.
-2. Fill in the metadata and analysis sections.
-3. Use `C-c C-p` to append code or data paths.
-4. Use `C-c C-o` to preview the rewritten Blackdog prompt for that spec.
-5. Use `C-c C-c` to render a draft payload buffer.
-6. In the draft buffer, use `c` to create the task now or `w` to create it and immediately start its WTAM worktree.
+1. `C-c b n` opens a `Blackdog-Thread-Compose` buffer for freeform markdown.
+2. Write the operator request as normal markdown and press `C-c C-c`.
+3. The saved thread opens in `Blackdog-Thread`, with timestamped collapsible entries and any linked tasks.
+4. Use `p` to preview the rewritten Blackdog prompt for that conversation.
+5. Use `c` to create a backlog task from the conversation or `w` to create and launch it immediately.
+6. Use `a` from the thread reader to keep appending user follow-up context to the same saved conversation.
 
-This is intentionally spec-driven but still CLI-authoritative: Emacs helps shape and preview the request, then shells out to `blackdog prompt`, `blackdog add`, and `blackdog worktree start` for the durable workflow.
+This stays CLI-authoritative: Emacs helps author and browse the conversation, then shells out to `blackdog thread prompt`, `blackdog thread task`, and `blackdog worktree start` for the durable workflow.
+
+### Structured spec drafting
+
+`C-c b N` still opens the legacy `Blackdog-Spec` flow when you want a fully structured task draft buffer instead of a freeform conversation.
 
 ### Task lifecycle actions
 
@@ -294,7 +316,7 @@ Landing healthy
 Retry pressure low
 ```
 
-The spec workflow adds an editable `Blackdog-Spec` buffer that keeps:
+The legacy spec workflow adds an editable `Blackdog-Spec` buffer that keeps:
 
 - task metadata (`title`, `bucket`, `priority`, `risk`, `effort`, `objective`)
 - analysis, why, evidence, and safe-first-slice notes
@@ -335,9 +357,12 @@ Suggested prefix: `C-c b`
 | `C-c b X` | `blackdog-stop-supervisor` | Request a draining stop for the telemetry actor's supervisor run. |
 | `C-c b u` | `blackdog-runs-open` | Browse supervisor run directories. |
 | `C-c b r` | `blackdog-results-open` | Browse latest task results. |
+| `C-c b h` | `blackdog-threads-open` | Browse saved conversation threads. |
 | `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
+| `C-c b T` | `blackdog-find-thread` | Open a saved conversation thread from completion. |
 | `C-c b a` | `blackdog-find-artifact` | Open a prompt/diff/result/run artifact from completion. |
-| `C-c b n` | `blackdog-spec-new` | Start a new spec-first task draft. |
+| `C-c b n` | `blackdog-thread-compose-new` | Start a new freeform conversation thread draft. |
+| `C-c b N` | `blackdog-spec-new` | Start a new structured spec-first task draft. |
 | `C-c b v` | `blackdog-telemetry-open` | Open CLI and supervisor telemetry. |
 | `C-c b f` | `blackdog-find-project-file` | Jump to a repo file. |
 | `C-c b s` | `blackdog-search-project` | Search the repo root. |
@@ -371,6 +396,7 @@ Suggested prefix: `C-c b`
 | `k` | Remove the current task after confirmation. |
 | `m` | Open Magit status for the task. |
 | `d` | Open a live Magit diff or saved diff artifact. |
+| `h` | Open the linked saved conversation thread. |
 | `p` | Browse the prompt in a read-only Blackdog buffer. |
 | `t` | Browse the best available child thread transcript. |
 | `P` | Open the raw prompt artifact. |
@@ -388,11 +414,14 @@ Suggested prefix: `C-c b`
 | --- | --- |
 | Results | `RET` opens the task reader, `f` opens the result file, `g` clears the cached snapshot and refreshes. |
 | Runs | `RET` opens the run directory, `t` opens the task reader, `g` clears the cached snapshot and refreshes. |
+| Threads | `RET` opens the thread reader, `n` starts a new conversation, `a` replies to the selected thread, `p` previews the prompt, `c` creates a task, `w` creates and launches it, `g` refreshes. |
 
 ### Spec and telemetry
 
 | Buffer | Keys |
 | --- | --- |
+| Thread Compose | `C-c C-c` saves the conversation thread or reply, `C-c C-k` closes the draft. |
+| Thread | `TAB` toggles the current entry, `a` appends a user entry, `p` previews the prompt rewrite, `c` creates a task, `w` creates and launches it, `o` opens the raw `entries.jsonl` artifact. |
 | Spec | `C-c C-o` previews the rewritten prompt, `C-c C-c` renders the draft payload, `C-c C-p` appends a code or data path. |
 | Spec Draft | `p` refreshes the prompt preview, `c` creates the task, `w` creates and launches it, `g` rerenders the draft. |
 | Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
@@ -454,7 +483,7 @@ After loading the package:
 2. Run `C-c b b` to confirm the dashboard renders.
 3. Run `C-c b .` to confirm Transient is available.
 4. Run `C-c b m` on any task to confirm Magit integration is present.
-5. Run `C-c b n`, preview a prompt with `C-c C-o`, then create and launch a task from the draft buffer with `w`.
+5. Run `C-c b n`, save a freeform thread with `C-c C-c`, preview the prompt with `p`, then create and launch the task from the thread buffer with `w`.
 6. Run `C-c b v`, start a supervisor run with `S`, verify live child output appears, then stop it with `x`.
 
 ## Release Packaging For Emacs 30+
@@ -519,7 +548,7 @@ Useful manual smoke checks:
 - `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../editors/emacs/lisp\") (require 'blackdog))"`
 - open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
 - open one task and verify `p` renders the prompt browser and `t` renders the thread browser when supervisor artifacts exist
-- open `C-c b n`, preview a prompt with `C-c C-o`, then create and launch a task from the draft buffer with `w`
+- open `C-c b n`, save a freeform thread with `C-c C-c`, preview the prompt with `p`, then create and launch a task from the thread buffer with `w`
 - open `C-c b v`, start the supervisor with `S`, confirm the live child stderr/stdout tails appear, then request stop with `x`
 - verify `C-c b d` uses a live Magit diff for an active task and a saved `changes.diff` artifact for a landed task
 
