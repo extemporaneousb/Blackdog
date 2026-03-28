@@ -284,6 +284,8 @@ Canonical event types include:
 - `primary_worktree`
 - `target_worktree`
 - `landed_commit`
+- `diff_file`
+- `diffstat_file`
 
 When the landing belongs to a Blackdog task, `task_id` should be set on the event so completed-task views can render landed status without relying on supervisor-only `child_finish` records.
 
@@ -432,9 +434,9 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
   - `observations[*].category` values include
     `startup_friction`, `retry_pressure`, `output_shape_consistency`,
     `landing_failures`
-- Child artifacts in `supervisor-runs/*/<task-id>/` and
-  `task-results/<task-id>/` are the source-of-truth artifacts for
-  startup and landing diagnostics.
+- Child artifacts in `supervisor-runs/*/<task-id>/` and direct/manual
+  landed diff artifacts in `task-results/<task-id>/` are the
+  source-of-truth artifacts for startup and landing diagnostics.
 
 ## `blackdog snapshot`
 
@@ -766,6 +768,10 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `operator_status_key`
 - `operator_status_detail`
 - `links`
+
+`diff_href` and `diffstat_href` may resolve either to supervisor-run
+artifacts or to direct/manual landed artifacts under
+`task-results/<task-id>/`.
 
 Current `active_tasks[*]` keys summarize the operator-facing running/claimed view:
 

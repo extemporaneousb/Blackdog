@@ -139,10 +139,6 @@ For a landed or cleaned-up task:
 
 That is the intended worktree-diff reading model: prefer live Git state while the task is active, then prefer the immutable saved diff once the task has been landed and cleaned up.
 
-Current limitation:
-
-- same-thread/manual WTAM tasks may land without a persisted `diff_href`, so historical `blackdog-magit-diff-task` review can still fail until the diff-artifact follow-up hardening lands
-
 ### Artifact and search pass
 
 - `C-c b a` opens prompt/stdout/stderr/diff/metadata/result/run artifacts through minibuffer completion.

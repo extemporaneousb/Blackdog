@@ -2644,6 +2644,13 @@ class BlackdogCliTests(unittest.TestCase):
             self.assertEqual(landed["branch"], branch)
             self.assertEqual((self.root / "feature.txt").read_text(encoding="utf-8"), "landed from worktree\n")
             self.assertFalse(worktree_path.exists())
+            diff_file = Path(str(landed["diff_file"]))
+            diffstat_file = Path(str(landed["diffstat_file"]))
+            self.assertTrue(diff_file.exists())
+            self.assertTrue(diffstat_file.exists())
+            self.assertIn(task_id, diff_file.as_posix())
+            self.assertIn("feature.txt", diff_file.read_text(encoding="utf-8"))
+            self.assertIn("feature.txt", diffstat_file.read_text(encoding="utf-8"))
 
             branch_check = subprocess.run(
                 ["git", "-C", str(self.root), "show-ref", "--verify", f"refs/heads/{branch}"],
@@ -2667,6 +2674,8 @@ class BlackdogCliTests(unittest.TestCase):
             land_event = next(row for row in reversed(events) if row["type"] == "worktree_land")
             self.assertEqual(land_event["task_id"], task_id)
             self.assertEqual(land_event["payload"]["landed_commit"], landed["landed_commit"])
+            self.assertEqual(land_event["payload"]["diff_file"], landed["diff_file"])
+            self.assertEqual(land_event["payload"]["diffstat_file"], landed["diffstat_file"])
 
     def test_snapshot_reports_graph_and_static_contract(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3849,12 +3858,23 @@ class BlackdogCliTests(unittest.TestCase):
                     "primary_worktree": str(self.root),
                     "target_worktree": str(self.root),
                     "landed_commit": landed_commit,
+                    "diff_file": str(paths.results_dir / task_id / "landed-changes.diff"),
+                    "diffstat_file": str(paths.results_dir / task_id / "landed-changes.stat.txt"),
                     "cleanup": True,
                     "cleaned_worktree": str(self.root / "wt-direct-landed"),
                     "deleted_branch": True,
                     "removed_temporary_target": False,
                 },
             },
+        )
+        (paths.results_dir / task_id).mkdir(parents=True, exist_ok=True)
+        (paths.results_dir / task_id / "landed-changes.diff").write_text(
+            "diff --git a/direct-landed.txt b/direct-landed.txt\n",
+            encoding="utf-8",
+        )
+        (paths.results_dir / task_id / "landed-changes.stat.txt").write_text(
+            " direct-landed.txt | 1 +\n",
+            encoding="utf-8",
         )
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/direct", "--id", task_id, "--note", "done")
 
@@ -3867,6 +3887,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(task["landed_commit_url"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")
         self.assertIn(commit_subject, task["landed_commit_message"])
         self.assertIn(commit_body, task["landed_commit_message"])
+        self.assertEqual(task["diff_href"], f"task-results/{task_id}/landed-changes.diff")
+        self.assertEqual(task["diffstat_href"], f"task-results/{task_id}/landed-changes.stat.txt")
         landed_chip = next(row for row in task["card_status_chips"] if row["key"] == "landed")
         self.assertEqual(landed_chip["label"], "Landed")
         self.assertEqual(landed_chip["href"], f"https://github.com/example/blackdog-demo/commit/{landed_commit}")

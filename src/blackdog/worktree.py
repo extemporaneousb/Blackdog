@@ -9,6 +9,7 @@ import time
 
 from .backlog import BacklogError, TaskInfo, load_backlog
 from .config import Profile, slugify
+from .store import atomic_write_text
 
 
 class WorktreeError(RuntimeError):
@@ -86,6 +87,14 @@ def _run_git_no_check(repo_root: Path, *args: str) -> subprocess.CompletedProces
     )
 
 
+def _run_git_stdout(repo_root: Path, *args: str) -> str:
+    completed = _run_git_no_check(repo_root, *args)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise WorktreeError(f"git {' '.join(args)} failed: {detail}")
+    return completed.stdout
+
+
 def _repo_root(project_root: Path) -> Path:
     return Path(_run_git(project_root, "rev-parse", "--show-toplevel")).resolve()
 
@@ -127,6 +136,35 @@ def find_primary_worktree(project_root: Path) -> Path:
         if path and _is_primary_worktree(path):
             return path
     raise WorktreeError("could not find primary worktree")
+
+
+def _persist_landed_diff_artifacts(
+    profile: Profile,
+    *,
+    task_id: str | None,
+    repo_root: Path,
+    target_branch: str,
+    branch: str,
+) -> dict[str, str | None]:
+    if not task_id:
+        return {"diff_file": None, "diffstat_file": None}
+
+    results_dir = profile.paths.results_dir / task_id
+    results_dir.mkdir(parents=True, exist_ok=True)
+    diff_text = _run_git_stdout(repo_root, "diff", "--binary", f"{target_branch}..{branch}")
+    diffstat_text = _run_git_stdout(repo_root, "diff", "--stat", f"{target_branch}..{branch}")
+
+    diff_file = None
+    diffstat_file = None
+    if diff_text.strip():
+        diff_path = results_dir / "landed-changes.diff"
+        atomic_write_text(diff_path, diff_text)
+        diff_file = str(diff_path.resolve())
+    if diffstat_text.strip():
+        diffstat_path = results_dir / "landed-changes.stat.txt"
+        atomic_write_text(diffstat_path, diffstat_text)
+        diffstat_file = str(diffstat_path.resolve())
+    return {"diff_file": diff_file, "diffstat_file": diffstat_file}
 
 
 def _find_worktree_for_branch(project_root: Path, branch_ref: str) -> Path | None:
@@ -443,6 +481,14 @@ def land_branch(
             raise WorktreeError(
                 f"cannot land: {resolved_branch} is not based on the current {resolved_target}; rebase it first"
             )
+        task_id = task_id_for_branch(profile, resolved_branch)
+        landed_artifacts = _persist_landed_diff_artifacts(
+            profile,
+            task_id=task_id,
+            repo_root=target_worktree,
+            target_branch=resolved_target,
+            branch=resolved_branch,
+        )
         landed_commit = _run_git(target_worktree, "rev-parse", resolved_branch)
         _run_git(target_worktree, "merge", "--ff-only", resolved_branch)
 
@@ -468,6 +514,8 @@ def land_branch(
             "primary_worktree": str(primary_root),
             "target_worktree": str(target_worktree),
             "landed_commit": landed_commit,
+            "diff_file": landed_artifacts["diff_file"],
+            "diffstat_file": landed_artifacts["diffstat_file"],
             "cleanup": cleanup,
             "cleaned_worktree": cleaned_worktree,
             "deleted_branch": deleted_branch,

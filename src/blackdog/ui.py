@@ -323,6 +323,13 @@ def _child_artifacts(paths: ProjectPaths, run_dir: Path | None, task_id: str) ->
     }
 
 
+def _direct_land_artifacts(paths: ProjectPaths, payload: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        "diff_href": _artifact_href(paths, payload.get("diff_file"), must_exist=True),
+        "diffstat_href": _artifact_href(paths, payload.get("diffstat_file"), must_exist=True),
+    }
+
+
 def _empty_task_activity() -> dict[str, Any]:
     return {
         "claimed_by": None,
@@ -636,6 +643,12 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
 
         run_dir = _find_run_dir(paths, run_id) if run_id else None
         entry.update(_child_artifacts(paths, run_dir, task_id))
+        if event_type == "worktree_land":
+            direct_artifacts = _direct_land_artifacts(paths, payload)
+            if direct_artifacts.get("diff_href"):
+                entry["diff_href"] = direct_artifacts["diff_href"]
+            if direct_artifacts.get("diffstat_href"):
+                entry["diffstat_href"] = direct_artifacts["diffstat_href"]
 
     github_repo_url = _github_repo_url(paths.project_root)
     commit_messages: dict[str, str | None] = {}
