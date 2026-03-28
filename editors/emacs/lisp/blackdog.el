@@ -32,6 +32,8 @@
     (define-key map (kbd "l") #'blackdog-release-task)
     (define-key map (kbd "e") #'blackdog-complete-task)
     (define-key map (kbd "k") #'blackdog-remove-task)
+    (define-key map (kbd "x") #'blackdog-start-supervisor)
+    (define-key map (kbd "X") #'blackdog-stop-supervisor)
     (define-key map (kbd "u") #'blackdog-runs-open)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
@@ -90,6 +92,16 @@
   (interactive)
   (blackdog-task-remove (blackdog-read-task)))
 
+(defun blackdog-start-supervisor ()
+  "Open the telemetry monitor and start one supervisor run."
+  (interactive)
+  (blackdog-telemetry-start-supervisor))
+
+(defun blackdog-stop-supervisor ()
+  "Request a stop for the active supervisor actor."
+  (interactive)
+  (blackdog-telemetry-stop-supervisor))
+
 (if (featurep 'transient)
     (transient-define-prefix blackdog-dispatch ()
       "Dispatch Blackdog commands."
@@ -108,6 +120,11 @@
         ("l" "Release" blackdog-release-task)
         ("e" "Complete" blackdog-complete-task)
         ("k" "Remove task" blackdog-remove-task)]
+       ["Supervisor"
+        ("v" "Telemetry" blackdog-telemetry-open)
+        ("x" "Start supervisor" blackdog-start-supervisor)
+        ("X" "Stop supervisor" blackdog-stop-supervisor)
+        ("u" "Runs" blackdog-runs-open)]
        ["Search"
         ("s" "Project grep" blackdog-search-project)
         ("A" "Artifact grep" blackdog-search-artifacts)

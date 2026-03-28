@@ -61,6 +61,10 @@ fall back to `blackdog' on PATH."
          (t (user-error "Could not find a Blackdog CLI for %s"
                         (or root (blackdog-project-root))))))))
 
+(defun blackdog-command-argv (root &rest args)
+  "Return argv for Blackdog in ROOT with ARGS."
+  (append (list (blackdog-command root)) args))
+
 (defun blackdog--call (root &rest args)
   "Run Blackdog in ROOT with ARGS and return stdout."
   (let ((default-directory root)
@@ -81,6 +85,19 @@ fall back to `blackdog' on PATH."
                    status
                    (string-trim output))))
       (kill-buffer buffer))))
+
+(defun blackdog-start-process (name root buffer stderr-buffer &rest args)
+  "Start an asynchronous Blackdog process NAME in ROOT with ARGS.
+
+Stdout goes to BUFFER and stderr goes to STDERR-BUFFER."
+  (let ((default-directory root))
+    (make-process
+     :name name
+     :buffer buffer
+     :stderr stderr-buffer
+     :noquery t
+     :connection-type 'pipe
+     :command (apply #'blackdog-command-argv root args))))
 
 (defun blackdog--call-json (root &rest args)
   "Run Blackdog in ROOT with ARGS and parse the JSON response."

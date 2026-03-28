@@ -28,7 +28,8 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
 - spec-first authoring buffers that turn analysis notes into a `blackdog prompt` preview, a draft `blackdog add` payload, and direct create-or-launch actions
 - task lifecycle commands for claim, claim-and-launch, release, complete, and remove without leaving Emacs
-- telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status` and `blackdog supervise report` summaries
+- telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status`, `recover`, and `report` summaries
+- live supervisor monitor that can start one async `blackdog supervise run`, request a draining stop, open the latest run directory, and tail live child stdout/stderr artifacts from `supervisor-runs/`
 
 ## Frameworks To Leverage
 
@@ -185,8 +186,11 @@ Set `blackdog-default-agent` if you do not want Emacs writes to default to your 
 ### Telemetry and supervision
 
 1. `C-c b v` opens the telemetry buffer.
-2. `g` refreshes local counters plus `blackdog supervise status/report`.
-3. `c` clears the in-session command counters so you can measure one workflow pass cleanly.
+2. `S` starts one asynchronous `blackdog supervise run` for the configured telemetry actor.
+3. `x` sends a `stop` inbox control so the run drains after current child work.
+4. `g` refreshes local counters plus `blackdog supervise status/recover/report`.
+5. `u` opens the latest run directory and `o` jumps into the latest child artifact directory.
+6. The monitor keeps polling live status while the run is active and tails the latest child `stderr.log` and `stdout.log` artifacts so the operator can watch agent output without leaving Emacs.
 
 ## UI Mocks
 
@@ -309,7 +313,9 @@ The telemetry workflow adds a read-only `Blackdog-Telemetry` buffer that combine
 
 - session-local Emacs instrumentation for Blackdog CLI latency and failures
 - `blackdog supervise status --format json` summaries for the current supervisor actor
+- `blackdog supervise recover --format json` summaries for recoverable blocked/interrupted runs
 - `blackdog supervise report --format json` summaries for startup, retry, output-shape, and landing health
+- live links into the latest child artifact directories plus tailed child `stderr.log` and `stdout.log` output
 
 ## Keybindings
 
@@ -325,6 +331,8 @@ Suggested prefix: `C-c b`
 | `C-c b l` | `blackdog-release-task` | Release a claimed task from completion. |
 | `C-c b e` | `blackdog-complete-task` | Complete a task from completion. |
 | `C-c b k` | `blackdog-remove-task` | Remove a task from completion when the CLI allows it. |
+| `C-c b x` | `blackdog-start-supervisor` | Start the telemetry actor's supervisor run and open the live monitor. |
+| `C-c b X` | `blackdog-stop-supervisor` | Request a draining stop for the telemetry actor's supervisor run. |
 | `C-c b u` | `blackdog-runs-open` | Browse supervisor run directories. |
 | `C-c b r` | `blackdog-results-open` | Browse latest task results. |
 | `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
@@ -387,7 +395,7 @@ Suggested prefix: `C-c b`
 | --- | --- |
 | Spec | `C-c C-o` previews the rewritten prompt, `C-c C-c` renders the draft payload, `C-c C-p` appends a code or data path. |
 | Spec Draft | `p` refreshes the prompt preview, `c` creates the task, `w` creates and launches it, `g` rerenders the draft. |
-| Telemetry | `g` clears the cached snapshot and refreshes supervisor/session data, `c` clears the session counters and refreshes. |
+| Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
 
 ## Installation With use-package
 
@@ -447,6 +455,7 @@ After loading the package:
 3. Run `C-c b .` to confirm Transient is available.
 4. Run `C-c b m` on any task to confirm Magit integration is present.
 5. Run `C-c b n`, preview a prompt with `C-c C-o`, then create and launch a task from the draft buffer with `w`.
+6. Run `C-c b v`, start a supervisor run with `S`, verify live child output appears, then stop it with `x`.
 
 ## Release Packaging For Emacs 30+
 
@@ -466,6 +475,7 @@ Recommended release checklist:
 3. Load the package through `use-package` or an equivalent `load-path` setup.
 4. Run the batch checks in the testing section below.
 5. Open the dashboard against a real repo and verify one live task diff plus one landed-task saved diff.
+6. Open `C-c b v`, start a supervisor run with `S`, confirm the monitor tails live child output, and stop it with `x`.
 
 ## Testing Plan
 
@@ -510,6 +520,7 @@ Useful manual smoke checks:
 - open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
 - open one task and verify `p` renders the prompt browser and `t` renders the thread browser when supervisor artifacts exist
 - open `C-c b n`, preview a prompt with `C-c C-o`, then create and launch a task from the draft buffer with `w`
+- open `C-c b v`, start the supervisor with `S`, confirm the live child stderr/stdout tails appear, then request stop with `x`
 - verify `C-c b d` uses a live Magit diff for an active task and a saved `changes.diff` artifact for a landed task
 
 ## Implementation Notes
