@@ -2112,6 +2112,31 @@ def _ensure_plan_entry(plan: dict[str, Any], *, kind: str, entry_id: str, title:
     return created
 
 
+def _prune_empty_plan_entries(plan: dict[str, Any]) -> dict[str, Any]:
+    plan["epics"] = [
+        entry
+        for entry in plan.get("epics", [])
+        if isinstance(entry, dict) and entry.get("task_ids")
+    ]
+    plan["lanes"] = [
+        entry
+        for entry in plan.get("lanes", [])
+        if isinstance(entry, dict) and entry.get("task_ids")
+    ]
+    return plan
+
+
+def _remove_task_section(text: str, task_id: str) -> str:
+    task_section_re = re.compile(
+        rf"^###\s+{re.escape(task_id)}\s+-\s+.+?(?=^###\s+[A-Z0-9]+-[0-9a-f]+\s+-|\Z)",
+        re.S | re.M,
+    )
+    updated, removed = task_section_re.subn("", text, count=1)
+    if removed != 1:
+        raise BacklogError(f"Could not find task section for {task_id}")
+    return updated.rstrip() + "\n"
+
+
 def add_task(
     profile: Profile,
     *,
@@ -2211,6 +2236,44 @@ def add_task(
         ).rstrip() + "\n"
         atomic_write_text(profile.paths.backlog_file, updated)
         return payload
+
+
+def remove_task(profile: Profile, *, task_id: str) -> dict[str, Any]:
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+        task = snapshot.tasks.get(task_id)
+        if task is None:
+            raise BacklogError(f"Unknown task id: {task_id}")
+        state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+        claim_entry = state.get("task_claims", {}).get(task_id) or {}
+        if claim_is_active(claim_entry):
+            raise BacklogError(f"Task {task_id} is currently claimed by {claim_entry.get('claimed_by')}")
+        if str(claim_entry.get("status") or "") == "done":
+            raise BacklogError(f"Task {task_id} is already completed and cannot be removed")
+        task_results = [row for row in load_task_results(profile.paths) if str(row.get("task_id") or "") == task_id]
+        if task_results:
+            raise BacklogError(f"Task {task_id} already has recorded results and cannot be removed")
+
+        plan = json.loads(json.dumps(snapshot.plan))
+        for collection_name in ("epics", "lanes"):
+            for entry in plan.get(collection_name, []):
+                entry["task_ids"] = [
+                    str(value)
+                    for value in entry.get("task_ids", [])
+                    if str(value) != task_id
+                ]
+        plan = _prune_empty_plan_entries(plan)
+        validate_plan_payload(plan, task_ids=set(snapshot.tasks) - {task_id})
+
+        updated = _apply_runtime_headers(snapshot.raw_text, profile)
+        updated = _replace_plan_block(updated, plan)
+        updated = _remove_task_section(updated, task_id)
+        atomic_write_text(profile.paths.backlog_file, updated)
+
+    state.setdefault("approval_tasks", {}).pop(task_id, None)
+    state.setdefault("task_claims", {}).pop(task_id, None)
+    save_state(profile.paths.state_file, state)
+    return {"id": task_id, "title": task.title}
 
 
 def render_initial_backlog(

@@ -27,6 +27,11 @@
 (defvar blackdog-prefix-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "b") #'blackdog-dashboard)
+    (define-key map (kbd "c") #'blackdog-claim-task)
+    (define-key map (kbd "w") #'blackdog-launch-task)
+    (define-key map (kbd "l") #'blackdog-release-task)
+    (define-key map (kbd "e") #'blackdog-complete-task)
+    (define-key map (kbd "k") #'blackdog-remove-task)
     (define-key map (kbd "u") #'blackdog-runs-open)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
@@ -60,6 +65,31 @@
   (interactive)
   (blackdog-magit-diff-task (blackdog-read-task)))
 
+(defun blackdog-claim-task ()
+  "Prompt for one task and claim it."
+  (interactive)
+  (blackdog-task-claim (blackdog-read-task)))
+
+(defun blackdog-launch-task ()
+  "Prompt for one task and launch its WTAM worktree."
+  (interactive)
+  (blackdog-task-launch (blackdog-read-task)))
+
+(defun blackdog-release-task ()
+  "Prompt for one task and release it."
+  (interactive)
+  (blackdog-task-release (blackdog-read-task)))
+
+(defun blackdog-complete-task ()
+  "Prompt for one task and complete it."
+  (interactive)
+  (blackdog-task-complete (blackdog-read-task)))
+
+(defun blackdog-remove-task ()
+  "Prompt for one task and remove it."
+  (interactive)
+  (blackdog-task-remove (blackdog-read-task)))
+
 (if (featurep 'transient)
     (transient-define-prefix blackdog-dispatch ()
       "Dispatch Blackdog commands."
@@ -72,6 +102,12 @@
         ("n" "New spec" blackdog-spec-new)
         ("v" "Telemetry" blackdog-telemetry-open)
         ("f" "Project file" blackdog-find-project-file)]
+       ["Write"
+        ("c" "Claim" blackdog-claim-task)
+        ("w" "Launch worktree" blackdog-launch-task)
+        ("l" "Release" blackdog-release-task)
+        ("e" "Complete" blackdog-complete-task)
+        ("k" "Remove task" blackdog-remove-task)]
        ["Search"
         ("s" "Project grep" blackdog-search-project)
         ("A" "Artifact grep" blackdog-search-artifacts)

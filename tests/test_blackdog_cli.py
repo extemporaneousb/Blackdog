@@ -1709,6 +1709,102 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertNotIn('id="objectives-panel"', rendered)
         self.assertNotIn('id="release-gates-panel"', rendered)
 
+    def test_remove_task_prunes_plan_and_clears_released_state(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Remove me",
+            "--bucket",
+            "core",
+            "--why",
+            "Need one removable backlog task.",
+            "--evidence",
+            "Deleting stale drafts should not require hand-editing backlog markdown.",
+            "--safe-first-slice",
+            "Add one removable task, release it, then remove it through the CLI.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Removal",
+            "--lane-title",
+            "Removal lane",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Remove me"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_id)
+        run_cli("release", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_id)
+
+        removed = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "remove",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "agent/a",
+                    "--id",
+                    task_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(removed["id"], task_id)
+        self.assertEqual(removed["title"], "Remove me")
+        snapshot = load_backlog(self.runtime_paths(), load_profile(self.root))
+        self.assertNotIn(task_id, snapshot.tasks)
+        self.assertEqual(snapshot.plan["epics"], [])
+        self.assertEqual(snapshot.plan["lanes"], [])
+        state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+        self.assertNotIn(task_id, state["task_claims"])
+        event_types = {row["type"] for row in load_events(self.runtime_paths(), task_id=task_id)}
+        self.assertIn("task_removed", event_types)
+
+    def test_remove_task_rejects_active_claims(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Claimed removal target",
+            "--bucket",
+            "core",
+            "--why",
+            "Need to guard against deleting active work.",
+            "--evidence",
+            "A currently claimed task should stay in the backlog until it is released or completed.",
+            "--safe-first-slice",
+            "Add one task, claim it, and verify remove fails.",
+            "--path",
+            "README.md",
+        )
+        task_id = task_ids_by_title(self.root)["Claimed removal target"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_id)
+
+        with self.assertRaises(SystemExit) as error:
+            run_cli(
+                "remove",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "agent/a",
+                "--id",
+                task_id,
+            )
+        self.assertEqual(error.exception.code, 2)
+
     def test_result_record_auto_enriches_task_shaping_telemetry(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         run_cli(

@@ -13,6 +13,9 @@
 (require 'json)
 (require 'subr-x)
 
+(declare-function blackdog-task-launch "blackdog-task" (task &optional root))
+(declare-function blackdog-task-view "blackdog-task" (task &optional root))
+
 (defcustom blackdog-spec-template-file nil
   "Path to the Blackdog spec template file.
 
@@ -28,6 +31,7 @@ When nil, use the bundled template from `editors/emacs/templates/'."
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "C-c C-c") #'blackdog-spec-draft-task)
     (define-key map (kbd "C-c C-p") #'blackdog-spec-add-path)
+    (define-key map (kbd "C-c C-o") #'blackdog-spec-prompt-preview)
     map)
   "Keymap for `blackdog-spec-mode'.")
 
@@ -35,6 +39,9 @@ When nil, use the bundled template from `editors/emacs/templates/'."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "g") #'blackdog-spec-draft-refresh)
+    (define-key map (kbd "p") #'blackdog-spec-prompt-preview)
+    (define-key map (kbd "c") #'blackdog-spec-submit-task)
+    (define-key map (kbd "w") #'blackdog-spec-submit-and-launch)
     map)
   "Keymap for `blackdog-spec-draft-mode'.")
 
@@ -43,6 +50,9 @@ When nil, use the bundled template from `editors/emacs/templates/'."
 
 (define-derived-mode blackdog-spec-draft-mode special-mode "Blackdog-Spec-Draft"
   "Read-only mode for rendered Blackdog task drafts.")
+
+(define-derived-mode blackdog-spec-prompt-mode special-mode "Blackdog-Prompt"
+  "Read-only mode for Blackdog prompt previews.")
 
 (defun blackdog-spec--template-path ()
   "Return the active Blackdog spec template path."
@@ -192,6 +202,13 @@ When called interactively, prompt for SECTION and PATH."
       (packages . ,(alist-get 'packages payload))
       (objective . ,(alist-get 'objective payload)))))
 
+(defun blackdog-spec--source-buffer ()
+  "Return the source spec buffer for the current context."
+  (cond
+   ((derived-mode-p 'blackdog-spec-mode) (current-buffer))
+   ((buffer-live-p blackdog-spec-source-buffer) blackdog-spec-source-buffer)
+   (t (user-error "No live Blackdog spec source buffer is available"))))
+
 (defun blackdog-spec--missing-required-fields (draft)
   "Return missing required field labels from DRAFT."
   (let (missing)
@@ -208,14 +225,11 @@ When called interactively, prompt for SECTION and PATH."
   "Normalize VALUE for shell command output."
   (replace-regexp-in-string "[ \t\n]+" " " (string-trim value)))
 
-(defun blackdog-spec--add-command (&optional payload root)
-  "Return a draft `blackdog add` command for PAYLOAD and ROOT."
+(defun blackdog-spec--add-args (&optional payload root)
+  "Return raw `blackdog add` args for PAYLOAD and ROOT."
   (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
          (draft (blackdog-spec-task-draft payload))
-         (parts (list (shell-quote-argument (blackdog-command root))
-                      "add"
-                      "--project-root"
-                      (shell-quote-argument root))))
+         (parts (list "add" "--project-root" root)))
     (dolist (pair '((title . "--title")
                     (bucket . "--bucket")
                     (priority . "--priority")
@@ -230,29 +244,69 @@ When called interactively, prompt for SECTION and PATH."
           (setq parts
                 (append parts
                         (list (cdr pair)
-                              (shell-quote-argument
-                               (blackdog-spec--command-value value))))))))
+                              (blackdog-spec--command-value value))))))
     (dolist (path (alist-get 'paths draft))
       (setq parts
             (append parts
-                    (list "--path" (shell-quote-argument path)))))
+                    (list "--path" path))))
     (dolist (check (alist-get 'checks draft))
       (setq parts
             (append parts
-                    (list "--check" (shell-quote-argument check)))))
+                    (list "--check" check))))
     (dolist (doc (alist-get 'docs draft))
       (setq parts
             (append parts
-                    (list "--doc" (shell-quote-argument doc)))))
+                    (list "--doc" doc))))
     (dolist (domain (alist-get 'domains draft))
       (setq parts
             (append parts
-                    (list "--domain" (shell-quote-argument domain)))))
+                    (list "--domain" domain))))
     (dolist (package (alist-get 'packages draft))
       (setq parts
             (append parts
-                    (list "--package" (shell-quote-argument package)))))
-    (string-join parts " ")))
+                    (list "--package" package)))))
+    parts))
+
+(defun blackdog-spec--add-command (&optional payload root)
+  "Return a draft `blackdog add` command for PAYLOAD and ROOT."
+  (let ((parts (cons (blackdog-command root)
+                     (blackdog-spec--add-args payload root))))
+    (string-join (mapcar #'shell-quote-argument parts) " ")))
+
+(defun blackdog-spec--prompt-complexity (&optional payload)
+  "Return the Blackdog prompt complexity for PAYLOAD."
+  (pcase (alist-get 'effort (or payload (blackdog-spec-current-payload)))
+    ("S" "low")
+    ("L" "high")
+    (_ "medium")))
+
+(defun blackdog-spec--format-prompt-list (title items)
+  "Format TITLE and bullet ITEMS for prompt generation."
+  (when items
+    (concat title "\n"
+            (mapconcat (lambda (item) (format "- %s" item)) items "\n"))))
+
+(defun blackdog-spec--prompt-request (&optional payload)
+  "Return one raw prompt request derived from PAYLOAD."
+  (let* ((payload (or payload (blackdog-spec-current-payload)))
+         (title (blackdog-spec--command-value (or (alist-get 'title payload) "")))
+         (analysis (string-trim (or (alist-get 'analysis payload) "")))
+         (prompt-notes (string-trim (or (alist-get 'prompt_notes payload) ""))))
+    (string-join
+     (delq nil
+           (list (unless (string-empty-p title)
+                   (format "Goal\n%s" title))
+                 (unless (string-empty-p (or (alist-get 'why payload) ""))
+                   (format "Why it matters\n%s" (string-trim (alist-get 'why payload))))
+                 (unless (string-empty-p (or (alist-get 'evidence payload) ""))
+                   (format "Evidence\n%s" (string-trim (alist-get 'evidence payload))))
+                 (unless (string-empty-p analysis)
+                   (format "Analysis\n%s" analysis))
+                 (blackdog-spec--format-prompt-list "Code paths" (alist-get 'code_paths payload))
+                 (blackdog-spec--format-prompt-list "Data paths" (alist-get 'data_paths payload))
+                 (unless (string-empty-p prompt-notes)
+                   (format "Prompt notes\n%s" prompt-notes))))
+     "\n\n")))
 
 (defun blackdog-spec--insert-list (title items)
   "Insert TITLE and bullet ITEMS into the current draft buffer."
@@ -287,6 +341,39 @@ When called interactively, prompt for SECTION and PATH."
       (unless (string-empty-p prompt-notes)
         (insert (format "Prompt Notes\n%s\n" prompt-notes))))))
 
+(defun blackdog-spec-prompt-preview (&optional root)
+  "Render one `blackdog prompt` preview for the current spec under ROOT."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (source (blackdog-spec--source-buffer))
+         (payload (with-current-buffer source
+                    (blackdog-spec-current-payload)))
+         (request (blackdog-spec--prompt-request payload))
+         (complexity (blackdog-spec--prompt-complexity payload))
+         (response (apply #'blackdog--call-json
+                          root
+                          (list "prompt"
+                                "--complexity" complexity
+                                "--format" "json"
+                                request)))
+         (buffer (get-buffer-create "*Blackdog Prompt*"))
+         (inhibit-read-only t))
+    (with-current-buffer buffer
+      (blackdog-spec-prompt-mode)
+      (setq-local blackdog-buffer-root root)
+      (erase-buffer)
+      (insert "Blackdog Prompt Preview\n")
+      (insert (format "Source Buffer: %s\n" (buffer-name source)))
+      (insert (format "Complexity: %s\n\n" complexity))
+      (insert "Original Request\n")
+      (insert request)
+      (insert "\n\n")
+      (insert "Improved Prompt\n")
+      (insert (or (alist-get 'improved_prompt response) ""))
+      (insert "\n"))
+    (pop-to-buffer buffer)
+    buffer))
+
 (defun blackdog-spec-draft-task (&optional root)
   "Render the current spec buffer into a Blackdog task draft for ROOT."
   (interactive)
@@ -306,6 +393,36 @@ When called interactively, prompt for SECTION and PATH."
         (goto-char (point-min)))
       (pop-to-buffer buffer)
       buffer)))
+
+(defun blackdog-spec-submit-task (&optional root)
+  "Create one backlog task from the current spec under ROOT and open it."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (source (blackdog-spec--source-buffer))
+         (payload (with-current-buffer source
+                    (blackdog-spec-current-payload)))
+         (draft (blackdog-spec-task-draft payload))
+         (missing (blackdog-spec--missing-required-fields draft)))
+    (when missing
+      (user-error "Spec is missing required fields: %s"
+                  (string-join missing ", ")))
+    (let* ((created (apply #'blackdog--call-json
+                           root
+                           (blackdog-spec--add-args payload root)))
+           (task-id (alist-get 'id created)))
+      (blackdog-clear-cache root)
+      (require 'blackdog-task)
+      (blackdog-task-view (or (blackdog-task-by-id task-id nil root) created) root)
+      (message "Created %s" task-id)
+      created)))
+
+(defun blackdog-spec-submit-and-launch (&optional root)
+  "Create one backlog task from the current spec under ROOT and launch it."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-spec-submit-task root)))
+    (require 'blackdog-task)
+    (blackdog-task-launch task root)))
 
 (defun blackdog-spec-draft-refresh ()
   "Refresh the current rendered spec draft buffer."

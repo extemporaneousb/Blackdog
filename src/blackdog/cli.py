@@ -26,6 +26,7 @@ from .backlog import (
     seed_tune_task,
     load_backlog,
     next_runnable_tasks,
+    remove_task,
     render_plan_text,
     render_summary_text,
     sync_state_for_backlog,
@@ -767,6 +768,21 @@ def cmd_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_remove(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = remove_task(profile, task_id=args.id)
+    append_event(
+        profile.paths,
+        event_type="task_removed",
+        actor=args.actor,
+        task_id=str(payload["id"]),
+        payload={"title": payload["title"]},
+    )
+    _emit_render(profile)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def _summary_view(profile, snapshot, state) -> dict[str, Any]:
     return build_view_model(
         profile,
@@ -1398,6 +1414,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--lane-title", default=None)
     p_add.add_argument("--wave", type=int, default=None)
     p_add.set_defaults(func=cmd_add)
+
+    p_remove = subparsers.add_parser("remove", help="Remove a backlog task that has not started execution")
+    p_remove.add_argument("--project-root", default=None)
+    p_remove.add_argument("--actor", default="blackdog")
+    p_remove.add_argument("--id", required=True)
+    p_remove.set_defaults(func=cmd_remove)
 
     p_summary = subparsers.add_parser("summary", help="Summarize backlog state")
     p_summary.add_argument("--project-root", default=None)

@@ -27,6 +27,11 @@
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "RET") #'push-button)
+    (define-key map (kbd "c") #'blackdog-task-claim)
+    (define-key map (kbd "w") #'blackdog-task-launch)
+    (define-key map (kbd "l") #'blackdog-task-release)
+    (define-key map (kbd "e") #'blackdog-task-complete)
+    (define-key map (kbd "k") #'blackdog-task-remove)
     (define-key map (kbd "m") #'blackdog-task-view-magit-status)
     (define-key map (kbd "d") #'blackdog-task-view-magit-diff)
     (define-key map (kbd "p") #'blackdog-task-view-browse-prompt)
@@ -106,6 +111,7 @@
          ("Branch" . ,(or (alist-get 'task_branch task) ""))
          ("Target" . ,(or (alist-get 'target_branch task) ""))
          ("Latest Result" . ,(or (alist-get 'latest_result_status task) ""))))
+      (blackdog-task--insert-lifecycle-actions task)
       (blackdog-task--insert-quick-links task)
       (blackdog-task--insert-section "Safe First Slice"
         (or (alist-get 'safe_first_slice task) ""))
@@ -308,6 +314,22 @@ ARTIFACT should be `prompt' or `thread'."
       (insert "\n"))
     (insert "\n")))
 
+(defun blackdog-task--insert-lifecycle-actions (task)
+  "Insert task lifecycle action buttons for TASK."
+  (insert "Actions\n")
+  (dolist (row `(("Claim" . ,#'blackdog-task-claim)
+                 ("Launch Worktree" . ,#'blackdog-task-launch)
+                 ("Release" . ,#'blackdog-task-release)
+                 ("Complete" . ,#'blackdog-task-complete)
+                 ("Remove" . ,#'blackdog-task-remove)))
+    (let ((label (car row))
+          (fn (cdr row)))
+      (blackdog-task--insert-action-button
+       label
+       (lambda (_button)
+         (funcall fn task)))))
+  (insert "\n"))
+
 (defun blackdog-task--insert-artifact-links (title task)
   "Insert TITLE with canonical artifact links from TASK."
   (let ((links (blackdog-task-artifacts-links task)))
@@ -345,6 +367,127 @@ ARTIFACT should be `prompt' or `thread'."
       blackdog-task-data
       (and blackdog-task-id
            (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root))))
+
+(defun blackdog-task--command-agent (&optional label)
+  "Return the agent name for one task command with LABEL."
+  (if current-prefix-arg
+      (blackdog-read-agent (format "%s as: " (or label "Run")))
+    blackdog-default-agent))
+
+(defun blackdog-task--refresh-after-mutation (root)
+  "Clear cached state for ROOT and refresh the current buffer when possible."
+  (blackdog-clear-cache root)
+  (when (functionp blackdog-refresh-function)
+    (funcall blackdog-refresh-function)))
+
+(defun blackdog-task--open-worktree (path)
+  "Open task worktree PATH in a useful buffer."
+  (ignore-errors
+    (require 'magit))
+  (cond
+   ((not path)
+    (message "No worktree path returned"))
+   ((fboundp 'magit-status)
+    (magit-status path))
+   (t
+    (dired path))))
+
+(defun blackdog-task-claim (&optional task root)
+  "Claim TASK from ROOT for the default Emacs agent."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (task-id (alist-get 'id task))
+         (agent (blackdog-task--command-agent "Claim")))
+    (unless task
+      (user-error "No task selected"))
+    (apply #'blackdog--call-json root
+           (list "claim" "--agent" agent "--id" task-id))
+    (blackdog-task--refresh-after-mutation root)
+    (message "Claimed %s as %s" task-id agent)))
+
+(defun blackdog-task-launch (&optional task root)
+  "Claim TASK when needed, then start its WTAM worktree from ROOT."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (task-id (alist-get 'id task))
+         (status-key (or (alist-get 'operator_status_key task)
+                         (alist-get 'status task)
+                         ""))
+         (claimed-by (or (alist-get 'claimed_by task) ""))
+         (agent (blackdog-task--command-agent "Launch")))
+    (unless task
+      (user-error "No task selected"))
+    (when (member status-key '("done" "complete"))
+      (user-error "Task %s is already complete" task-id))
+    (when (and (string= status-key "claimed")
+               (not (string-empty-p claimed-by))
+               (not (string= claimed-by agent)))
+      (user-error "Task %s is claimed by %s" task-id claimed-by))
+    (unless (string= status-key "claimed")
+      (apply #'blackdog--call-json root
+             (list "claim" "--agent" agent "--id" task-id)))
+    (let* ((payload (apply #'blackdog--call-json root
+                           (list "worktree" "start"
+                                 "--actor" agent
+                                 "--id" task-id
+                                 "--format" "json")))
+           (worktree-path (alist-get 'worktree_path payload)))
+      (blackdog-task--refresh-after-mutation root)
+      (blackdog-task--open-worktree worktree-path)
+      (message "Started %s in %s" task-id worktree-path)
+      payload)))
+
+(defun blackdog-task-release (&optional task root)
+  "Release TASK from ROOT for the default Emacs agent."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (task-id (alist-get 'id task))
+         (agent (blackdog-task--command-agent "Release")))
+    (unless task
+      (user-error "No task selected"))
+    (apply #'blackdog--call root
+           (list "release" "--agent" agent "--id" task-id))
+    (blackdog-task--refresh-after-mutation root)
+    (message "Released %s as %s" task-id agent)))
+
+(defun blackdog-task-complete (&optional task root)
+  "Complete TASK from ROOT for the default Emacs agent."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (task-id (alist-get 'id task))
+         (agent (blackdog-task--command-agent "Complete"))
+         (note (read-string "Completion note (optional): " nil nil "")))
+    (unless task
+      (user-error "No task selected"))
+    (apply #'blackdog--call root
+           (append (list "complete" "--agent" agent "--id" task-id)
+                   (unless (string-empty-p note)
+                     (list "--note" note))))
+    (blackdog-task--refresh-after-mutation root)
+    (message "Completed %s as %s" task-id agent)))
+
+(defun blackdog-task-remove (&optional task root)
+  "Remove TASK from ROOT after confirmation."
+  (interactive)
+  (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
+         (task (blackdog-task--task-for-action task))
+         (task-id (alist-get 'id task))
+         (title (alist-get 'title task))
+         (actor (blackdog-task--command-agent "Remove")))
+    (unless task
+      (user-error "No task selected"))
+    (unless (yes-or-no-p (format "Remove %s (%s)? " task-id title))
+      (user-error "Task removal cancelled"))
+    (apply #'blackdog--call-json root
+           (list "remove" "--actor" actor "--id" task-id))
+    (blackdog-clear-cache root)
+    (when (derived-mode-p 'blackdog-task-view-mode 'blackdog-task-artifact-view-mode)
+      (kill-buffer (current-buffer)))
+    (message "Removed %s" task-id)))
 
 (defun blackdog-task--insert-quick-links (task)
   "Insert quick artifact links for TASK."

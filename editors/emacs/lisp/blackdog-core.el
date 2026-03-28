@@ -28,6 +28,12 @@ fall back to `blackdog' on PATH."
   :type '(choice (const :tag "Auto-detect" nil) file)
   :group 'blackdog)
 
+(defcustom blackdog-default-agent
+  (or (getenv "BLACKDOG_AGENT_NAME") user-login-name "emacs")
+  "Default agent/actor name for Emacs-initiated Blackdog writes."
+  :type 'string
+  :group 'blackdog)
+
 (defvar blackdog--snapshot-cache (make-hash-table :test #'equal))
 (defvar blackdog--telemetry-command-table (make-hash-table :test #'equal))
 (defvar blackdog--telemetry-total-calls 0)
@@ -175,6 +181,15 @@ When OTHER-WINDOW is non-nil, use another window."
     (blackdog-clear-cache root)
     (when (functionp blackdog-refresh-function)
       (funcall blackdog-refresh-function))))
+
+(defun blackdog-read-agent (&optional prompt)
+  "Read one agent name with PROMPT.
+
+Default to `blackdog-default-agent'."
+  (read-string (or prompt "Agent: ")
+               nil
+               nil
+               blackdog-default-agent))
 
 (defun blackdog-clear-telemetry ()
   "Reset the session-local Emacs telemetry counters."

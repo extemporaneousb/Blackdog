@@ -119,6 +119,7 @@ product development.
 - `blackdog backlog remove NAME`
 - `blackdog backlog reset`
 - `blackdog add --title ... --bucket ... --why ... --evidence ... --safe-first-slice ... [--task-shaping JSON_OBJECT]`
+- `blackdog remove --id TASK --actor NAME`
 - `blackdog plan`
 - `blackdog summary`
 - `blackdog next`
@@ -138,6 +139,15 @@ product development.
 `blackdog prompt` rewrites a raw prompt against the local repo contract. It emits low/medium/high complexity prompt profiles derived from the repo profile, routed docs, validation defaults, and the latest tune recommendation so host-repo skills can reuse Blackdog's repo-local guidance instead of rebuilding it from scratch.
 
 The prompt profiles now also carry calibrated task-shaping defaults by effort (`S`/`M`/`L`) derived from completed work in the repo. That lets tune improve prompt generation, not just reporting: prompts can ask for explicit estimate snapshots that match the repo's observed task history instead of generic defaults.
+
+`blackdog remove` deletes a task from the backlog plan and task block when execution has not materially started. Removal is intentionally conservative:
+
+- active claimed tasks cannot be removed
+- completed tasks cannot be removed
+- tasks with recorded result artifacts cannot be removed
+- released or never-claimed tasks can be removed, and the runtime clears any approval or claim state that still points at that task
+
+The command appends a `task_removed` event and rerenders the static board like other task-state mutations.
 
 `blackdog tune` now does direct tuning as well as optional backlog seeding. It still prints the stable self-tuning task payload when task creation is enabled, but it also emits a `tune_analysis` summary plus low/medium/high `prompt_profiles`. The analysis now groups runtime signals into `time`, `missteps`, `document_use_value`, and `context_efficiency`, then uses those categories to decide which runtime gap should be addressed first. Pass `--no-task` when you want the tuning guidance without automatically seeding a backlog task.
 

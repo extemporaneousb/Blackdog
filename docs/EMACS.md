@@ -26,7 +26,8 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
 - minibuffer completion for task, artifact, and project-file lookup
 - incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
-- spec-first authoring buffers that turn analysis notes into a draft `blackdog add` payload and ready-to-run CLI command
+- spec-first authoring buffers that turn analysis notes into a `blackdog prompt` preview, a draft `blackdog add` payload, and direct create-or-launch actions
+- task lifecycle commands for claim, claim-and-launch, release, complete, and remove without leaving Emacs
 - telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status` and `blackdog supervise report` summaries
 
 ## Frameworks To Leverage
@@ -81,11 +82,12 @@ Notes:
 The package should shell out to Blackdog CLI commands for any durable state change:
 
 - claim/release/complete
+- remove
 - inbox messages
 - result recording
 - supervisor inspection/control
 
-The first foundation slice keeps write commands minimal and focuses on browseability. Later tasks add safe write helpers and spec-driven task capture.
+The current package keeps write logic thin and CLI-authoritative. Emacs adds safe wrappers for prompt shaping, task capture, and core task lifecycle actions, while Blackdog still owns the durable state transitions and validation rules.
 
 ### Git / Worktree semantics
 
@@ -162,9 +164,23 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 1. `C-c b n` opens a `Blackdog-Spec` buffer seeded from the bundled template.
 2. Fill in the metadata and analysis sections.
 3. Use `C-c C-p` to append code or data paths.
-4. Use `C-c C-c` to render a draft payload plus a ready-to-run `blackdog add` command.
+4. Use `C-c C-o` to preview the rewritten Blackdog prompt for that spec.
+5. Use `C-c C-c` to render a draft payload buffer.
+6. In the draft buffer, use `c` to create the task now or `w` to create it and immediately start its WTAM worktree.
 
-This is intentionally spec-driven but still CLI-authoritative: Emacs helps assemble the task, while Blackdog still owns the durable write.
+This is intentionally spec-driven but still CLI-authoritative: Emacs helps shape and preview the request, then shells out to `blackdog prompt`, `blackdog add`, and `blackdog worktree start` for the durable workflow.
+
+### Task lifecycle actions
+
+From the task reader, task picker, or dispatch menu:
+
+1. `c` or `C-c b c` claims a task for `blackdog-default-agent` unless you provide a prefix argument to enter a different actor.
+2. `w` or `C-c b w` claims the task when needed and starts its WTAM worktree, then opens that worktree in Magit when available.
+3. `l` or `C-c b l` releases a claimed task.
+4. `e` or `C-c b e` completes a task with an optional note.
+5. `k` or `C-c b k` removes a task after confirmation when the CLI allows removal.
+
+Set `blackdog-default-agent` if you do not want Emacs writes to default to your login name.
 
 ### Telemetry and supervision
 
@@ -287,6 +303,8 @@ The spec workflow adds an editable `Blackdog-Spec` buffer that keeps:
 - a ready-to-run `blackdog add` command
 - prompt context that carries analysis, code paths, data paths, and prompt notes together
 
+`blackdog-spec-prompt-preview` runs `blackdog prompt --format json` with a complexity calibrated from the spec effort, then renders the improved prompt in a read-only preview buffer before you create the task.
+
 The telemetry workflow adds a read-only `Blackdog-Telemetry` buffer that combines:
 
 - session-local Emacs instrumentation for Blackdog CLI latency and failures
@@ -302,6 +320,11 @@ Suggested prefix: `C-c b`
 | Key | Command | Purpose |
 | --- | --- | --- |
 | `C-c b b` | `blackdog-dashboard` | Open the Magit-style dashboard. |
+| `C-c b c` | `blackdog-claim-task` | Claim a task from completion. |
+| `C-c b w` | `blackdog-launch-task` | Claim and start a task worktree from completion. |
+| `C-c b l` | `blackdog-release-task` | Release a claimed task from completion. |
+| `C-c b e` | `blackdog-complete-task` | Complete a task from completion. |
+| `C-c b k` | `blackdog-remove-task` | Remove a task from completion when the CLI allows it. |
 | `C-c b u` | `blackdog-runs-open` | Browse supervisor run directories. |
 | `C-c b r` | `blackdog-results-open` | Browse latest task results. |
 | `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
@@ -333,6 +356,11 @@ Suggested prefix: `C-c b`
 | --- | --- |
 | `RET` | Open the button at point. |
 | `g` | Clear the cached snapshot and refresh the task reader. |
+| `c` | Claim the current task. |
+| `w` | Claim when needed and start the task worktree. |
+| `l` | Release the current task. |
+| `e` | Complete the current task. |
+| `k` | Remove the current task after confirmation. |
 | `m` | Open Magit status for the task. |
 | `d` | Open a live Magit diff or saved diff artifact. |
 | `p` | Browse the prompt in a read-only Blackdog buffer. |
@@ -357,7 +385,8 @@ Suggested prefix: `C-c b`
 
 | Buffer | Keys |
 | --- | --- |
-| Spec | `C-c C-c` renders the draft payload and CLI command, `C-c C-p` appends a code or data path. |
+| Spec | `C-c C-o` previews the rewritten prompt, `C-c C-c` renders the draft payload, `C-c C-p` appends a code or data path. |
+| Spec Draft | `p` refreshes the prompt preview, `c` creates the task, `w` creates and launches it, `g` rerenders the draft. |
 | Telemetry | `g` clears the cached snapshot and refreshes supervisor/session data, `c` clears the session counters and refreshes. |
 
 ## Installation With use-package
@@ -388,6 +417,8 @@ Then load Blackdog from this checkout:
 
 (use-package blackdog
   :load-path "/Users/bullard/Work/Blackdog/editors/emacs/lisp"
+  :custom
+  (blackdog-default-agent "bullard")
   :bind-keymap (("C-c b" . blackdog-prefix-map)))
 ```
 
@@ -397,6 +428,8 @@ If you prefer a variable:
 (let ((blackdog-root "/Users/bullard/Work/Blackdog"))
   (use-package blackdog
     :load-path (list (expand-file-name "editors/emacs/lisp" blackdog-root))
+    :custom
+    (blackdog-default-agent "bullard")
     :bind-keymap (("C-c b" . blackdog-prefix-map))))
 ```
 
@@ -413,6 +446,7 @@ After loading the package:
 2. Run `C-c b b` to confirm the dashboard renders.
 3. Run `C-c b .` to confirm Transient is available.
 4. Run `C-c b m` on any task to confirm Magit integration is present.
+5. Run `C-c b n`, preview a prompt with `C-c C-o`, then create and launch a task from the draft buffer with `w`.
 
 ## Release Packaging For Emacs 30+
 
@@ -475,6 +509,7 @@ Useful manual smoke checks:
 - `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../editors/emacs/lisp\") (require 'blackdog))"`
 - open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
 - open one task and verify `p` renders the prompt browser and `t` renders the thread browser when supervisor artifacts exist
+- open `C-c b n`, preview a prompt with `C-c C-o`, then create and launch a task from the draft buffer with `w`
 - verify `C-c b d` uses a live Magit diff for an active task and a saved `changes.diff` artifact for a landed task
 
 ## Implementation Notes
