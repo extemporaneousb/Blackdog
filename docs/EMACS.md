@@ -22,6 +22,7 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
 - read-only task reader with task metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
+- shared root-local snapshot caching so one queue pass can reuse the same snapshot across dashboard, task, result, run, and artifact views until the operator explicitly refreshes
 - Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
 - minibuffer completion for task, artifact, and project-file lookup
 - incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
@@ -71,8 +72,9 @@ Notes:
 1. Resolve repo root from `blackdog.toml`.
 2. Prefer `./.VE/bin/blackdog` for that worktree; fall back to `blackdog` on `PATH`.
 3. Call `blackdog snapshot` and cache the parsed JSON per root.
-4. Render dashboard, task reader, and result buffers from snapshot rows.
-5. Resolve artifact hrefs against `snapshot.control_dir`.
+4. Reuse that cached snapshot across the current operator pass until the operator explicitly refreshes.
+5. Render dashboard, task reader, and result buffers from snapshot rows.
+6. Resolve artifact hrefs against `snapshot.control_dir`.
 
 ### Write path
 
@@ -313,14 +315,14 @@ Suggested prefix: `C-c b`
 | `C-c b d` | `blackdog-magit-diff-for-task` | Open the task diff or saved diff artifact. |
 | `C-c b .` | `blackdog-dispatch` | Open the Transient dispatch menu. |
 | `C-c b ?` | `blackdog-dispatch` | Same as `.`. |
-| `C-c b g` | `blackdog-refresh` | Refresh the current Blackdog buffer. |
+| `C-c b g` | `blackdog-refresh` | Clear the cached snapshot and refresh the current Blackdog buffer. |
 
 ### Dashboard keys
 
 | Key | Purpose |
 | --- | --- |
 | `RET` | Open the task/result at point or toggle the current section. |
-| `g` | Refresh the snapshot-backed buffer. |
+| `g` | Clear the cached snapshot and refresh the buffer. |
 | `r` | Jump to results. |
 | `s` | Jump to a task by completion. |
 | `q` | Quit the window. |
@@ -330,7 +332,7 @@ Suggested prefix: `C-c b`
 | Key | Purpose |
 | --- | --- |
 | `RET` | Open the button at point. |
-| `g` | Refresh the task reader from a fresh snapshot. |
+| `g` | Clear the cached snapshot and refresh the task reader. |
 | `m` | Open Magit status for the task. |
 | `d` | Open a live Magit diff or saved diff artifact. |
 | `p` | Browse the prompt in a read-only Blackdog buffer. |
@@ -348,15 +350,15 @@ Suggested prefix: `C-c b`
 
 | Buffer | Keys |
 | --- | --- |
-| Results | `RET` opens the task reader, `f` opens the result file, `g` refreshes. |
-| Runs | `RET` opens the run directory, `t` opens the task reader, `g` refreshes. |
+| Results | `RET` opens the task reader, `f` opens the result file, `g` clears the cached snapshot and refreshes. |
+| Runs | `RET` opens the run directory, `t` opens the task reader, `g` clears the cached snapshot and refreshes. |
 
 ### Spec and telemetry
 
 | Buffer | Keys |
 | --- | --- |
 | Spec | `C-c C-c` renders the draft payload and CLI command, `C-c C-p` appends a code or data path. |
-| Telemetry | `g` refreshes supervisor and session data, `c` clears the session counters and refreshes. |
+| Telemetry | `g` clears the cached snapshot and refreshes supervisor/session data, `c` clears the session counters and refreshes. |
 
 ## Installation With use-package
 
@@ -479,4 +481,5 @@ Useful manual smoke checks:
 
 - The current code keeps durable writes in the CLI and makes Emacs a high-signal operator cockpit.
 - The package should stay dependency-light: optional packages improve UX, but the package must remain usable with built-in completion plus Magit/Transient.
+- Snapshot reloads are now explicit: opening multiple read-only workbench buffers during one queue pass reuses the cached snapshot, while `g` and `blackdog-refresh` clear that cache before reloading.
 - The next backlog candidates are write-enabled inbox/approval flows, richer minibuffer actions, and asynchronous refresh for larger control dirs.

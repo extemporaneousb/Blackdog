@@ -16,7 +16,7 @@
 (defvar blackdog-results-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
-    (define-key map (kbd "g") #'blackdog-results-refresh)
+    (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "RET") #'blackdog-results-visit)
     (define-key map (kbd "f") #'blackdog-results-open-result)
     map)
@@ -48,7 +48,7 @@
   "Refresh the results listing."
   (interactive)
   (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root t))
+         (snapshot (blackdog-snapshot root))
          (tasks (seq-filter (lambda (task)
                               (alist-get 'latest_result_status task))
                             (alist-get 'tasks snapshot))))

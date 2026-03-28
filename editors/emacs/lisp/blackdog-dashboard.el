@@ -17,7 +17,7 @@
 
 (defvar blackdog-dashboard-mode-map
   (let ((map (copy-keymap magit-section-mode-map)))
-    (define-key map (kbd "g") #'blackdog-dashboard-refresh)
+    (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "RET") #'blackdog-dashboard-visit)
     (define-key map (kbd "r") #'blackdog-results-open)
@@ -33,7 +33,7 @@
   "Open the Blackdog dashboard for ROOT."
   (interactive)
   (let* ((root (or root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root t))
+         (snapshot (blackdog-snapshot root))
          (buffer (get-buffer-create
                   (format "*Blackdog: %s*"
                           (alist-get 'project_name snapshot)))))
@@ -48,7 +48,7 @@
   "Refresh the current dashboard buffer."
   (interactive)
   (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root t))
+         (snapshot (blackdog-snapshot root))
          (inhibit-read-only t))
     (erase-buffer)
     (setq-local blackdog-buffer-root root)

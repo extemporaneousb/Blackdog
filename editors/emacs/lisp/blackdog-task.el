@@ -25,7 +25,7 @@
 (defvar blackdog-task-view-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "g") #'blackdog-task-view-refresh)
+    (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "RET") #'push-button)
     (define-key map (kbd "m") #'blackdog-task-view-magit-status)
     (define-key map (kbd "d") #'blackdog-task-view-magit-diff)
@@ -49,7 +49,7 @@
 (defvar blackdog-task-artifact-view-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "g") #'blackdog-task-artifact-view-refresh)
+    (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "RET") #'push-button)
     (define-key map (kbd "p") #'blackdog-task-view-browse-prompt)
     (define-key map (kbd "t") #'blackdog-task-view-browse-thread)
@@ -82,7 +82,7 @@
   "Refresh the current task view."
   (interactive)
   (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root t))
+         (snapshot (blackdog-snapshot root))
          (task (blackdog-task-by-id blackdog-task-id snapshot)))
     (unless task
       (user-error "Task %s is no longer present" blackdog-task-id))
@@ -239,7 +239,7 @@ ARTIFACT should be `prompt' or `thread'."
   "Refresh the current prompt/thread browser buffer."
   (interactive)
   (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root t))
+         (snapshot (blackdog-snapshot root))
          (task (blackdog-task-by-id blackdog-task-id snapshot))
          (artifact blackdog-task-artifact-kind)
          (href (and task (blackdog-task-artifact-href task artifact))))

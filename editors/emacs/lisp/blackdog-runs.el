@@ -17,7 +17,7 @@
 (defvar blackdog-runs-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
-    (define-key map (kbd "g") #'blackdog-runs-refresh)
+    (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "RET") #'blackdog-runs-open-run)
     (define-key map (kbd "t") #'blackdog-runs-open-task)
     map)
@@ -49,7 +49,7 @@
   "Refresh the current run browser."
   (interactive)
   (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
-         (snapshot (blackdog-snapshot root t))
+         (snapshot (blackdog-snapshot root))
          (tasks (seq-filter
                  (lambda (task)
                    (and (alist-get 'run_dir_href task)))

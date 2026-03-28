@@ -20,7 +20,7 @@
 (defvar blackdog-telemetry-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "g") #'blackdog-telemetry-refresh)
+    (define-key map (kbd "g") #'blackdog-refresh)
     (define-key map (kbd "c") #'blackdog-telemetry-clear-session)
     map)
   "Keymap for `blackdog-telemetry-mode'.")
