@@ -18,12 +18,10 @@
 (require 'blackdog-artifacts)
 (require 'blackdog-magit)
 (require 'blackdog-search)
+(require 'blackdog-codex)
 (require 'blackdog-thread)
 (require 'blackdog-spec)
 (require 'blackdog-telemetry)
-
-(ignore-errors
-  (require 'transient))
 
 (defvar blackdog-prefix-map
   (let ((map (make-sparse-keymap)))
@@ -38,10 +36,11 @@
     (define-key map (kbd "u") #'blackdog-runs-open)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
-    (define-key map (kbd "T") #'blackdog-find-thread)
-    (define-key map (kbd "h") #'blackdog-threads-open)
+    (define-key map (kbd "T") #'blackdog-find-codex-session)
+    (define-key map (kbd "h") #'blackdog-codex-sessions-open)
+    (define-key map (kbd "H") #'blackdog-threads-open)
     (define-key map (kbd "a") #'blackdog-find-artifact)
-    (define-key map (kbd "n") #'blackdog-thread-compose-new)
+    (define-key map (kbd "n") #'blackdog-codex-compose-new)
     (define-key map (kbd "N") #'blackdog-spec-new)
     (define-key map (kbd "v") #'blackdog-telemetry-open)
     (define-key map (kbd "f") #'blackdog-find-project-file)
@@ -106,39 +105,41 @@
   (interactive)
   (blackdog-telemetry-stop-supervisor))
 
-(if (featurep 'transient)
-    (transient-define-prefix blackdog-dispatch ()
-      "Dispatch Blackdog commands."
-      [["Views"
-       ("b" "Dashboard" blackdog-dashboard)
-        ("h" "Threads" blackdog-threads-open)
-        ("u" "Runs" blackdog-runs-open)
-        ("r" "Results" blackdog-results-open)
-        ("t" "Task" blackdog-find-task)
-        ("T" "Thread" blackdog-find-thread)
-        ("a" "Artifact" blackdog-find-artifact)
-        ("n" "New thread" blackdog-thread-compose-new)
-        ("N" "New spec" blackdog-spec-new)
-        ("v" "Telemetry" blackdog-telemetry-open)
-        ("f" "Project file" blackdog-find-project-file)]
-       ["Write"
-        ("c" "Claim" blackdog-claim-task)
-        ("w" "Launch worktree" blackdog-launch-task)
-        ("l" "Release" blackdog-release-task)
-        ("e" "Complete" blackdog-complete-task)
-        ("k" "Remove task" blackdog-remove-task)]
-       ["Supervisor"
-        ("v" "Telemetry" blackdog-telemetry-open)
-        ("x" "Start supervisor" blackdog-start-supervisor)
-        ("X" "Stop supervisor" blackdog-stop-supervisor)
-        ("u" "Runs" blackdog-runs-open)]
-       ["Search"
-        ("s" "Project grep" blackdog-search-project)
-        ("A" "Artifact grep" blackdog-search-artifacts)
-        ("g" "Refresh" blackdog-refresh)]
-       ["Git"
-        ("m" "Magit status" blackdog-magit-status-for-task)
-        ("d" "Magit diff" blackdog-magit-diff-for-task)]])
+(if (require 'transient nil t)
+    (eval
+     '(transient-define-prefix blackdog-dispatch ()
+        "Dispatch Blackdog commands."
+        [["Views"
+          ("b" "Dashboard" blackdog-dashboard)
+          ("h" "Codex sessions" blackdog-codex-sessions-open)
+          ("H" "Blackdog threads" blackdog-threads-open)
+          ("u" "Runs" blackdog-runs-open)
+          ("r" "Results" blackdog-results-open)
+          ("t" "Task" blackdog-find-task)
+          ("T" "Codex session" blackdog-find-codex-session)
+          ("a" "Artifact" blackdog-find-artifact)
+          ("n" "New Codex session" blackdog-codex-compose-new)
+          ("N" "New spec" blackdog-spec-new)
+          ("v" "Telemetry" blackdog-telemetry-open)
+          ("f" "Project file" blackdog-find-project-file)]
+         ["Write"
+          ("c" "Claim" blackdog-claim-task)
+          ("w" "Launch worktree" blackdog-launch-task)
+          ("l" "Release" blackdog-release-task)
+          ("e" "Complete" blackdog-complete-task)
+          ("k" "Remove task" blackdog-remove-task)]
+         ["Supervisor"
+          ("v" "Telemetry" blackdog-telemetry-open)
+          ("x" "Start supervisor" blackdog-start-supervisor)
+          ("X" "Stop supervisor" blackdog-stop-supervisor)
+          ("u" "Runs" blackdog-runs-open)]
+         ["Search"
+          ("s" "Project grep" blackdog-search-project)
+          ("A" "Artifact grep" blackdog-search-artifacts)
+          ("g" "Refresh" blackdog-refresh)]
+         ["Git"
+          ("m" "Magit status" blackdog-magit-status-for-task)
+          ("d" "Magit diff" blackdog-magit-diff-for-task)]]))
   (defun blackdog-dispatch ()
     "Fallback command when Transient is unavailable."
     (interactive)

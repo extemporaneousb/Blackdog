@@ -27,6 +27,7 @@
 (require 'blackdog-magit)
 (require 'blackdog)
 (require 'blackdog-search)
+(require 'blackdog-codex)
 (require 'blackdog-spec)
 (require 'blackdog-thread)
 (require 'blackdog-telemetry)
@@ -104,6 +105,19 @@ Mention the current backlog lane and code/data attachments.
 "
   "Sample spec fixture used by the spec-mode tests.")
 
+(defconst blackdog-test-codex-session-sample
+  (mapconcat
+   #'identity
+   '("{\"timestamp\":\"2026-03-28T23:25:41.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019d3845-0690-78a1-897a-48b8655f93fe\",\"timestamp\":\"2026-03-28T23:25:41.000Z\",\"cwd\":\"/Users/bullard/Work/Blackdog\"}}"
+     "{\"timestamp\":\"2026-03-28T23:25:42.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# Fix bug\\n\\nPlease inspect the worktree.\"}]}}"
+     "{\"timestamp\":\"2026-03-28T23:25:47.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"Inspecting the repo now.\"}]}}"
+     "{\"timestamp\":\"2026-03-28T23:25:49.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"exec_command\",\"call_id\":\"call_1\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}}"
+     "{\"timestamp\":\"2026-03-28T23:25:51.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"/Users/bullard/Work/Blackdog\\n\"}}"
+     "{\"timestamp\":\"2026-03-28T23:25:53.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":2}}}}"
+     "{\"timestamp\":\"2026-03-28T23:25:58.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Done.\"}]}}")
+   "\n")
+  "Minimal Codex JSONL fixture used by session tests.")
+
 (defconst blackdog-test-fixture-candidate-clis
   (list (expand-file-name ".VE/bin/blackdog" blackdog-test-root)
         (executable-find "blackdog"))
@@ -131,6 +145,13 @@ Mention the current backlog lane and code/data attachments.
   "Load the frozen snapshot fixture."
   (blackdog-test--read-json
    (expand-file-name "blackdog-snapshot.json" blackdog-test-fixture-root)))
+
+(defun blackdog-test-write-temp-file (content suffix)
+  "Write CONTENT into a temporary file ending in SUFFIX."
+  (let ((path (make-temp-file "blackdog-test-" nil suffix)))
+    (with-temp-file path
+      (insert content))
+    path))
 
 (defun blackdog-test-list-task-result-files (task-id)
   "Return sorted result fixture files for TASK-ID."
@@ -230,6 +251,61 @@ Mention the current backlog lane and code/data attachments.
       (should (equal (list "thread" "new" "--actor" blackdog-default-agent "--title" "Freeform prompt" "--format" "json" "--body" "Need the prompt stored as a thread.")
                      captured))
       (should (equal "thread-1" (alist-get 'thread_id opened))))))
+
+(ert-deftest blackdog-codex-read-session-file-builds-summary-and-blocks ()
+  (let ((path (blackdog-test-write-temp-file blackdog-test-codex-session-sample ".jsonl")))
+    (unwind-protect
+        (let* ((session (blackdog-codex-read-session-file path))
+               (blocks (alist-get 'blocks session))
+               (assistant-final (car (last (seq-filter
+                                            (lambda (block)
+                                              (and (equal (alist-get 'kind block) "message")
+                                                   (equal (alist-get 'role block) "assistant")
+                                                   (equal (alist-get 'phase block) "final_answer")))
+                                            blocks)))))
+          (should (equal "019d3845-0690-78a1-897a-48b8655f93fe"
+                         (alist-get 'id session)))
+          (should (equal "/Users/bullard/Work/Blackdog"
+                         (alist-get 'cwd session)))
+          (should (equal "Fix bug" (alist-get 'title session)))
+          (should (equal "Done." (alist-get 'preview session)))
+          (should (equal 1 (alist-get 'turn_count session)))
+          (should (= 5 (length blocks)))
+          (should (equal 16 (alist-get 'duration_seconds assistant-final))))
+      (delete-file path))))
+
+(ert-deftest blackdog-codex-exec-argv-builds-new-and-resume-commands ()
+  (let ((blackdog-codex-use-full-auto t)
+        (blackdog-codex-default-model "gpt-5.4")
+        (blackdog-codex-enable-search t)
+        (blackdog-codex-extra-args '("--add-dir" "/tmp/shared")))
+    (should (equal '("exec" "--full-auto" "--model" "gpt-5.4" "--search" "-C"
+                     "/tmp/project" "--add-dir" "/tmp/shared" "--json" "-")
+                   (blackdog-codex-exec-argv "/tmp/project")))
+    (should (equal '("exec" "resume" "--full-auto" "--model" "gpt-5.4" "--search" "-C"
+                     "/tmp/project" "--add-dir" "/tmp/shared" "--json"
+                     "session-1" "-")
+                   (blackdog-codex-exec-argv "/tmp/project" "session-1")))))
+
+(ert-deftest blackdog-read-codex-session-errors-when-empty ()
+  (cl-letf (((symbol-function 'blackdog-codex-session-candidates)
+             (lambda (&optional _root _include-all)
+               nil)))
+    (should-error (blackdog-read-codex-session) :type 'user-error)))
+
+(ert-deftest blackdog-codex-compose-submit-keeps-draft-on-launch-failure ()
+  (with-temp-buffer
+    (blackdog-codex-compose-mode)
+    (setq-local blackdog-buffer-root blackdog-test-root)
+    (insert "# Prompt\n\nKeep this draft.\n")
+    (let ((draft-buffer (current-buffer)))
+      (cl-letf (((symbol-function 'blackdog-codex-session-run)
+                 (lambda (&rest _args)
+                   (user-error "Codex launch failed"))))
+        (should-error (blackdog-codex-compose-submit) :type 'user-error)
+        (should (buffer-live-p draft-buffer))
+        (should (string-match-p "Keep this draft"
+                                (buffer-string)))))))
 
 (ert-deftest blackdog-task-open-conversation-uses-linked-thread ()
   (let ((opened nil))
@@ -625,12 +701,14 @@ Mention the current backlog lane and code/data attachments.
               (lookup-key blackdog-prefix-map (kbd "."))))
   (should (eq 'blackdog-dispatch
               (lookup-key blackdog-prefix-map (kbd "?"))))
-  (should (eq 'blackdog-thread-compose-new
+  (should (eq 'blackdog-codex-compose-new
               (lookup-key blackdog-prefix-map (kbd "n"))))
   (should (eq 'blackdog-spec-new
               (lookup-key blackdog-prefix-map (kbd "N"))))
-  (should (eq 'blackdog-threads-open
+  (should (eq 'blackdog-codex-sessions-open
               (lookup-key blackdog-prefix-map (kbd "h"))))
+  (should (eq 'blackdog-threads-open
+              (lookup-key blackdog-prefix-map (kbd "H"))))
   (should (eq 'blackdog-claim-task
               (lookup-key blackdog-prefix-map (kbd "c"))))
   (should (eq 'blackdog-launch-task
@@ -679,18 +757,20 @@ Mention the current backlog lane and code/data attachments.
                      (alist-get 'paths payload))))))
 
 (ert-deftest blackdog-spec-add-command-includes-task-fields ()
-  (with-temp-buffer
-    (insert blackdog-test-spec-sample)
-    (blackdog-spec-mode)
-    (let ((command (blackdog-spec--add-command nil blackdog-test-root)))
-      (should (string-match-p "blackdog[^ ]* add" command))
-      (should (string-match-p "--project-root" command))
-      (should (string-match-p "--title" command))
-      (should (string-match-p "Spec\\\\ task" command))
-      (should (string-match-p "--path" command))
-      (should (string-match-p "editors/emacs/lisp/blackdog-spec.el" command))
-      (should (string-match-p "--doc" command))
-      (should (string-match-p "docs/FILE_FORMATS.md" command)))))
+  (skip-unless (blackdog-test--cli-command))
+  (let ((blackdog-default-command (blackdog-test--cli-command)))
+    (with-temp-buffer
+      (insert blackdog-test-spec-sample)
+      (blackdog-spec-mode)
+      (let ((command (blackdog-spec--add-command nil blackdog-test-root)))
+        (should (string-match-p "blackdog[^ ]* add" command))
+        (should (string-match-p "--project-root" command))
+        (should (string-match-p "--title" command))
+        (should (string-match-p "Spec\\\\ task" command))
+        (should (string-match-p "--path" command))
+        (should (string-match-p "editors/emacs/lisp/blackdog-spec.el" command))
+        (should (string-match-p "--doc" command))
+        (should (string-match-p "docs/FILE_FORMATS.md" command))))))
 
 (ert-deftest blackdog-spec-prompt-preview-renders-improved-prompt ()
   (let ((captured nil)

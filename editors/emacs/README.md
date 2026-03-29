@@ -6,7 +6,7 @@ Current surfaces:
 
 - Magit-style dashboard for backlog state and recent results
 - task reader with artifact links and Magit task actions
-- saved conversation-thread browser and freeform markdown composer
+- Codex-session browser and freeform markdown composer backed by the real Codex CLI
 - results and supervisor-run listings
 - task, artifact, and project-file completion
 - repo and artifact grep

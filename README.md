@@ -16,7 +16,7 @@ Implemented today:
 - An initial supervisor runner that launches child agents into branch-backed task worktrees and lands their commits through the primary worktree
 - An initial persistent supervisor loop that can keep cycling, refresh repo-local status views, honor inbox `pause` or `stop` control messages, and reread backlog state between cycles
 - A static backlog index that embeds JSON task data and links directly to task artifacts on disk
-- A local-use Emacs 30+ package with dashboard, conversation-thread authoring, task reader, result/run listings, search, telemetry, and Magit-aware task/worktree navigation
+- A local-use Emacs 30+ package with dashboard, Codex-session conversation UI, task reader, result/run listings, search, telemetry, and Magit-aware task/worktree navigation
 
 Planned but not implemented yet:
 

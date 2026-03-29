@@ -22,12 +22,13 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
 - read-only task reader with task metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
-- tabulated conversation-thread listing plus a dedicated thread reader with collapsible timestamped user/assistant/system entries
+- tabulated Codex-session listing plus a dedicated session reader with collapsible timestamped user, assistant, tool-call, and tool-output sections
 - shared root-local snapshot caching so one queue pass can reuse the same snapshot across dashboard, task, result, run, and artifact views until the operator explicitly refreshes
 - Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
 - minibuffer completion for task, artifact, and project-file lookup
 - incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
-- conversation-first authoring buffers that let the operator write freeform markdown, save it as a durable project-level thread, preview the repo-aware prompt rewrite, create a backlog task from that thread, and launch it immediately
+- Codex-backed conversation buffers that let the operator write a freeform prompt, stream one live `codex exec --json` turn in Emacs, resume the same Codex session with follow-up prompts, and replay persisted session JSONL transcripts from `~/.codex/sessions/`
+- legacy Blackdog conversation-thread buffers remain available as artifact readers for Blackdog-owned prompt/task flows
 - legacy spec-first authoring buffers remain available for structured task drafting, but they are no longer the default entrypoint
 - task lifecycle commands for claim, claim-and-launch, release, complete, and remove without leaving Emacs
 - telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status`, `recover`, and `report` summaries
@@ -58,7 +59,7 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 
 | Tier | Packages | Why |
 | --- | --- | --- |
-| Required runtime | Emacs 30+, Blackdog CLI in the repo worktree | Core snapshot, task, artifact, result, run, search, spec, and telemetry commands shell out to `blackdog` and use built-in Emacs libraries. |
+| Required runtime | Emacs 30+, Blackdog CLI in the repo worktree, Codex CLI | Snapshot/task/result/run surfaces shell out to `blackdog`; the conversation UI shells out to `codex exec --json` and replays persisted Codex session JSONL transcripts. |
 | Recommended | `magit` | Provides `magit-status`, `magit-diff-range`, and `magit-section`; the dashboard and Magit task actions are built around those surfaces. |
 | Recommended | `transient` | Enables `blackdog-dispatch`; without it the prefix map still works, but `.` and `?` raise a clear error. |
 | Optional | `consult` | Upgrades project and artifact grep to live `consult-ripgrep`. |
@@ -90,9 +91,9 @@ The package should shell out to Blackdog CLI commands for any durable state chan
 - result recording
 - supervisor inspection/control
 
-The current package keeps write logic thin and CLI-authoritative. Emacs adds safe wrappers for prompt shaping, task capture, and core task lifecycle actions, while Blackdog still owns the durable state transitions and validation rules.
+The current package keeps write logic thin and CLI-authoritative. Emacs adds safe wrappers for task capture, Codex-session launch/resume, and core task lifecycle actions, while Blackdog and Codex still own the durable state transitions and validation rules.
 
-Conversation threads are a first-class Blackdog runtime object, not just an Emacs buffer. Emacs shells out to `blackdog thread ...` for durable thread creation, entry append, prompt preview, and thread-to-task linking.
+Codex conversations are now Codex-owned, not Blackdog-owned. Emacs shells out to `codex exec --json` for a new local session turn, `codex exec resume --json` for follow-up turns, and replays the persisted JSONL transcript under `~/.codex/sessions/` for browse and resume behavior.
 
 ### Git / Worktree semantics
 
@@ -116,24 +117,24 @@ For a task row:
 
 The Emacs task reader uses dedicated prompt/thread buffers for those artifacts so operators can stay inside the workbench, while the raw files remain available through the artifact list and minibuffer artifact picker.
 
-### Conversation-first prompt authoring
+### Codex session workflow
 
-The main operator flow now starts with a saved conversation thread:
+The main operator flow now starts with a Codex session instead of a Blackdog-owned thread:
 
-1. `C-c b n` opens a freeform markdown draft for a new conversation thread.
-2. `C-c C-c` saves that draft as a durable thread under the Blackdog control root.
-3. `a` from the thread reader appends a new user entry.
-4. `p` previews the repo-aware `blackdog prompt` rewrite for the saved conversation.
-5. `c` creates one backlog task from the thread.
-6. `w` creates that task and immediately launches its WTAM worktree.
+1. `C-c b n` opens a freeform markdown draft for a new Codex session.
+2. `C-c C-c` launches `codex exec --json` and opens a live session buffer in Emacs.
+3. Completed assistant messages, tool calls, and tool outputs render into collapsible transcript sections with timestamps.
+4. `a` from the session reader opens a follow-up draft and resumes the same session through `codex exec resume --json`.
+5. Historical sessions are replayed from their persisted JSONL transcripts under `~/.codex/sessions/`.
 
-When a linked task later records a result, Blackdog appends an assistant entry to the saved conversation thread so the operator can review the request and the resulting response in one place.
+Context growth and compaction stay Codex-owned because Emacs is resuming the real Codex session instead of copying the conversation into a second storage model.
 
 ## Package Layout
 
 The current package layout is:
 
 - `editors/emacs/lisp/blackdog-core.el`
+- `editors/emacs/lisp/blackdog-codex.el`
 - `editors/emacs/lisp/blackdog.el`
 - `editors/emacs/lisp/blackdog-dashboard.el`
 - `editors/emacs/lisp/blackdog-task.el`
@@ -178,16 +179,15 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 - `C-c b A` searches the Blackdog control dir, which is the right place to grep old results, diffs, prompts, and supervisor artifacts.
 - `C-c b f` and `C-c b s` stay in project code and docs.
 
-### Conversation-first task shaping
+### Codex-first conversation loop
 
-1. `C-c b n` opens a `Blackdog-Thread-Compose` buffer for freeform markdown.
-2. Write the operator request as normal markdown and press `C-c C-c`.
-3. The saved thread opens in `Blackdog-Thread`, with timestamped collapsible entries and any linked tasks.
-4. Use `p` to preview the rewritten Blackdog prompt for that conversation.
-5. Use `c` to create a backlog task from the conversation or `w` to create and launch it immediately.
-6. Use `a` from the thread reader to keep appending user follow-up context to the same saved conversation.
+1. `C-c b n` opens a `Blackdog-Codex-Compose` buffer for freeform markdown.
+2. Write the operator request and press `C-c C-c`.
+3. Emacs launches `codex exec --json`, opens `Blackdog-Codex`, and streams live assistant commentary plus command activity into the buffer.
+4. Use `a` from the session reader to send the next prompt into the same Codex session with `codex exec resume --json`.
+5. Use `C-c b h` or `C-c b T` to reopen older Codex sessions for this repo from their persisted JSONL transcripts.
 
-This stays CLI-authoritative: Emacs helps author and browse the conversation, then shells out to `blackdog thread prompt`, `blackdog thread task`, and `blackdog worktree start` for the durable workflow.
+This keeps conversation state where it belongs: in Codex, not in a parallel Blackdog thread store.
 
 ### Structured spec drafting
 
@@ -357,11 +357,12 @@ Suggested prefix: `C-c b`
 | `C-c b X` | `blackdog-stop-supervisor` | Request a draining stop for the telemetry actor's supervisor run. |
 | `C-c b u` | `blackdog-runs-open` | Browse supervisor run directories. |
 | `C-c b r` | `blackdog-results-open` | Browse latest task results. |
-| `C-c b h` | `blackdog-threads-open` | Browse saved conversation threads. |
+| `C-c b h` | `blackdog-codex-sessions-open` | Browse Codex sessions for the current repo. |
+| `C-c b H` | `blackdog-threads-open` | Browse legacy Blackdog conversation threads. |
 | `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
-| `C-c b T` | `blackdog-find-thread` | Open a saved conversation thread from completion. |
+| `C-c b T` | `blackdog-find-codex-session` | Open a Codex session from completion. |
 | `C-c b a` | `blackdog-find-artifact` | Open a prompt/diff/result/run artifact from completion. |
-| `C-c b n` | `blackdog-thread-compose-new` | Start a new freeform conversation thread draft. |
+| `C-c b n` | `blackdog-codex-compose-new` | Start a new freeform Codex session draft. |
 | `C-c b N` | `blackdog-spec-new` | Start a new structured spec-first task draft. |
 | `C-c b v` | `blackdog-telemetry-open` | Open CLI and supervisor telemetry. |
 | `C-c b f` | `blackdog-find-project-file` | Jump to a repo file. |
@@ -414,14 +415,14 @@ Suggested prefix: `C-c b`
 | --- | --- |
 | Results | `RET` opens the task reader, `f` opens the result file, `g` clears the cached snapshot and refreshes. |
 | Runs | `RET` opens the run directory, `t` opens the task reader, `g` clears the cached snapshot and refreshes. |
-| Threads | `RET` opens the thread reader, `n` starts a new conversation, `a` replies to the selected thread, `p` previews the prompt, `c` creates a task, `w` creates and launches it, `g` refreshes. |
+| Codex Sessions | `RET` opens the session reader, `n` starts a new Codex conversation, `a` sends a follow-up prompt to the selected session, `o` opens the raw JSONL transcript, `g` refreshes. |
 
 ### Spec and telemetry
 
 | Buffer | Keys |
 | --- | --- |
-| Thread Compose | `C-c C-c` saves the conversation thread or reply, `C-c C-k` closes the draft. |
-| Thread | `TAB` toggles the current entry, `a` appends a user entry, `p` previews the prompt rewrite, `c` creates a task, `w` creates and launches it, `o` opens the raw `entries.jsonl` artifact. |
+| Codex Compose | `C-c C-c` launches a new Codex turn or resumes the current session, `C-c C-k` closes the draft. |
+| Codex Session | `TAB` toggles the current section, `a` sends a follow-up prompt, `o` opens the raw session JSONL transcript, `e` opens the stderr buffer for the live process. |
 | Spec | `C-c C-o` previews the rewritten prompt, `C-c C-c` renders the draft payload, `C-c C-p` appends a code or data path. |
 | Spec Draft | `p` refreshes the prompt preview, `c` creates the task, `w` creates and launches it, `g` rerenders the draft. |
 | Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
@@ -456,6 +457,7 @@ Then load Blackdog from this checkout:
   :load-path "/Users/bullard/Work/Blackdog/editors/emacs/lisp"
   :custom
   (blackdog-default-agent "bullard")
+  (blackdog-codex-command "/Applications/Codex.app/Contents/Resources/codex")
   :bind-keymap (("C-c b" . blackdog-prefix-map)))
 ```
 
@@ -467,6 +469,7 @@ If you prefer a variable:
     :load-path (list (expand-file-name "editors/emacs/lisp" blackdog-root))
     :custom
     (blackdog-default-agent "bullard")
+    (blackdog-codex-command "/Applications/Codex.app/Contents/Resources/codex")
     :bind-keymap (("C-c b" . blackdog-prefix-map))))
 ```
 
@@ -483,7 +486,7 @@ After loading the package:
 2. Run `C-c b b` to confirm the dashboard renders.
 3. Run `C-c b .` to confirm Transient is available.
 4. Run `C-c b m` on any task to confirm Magit integration is present.
-5. Run `C-c b n`, save a freeform thread with `C-c C-c`, preview the prompt with `p`, then create and launch the task from the thread buffer with `w`.
+5. Run `C-c b n`, launch a Codex session with `C-c C-c`, then send a follow-up from the session buffer with `a`.
 6. Run `C-c b v`, start a supervisor run with `S`, verify live child output appears, then stop it with `x`.
 
 ## Release Packaging For Emacs 30+
@@ -500,11 +503,11 @@ For an internal release bundle, ship:
 Recommended release checklist:
 
 1. Install the Blackdog CLI in the target worktree-local `.VE`.
-2. Install `magit` and `transient` in Emacs.
-3. Load the package through `use-package` or an equivalent `load-path` setup.
-4. Run the batch checks in the testing section below.
-5. Open the dashboard against a real repo and verify one live task diff plus one landed-task saved diff.
-6. Open `C-c b v`, start a supervisor run with `S`, confirm the monitor tails live child output, and stop it with `x`.
+2. Install a recent Codex CLI and point `blackdog-codex-command` at it when needed.
+3. Install `magit` and `transient` in Emacs.
+4. Load the package through `use-package` or an equivalent `load-path` setup.
+5. Run the batch checks in the testing section below.
+6. Open `C-c b n`, launch a real Codex turn, confirm the session transcript reopens from `C-c b h`, then verify one live task diff plus one landed-task saved diff.
 
 ## Testing Plan
 
@@ -548,13 +551,14 @@ Useful manual smoke checks:
 - `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../editors/emacs/lisp\") (require 'blackdog))"`
 - open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
 - open one task and verify `p` renders the prompt browser and `t` renders the thread browser when supervisor artifacts exist
-- open `C-c b n`, save a freeform thread with `C-c C-c`, preview the prompt with `p`, then create and launch a task from the thread buffer with `w`
+- open `C-c b n`, launch a Codex turn with `C-c C-c`, then send a follow-up from the session buffer with `a`
 - open `C-c b v`, start the supervisor with `S`, confirm the live child stderr/stdout tails appear, then request stop with `x`
 - verify `C-c b d` uses a live Magit diff for an active task and a saved `changes.diff` artifact for a landed task
 
 ## Implementation Notes
 
 - The current code keeps durable writes in the CLI and makes Emacs a high-signal operator cockpit.
+- Codex sessions now use the real Codex CLI/session store; Blackdog no longer emulates the live conversation object.
 - The package should stay dependency-light: optional packages improve UX, but the package must remain usable with built-in completion plus Magit/Transient.
 - Snapshot reloads are now explicit: opening multiple read-only workbench buffers during one queue pass reuses the cached snapshot, while `g` and `blackdog-refresh` clear that cache before reloading.
-- The next backlog candidates are write-enabled inbox/approval flows, richer minibuffer actions, and asynchronous refresh for larger control dirs.
+- The next backlog candidates are richer task capture from Codex sessions, in-Emacs approval handling for non-`--full-auto` Codex turns, and asynchronous refresh for larger control dirs.
