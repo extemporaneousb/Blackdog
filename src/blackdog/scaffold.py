@@ -12,7 +12,16 @@ import sys
 from typing import Any
 
 from .backlog import render_initial_backlog, refresh_backlog_headers
-from .config import GIT_COMMON_TOKEN, _git_common_dir, load_profile, named_backlog_paths, write_default_profile, Profile
+from .config import (
+    DEFAULT_SKILL_USAGE_HEURISTIC,
+    GIT_COMMON_TOKEN,
+    _git_common_dir,
+    default_host_skill_name,
+    load_profile,
+    named_backlog_paths,
+    write_default_profile,
+    Profile,
+)
 from .store import append_event, default_state, save_state
 from .ui import build_ui_snapshot, render_static_html
 
@@ -325,6 +334,11 @@ def _preferred_cli_command(project_root: Path, executable: str) -> str:
     return executable
 
 
+def _host_skill_token(profile: Profile) -> str:
+    token = profile.paths.skill_dir.name.strip()
+    return token or default_host_skill_name(profile.project_name)
+
+
 def _display_path(project_root: Path, path: Path, *, git_common_dir: Path | None = None) -> str:
     resolved_root = project_root.resolve()
     resolved_path = path.resolve()
@@ -451,10 +465,12 @@ def _project_skill_bundle(profile: Profile) -> dict[Path, str]:
     skill_file = skill_dir / "SKILL.md"
     agent_file = agents_dir / "openai.yaml"
     task_shaping_reference_file = references_dir / "task-shaping.md"
-    skill_name = "blackdog"
-    display_name = "Blackdog"
+    skill_name = _host_skill_token(profile)
+    display_name = f"Blackdog: {profile.project_name}"
     cli_command = _preferred_cli_command(profile.paths.project_root, "blackdog")
     skill_command = _preferred_cli_command(profile.paths.project_root, "blackdog-skill")
+    workflow_guidance = (profile.pm_heuristics.get("skill_usage") or "").strip() or DEFAULT_SKILL_USAGE_HEURISTIC
+    summary_focus = (profile.pm_heuristics.get("summary_focus") or "").strip()
     git_common_dir = _git_common_dir(profile.paths.project_root)
     profile_path = _display_path(profile.paths.project_root, profile.paths.profile_file, git_common_dir=git_common_dir)
     control_root = _display_path(profile.paths.project_root, profile.paths.control_dir, git_common_dir=git_common_dir)
@@ -508,15 +524,25 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Codex Skill Discovery
 
+- Host skill token: `{skill_name}`
 - Skill metadata file: `{skill_metadata_path}`
 - UI discovery file: `{skill_discovery_path}`
 - Codex discovers this skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repo.
+- `agents/openai.yaml` should explicitly mention `${skill_name}` in `interface.default_prompt`.
 - Open or refresh the repo in Codex after bootstrap so the skill appears in the available skill list.
+
+## Repo-Specific Planning Guidance
+
+- Workflow policy: {workflow_guidance}
+"""
+    if summary_focus:
+        skill_text += f"\n- Summary focus: {summary_focus}\n"
+    skill_text += f"""
 
 ## Host Project Creation
 
 - When the user asks to create a brand-new Blackdog repo at a filesystem path, run `{cli_command} create-project --project-root /abs/path --project-name "Repo Name"` from this checkout.
-- `create-project` creates the target directory, initializes git, bootstraps a repo-local `.VE`, installs Blackdog from the current checkout, and runs bootstrap so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/blackdog/`.
+- `create-project` creates the target directory, initializes git, bootstraps a repo-local `.VE`, installs Blackdog from the current checkout, and runs bootstrap so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/{skill_name}/`.
 - Use `{cli_command} bootstrap` instead when the target repo already exists or already has its own Python environment prepared.
 
 ## Repo Refresh
@@ -593,7 +619,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
     agent_text = f"""interface:
   display_name: "{display_name}"
   short_description: "Project-local backlog control via Blackdog"
-  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for {profile.project_name} to shape this request into measurable, consolidated backlog work, tune repo-local prompts when needed, and then review, claim, supervise, or report it through the repo CLI."
+  default_prompt: "Use ${skill_name} to shape or execute repo-specific backlog work for {profile.project_name} through the local Blackdog contract."
 """
     return {
         skill_file: skill_text,

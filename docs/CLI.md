@@ -35,7 +35,7 @@ For a brand-new host repo from the current Blackdog checkout:
 blackdog create-project --project-root /path/to/repo --project-name "Repo Name"
 ```
 
-`create-project` expects a new or empty target directory. It creates the directory, initializes git, creates `.VE/`, installs Blackdog from the current checkout into that environment, and then runs the existing bootstrap scaffold so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/blackdog/`.
+`create-project` expects a new or empty target directory. It creates the directory, initializes git, creates `.VE/`, installs Blackdog from the current checkout into that environment, and then runs the existing bootstrap scaffold so the new repo already has `blackdog.toml`, `AGENTS.md`, and `.codex/skills/<skill-name>/`.
 
 For an existing host repo, install Blackdog first using one of:
 
@@ -51,11 +51,12 @@ blackdog bootstrap --project-name "Repo Name"
 
 Bootstrap creates the project-local discovery files under:
 
-- `.codex/skills/blackdog/SKILL.md`
-- `.codex/skills/blackdog/agents/openai.yaml`
-- `.codex/skills/blackdog/.blackdog-managed.json`
+- `.codex/skills/<skill-name>/SKILL.md`
+- `.codex/skills/<skill-name>/agents/openai.yaml`
+- `.codex/skills/<skill-name>/.blackdog-managed.json`
 
-Codex surfaces the `blackdog` skill from the `agents/openai.yaml` file in the opened repository tree.
+By default `<skill-name>` is `blackdog-<project-slug>`, so host repos get a project-specific wrapper skill instead of the generic `blackdog` token.
+Codex surfaces that project-local token from the `agents/openai.yaml` file in the opened repository tree.
 If the repo was open before bootstrap, reopen the repo (or restart the Codex session) so discovery picks up the new files.
 
 After bootstrap, the default rendered board lives at `<control_dir>/<project-slug>-backlog.html`.
@@ -84,7 +85,7 @@ blackdog installs update --all
 blackdog installs observe --all
 ```
 
-`blackdog installs add` stores repo roots under the shared control root for the current development checkout. `installs update` pushes the current Blackdog source into those tracked repos by calling the same `update-repo` flow per target. `installs observe` reads each tracked repo's backlog and tune state so the dev checkout can mine local host-repo intelligence without baking those machine-local paths into the skill scaffold or the host repos themselves.
+`blackdog installs add` stores repo roots under the shared control root for the current development checkout. `installs update` pushes the current Blackdog source into those tracked repos by calling the same `update-repo` flow per target. `installs observe` reads each tracked repo's backlog and tune state, and now also emits host-integration findings for wrapper-skill naming, prompt metadata, WTAM guidance, and task-shaping/history signals so the dev checkout can mine local host-repo intelligence without baking those machine-local paths into the skill scaffold or the host repos themselves.
 
 `blackdog worktree ...` is the implementation-work entrypoint. WTAM is the implementation model:
 
@@ -257,6 +258,6 @@ before changing launch settings or child startup contract details.
 - `blackdog-skill new backlog --project-root PATH`
 - `blackdog-skill refresh backlog --project-root PATH`
 
-`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/blackdog/`.
+`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/<skill-name>/`.
 
 `blackdog-skill refresh backlog` remains as a compatibility wrapper around the managed skill refresh flow. It regenerates the project-local skill files from the current `blackdog.toml` profile without rebuilding backlog/runtime files, preserves locally modified managed files by writing `*.blackdog-new` sidecars, and is now usually superseded by `blackdog refresh`.

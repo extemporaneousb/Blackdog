@@ -32,7 +32,7 @@ Planned but not implemented yet:
 - `blackdog.toml`: repo-local profile for id prefixes, bucket/domain taxonomy, defaults, and heuristics
 - shared runtime state under the git control root, which defaults to `@git-common/blackdog`
 - `blackdog worktree ...`: explicit branch-backed worktree start/land/cleanup entrypoints for implementation work
-- `.codex/skills/blackdog/`: project-local skill scaffold that teaches agents how to use Blackdog in that repo
+- `.codex/skills/<skill-name>/`: project-local skill scaffold that teaches agents how to use Blackdog in that repo
 
 ## Quick start
 
@@ -59,10 +59,11 @@ blackdog bootstrap --project-name "Repo Name"
 
 Bootstrap writes the project-local skill discovery payload to:
 
-- `.codex/skills/blackdog/SKILL.md`
-- `.codex/skills/blackdog/agents/openai.yaml`
+- `.codex/skills/<skill-name>/SKILL.md`
+- `.codex/skills/<skill-name>/agents/openai.yaml`
 
-Codex surfaces the `blackdog` skill from `agents/openai.yaml` once these files exist and the repo is opened in Codex with file-system-based skill discovery enabled (reopen the repo if the skill list was already loaded).
+By default `<skill-name>` is `blackdog-<project-slug>`, so each host repo gets its own wrapper skill token.
+Codex surfaces that project-local token from `agents/openai.yaml` once these files exist and the repo is opened in Codex with file-system-based skill discovery enabled (reopen the repo if the skill list was already loaded).
 
 Then continue with the usual contract commands:
 

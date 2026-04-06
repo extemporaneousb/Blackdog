@@ -202,7 +202,7 @@ Clarifications:
 
 In practice: `epic` answers "why this cluster exists", `lane` answers "which ordered slot the task is currently in", `wave` answers "which concurrent lane group is currently open", and `task` is the unit an agent actually executes.
 
-## `.codex/skills/blackdog/.blackdog-managed.json`
+## `.codex/skills/<skill-name>/.blackdog-managed.json`
 
 Project-local managed-skill manifest.
 
@@ -241,6 +241,10 @@ Schema:
     - `at`
     - `counts`
     - `next_rows`
+    - optional `host_integration_findings`
+      - `category`
+      - `severity`
+      - `finding`
     - `tune_focus`
     - `tune_summary`
 

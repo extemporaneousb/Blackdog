@@ -59,8 +59,9 @@ exist. Richer write-enabled runtime steering still does not.
 	 
 
 4. Project-local skill scaffold
-   - Generated under `.codex/skills/blackdog/`.
-   - Tells an AI agent how to use the local CLI and local artifact paths.
+   - Generated under `.codex/skills/<skill-name>/`.
+   - Uses a project-specific wrapper token by default (`blackdog-<project-slug>`).
+   - Tells an AI agent how to use the local CLI, local artifact paths, and the host repo's planning policy.
 
 ## Why this split
 

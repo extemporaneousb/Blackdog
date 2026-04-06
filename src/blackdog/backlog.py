@@ -1548,12 +1548,25 @@ def _task_context_metrics(task: TaskInfo | None, runtime: dict[str, Any]) -> dic
 
 
 def build_prompt_profiles(profile: Profile, *, analysis: dict[str, Any]) -> dict[str, Any]:
+    try:
+        skill_doc_paths = [
+            str((profile.paths.skill_dir / "SKILL.md").resolve().relative_to(profile.paths.project_root.resolve())),
+            str(
+                (profile.paths.skill_dir / "agents" / "openai.yaml")
+                .resolve()
+                .relative_to(profile.paths.project_root.resolve())
+            ),
+        ]
+    except ValueError:
+        skill_doc_paths = [
+            str(profile.paths.skill_dir / "SKILL.md"),
+            str(profile.paths.skill_dir / "agents" / "openai.yaml"),
+        ]
     base_docs = _unique_ordered(
         [
             "AGENTS.md",
             *profile.doc_routing_defaults,
-            ".codex/skills/blackdog/SKILL.md",
-            ".codex/skills/blackdog/agents/openai.yaml",
+            *skill_doc_paths,
             "docs/INTEGRATION.md",
         ]
     )
@@ -1885,11 +1898,24 @@ def _tune_task_payload(profile: Profile) -> dict[str, Any]:
             str(profile.paths.skill_dir / "agents/openai.yaml"),
         ]
     )
+    try:
+        skill_docs = [
+            str((profile.paths.skill_dir / "SKILL.md").resolve().relative_to(profile.paths.project_root.resolve())),
+            str(
+                (profile.paths.skill_dir / "agents" / "openai.yaml")
+                .resolve()
+                .relative_to(profile.paths.project_root.resolve())
+            ),
+        ]
+    except ValueError:
+        skill_docs = [
+            str(profile.paths.skill_dir / "SKILL.md"),
+            str(profile.paths.skill_dir / "agents" / "openai.yaml"),
+        ]
     docs = _unique_ordered(
         [
             "AGENTS.md",
-            ".codex/skills/blackdog/SKILL.md",
-            ".codex/skills/blackdog/agents/openai.yaml",
+            *skill_docs,
             "blackdog.toml",
             "docs/CLI.md",
             "docs/FILE_FORMATS.md",

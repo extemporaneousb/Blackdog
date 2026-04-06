@@ -26,7 +26,7 @@ from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
 from blackdog.backlog import load_backlog, render_backlog_plan_block, render_task_section
 from blackdog.cli import main as blackdog_main
-from blackdog.config import load_profile, render_default_profile
+from blackdog.config import default_host_skill_name, load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import (
     append_jsonl,
@@ -838,6 +838,13 @@ class BlackdogCliTests(unittest.TestCase):
             "0",
         )
 
+        host_one_profile_text = (host_one / "blackdog.toml").read_text(encoding="utf-8").replace(
+            f'skill_dir = ".codex/skills/{default_host_skill_name("Host One")}"',
+            'skill_dir = ".codex/skills/blackdog"',
+        )
+        (host_one / "blackdog.toml").write_text(host_one_profile_text, encoding="utf-8")
+        run_cli("refresh", "--project-root", str(host_one))
+
         run_cli("installs", "add", "--project-root", str(self.root), str(host_one), str(host_two))
         registry = load_tracked_installs(self.runtime_paths())
         self.assertEqual(len(registry["repos"]), 2)
@@ -858,12 +865,26 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(host_one_row["counts"]["ready"], 1)
         self.assertEqual(host_one_row["next_rows"][0]["title"], "Host backlog task")
         self.assertIn("focus", host_one_row["tune_recommendation"])
+        self.assertIsInstance(host_one_row.get("host_integration_findings"), list)
+        self.assertIn(
+            "wrapper_naming",
+            {
+                finding.get("category")
+                for finding in host_one_row.get("host_integration_findings", [])
+                if isinstance(finding, dict)
+            },
+        )
+        candidate = next(
+            item for item in observed["blackdog_improvement_candidates"] if item["project_name"] == "Host One"
+        )
+        self.assertIn("host_integration_findings", candidate)
         self.assertTrue(observed["blackdog_improvement_candidates"])
 
         refreshed_registry = load_tracked_installs(self.runtime_paths())
         tracked_host_one = next(row for row in refreshed_registry["repos"] if row["project_name"] == "Host One")
         self.assertEqual(tracked_host_one["last_observation"]["counts"]["ready"], 1)
         self.assertEqual(tracked_host_one["last_observation"]["next_rows"][0]["title"], "Host backlog task")
+        self.assertIsInstance(tracked_host_one["last_observation"]["host_integration_findings"], list)
 
     def test_installs_update_uses_registry_targets_and_records_status(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -986,8 +1007,13 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("docs/CLI.md", tune_payload["docs"])
         self.assertIn("docs/FILE_FORMATS.md", tune_payload["docs"])
         self.assertIn("docs/INTEGRATION.md", tune_payload["docs"])
-        self.assertIn(".codex/skills/blackdog/SKILL.md", tune_payload["docs"])
-        self.assertIn(".codex/skills/blackdog/agents/openai.yaml", tune_payload["docs"])
+        resolved_root = self.root.resolve()
+        resolved_skill_dir = paths.skill_dir.resolve()
+        self.assertIn(str(resolved_skill_dir.relative_to(resolved_root) / "SKILL.md"), tune_payload["docs"])
+        self.assertIn(
+            str(resolved_skill_dir.relative_to(resolved_root) / "agents" / "openai.yaml"),
+            tune_payload["docs"],
+        )
         self.assertIn("blackdog.toml", tune_payload["docs"])
         self.assertIn(str(paths.backlog_file), tune_payload["paths"])
         self.assertIn(str(paths.state_file), tune_payload["paths"])
@@ -1495,10 +1521,12 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(Path(payload["project_root"]).resolve(), self.root.resolve())
         paths = self.runtime_paths()
+        profile = load_profile(self.root)
         self.assertTrue((self.root / "blackdog.toml").exists())
         self.assertTrue(paths.backlog_file.exists())
-        self.assertTrue((self.root / ".codex/skills/blackdog/SKILL.md").exists())
-        self.assertTrue((self.root / ".codex/skills/blackdog/references/task-shaping.md").exists())
+        self.assertEqual(profile.paths.skill_dir.name, default_host_skill_name("Bootstrap Demo"))
+        self.assertTrue((profile.paths.skill_dir / "SKILL.md").exists())
+        self.assertTrue((profile.paths.skill_dir / "references" / "task-shaping.md").exists())
 
         second_payload = json.loads(
             subprocess.run(
@@ -1556,10 +1584,12 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(Path(payload["project_root"]).resolve(), target.resolve())
         self.assertEqual(Path(payload["venv"]).resolve(), (target / ".VE").resolve())
         self.assertEqual(Path(payload["blackdog_source"]).resolve(), ROOT.resolve())
+        target_profile = load_profile(target)
         self.assertTrue((target / ".git").exists())
         self.assertTrue((target / "blackdog.toml").exists())
-        self.assertTrue((target / ".codex/skills/blackdog/SKILL.md").exists())
-        self.assertTrue((target / ".codex/skills/blackdog/references/task-shaping.md").exists())
+        self.assertEqual(target_profile.paths.skill_dir.name, default_host_skill_name("Child Demo"))
+        self.assertTrue((target_profile.paths.skill_dir / "SKILL.md").exists())
+        self.assertTrue((target_profile.paths.skill_dir / "references" / "task-shaping.md").exists())
         self.assertTrue((target / ".VE/bin/blackdog").exists())
         self.assertTrue((target / ".VE/bin/blackdog-skill").exists())
         self.assertEqual(len(install_commands), 1)
@@ -1571,7 +1601,7 @@ class BlackdogCliTests(unittest.TestCase):
             text=True,
         ).stdout.strip()
         self.assertEqual(branch, "main")
-        skill_text = (target / ".codex/skills/blackdog/SKILL.md").read_text(encoding="utf-8")
+        skill_text = (target_profile.paths.skill_dir / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("create-project", skill_text)
         self.assertIn("./.VE/bin/blackdog", skill_text)
 
@@ -2392,7 +2422,7 @@ class BlackdogCliTests(unittest.TestCase):
             ).stdout
         )
         self.assertEqual(len(resolved), 1)
-        self.assertTrue((self.root / ".codex/skills/blackdog/SKILL.md").exists())
+        self.assertTrue((load_profile(self.root).paths.skill_dir / "SKILL.md").exists())
 
     def test_skill_refresh_regenerates_existing_project_skill(self) -> None:
         run_skill_cli("new", "backlog", "--project-root", str(self.root), "--project-name", "Inbox Demo")
@@ -2407,7 +2437,7 @@ class BlackdogCliTests(unittest.TestCase):
             script = ve_bin / name
             script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             script.chmod(0o755)
-        skill_file = self.root / ".codex/skills/blackdog/SKILL.md"
+        skill_file = load_profile(self.root).paths.skill_dir / "SKILL.md"
 
         payload = json.loads(
             subprocess.run(
@@ -2434,6 +2464,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Use the project-local Blackdog backlog contract", refreshed_text)
         self.assertIn("./.VE/bin/blackdog", refreshed_text)
         self.assertIn("./.VE/bin/blackdog-skill", refreshed_text)
+        self.assertIn("Host skill token:", refreshed_text)
+        self.assertIn("Repo-Specific Planning Guidance", refreshed_text)
         self.assertIn("Control root:", refreshed_text)
         self.assertIn("@git-common", refreshed_text)
         self.assertIn("`make test`", refreshed_text)
@@ -2449,15 +2481,16 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("doc_routing_defaults", refreshed_text)
         self.assertIn("Blackdog uses branch-backed task worktrees for kept implementation changes.", refreshed_text)
         self.assertIn("refresh backlog", refreshed_text)
+        self.assertIn("$blackdog-inbox-demo", (skill_file.parent / "agents" / "openai.yaml").read_text(encoding="utf-8"))
         task_shaping_reference = (
-            self.root / ".codex" / "skills" / "blackdog" / "references" / "task-shaping.md"
+            load_profile(self.root).paths.skill_dir / "references" / "task-shaping.md"
         ).read_text(encoding="utf-8")
         self.assertIn("estimated_elapsed_minutes", task_shaping_reference)
         self.assertIn("parallel time saved", task_shaping_reference)
 
     def test_refresh_preserves_locally_modified_skill_scaffold(self) -> None:
         run_cli("bootstrap", "--project-root", str(self.root), "--project-name", "Inbox Demo")
-        skill_file = self.root / ".codex/skills/blackdog/SKILL.md"
+        skill_file = load_profile(self.root).paths.skill_dir / "SKILL.md"
         custom_text = skill_file.read_text(encoding="utf-8") + "\nLocal customization.\n"
         skill_file.write_text(custom_text, encoding="utf-8")
 
@@ -2529,7 +2562,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(Path(payload["blackdog_source"]).resolve(), ROOT.resolve())
         self.assertEqual(Path(payload["venv_python"]).resolve(), python_bin.resolve())
         self.assertIn(
-            str((self.root / ".codex/skills/blackdog/SKILL.md").resolve()),
+            str((load_profile(self.root).paths.skill_dir / "SKILL.md").resolve()),
             [str(Path(path).resolve()) for path in payload["managed"]["updated"]],
         )
         self.assertEqual(Path(payload["html_file"]).name, "update-demo-backlog.html")

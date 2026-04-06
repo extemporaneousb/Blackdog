@@ -31,7 +31,7 @@ from .backlog import (
     render_summary_text,
     sync_state_for_backlog,
 )
-from .config import ConfigError, load_profile
+from .config import ConfigError, DEFAULT_SKILL_USAGE_HEURISTIC, load_profile
 from .scaffold import (
     ScaffoldError,
     bootstrap_project,
@@ -90,6 +90,7 @@ from .worktree import (
     render_start_text,
     start_task_worktree,
     task_id_for_branch,
+    worktree_contract,
     worktree_preflight,
 )
 
@@ -217,6 +218,150 @@ def _tracked_install_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]
     }
 
 
+def _host_skill_token(profile) -> str:
+    token = profile.paths.skill_dir.name.strip()
+    return token or "blackdog"
+
+
+def _safe_read_text(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _extract_skill_name(skill_text: str | None) -> str | None:
+    if not skill_text:
+        return None
+    match = re.search(r"^name:\s*([^\n]+)\s*$", skill_text, re.M)
+    if match is None:
+        return None
+    return match.group(1).strip().strip('"').strip("'")
+
+
+def _build_host_integration_findings(profile, view: dict[str, Any], analysis: dict[str, Any]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    token = _host_skill_token(profile)
+    skill_file = profile.paths.skill_dir / "SKILL.md"
+    openai_file = profile.paths.skill_dir / "agents" / "openai.yaml"
+    skill_text = _safe_read_text(skill_file)
+    openai_text = _safe_read_text(openai_file)
+    observed_skill_name = _extract_skill_name(skill_text)
+    contract = worktree_contract(profile, workspace=profile.paths.project_root)
+
+    if observed_skill_name is None:
+        findings.append(
+            {
+                "category": "wrapper_naming",
+                "severity": "high",
+                "finding": f"Missing or unreadable `{skill_file}`; this install cannot expose a repo-specific wrapper skill.",
+            }
+        )
+    elif observed_skill_name != token:
+        findings.append(
+            {
+                "category": "wrapper_naming",
+                "severity": "high",
+                "finding": f"Skill frontmatter name `{observed_skill_name}` does not match the skill directory token `{token}`.",
+            }
+        )
+    elif token == "blackdog":
+        findings.append(
+            {
+                "category": "wrapper_naming",
+                "severity": "medium",
+                "finding": "This host still exposes the generic `blackdog` skill token; switch to a project-specific skill directory/token so repo guidance stays distinct.",
+            }
+        )
+
+    if openai_text is None:
+        findings.append(
+            {
+                "category": "prompt_metadata",
+                "severity": "high",
+                "finding": f"Missing `{openai_file}`; Codex skill discovery metadata is not available for this install.",
+            }
+        )
+    elif f"${token}" not in openai_text:
+        findings.append(
+            {
+                "category": "prompt_metadata",
+                "severity": "medium",
+                "finding": f"`agents/openai.yaml` should mention `${token}` explicitly in `interface.default_prompt`.",
+            }
+        )
+
+    if not contract.get("workspace_has_local_blackdog"):
+        findings.append(
+            {
+                "category": "worktree_safety",
+                "severity": "high",
+                "finding": "No repo-local `.VE/bin/blackdog` entrypoint was detected; WTAM-safe implementation work is not fully bootstrapped in this host checkout.",
+            }
+        )
+    elif not skill_text or "worktree preflight" not in skill_text or "branch-backed task worktree" not in skill_text:
+        findings.append(
+            {
+                "category": "worktree_safety",
+                "severity": "medium",
+                "finding": "Generated skill guidance does not clearly restate the WTAM preflight and branch-backed worktree contract.",
+            }
+        )
+
+    workflow_guidance = (profile.pm_heuristics.get("skill_usage") or "").strip()
+    if not workflow_guidance or workflow_guidance == DEFAULT_SKILL_USAGE_HEURISTIC:
+        findings.append(
+            {
+                "category": "task_shaping_policy",
+                "severity": "medium",
+                "finding": "The host profile still uses the default generic `pm_heuristics.skill_usage`; encode repo-specific task-shaping and change-tolerance guidance there.",
+            }
+        )
+
+    missteps = analysis.get("categories", {}).get("missteps", {})
+    landing_failures = int(missteps.get("landing_failures") or 0)
+    retry_total = int(missteps.get("retry_total") or 0)
+    reclaim_total = int(missteps.get("reclaim_total") or 0)
+    focus = str((analysis.get("recommendation") or {}).get("focus") or "")
+    if landing_failures:
+        findings.append(
+            {
+                "category": "task_shaping_and_history",
+                "severity": "high",
+                "finding": "Tune history shows landing failures; tighten task boundaries and WTAM hygiene before increasing parallel lanes.",
+            }
+        )
+    elif retry_total or reclaim_total:
+        findings.append(
+            {
+                "category": "task_shaping_and_history",
+                "severity": "medium",
+                "finding": "Tune history shows retries or reclaims; reassess lane splitting and dependency structure before adding more concurrency.",
+            }
+        )
+    elif focus in {"task_shaping_coverage", "task_time_calibration", "collect_task_time_history"}:
+        findings.append(
+            {
+                "category": "task_shaping_and_history",
+                "severity": "low",
+                "finding": "This host still needs stronger estimate-vs-actual history before Blackdog can safely tune prompt defaults and task shaping.",
+            }
+        )
+
+    if view.get("counts", {}).get("ready", 0) and view.get("counts", {}).get("blocked", 0):
+        findings.append(
+            {
+                "category": "worktree_safety",
+                "severity": "low",
+                "finding": "Ready and blocked work are both present; verify ownership boundaries and landing order before opening additional lanes.",
+            }
+        )
+
+    return findings
+
+
 def _build_tracked_install_row(project_root: Path) -> dict[str, Any]:
     profile = load_profile(project_root)
     cli_candidate = (project_root / ".VE" / "bin" / "blackdog").resolve()
@@ -270,6 +415,7 @@ def _observe_tracked_install(project_root: Path, *, next_limit: int) -> dict[str
         "next_rows": view["next_rows"][:next_limit],
         "tune_recommendation": analysis["recommendation"],
         "tune_categories": analysis["categories"],
+        "host_integration_findings": _build_host_integration_findings(profile, view, analysis),
         "observed_at": now_iso(),
     }
 
@@ -312,6 +458,14 @@ def _render_tracked_install_observations(rows: list[dict[str, Any]]) -> str:
             if not isinstance(next_row, dict):
                 continue
             lines.append(f"  next: {next_row.get('id', '')} {next_row.get('title', '')}".rstrip())
+        findings = row.get("host_integration_findings") if isinstance(row.get("host_integration_findings"), list) else []
+        for finding in findings[:5]:
+            if not isinstance(finding, dict):
+                continue
+            lines.append(
+                f"  finding: {finding.get('category', 'unknown')} / {finding.get('severity', 'unknown')} - "
+                f"{finding.get('finding', '').rstrip()}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -670,6 +824,7 @@ def cmd_installs_observe(args: argparse.Namespace) -> int:
                 "at": row["observed_at"],
                 "counts": row["counts"],
                 "next_rows": row["next_rows"],
+                "host_integration_findings": row["host_integration_findings"],
                 "tune_focus": row["tune_recommendation"]["focus"],
                 "tune_summary": row["tune_recommendation"]["summary"],
             }
@@ -681,6 +836,7 @@ def cmd_installs_observe(args: argparse.Namespace) -> int:
             {
                 "project_root": row["project_root"],
                 "project_name": row.get("project_name", ""),
+                "host_integration_findings": row.get("host_integration_findings", []),
                 "focus": row["tune_recommendation"]["focus"],
                 "summary": row["tune_recommendation"]["summary"],
             }

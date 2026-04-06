@@ -36,6 +36,10 @@ DEFAULT_VALIDATION_COMMANDS = (
 DEFAULT_CONTROL_DIR = f"{GIT_COMMON_TOKEN}/blackdog"
 DEFAULT_NAMED_BACKLOGS_DIR = "backlogs"
 DEFAULT_WORKTREES_DIR = "../.worktrees"
+DEFAULT_SKILL_USAGE_HEURISTIC = (
+    "Prefer the project-local wrapper skill and Blackdog CLI over hand-edited state transitions, "
+    "and encode repo-specific task-shaping and change-tolerance guidance here."
+)
 DEFAULT_SUPERVISOR_COMMAND = (
     "codex",
     "exec",
@@ -57,6 +61,14 @@ class ConfigError(RuntimeError):
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "project"
+
+
+def default_host_skill_name(project_name: str) -> str:
+    return f"blackdog-{slugify(project_name)}"
+
+
+def default_host_skill_dir(project_name: str) -> str:
+    return f".codex/skills/{default_host_skill_name(project_name)}"
 
 
 def default_id_prefix(project_name: str) -> str:
@@ -326,7 +338,7 @@ def render_default_profile(project_name: str) -> str:
         f"profile_version = 1\n\n"
         f'[paths]\n'
         f'control_dir = "{DEFAULT_CONTROL_DIR}"\n'
-        f'skill_dir = ".codex/skills/blackdog"\n\n'
+        f'skill_dir = "{default_host_skill_dir(project_name)}"\n\n'
         f'worktrees_dir = "{DEFAULT_WORKTREES_DIR}"\n'
         f"\n"
         f'[ids]\n'
@@ -346,7 +358,7 @@ def render_default_profile(project_name: str) -> str:
         f"doc_routing_defaults = [{doc_routing}]\n\n"
         f'[pm_heuristics]\n'
         f'summary_focus = "Lead with direct status, then backlog state, then test focus."\n'
-        f'skill_usage = "Prefer the project-local blackdog CLI over hand-edited state transitions."\n'
+        f'skill_usage = "{DEFAULT_SKILL_USAGE_HEURISTIC}"\n'
     )
 
 

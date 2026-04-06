@@ -11,7 +11,7 @@ This document describes the current integration path for adopting Blackdog in an
 - repo-local profile in `blackdog.toml`
 - baseline `AGENTS.md` contract file on first bootstrap when absent
 - mutable backlog/runtime artifacts under a shared git control root
-- project-local skill scaffold under `.codex/skills/blackdog/`
+- project-local skill scaffold under `.codex/skills/<skill-name>/`
 - a branch-backed `blackdog worktree` lifecycle for implementation tasks
 - CLI support for task intake, claims, approvals, comments, inbox messaging, task results, and HTML rendering
 - a repo-aware `blackdog prompt` command that rewrites prompts against the host repo contract for low/medium/high complexity
@@ -32,8 +32,8 @@ This document describes the current integration path for adopting Blackdog in an
    - `.VE/`
    - `blackdog.toml`
    - `AGENTS.md` (generated when absent)
-   - `.codex/skills/blackdog/SKILL.md`
-   - `.codex/skills/blackdog/agents/openai.yaml`
+   - `.codex/skills/<skill-name>/SKILL.md`
+   - `.codex/skills/<skill-name>/agents/openai.yaml`
    - runtime artifacts under the resolved control root (`backlog.md`, `task-results/`, and related state files)
 3. Review `blackdog.toml` and tailor the generated `AGENTS.md` contract before committing the initial scaffold.
 
@@ -48,8 +48,8 @@ This document describes the current integration path for adopting Blackdog in an
 3. Verify the generated bootstrap artifacts are present:
    - `blackdog.toml`
    - `AGENTS.md` (generated when absent)
-   - `.codex/skills/blackdog/SKILL.md`
-   - `.codex/skills/blackdog/agents/openai.yaml`
+   - `.codex/skills/<skill-name>/SKILL.md`
+   - `.codex/skills/<skill-name>/agents/openai.yaml`
    - runtime artifacts under the resolved control root (`backlog.md`, `task-results/`, and related state files)
 4. Review `blackdog.toml` and tune taxonomy, validation commands, and doc routing for the host repo.
    If `AGENTS.md` was missing, bootstrap created a baseline host-contract file you should then tailor to your repo.
@@ -83,11 +83,11 @@ If one Blackdog development checkout manages several local host repos on the sam
 
 That tracked-install registry is machine-local state under the development checkout's control root. It is the right place to remember "these are the local repos I manage from this Blackdog checkout" because those paths are operator-specific, not host-repo contract.
 
-`installs update` pushes the current Blackdog source into each tracked repo through the existing `update-repo` path. `installs observe` reads each tracked repo's backlog summary and tune recommendation so the development checkout can compare host-repo friction points and mine Blackdog improvement candidates across local repos.
+`installs update` pushes the current Blackdog source into each tracked repo through the existing `update-repo` path. `installs observe` reads each tracked repo's backlog summary and tune recommendation, and now also reports host-integration findings for wrapper-skill naming, prompt metadata, WTAM guidance, and task-shaping/history drift so the development checkout can compare host-repo friction points and mine Blackdog improvement candidates across local repos.
 
 ## How the Blackdog skill appears in Codex
 
-Bootstrap and refresh generate these managed files under `.codex/skills/blackdog/`:
+Bootstrap and refresh generate these managed files under `.codex/skills/<skill-name>/`:
 
 - `SKILL.md`: repo-local operating instructions tailored from `blackdog.toml`
 - `agents/openai.yaml`: UI-facing metadata for skill list and default prompts
@@ -96,7 +96,8 @@ Bootstrap and refresh generate these managed files under `.codex/skills/blackdog
 - `.blackdog-managed.json`: last-generated hashes for the managed skill files so refresh can tell when a local edit should be preserved instead of overwritten
 
 Codex discovers a repo skill from `agents/openai.yaml` under `.codex/skills/<skill-name>/` in the opened repository.
-The `blackdog` skill usually appears after bootstrap once the repo is opened (or rescanned) in Codex.
+By default `<skill-name>` is `blackdog-<project-slug>`, so each host repo gets a project-specific wrapper skill instead of the generic `blackdog` token.
+That project-specific token usually appears after bootstrap once the repo is opened (or rescanned) in Codex.
 If the repo was already open before bootstrap, reopen the repo or refresh the runtime so the new skill files are rescanned.
 
 Blackdog does not currently call an external skill-authoring workflow at bootstrap time.
@@ -110,7 +111,9 @@ It generates and refreshes the project-local skill deterministically from `black
 - `[taxonomy].doc_routing_defaults`: point at the docs an agent must review before changing code; Blackdog emits this list into the generated skill, so keep it limited to the required review set
 - `[rules].require_claim_for_completion`: keep this enabled unless the repo intentionally allows ad hoc completions
 - `[paths].control_dir`: keep the git-common default unless the host repo has a strong reason to relocate mutable runtime state
+- `[paths].skill_dir`: prefer a project-specific token such as `.codex/skills/blackdog-<project-slug>` so the host repo does not expose the generic `blackdog` skill name
 - `[paths].worktrees_dir`: prefer a sibling worktree base or an explicit `.worktrees` symlink target over an in-repo runtime directory
+- `[pm_heuristics].skill_usage`: encode repo-specific task-shaping and change-tolerance policy here so generated skills can distinguish safe-first maintenance repos from larger refactor-oriented repos
 
 ## Adoption checklist for a first pilot
 
@@ -127,7 +130,7 @@ Today, Blackdog works best as a coordinating contract used by a foreground agent
 
 For implementation tasks, the intended operator model is now explicit and hard-gated: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
 
-The generated skill should mirror that hard gate and enumerate the repo docs from `taxonomy.doc_routing_defaults` so agents see both the worktree contract and the required review set before they edit.
+The generated skill should mirror that hard gate, enumerate the repo docs from `taxonomy.doc_routing_defaults`, and carry the repo's `pm_heuristics.skill_usage` guidance so agents see both the worktree contract and the host repo's task-shaping philosophy before they edit.
 
 When a host repo builds additional skills on top of Blackdog, prefer routing those skills through `blackdog prompt` or `blackdog tune --no-task` first. That lets the repo-local profile, doc routing, validation defaults, and WTAM rules shape the final prompt before the higher-level skill starts work.
 
