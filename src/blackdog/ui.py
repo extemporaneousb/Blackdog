@@ -26,6 +26,8 @@ from .worktree import worktree_contract
 UI_SNAPSHOT_SCHEMA_VERSION = 10
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
+_GIT_FIELD_SEPARATOR = "\x1f"
+_GIT_RECORD_SEPARATOR = "\x1e"
 
 
 class UIError(RuntimeError):
@@ -110,24 +112,15 @@ def _run_git_capture(repo_root: Path, *args: str) -> str | None:
     return text or None
 
 
-def _git_commit_metadata(repo_root: Path, ref: str | None, *, github_repo_url: str | None = None) -> dict[str, Any] | None:
-    if not ref:
-        return None
-    commit = _run_git_capture(repo_root, "rev-parse", "--verify", ref)
-    if not commit:
-        return None
-    raw = _run_git_capture(
-        repo_root,
-        "show",
-        "-s",
-        "--date=iso-strict",
-        "--format=%H%x00%s%x00%an%x00%ad%x00%B",
-        commit,
-    )
-    if not raw:
-        return None
-    commit_hash, subject, author, committed_at, message = (raw.split("\x00", 4) + [""] * 5)[:5]
-    commit_hash = commit_hash or commit
+def _git_commit_metadata_row(
+    commit_hash: str,
+    subject: str,
+    author: str,
+    committed_at: str,
+    message: str,
+    *,
+    github_repo_url: str | None = None,
+) -> dict[str, Any]:
     return {
         "commit": commit_hash,
         "commit_short": _short_commit(commit_hash),
@@ -137,6 +130,103 @@ def _git_commit_metadata(repo_root: Path, ref: str | None, *, github_repo_url: s
         "commit_at": committed_at or None,
         "commit_message": message or None,
     }
+
+
+def _git_commit_metadata_batch(
+    repo_root: Path,
+    refs: list[str | None] | tuple[str | None, ...],
+    *,
+    github_repo_url: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    ordered_refs: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        ref_text = str(ref or "").strip()
+        if not ref_text or ref_text in seen:
+            continue
+        seen.add(ref_text)
+        ordered_refs.append(ref_text)
+    if not ordered_refs:
+        return {}
+    raw = _run_git_capture(
+        repo_root,
+        "show",
+        "-s",
+        "--no-patch",
+        "--date=iso-strict",
+        f"--format=%H{_GIT_FIELD_SEPARATOR}%s{_GIT_FIELD_SEPARATOR}%an{_GIT_FIELD_SEPARATOR}%ad{_GIT_FIELD_SEPARATOR}%B{_GIT_RECORD_SEPARATOR}",
+        *ordered_refs,
+    )
+    if not raw:
+        return {}
+    metadata: dict[str, dict[str, Any]] = {}
+    for record in raw.split(_GIT_RECORD_SEPARATOR):
+        record = record.rstrip("\n")
+        if not record:
+            continue
+        commit_hash, subject, author, committed_at, message = (record.split(_GIT_FIELD_SEPARATOR, 4) + [""] * 5)[:5]
+        commit_hash = commit_hash.strip()
+        if not commit_hash:
+            continue
+        metadata[commit_hash] = _git_commit_metadata_row(
+            commit_hash,
+            subject,
+            author,
+            committed_at,
+            message,
+            github_repo_url=github_repo_url,
+        )
+    return metadata
+
+
+def _git_branch_metadata_batch(
+    repo_root: Path,
+    branches: list[str | None] | tuple[str | None, ...],
+    *,
+    github_repo_url: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    ordered_refs: list[str] = []
+    seen: set[str] = set()
+    for branch in branches:
+        branch_text = str(branch or "").strip()
+        if not branch_text or branch_text in seen:
+            continue
+        seen.add(branch_text)
+        ordered_refs.append(branch_text if branch_text.startswith("refs/") else f"refs/heads/{branch_text}")
+    if not ordered_refs:
+        return {}
+    raw = _run_git_capture(
+        repo_root,
+        "for-each-ref",
+        f"--format=%(refname){_GIT_FIELD_SEPARATOR}%(refname:short){_GIT_FIELD_SEPARATOR}%(objectname){_GIT_FIELD_SEPARATOR}%(subject){_GIT_FIELD_SEPARATOR}%(authorname){_GIT_FIELD_SEPARATOR}%(authordate:iso-strict){_GIT_FIELD_SEPARATOR}%(contents){_GIT_RECORD_SEPARATOR}",
+        *ordered_refs,
+    )
+    if not raw:
+        return {}
+    metadata: dict[str, dict[str, Any]] = {}
+    for record in raw.split(_GIT_RECORD_SEPARATOR):
+        record = record.rstrip("\n")
+        if not record:
+            continue
+        full_ref, short_ref, commit_hash, subject, author, committed_at, message = (
+            record.split(_GIT_FIELD_SEPARATOR, 6) + [""] * 7
+        )[:7]
+        commit_hash = commit_hash.strip()
+        if not commit_hash:
+            continue
+        row = _git_commit_metadata_row(
+            commit_hash,
+            subject,
+            author,
+            committed_at,
+            message,
+            github_repo_url=github_repo_url,
+        )
+        if short_ref:
+            metadata[short_ref] = row
+        if full_ref:
+            metadata[full_ref] = row
+    return metadata
 
 
 def _github_repo_url(repo_root: Path) -> str | None:
@@ -723,7 +813,6 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
                 entry["diffstat_href"] = direct_artifacts["diffstat_href"]
 
     github_repo_url = _github_repo_url(paths.project_root)
-    commit_messages: dict[str, str | None] = {}
     for entry in rows.values():
         if entry.get("run_status") == "running" and not _pid_alive(entry.get("pid")):
             entry["run_status"] = "interrupted"
@@ -732,9 +821,6 @@ def _build_task_run_artifacts(paths: ProjectPaths, events: list[dict[str, Any]])
         if landed_commit:
             entry["landed_commit_short"] = _short_commit(landed_commit)
             entry["landed_commit_url"] = f"{github_repo_url}/commit/{landed_commit}" if github_repo_url else None
-            if landed_commit not in commit_messages:
-                commit_messages[landed_commit] = _run_git_capture(paths.project_root, "show", "-s", "--format=%B", landed_commit)
-            entry["landed_commit_message"] = commit_messages[landed_commit]
         entry["elapsed_seconds"] = _duration_seconds(_parse_iso(entry.get("started_at")), _parse_iso(entry.get("finished_at")))
         entry["elapsed_label"] = _format_duration(entry.get("elapsed_seconds"))
     return rows
@@ -1336,6 +1422,16 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     task_runs = _build_task_run_artifacts(profile.paths, events)
     threads, task_threads = _build_thread_snapshot_rows(profile.paths)
     github_repo_url = _github_repo_url(profile.paths.project_root)
+    task_branch_metadata = _git_branch_metadata_batch(
+        profile.paths.project_root,
+        [run.get("task_branch") for run in task_runs.values()],
+        github_repo_url=github_repo_url,
+    )
+    landed_commit_metadata = _git_commit_metadata_batch(
+        profile.paths.project_root,
+        [run.get("landed_commit") for run in task_runs.values()],
+        github_repo_url=github_repo_url,
+    )
     summary = build_view_model(
         profile,
         snapshot,
@@ -1370,8 +1466,10 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         run_info = task_runs.get(task.id, {})
         conversation_threads = task_threads.get(task.id, [])
         lane_info = lane_positions.get(task.id, {})
-        task_commit = _git_commit_metadata(profile.paths.project_root, run_info.get("task_branch"), github_repo_url=github_repo_url)
-        landed_commit = _git_commit_metadata(profile.paths.project_root, run_info.get("landed_commit"), github_repo_url=github_repo_url)
+        task_branch = _text_label(run_info.get("task_branch"))
+        landed_commit_ref = _text_label(run_info.get("landed_commit"))
+        task_commit = task_branch_metadata.get(task_branch or "")
+        landed_commit = landed_commit_metadata.get(landed_commit_ref or "")
         activity_rows = list(task_timeline.get(task.id, []))
         created_at = str(lifecycle.get("created_at") or "")
         updated_at = str(lifecycle.get("updated_at") or "")
@@ -1462,9 +1560,9 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "model_response_html": _render_markdown_html(run_info.get("model_response")),
             "model_response_truncated": bool(run_info.get("model_response_truncated")),
             "landed_commit": run_info.get("landed_commit"),
-            "landed_commit_short": run_info.get("landed_commit_short"),
-            "landed_commit_url": run_info.get("landed_commit_url"),
-            "landed_commit_message": run_info.get("landed_commit_message"),
+            "landed_commit_short": (landed_commit or {}).get("commit_short") or run_info.get("landed_commit_short"),
+            "landed_commit_url": (landed_commit or {}).get("commit_url") or run_info.get("landed_commit_url"),
+            "landed_commit_message": (landed_commit or {}).get("commit_message") or run_info.get("landed_commit_message"),
             "task_commit": (task_commit or {}).get("commit"),
             "task_commit_short": (task_commit or {}).get("commit_short"),
             "task_commit_url": (task_commit or {}).get("commit_url"),

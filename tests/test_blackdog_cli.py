@@ -24,6 +24,7 @@ sys.path.insert(0, str(SRC))
 from blackdog import backlog as backlog_module
 from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
+from blackdog import ui as ui_module
 from blackdog.backlog import load_backlog, render_backlog_plan_block, render_task_section
 from blackdog.cli import main as blackdog_main
 from blackdog.config import default_host_skill_name, load_profile, render_default_profile
@@ -3982,6 +3983,121 @@ class BlackdogCliTests(unittest.TestCase):
             rows[task_id]["thread_href"],
             f"supervisor-runs/20260327-120000-threadstdout/{task_id}/stdout.log",
         )
+
+    def test_snapshot_batches_git_commit_metadata_for_many_task_refs(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        task_titles: list[str] = []
+        commit_rows: list[tuple[str, str, str]] = []
+
+        for index in range(6):
+            title = f"Metadata batch task {index}"
+            task_titles.append(title)
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "html",
+                "--why",
+                "Snapshot performance should not degrade with one git subprocess per task ref.",
+                "--evidence",
+                "This fixture creates unique task branches and landed commits so the snapshot has to resolve multiple refs.",
+                "--safe-first-slice",
+                "Batch git metadata resolution across task refs.",
+                "--path",
+                "src/blackdog/ui.py",
+                "--epic-title",
+                "Snapshot performance",
+                "--lane-title",
+                "Metadata batching",
+                "--wave",
+                "0",
+            )
+            commit_subject = f"Batch metadata commit {index}"
+            commit_body = f"Record unique metadata fixture {index}."
+            artifact = self.root / f"metadata-batch-{index}.txt"
+            artifact.write_text(f"batch {index}\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(self.root), "add", artifact.name],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(self.root), "commit", "-m", commit_subject, "-m", commit_body],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            commit_hash = subprocess.run(
+                ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            branch_name = f"agent/metadata-batch-{index}"
+            subprocess.run(
+                ["git", "-C", str(self.root), "branch", "-f", branch_name, commit_hash],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            commit_rows.append((branch_name, commit_hash, commit_subject))
+
+        task_ids = task_ids_by_title(self.root)
+        for index, title in enumerate(task_titles):
+            task_id = task_ids[title]
+            branch_name, commit_hash, _commit_subject = commit_rows[index]
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-batch-start-{index}",
+                    "type": "worktree_start",
+                    "at": f"2026-03-27T12:00:0{index}-07:00",
+                    "actor": "supervisor",
+                    "task_id": task_id,
+                    "payload": {
+                        "run_id": f"batchrun{index}",
+                        "branch": branch_name,
+                        "target_branch": "main",
+                    },
+                },
+            )
+            append_jsonl(
+                paths.events_file,
+                {
+                    "event_id": f"evt-batch-finish-{index}",
+                    "type": "child_finish",
+                    "at": f"2026-03-27T12:01:0{index}-07:00",
+                    "actor": "supervisor",
+                    "task_id": task_id,
+                    "payload": {
+                        "run_id": f"batchrun{index}",
+                        "branch": branch_name,
+                        "target_branch": "main",
+                        "final_task_status": "done",
+                        "landed_commit": commit_hash,
+                    },
+                },
+            )
+
+        with patch("blackdog.ui._run_git_capture", wraps=ui_module._run_git_capture) as git_capture:
+            snapshot = build_ui_snapshot(load_profile(self.root))
+
+        self.assertLessEqual(git_capture.call_count, 4)
+        task_rows = {row["id"]: row for row in snapshot["tasks"]}
+        for title, (branch_name, commit_hash, commit_subject) in zip(task_titles, commit_rows, strict=True):
+            task = task_rows[task_ids[title]]
+            self.assertEqual(task["task_branch"], branch_name)
+            self.assertEqual(task["task_commit"], commit_hash)
+            self.assertEqual(task["task_commit_short"], commit_hash[:12])
+            self.assertIn(commit_subject, task["task_commit_message"])
+            self.assertEqual(task["landed_commit"], commit_hash)
+            self.assertEqual(task["landed_commit_short"], commit_hash[:12])
+            self.assertIn(commit_subject, task["landed_commit_message"])
 
     def test_completed_task_reader_exposes_model_response_and_commit_details(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
