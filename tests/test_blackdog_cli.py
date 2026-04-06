@@ -1990,6 +1990,289 @@ class BlackdogCliTests(unittest.TestCase):
             )
         self.assertEqual(error.exception.code, 2)
 
+    def test_task_edit_updates_an_unstarted_task_in_place(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Editable task",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need a stable in-place edit surface.",
+            "--evidence",
+            "Thin UIs should not patch backlog markdown directly.",
+            "--safe-first-slice",
+            "Edit one unstarted task through the CLI.",
+            "--path",
+            "src/blackdog/cli.py",
+            "--epic-title",
+            "Task control",
+            "--lane-title",
+            "Initial lane",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Editable task"]
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "task",
+                    "edit",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "operator",
+                    "--id",
+                    task_id,
+                    "--title",
+                    "Edited task",
+                    "--why",
+                    "Updated why.",
+                    "--evidence",
+                    "Updated evidence.",
+                    "--safe-first-slice",
+                    "Updated slice.",
+                    "--path",
+                    "src/blackdog/supervisor.py",
+                    "--check",
+                    "make test",
+                    "--doc",
+                    "docs/CLI.md",
+                    "--domain",
+                    "cli",
+                    "--objective",
+                    "Keep thin UIs on stable task commands.",
+                    "--lane-title",
+                    "Edited lane",
+                    "--wave",
+                    "1",
+                    "--task-shaping",
+                    json.dumps({"estimated_elapsed_minutes": 45}),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(payload["id"], task_id)
+        self.assertEqual(payload["title"], "Edited task")
+        profile = load_profile(self.root)
+        snapshot = load_backlog(profile.paths, profile)
+        task = snapshot.tasks[task_id]
+        self.assertEqual(task.title, "Edited task")
+        self.assertEqual(task.narrative.why, "Updated why.")
+        self.assertEqual(task.narrative.evidence, "Updated evidence.")
+        self.assertEqual(task.payload["safe_first_slice"], "Updated slice.")
+        self.assertEqual(task.payload["paths"], ["src/blackdog/supervisor.py"])
+        self.assertEqual(task.payload["checks"], ["make test"])
+        self.assertEqual(task.payload["docs"], ["docs/CLI.md"])
+        self.assertEqual(task.payload["task_shaping"]["estimated_elapsed_minutes"], 45)
+        self.assertEqual(task.lane_title, "Edited lane")
+        self.assertEqual(task.wave, 1)
+        event_types = {row["type"] for row in load_events(self.runtime_paths(), task_id=task_id)}
+        self.assertIn("task_updated", event_types)
+
+    def test_task_run_claims_task_and_reuses_existing_worktree(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Manual worktree task",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need a thin manual run surface.",
+            "--evidence",
+            "The CLI should claim the task and hand back a worktree without editor-specific logic.",
+            "--safe-first-slice",
+            "Prepare a branch-backed worktree for one task.",
+            "--path",
+            "src/blackdog/cli.py",
+            "--epic-title",
+            "Task control",
+            "--lane-title",
+            "Manual run lane",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Manual worktree task"]
+        first = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "task",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--agent",
+                    "operator",
+                    "--id",
+                    task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        worktree_path = Path(first["worktree"]["worktree_path"])
+        branch = str(first["worktree"]["branch"])
+        try:
+            self.assertTrue(first["worktree"]["created"])
+            self.assertTrue(worktree_path.exists())
+            state = json.loads(self.runtime_paths().state_file.read_text(encoding="utf-8"))
+            self.assertEqual(state["task_claims"][task_id]["status"], "claimed")
+            self.assertEqual(state["task_claims"][task_id]["claimed_by"], "operator")
+
+            second = json.loads(
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "blackdog.cli",
+                        "task",
+                        "run",
+                        "--project-root",
+                        str(self.root),
+                        "--agent",
+                        "operator",
+                        "--id",
+                        task_id,
+                        "--format",
+                        "json",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=cli_env(),
+                    cwd=self.root,
+                ).stdout
+            )
+            self.assertFalse(second["worktree"]["created"])
+            self.assertEqual(second["worktree"]["worktree_path"], str(worktree_path))
+        finally:
+            if worktree_path.exists():
+                subprocess.run(
+                    ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            subprocess.run(
+                ["git", "-C", str(self.root), "branch", "-D", branch],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_supervise_sweep_compacts_completed_tasks_without_launching_children(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Completed before sweep",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need one completed task to remove from the active plan.",
+            "--evidence",
+            "A non-draining sweep should compact the execution map before UI refresh.",
+            "--safe-first-slice",
+            "Complete one task, then sweep.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Sweep",
+            "--lane-title",
+            "Wave zero lane",
+            "--wave",
+            "0",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Remaining after sweep",
+            "--bucket",
+            "cli",
+            "--why",
+            "Need one remaining task whose wave gets compacted.",
+            "--evidence",
+            "The remaining task should move to wave zero once the completed lane is removed.",
+            "--safe-first-slice",
+            "Leave this task open.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Sweep",
+            "--lane-title",
+            "Wave one lane",
+            "--wave",
+            "1",
+        )
+        task_ids = task_ids_by_title(self.root)
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_ids["Completed before sweep"])
+        run_cli(
+            "complete",
+            "--project-root",
+            str(self.root),
+            "--agent",
+            "agent/a",
+            "--id",
+            task_ids["Completed before sweep"],
+        )
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "sweep",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertTrue(payload["sweep"]["changed"])
+        self.assertIn(task_ids["Completed before sweep"], payload["sweep"]["removed_task_ids"])
+        self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Remaining after sweep"])
+        profile = load_profile(self.root)
+        snapshot = load_backlog(profile.paths, profile)
+        self.assertEqual(snapshot.tasks[task_ids["Remaining after sweep"]].wave, 0)
+        event_types = {row["type"] for row in load_events(self.runtime_paths())}
+        self.assertNotIn("child_launch", event_types)
+
     def test_result_record_auto_enriches_task_shaping_telemetry(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         run_cli(
@@ -5226,6 +5509,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["workspace_contract"]["target_branch"], "main")
         self.assertIsInstance(payload["workspace_contract"]["primary_dirty"], bool)
         self.assertIn(".VE is unversioned", payload["workspace_contract"]["ve_expectation"])
+        self.assertEqual(payload["launch_defaults"]["mode"], "exec")
+        self.assertIn("strategy", payload["launch_defaults"])
         self.assertEqual(payload["control_action"], {"action": "stop", "message_id": stop_message["message_id"]})
         self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [stop_message["message_id"]])
         self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Status task one"])
@@ -5255,6 +5540,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Last checked: 2026-03-13T12:00:05-07:00", text_output)
         self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
         self.assertIn(".VE rule: .VE is unversioned", text_output)
+        self.assertIn("Launch defaults:", text_output)
         self.assertIn(f"Run control: stop via {stop_message['message_id']}", text_output)
         self.assertIn("Recent child-run results:", text_output)
 
@@ -8438,6 +8724,159 @@ if __name__ == "__main__":
                 self.assertEqual(telemetry["context_path_count"], 1)
                 self.assertIn("misstep_total", telemetry)
                 self.assertIn("actual_task_minutes", telemetry)
+
+    def test_supervise_run_accepts_model_and_reasoning_overrides(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    model = "default"
+    reasoning = "default"
+    if "-m" in args:
+        index = args.index("-m")
+        if index + 1 < len(args):
+            model = args[index + 1]
+    elif "--model" in args:
+        index = args.index("--model")
+        if index + 1 < len(args):
+            model = args[index + 1]
+    if "--effort" in args:
+        index = args.index("--effort")
+        if index + 1 < len(args):
+            reasoning = args[index + 1]
+    for index, token in enumerate(args):
+        if token == "-c" and index + 1 < len(args):
+            key, _, value = args[index + 1].partition("=")
+            if key == "model_reasoning_effort":
+                reasoning = value
+    Path(f"{task_id}-{model}-{reasoning}.txt").write_text(f"{model} {reasoning}\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], check=True)
+    subprocess.run(["git", "commit", "-m", f"Record overrides for {task_id}"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"completed {task_id} with model {model} and reasoning {reasoning}",
+            "--validation",
+            f"model={model}",
+            "--validation",
+            f"reasoning={reasoning}",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint override launcher",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Override task",
+            "--bucket",
+            "core",
+            "--why",
+            "Need Blackdog-owned model and reasoning overrides.",
+            "--evidence",
+            "Thin UIs should request one model/effort pair without knowing Codex argv flags.",
+            "--safe-first-slice",
+            "Run one child with explicit overrides and inspect the launch settings.",
+            "--path",
+            "README.md",
+            "--epic-title",
+            "Override contract",
+            "--lane-title",
+            "Override lane",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Override task"]
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--id",
+                    task_id,
+                    "--count",
+                    "1",
+                    "--model",
+                    "gpt-5.4-mini",
+                    "--reasoning-effort",
+                    "xhigh",
+                    "--poll-interval-seconds",
+                    "0",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual(payload["launch_overrides"]["model"], "gpt-5.4-mini")
+        self.assertEqual(payload["launch_overrides"]["reasoning_effort"], "xhigh")
+        self.assertEqual(payload["launch_settings"]["model"], "gpt-5.4-mini")
+        self.assertEqual(payload["launch_settings"]["reasoning_effort"], "xhigh")
+        launch_command = payload["children"][0]["launch_command"]
+        self.assertIn("-m", launch_command)
+        self.assertEqual(launch_command[launch_command.index("-m") + 1], "gpt-5.4-mini")
+        self.assertIn("-c", launch_command)
+        self.assertIn("model_reasoning_effort=xhigh", launch_command)
+
+        result_rows = [row for row in load_task_results(self.runtime_paths()) if row["task_id"] == task_id]
+        self.assertEqual(len(result_rows), 1)
+        self.assertIn("model=gpt-5.4-mini", result_rows[0]["validation"])
+        self.assertIn("reasoning=xhigh", result_rows[0]["validation"])
 
     def test_supervise_run_performs_a_second_round_convergence_optimization_funnel(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

@@ -279,6 +279,7 @@ Canonical event types include:
 
 - `init`
 - `task_added`
+- `task_updated`
 - `task_removed`
 - `claim`
 - `release`

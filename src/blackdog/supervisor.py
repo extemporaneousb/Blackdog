@@ -346,6 +346,15 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
         if contract.get("primary_dirty_paths"):
             lines.append("Primary dirty paths: " + ", ".join(str(item) for item in contract["primary_dirty_paths"]))
         lines.append(f".VE rule: {contract.get('ve_expectation') or ''}")
+    launch_defaults = view.get("launch_defaults")
+    if isinstance(launch_defaults, dict):
+        lines.append(
+            "Launch defaults: "
+            f"{launch_defaults.get('launcher') or '?'}"
+            f" | strategy {launch_defaults.get('strategy') or 'unknown'}"
+            f" | model {launch_defaults.get('model') or 'default'}"
+            f" | reasoning {launch_defaults.get('reasoning_effort') or 'default'}"
+        )
     recovery = view.get("prelaunch_recovery")
     if isinstance(recovery, dict):
         lines.append(
@@ -387,6 +396,33 @@ def render_supervisor_status_output(view: dict[str, Any], *, as_json: bool) -> s
     if as_json:
         return json.dumps(view, indent=2) + "\n"
     return _supervisor_status_text(view)
+
+
+def render_supervisor_sweep_output(view: dict[str, Any], *, as_json: bool) -> str:
+    if as_json:
+        return json.dumps(view, indent=2) + "\n"
+    lines = [
+        f"Supervisor sweep actor: {view['actor']}",
+        f"Sweep changed: {'yes' if view['sweep']['changed'] else 'no'}",
+    ]
+    if view["sweep"]["removed_task_ids"]:
+        lines.append("Removed tasks: " + ", ".join(view["sweep"]["removed_task_ids"]))
+    if view["released_task_ids"]:
+        lines.append("Released orphaned claims: " + ", ".join(view["released_task_ids"]))
+    launch_defaults = view.get("launch_defaults")
+    if isinstance(launch_defaults, dict):
+        lines.append(
+            "Launch defaults: "
+            f"model {launch_defaults.get('model') or 'default'}"
+            f" | reasoning {launch_defaults.get('reasoning_effort') or 'default'}"
+        )
+    lines.extend(["", "Ready tasks:"])
+    if view["ready_tasks"]:
+        for task in view["ready_tasks"]:
+            lines.append(f"- {task['id']} [{task['risk']}] {task['title']}")
+    else:
+        lines.append("- No runnable tasks.")
+    return "\n".join(lines) + "\n"
 
 
 def _run_dir_for_id(profile: Profile, run_id: str) -> Path | None:
@@ -1604,6 +1640,7 @@ def build_supervisor_status_view(
         "actor": actor,
         "latest_run": latest_run,
         "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
+        "launch_defaults": build_supervisor_launch_defaults_view(profile),
         "prelaunch_recovery": _plan_prelaunch_recovery(profile, actor=actor),
         "control_action": (
             {
@@ -1899,12 +1936,104 @@ def _build_child_prompt(
     ).strip()
 
 
+def _apply_launch_overrides(
+    command: list[str],
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> list[str]:
+    updated: list[str] = []
+    saw_model = False
+    saw_reasoning = False
+    index = 0
+    while index < len(command):
+        token = command[index]
+        next_token = command[index + 1] if index + 1 < len(command) else None
+        if token in {"-m", "--model"} and next_token is not None:
+            updated.extend([token, model if model is not None else next_token])
+            saw_model = True
+            index += 2
+            continue
+        if token == "--effort" and next_token is not None:
+            updated.extend([token, reasoning_effort if reasoning_effort is not None else next_token])
+            saw_reasoning = True
+            index += 2
+            continue
+        if token == "-c" and next_token is not None and "=" in next_token:
+            key, _, value = next_token.partition("=")
+            if key == "model":
+                updated.extend([token, f"{key}={model if model is not None else value}"])
+                saw_model = True
+                index += 2
+                continue
+            if key == "model_reasoning_effort":
+                updated.extend([token, f"{key}={reasoning_effort if reasoning_effort is not None else value}"])
+                saw_reasoning = True
+                index += 2
+                continue
+        updated.append(token)
+        index += 1
+    if model is not None and not saw_model:
+        updated.extend(["-m", model])
+    if reasoning_effort is not None and not saw_reasoning:
+        updated.extend(["-c", f"model_reasoning_effort={reasoning_effort}"])
+    return updated
+
+
+def _launch_settings_view(launch_command: tuple[str, ...] | list[str], *, strategy: str) -> dict[str, Any]:
+    command = list(launch_command)
+    model = None
+    reasoning_effort = None
+    config_overrides: dict[str, str] = {}
+    index = 0
+    while index < len(command):
+        token = command[index]
+        next_token = command[index + 1] if index + 1 < len(command) else None
+        if token in {"-m", "--model"} and next_token is not None:
+            model = next_token
+            index += 2
+            continue
+        if token == "--effort" and next_token is not None:
+            reasoning_effort = next_token
+            index += 2
+            continue
+        if token == "-c" and next_token is not None and "=" in next_token:
+            key, _, value = next_token.partition("=")
+            config_overrides[key] = value
+            if key == "model":
+                model = value
+            elif key == "model_reasoning_effort":
+                reasoning_effort = value
+            index += 2
+            continue
+        index += 1
+    return {
+        "command": command,
+        "strategy": strategy,
+        "launcher": command[0] if command else None,
+        "mode": command[1] if len(command) > 1 else None,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "config_overrides": config_overrides,
+    }
+
+
+def build_supervisor_launch_defaults_view(profile: Profile) -> dict[str, Any]:
+    command, strategy = _resolved_launch_command_with_strategy(profile)
+    return _launch_settings_view(command, strategy=strategy)
+
+
 def _resolved_launch_command(profile: Profile) -> list[str]:
     command, _ = _resolved_launch_command_with_strategy(profile)
     return command
 
 
-def _resolved_launch_command_with_strategy(profile: Profile) -> tuple[list[str], str]:
+def _resolved_launch_command_with_strategy(
+    profile: Profile,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> tuple[list[str], str]:
     command = list(profile.supervisor_launch_command)
     strategy = "profile"
     if (
@@ -1914,6 +2043,7 @@ def _resolved_launch_command_with_strategy(profile: Profile) -> tuple[list[str],
     ):
         command[0] = str(DESKTOP_CODEX_BINARY)
         strategy = "default-desktop-codex"
+    command = _apply_launch_overrides(command, model=model, reasoning_effort=reasoning_effort)
     return command, strategy
 
 
@@ -2514,6 +2644,8 @@ def run_supervisor(
     force: bool,
     workspace_mode: str | None,
     poll_interval_seconds: float | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     selected_count = count or profile.supervisor_max_parallel
     resolved_workspace_mode = workspace_mode or profile.supervisor_workspace_mode
@@ -2577,7 +2709,11 @@ def run_supervisor(
         removed_task_ids=list(sweep["removed_task_ids"]),
     )
 
-    resolved_launch_command, launch_command_strategy = _resolved_launch_command_with_strategy(profile)
+    resolved_launch_command, launch_command_strategy = _resolved_launch_command_with_strategy(
+        profile,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
     resolved_launch_command = tuple(resolved_launch_command)
     children: list[ChildRun] = []
     active: dict[str, ChildRun] = {}
@@ -2811,6 +2947,11 @@ def run_supervisor(
         "run_id": run_id,
         "actor": actor,
         "launch_command": list(resolved_launch_command),
+        "launch_overrides": {
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+        },
+        "launch_settings": _launch_settings_view(resolved_launch_command, strategy=launch_command_strategy),
         "workspace_mode": resolved_workspace_mode,
         "poll_interval_seconds": resolved_poll_interval_seconds,
         "draining": bool(status_payload.get("draining")),
@@ -2844,5 +2985,47 @@ def run_supervisor(
                 "land_error": child.land_error,
             }
             for child in children
+        ],
+    }
+
+
+def run_supervisor_sweep(
+    profile: Profile,
+    *,
+    actor: str,
+    allow_high_risk: bool,
+) -> dict[str, Any]:
+    sweep = sweep_completed_tasks(profile)
+    released_task_ids = _scan_claim_process_liveness(profile, actor=actor, skip_task_ids=set())
+    snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    if sweep["changed"]:
+        _emit_render(profile)
+    view = build_supervisor_status_view(profile, actor=actor, allow_high_risk=allow_high_risk)
+    return {
+        **view,
+        "sweep": {
+            "changed": bool(sweep["changed"]),
+            "removed_task_ids": list(sweep["removed_task_ids"]),
+            "removed_lane_ids": list(sweep["removed_lane_ids"]),
+            "removed_epic_ids": list(sweep["removed_epic_ids"]),
+            "wave_map": dict(sweep["wave_map"]),
+        },
+        "released_task_ids": list(released_task_ids),
+        "ready_tasks": [
+            {
+                "id": task.id,
+                "title": task.title,
+                "lane": task.lane_title,
+                "wave": task.wave,
+                "risk": task.payload["risk"],
+                "priority": task.payload["priority"],
+            }
+            for task in next_runnable_tasks(
+                snapshot,
+                state,
+                allow_high_risk=allow_high_risk,
+                limit=SUPERVISOR_STATUS_READY_LIMIT,
+            )
         ],
     }

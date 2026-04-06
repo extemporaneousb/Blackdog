@@ -20,6 +20,7 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 - `blackdog coverage [--command CMD] [--output FILE]`
 - `blackdog prompt [--complexity low|medium|high] [--format text|json] PROMPT...`
 - `blackdog thread new|list|show|append|prompt|task ...`
+- `blackdog task edit|run ...`
 - `blackdog worktree preflight`
 - `blackdog worktree start --id TASK`
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
@@ -127,8 +128,10 @@ product development.
 - `blackdog next`
 - `blackdog prompt`
 - `blackdog thread new|list|show|append|prompt|task`
+- `blackdog task edit|run`
 - `blackdog tune`
 - `blackdog supervise run`
+- `blackdog supervise sweep`
 - `blackdog supervise status`
 - `blackdog supervise recover`
 - `blackdog supervise report`
@@ -160,6 +163,10 @@ The prompt profiles now also carry calibrated task-shaping defaults by effort (`
 
 The command appends a `task_removed` event and rerenders the static board like other task-state mutations.
 
+`blackdog task edit` is the in-place mutation surface for thin UIs. It preserves the task id, updates the task block plus plan assignment, and rejects tasks that already have claim state or recorded results. Use it for operator edits before execution starts instead of teaching editors to rewrite backlog markdown directly.
+
+`blackdog task run` is the manual WTAM preparation surface. It claims the task for the selected agent, creates the default branch-backed worktree when one does not exist yet, or reuses the existing task worktree when it is already present. Pass `--format json` when an editor wants the returned branch/worktree contract instead of parsing shell text.
+
 `blackdog tune` now does direct tuning as well as optional backlog seeding. It still prints the stable self-tuning task payload when task creation is enabled, but it also emits a `tune_analysis` summary plus low/medium/high `prompt_profiles`. The analysis now groups runtime signals into `time`, `missteps`, `document_use_value`, and `context_efficiency`, then uses those categories to decide which runtime gap should be addressed first. Pass `--no-task` when you want the tuning guidance without automatically seeding a backlog task.
 
 `blackdog add` now auto-seeds missing task-shaping estimates from the repo's completed task history. When you omit `--task-shaping` or leave estimate fields blank, Blackdog preserves comparable fields like `estimated_elapsed_minutes`, `estimated_active_minutes`, `estimated_validation_minutes`, and `estimated_touched_paths` so future `tune` runs can compare new work against the same contract instead of mostly reporting coverage gaps.
@@ -170,7 +177,7 @@ The command appends a `task_removed` event and rerenders the static board like o
 
 `blackdog backlog reset` obliterates the mutable state for the default backlog and recreates a fresh empty runtime. Use `--purge-named` when you also want to remove every named backlog under `<control_dir>/backlogs/`.
 
-`blackdog supervise run` now assumes an exec-capable Codex launcher. With the default config, it prefers the Codex.app runtime when available and no longer supports the legacy prompt launcher.
+`blackdog supervise run` now assumes an exec-capable Codex launcher. With the default config, it prefers the Codex.app runtime when available and no longer supports the legacy prompt launcher. When an editor or operator needs a one-off model or reasoning override, use `--model MODEL` and `--reasoning-effort low|medium|high|xhigh`; Blackdog rewrites the launch prefix itself so UIs do not need to know Codex argv details.
 
 The default `worktrees_dir` is now `../.worktrees`, which keeps Blackdog task worktrees as siblings of the primary checkout rather than nesting them under repo-controlled runtime artifacts. If a repo prefers a `.worktrees` symlink inside the repo root, Blackdog will follow that resolved path when it is configured in `blackdog.toml`.
 
@@ -184,13 +191,15 @@ Completed outcomes now encode one of three landing states:
 
 The generated child prompt tells the agent that committed repo state is the baseline, that the task is already claimed by the supervisor, that it must commit changes on the task branch, and that Blackdog CLI output should be treated as the source of truth for backlog state. It also surfaces the run workspace mode, the task branch to target-branch landing path, the primary-worktree cleanliness gate, and the per-worktree `.VE` rule. When the current workspace contains `.VE/bin/blackdog`, the prompt points child agents at that workspace-local CLI; otherwise it falls back to `blackdog` from the active environment and tells the agent to bootstrap `./.VE` in that worktree rather than reusing another worktree's environment.
 
-`blackdog supervise run` is the only supervisor mode. It performs one cleanup sweep at the start of the run, removes already-completed tasks from the execution map, drops empty lanes and waves, compacts remaining waves back to small integers, then keeps rereading backlog/state while the run is active. Before it launches new child work from an idle point in that loop, it runs the primary-worktree recovery gate described above and records any resulting `stash`, `land`, or `commit` recovery actions in the run payload. Tasks completed during that active run stay visible in place on the execution map until the next run starts and sweeps them away. If there is no runnable or running work after that opening sweep, the command returns `idle` immediately instead of waiting for future tasks. Otherwise the run exits only when it reaches idle or when a `stop` inbox message puts it into draining mode. `stop` prevents new launches but does not interrupt already-running child tasks.
+`blackdog supervise run` is the draining supervisor mode. It performs one cleanup sweep at the start of the run, removes already-completed tasks from the execution map, drops empty lanes and waves, compacts remaining waves back to small integers, then keeps rereading backlog/state while the run is active. Before it launches new child work from an idle point in that loop, it runs the primary-worktree recovery gate described above and records any resulting `stash`, `land`, or `commit` recovery actions in the run payload. Tasks completed during that active run stay visible in place on the execution map until the next run starts and sweeps them away. If there is no runnable or running work after that opening sweep, the command returns `idle` immediately instead of waiting for future tasks. Otherwise the run exits only when it reaches idle or when a `stop` inbox message puts it into draining mode. `stop` prevents new launches but does not interrupt already-running child tasks.
+
+`blackdog supervise sweep` is the non-draining counterpart. It runs the same cleanup/liveness refresh once, rerenders the board when the plan changed, and returns the current ready queue plus launch-default metadata without starting child work.
 
 While a run is active, Blackdog keeps writing the latest `status.json` for that run plus per-child `prompt.txt`, `stdout.log`, `stderr.log`, `metadata.json`, and any diff artifacts under `supervisor-runs/<timestamp-runid>/`. Operator UIs such as the Emacs monitor can poll that status file and tail those child artifacts directly instead of waiting for the final `supervise run` process output.
 
 Claimed tasks no longer have a lease timeout. `blackdog claim` can record the long-lived claiming process with `--pid PID`, and supervisor child claims record that pid automatically. A live claimed process can run indefinitely; the supervisor only recovers a claim when the reported claiming pid is missing on repeated liveness scans, and even then it releases the claim instead of killing a still-live task.
 
-`blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the resolved WTAM workspace contract, the current pre-launch recovery decision when one exists, the currently open `stop` control messages for that actor, the current ready-task queue, and the most recent supervisor or child-agent task results in one compact text or JSON view.
+`blackdog supervise status` is the chat-native inspection surface for that run. It reports the latest saved run status for a supervisor actor, the resolved WTAM workspace contract, the current launch defaults (including parsed model/reasoning when configured), the current pre-launch recovery decision when one exists, the currently open `stop` control messages for that actor, the current ready-task queue, and the most recent supervisor or child-agent task results in one compact text or JSON view.
 
 `blackdog supervise recover` is the structured interruption-recovery surface. It reports recent supervisor runs and child executions, and highlights recoverable cases with suggested follow-up actions. Recoverable dirty-primary rows now include the branch/primary metadata the supervisor uses for the pre-launch recovery gate. Use this command to inspect what the supervisor will try to land, commit, or stash before deciding whether to relaunch, clean up, retry, or complete a replacement flow yourself.
 

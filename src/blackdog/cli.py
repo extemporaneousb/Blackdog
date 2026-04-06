@@ -27,6 +27,7 @@ from .backlog import (
     load_backlog,
     next_runnable_tasks,
     remove_task,
+    update_task,
     render_plan_text,
     render_summary_text,
     sync_state_for_backlog,
@@ -75,14 +76,18 @@ from .supervisor import (
     build_supervisor_observation_view,
     render_supervisor_output,
     render_supervisor_status_output,
+    render_supervisor_sweep_output,
     render_supervisor_recover_output,
     render_supervisor_observation_output,
     run_supervisor,
+    run_supervisor_sweep,
 )
 from .ui import UIError, build_ui_snapshot
 from .worktree import (
     WorktreeError,
     cleanup_task_worktree,
+    default_task_branch,
+    find_worktree_for_branch,
     land_branch,
     render_cleanup_text,
     render_land_text,
@@ -944,6 +949,143 @@ def cmd_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_edit(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = update_task(
+        profile,
+        task_id=args.id,
+        title=args.title,
+        bucket=args.bucket,
+        priority=args.priority,
+        risk=args.risk,
+        effort=args.effort,
+        why=args.why,
+        evidence=args.evidence,
+        safe_first_slice=args.safe_first_slice,
+        paths=args.path,
+        checks=args.check,
+        docs=args.doc,
+        domains=args.domain,
+        packages=args.package,
+        affected_paths=args.affected_path,
+        task_shaping=_parse_json_object(args.task_shaping, command="task edit", flag="--task-shaping"),
+        objective=args.objective,
+        requires_approval=args.requires_approval,
+        approval_reason=args.approval_reason,
+        epic_id=args.epic_id,
+        epic_title=args.epic_title,
+        lane_id=args.lane_id,
+        lane_title=args.lane_title,
+        wave=args.wave,
+    )
+    append_event(
+        profile.paths,
+        event_type="task_updated",
+        actor=args.actor,
+        task_id=str(payload["id"]),
+        payload={"title": payload["title"], "bucket": payload["bucket"]},
+    )
+    _emit_render(profile)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def cmd_task_run(args: argparse.Namespace) -> int:
+    profile, snapshot, _ = _load_runtime(Path(args.project_root) if args.project_root else None)
+    task = snapshot.tasks.get(args.id)
+    if task is None:
+        raise BacklogError(f"Unknown task id: {args.id}")
+
+    with locked_state(profile.paths.state_file) as state:
+        state = sync_state_for_backlog(state, snapshot)
+        entry = state.setdefault("task_claims", {}).get(task.id) or {}
+        owner = entry.get("claimed_by")
+        if owner and owner != args.agent and not args.force:
+            raise BacklogError(f"Task {task.id} is claimed by {owner}; use --force to override")
+        blocker = classify_task_status(task, snapshot, state, allow_high_risk=args.allow_high_risk)
+        if blocker[0] != "ready" and owner != args.agent and not args.force:
+            raise BacklogError(f"Task {task.id} is not claimable: {blocker[1]}")
+        if args.pid is not None and args.pid < 1:
+            raise BacklogError("--pid must be a positive integer")
+        claim_task_entry(
+            entry,
+            agent=args.agent,
+            title=task.title,
+            summary={
+                "bucket": task.payload["bucket"],
+                "paths": task.payload["paths"],
+                "priority": task.payload["priority"],
+                "risk": task.payload["risk"],
+            },
+            claimed_pid=args.pid,
+        )
+        state["task_claims"][task.id] = entry
+    append_event(
+        profile.paths,
+        event_type="claim",
+        actor=args.agent,
+        task_id=task.id,
+        payload={"claimed_pid": args.pid} if args.pid is not None else {},
+    )
+
+    branch = args.branch or default_task_branch(task)
+    existing_worktree = find_worktree_for_branch(profile, branch)
+    worktree_payload: dict[str, Any]
+    if existing_worktree is not None:
+        contract = worktree_contract(profile, workspace=Path(existing_worktree))
+        worktree_payload = {
+            "task_id": task.id,
+            "task_title": task.title,
+            "branch": contract["current_branch"],
+            "target_branch": contract["target_branch"],
+            "worktree_path": str(existing_worktree),
+            "created": False,
+            "workspace_contract": contract,
+        }
+    else:
+        spec = start_task_worktree(
+            profile,
+            task_id=task.id,
+            branch=args.branch,
+            from_ref=args.from_ref,
+            path=args.path,
+        )
+        append_event(
+            profile.paths,
+            event_type="worktree_start",
+            actor=args.agent,
+            task_id=spec.task_id,
+            payload=spec.to_dict(),
+        )
+        worktree_payload = {**spec.to_dict(), "created": True, "workspace_contract": worktree_contract(profile, workspace=Path(spec.worktree_path))}
+    _emit_render(profile)
+    payload = {
+        "task": {
+            "id": task.id,
+            "title": task.title,
+            "priority": task.payload["priority"],
+            "risk": task.payload["risk"],
+        },
+        "claimed_by": args.agent,
+        "worktree": worktree_payload,
+    }
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        created_text = "created" if worktree_payload["created"] else "reused"
+        print(
+            "\n".join(
+                [
+                    f"{task.id} {task.title}",
+                    f"Claimed by: {args.agent}",
+                    f"Worktree: {created_text} {worktree_payload['worktree_path']}",
+                    f"Branch: {worktree_payload['branch']} -> {worktree_payload['target_branch']}",
+                ]
+            )
+        )
+    return 0
+
+
 def _summary_view(profile, snapshot, state) -> dict[str, Any]:
     return build_view_model(
         profile,
@@ -986,9 +1128,22 @@ def cmd_supervise_run(args: argparse.Namespace) -> int:
         force=args.force,
         workspace_mode=None,
         poll_interval_seconds=args.poll_interval_seconds,
+        model=args.model,
+        reasoning_effort=args.reasoning_effort,
     )
     _emit_render(profile)
     print(render_supervisor_output(payload, as_json=args.format == "json"), end="")
+    return 0
+
+
+def cmd_supervise_sweep(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    payload = run_supervisor_sweep(
+        profile,
+        actor=args.actor,
+        allow_high_risk=args.allow_high_risk,
+    )
+    print(render_supervisor_sweep_output(payload, as_json=args.format == "json"), end="")
     return 0
 
 
@@ -1806,6 +1961,49 @@ def build_parser() -> argparse.ArgumentParser:
     p_remove.add_argument("--id", required=True)
     p_remove.set_defaults(func=cmd_remove)
 
+    p_task = subparsers.add_parser("task", help="Task-scoped edit and manual-run surfaces for thin UIs")
+    task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
+    p_task_edit = task_subparsers.add_parser("edit", help="Edit an unstarted task in place")
+    p_task_edit.add_argument("--project-root", default=None)
+    p_task_edit.add_argument("--actor", default="blackdog")
+    p_task_edit.add_argument("--id", required=True)
+    p_task_edit.add_argument("--title", default=None)
+    p_task_edit.add_argument("--bucket", default=None)
+    p_task_edit.add_argument("--priority", choices=sorted({"P1", "P2", "P3"}), default=None)
+    p_task_edit.add_argument("--risk", choices=sorted({"low", "medium", "high"}), default=None)
+    p_task_edit.add_argument("--effort", choices=sorted({"S", "M", "L"}), default=None)
+    p_task_edit.add_argument("--why", default=None)
+    p_task_edit.add_argument("--evidence", default=None)
+    p_task_edit.add_argument("--safe-first-slice", default=None)
+    p_task_edit.add_argument("--path", action="append", default=None)
+    p_task_edit.add_argument("--affected-path", action="append", default=None)
+    p_task_edit.add_argument("--task-shaping", default=None)
+    p_task_edit.add_argument("--check", action="append", default=None)
+    p_task_edit.add_argument("--doc", action="append", default=None)
+    p_task_edit.add_argument("--domain", action="append", default=None)
+    p_task_edit.add_argument("--package", action="append", default=None)
+    p_task_edit.add_argument("--objective", default=None)
+    p_task_edit.add_argument("--requires-approval", action=argparse.BooleanOptionalAction, default=None)
+    p_task_edit.add_argument("--approval-reason", default=None)
+    p_task_edit.add_argument("--epic-id", default=None)
+    p_task_edit.add_argument("--epic-title", default=None)
+    p_task_edit.add_argument("--lane-id", default=None)
+    p_task_edit.add_argument("--lane-title", default=None)
+    p_task_edit.add_argument("--wave", type=int, default=None)
+    p_task_edit.set_defaults(func=cmd_task_edit)
+    p_task_run = task_subparsers.add_parser("run", help="Claim a task and create or reuse its manual WTAM worktree")
+    p_task_run.add_argument("--project-root", default=None)
+    p_task_run.add_argument("--agent", required=True)
+    p_task_run.add_argument("--id", required=True)
+    p_task_run.add_argument("--pid", type=int, default=None)
+    p_task_run.add_argument("--allow-high-risk", action="store_true")
+    p_task_run.add_argument("--force", action="store_true")
+    p_task_run.add_argument("--branch", default=None)
+    p_task_run.add_argument("--from", dest="from_ref", default=None)
+    p_task_run.add_argument("--path", default=None)
+    p_task_run.add_argument("--format", choices=("text", "json"), default="text")
+    p_task_run.set_defaults(func=cmd_task_run)
+
     p_summary = subparsers.add_parser("summary", help="Summarize backlog state")
     p_summary.add_argument("--project-root", default=None)
     p_summary.add_argument("--format", choices=("text", "json"), default="text")
@@ -1937,9 +2135,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_run.add_argument("--count", type=int, default=0)
     p_supervise_run.add_argument("--allow-high-risk", action="store_true")
     p_supervise_run.add_argument("--force", action="store_true")
+    p_supervise_run.add_argument("--model", default=None)
+    p_supervise_run.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"), default=None)
     p_supervise_run.add_argument("--poll-interval-seconds", type=float, default=1.0)
     p_supervise_run.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_run.set_defaults(func=cmd_supervise_run)
+    p_supervise_sweep = supervise_subparsers.add_parser("sweep", help="Run one non-draining supervisor update cycle")
+    p_supervise_sweep.add_argument("--project-root", default=None)
+    p_supervise_sweep.add_argument("--actor", default="supervisor")
+    p_supervise_sweep.add_argument("--allow-high-risk", action="store_true")
+    p_supervise_sweep.add_argument("--format", choices=("text", "json"), default="text")
+    p_supervise_sweep.set_defaults(func=cmd_supervise_sweep)
     p_supervise_status = supervise_subparsers.add_parser("status", help="Report latest run state, open controls, ready tasks, and recent child results")
     p_supervise_status.add_argument("--project-root", default=None)
     p_supervise_status.add_argument("--actor", default="supervisor")

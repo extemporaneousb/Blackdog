@@ -2163,6 +2163,27 @@ def _remove_task_section(text: str, task_id: str) -> str:
     return updated.rstrip() + "\n"
 
 
+def _replace_task_section(text: str, task_id: str, section: str) -> str:
+    task_section_re = re.compile(
+        rf"^###\s+{re.escape(task_id)}\s+-\s+.+?(?=^###\s+[A-Z0-9]+-[0-9a-f]+\s+-|\Z)",
+        re.S | re.M,
+    )
+    updated, replaced = task_section_re.subn(section.rstrip() + "\n", text, count=1)
+    if replaced != 1:
+        raise BacklogError(f"Could not find task section for {task_id}")
+    return updated.rstrip() + "\n"
+
+
+def _plan_entry_for_task(plan: dict[str, Any], *, collection: str, task_id: str) -> dict[str, Any] | None:
+    for entry in plan.get(collection, []):
+        if not isinstance(entry, dict):
+            continue
+        task_ids = [str(value) for value in entry.get("task_ids", [])]
+        if task_id in task_ids:
+            return entry
+    return None
+
+
 def add_task(
     profile: Profile,
     *,
@@ -2262,6 +2283,150 @@ def add_task(
         ).rstrip() + "\n"
         atomic_write_text(profile.paths.backlog_file, updated)
         return payload
+
+
+def update_task(
+    profile: Profile,
+    *,
+    task_id: str,
+    title: str | None = None,
+    bucket: str | None = None,
+    priority: str | None = None,
+    risk: str | None = None,
+    effort: str | None = None,
+    why: str | None = None,
+    evidence: str | None = None,
+    safe_first_slice: str | None = None,
+    paths: list[str] | None = None,
+    checks: list[str] | None = None,
+    docs: list[str] | None = None,
+    domains: list[str] | None = None,
+    packages: list[str] | None = None,
+    affected_paths: list[str] | None = None,
+    task_shaping: dict[str, Any] | None = None,
+    objective: str | None = None,
+    requires_approval: bool | None = None,
+    approval_reason: str | None = None,
+    epic_id: str | None = None,
+    epic_title: str | None = None,
+    lane_id: str | None = None,
+    lane_title: str | None = None,
+    wave: int | None = None,
+) -> dict[str, Any]:
+    with locked_path(profile.paths.backlog_file):
+        snapshot = load_backlog(profile.paths, profile)
+        task = snapshot.tasks.get(task_id)
+        if task is None:
+            raise BacklogError(f"Unknown task id: {task_id}")
+        state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+        claim_entry = state.get("task_claims", {}).get(task_id) or {}
+        if claim_entry:
+            raise BacklogError(f"Task {task_id} already has execution state and cannot be edited in place")
+        task_results = [row for row in load_task_results(profile.paths) if str(row.get("task_id") or "") == task_id]
+        if task_results:
+            raise BacklogError(f"Task {task_id} already has recorded results and cannot be edited in place")
+
+        existing_payload = json.loads(json.dumps(task.payload))
+        updated_payload = dict(existing_payload)
+        if title is not None:
+            updated_payload["title"] = title
+        if bucket is not None:
+            updated_payload["bucket"] = bucket
+        if priority is not None:
+            updated_payload["priority"] = priority
+        if risk is not None:
+            updated_payload["risk"] = risk
+        if effort is not None:
+            updated_payload["effort"] = effort
+        if safe_first_slice is not None:
+            updated_payload["safe_first_slice"] = safe_first_slice
+        if paths is not None:
+            updated_payload["paths"] = list(paths)
+        if checks is not None:
+            updated_payload["checks"] = list(checks)
+        if docs is not None:
+            updated_payload["docs"] = list(docs)
+        if domains is not None:
+            updated_payload["domains"] = list(domains)
+        if packages is not None:
+            updated_payload["packages"] = list(packages)
+        if objective is not None:
+            updated_payload["objective"] = objective
+        if requires_approval is not None:
+            updated_payload["requires_approval"] = requires_approval
+        if approval_reason is not None:
+            updated_payload["approval_reason"] = approval_reason
+
+        existing_task_shaping = existing_payload.get("task_shaping")
+        merged_task_shaping = dict(existing_task_shaping) if isinstance(existing_task_shaping, dict) else {}
+        if task_shaping is not None:
+            merged_task_shaping.update(task_shaping)
+        updated_payload["task_shaping"] = _coerce_task_shaping(
+            merged_task_shaping,
+            fallback_paths=list(updated_payload.get("paths") or []),
+        )
+        validate_task_payload(updated_payload, profile)
+
+        plan = json.loads(json.dumps(snapshot.plan))
+        existing_epic = _plan_entry_for_task(plan, collection="epics", task_id=task_id) or {}
+        existing_lane = _plan_entry_for_task(plan, collection="lanes", task_id=task_id) or {}
+        for collection_name in ("epics", "lanes"):
+            for entry in plan.get(collection_name, []):
+                if not isinstance(entry, dict):
+                    continue
+                entry["task_ids"] = [str(value) for value in entry.get("task_ids", []) if str(value) != task_id]
+        plan = _prune_empty_plan_entries(plan)
+
+        resolved_epic_title = epic_title or str(existing_epic.get("title") or task.epic_title or "Unplanned")
+        resolved_epic_id = epic_id or str(existing_epic.get("id") or f"epic-{slugify(resolved_epic_title)}")
+        resolved_lane_title = lane_title or str(existing_lane.get("title") or task.lane_title or "Unplanned")
+        resolved_lane_id = lane_id or str(existing_lane.get("id") or f"lane-{slugify(resolved_lane_title)}")
+        resolved_wave = (
+            wave
+            if wave is not None
+            else int(existing_lane.get("wave", task.wave if task.wave is not None else 0))
+        )
+
+        epic_entry = _ensure_plan_entry(plan, kind="epic", entry_id=resolved_epic_id, title=resolved_epic_title)
+        lane_entry = _ensure_plan_entry(
+            plan,
+            kind="lane",
+            entry_id=resolved_lane_id,
+            title=resolved_lane_title,
+            wave=resolved_wave,
+        )
+        epic_entry["task_ids"].append(task_id)
+        lane_entry["task_ids"].append(task_id)
+        validate_plan_payload(plan, task_ids=set(snapshot.tasks))
+
+        resolved_why = why if why is not None else task.narrative.why
+        resolved_evidence = evidence if evidence is not None else task.narrative.evidence
+        resolved_affected_paths = (
+            list(affected_paths)
+            if affected_paths is not None
+            else list(task.narrative.affected_paths) or list(updated_payload.get("paths") or [])
+        )
+
+        updated = _apply_runtime_headers(snapshot.raw_text, profile)
+        updated = _replace_plan_block(updated, plan)
+        updated = _replace_task_section(
+            updated,
+            task_id,
+            render_task_section(
+                updated_payload,
+                why=resolved_why,
+                evidence=resolved_evidence,
+                affected_paths=resolved_affected_paths,
+            ),
+        )
+        atomic_write_text(profile.paths.backlog_file, updated)
+
+    refreshed_snapshot = load_backlog(profile.paths, profile)
+    state = sync_state_for_backlog(state, refreshed_snapshot)
+    if not bool(updated_payload.get("requires_approval")):
+        state.setdefault("approval_tasks", {}).pop(task_id, None)
+    save_state(profile.paths.state_file, state)
+    return updated_payload
 
 
 def remove_task(profile: Profile, *, task_id: str) -> dict[str, Any]:
