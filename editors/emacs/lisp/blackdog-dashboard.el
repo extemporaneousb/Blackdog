@@ -29,6 +29,22 @@
   "Major mode for the Blackdog dashboard."
   (setq-local truncate-lines t))
 
+(defun blackdog-dashboard--task-meta-line (task)
+  "Return a compact lifecycle/commit summary for TASK."
+  (let ((created (alist-get 'created_at task))
+        (updated (alist-get 'updated_at task))
+        (claimed (alist-get 'claimed_at task))
+        (commit (or (alist-get 'task_commit_short task)
+                    (alist-get 'landed_commit_short task))))
+    (when (or created updated claimed commit)
+      (string-join
+       (delq nil
+             (list (when created (format "Created: %s" created))
+                   (when updated (format "Updated: %s" updated))
+                   (when claimed (format "Claimed: %s" claimed))
+                   (when commit (format "Commit: %s" commit))))
+       "  "))))
+
 (defun blackdog-dashboard-open (&optional root)
   "Open the Blackdog dashboard for ROOT."
   (interactive)
@@ -140,6 +156,8 @@
                             (or (alist-get 'lane_title task) "")
                             (or (alist-get 'wave task) "")
                             (or (alist-get 'priority task) "")))
+            (when-let ((meta (blackdog-dashboard--task-meta-line task)))
+              (insert (format "  %s\n" meta)))
             (when-let ((preview (or (alist-get 'latest_result_preview task)
                                     (alist-get 'safe_first_slice task))))
               (insert (format "  %s\n" preview)))))

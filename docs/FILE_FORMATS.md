@@ -772,10 +772,12 @@ Current `graph` keys:
 Current `graph.tasks[*]` keys include task identity and planning fields plus derived operator metadata:
 
 - `activity`
+- `created_at`
 - `claimed_by`
 - `claimed_at`
 - `completed_at`
 - `released_at`
+- `updated_at`
 - `active_compute_seconds`
 - `active_compute_label`
 - `total_compute_seconds`
@@ -808,6 +810,13 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `task_branch`
 - `target_branch`
 - `child_agent`
+- `task_commit`
+- `task_commit_short`
+- `task_commit_url`
+- `task_commit_subject`
+- `task_commit_author`
+- `task_commit_at`
+- `task_commit_message`
 - `model_response`
 - `model_response_html`
 - `model_response_truncated`
@@ -815,6 +824,9 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `landed_commit_short`
 - `landed_commit_url`
 - `landed_commit_message`
+- `landed_commit_subject`
+- `landed_commit_author`
+- `landed_commit_at`
 - `latest_run_branch_ahead`
 - `latest_run_landed`
 - `latest_run_land_error`
@@ -822,6 +834,8 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `operator_status_key`
 - `operator_status_detail`
 - `links`
+
+The `activity` timeline now includes task-created events, so `created_at` and `updated_at` can be derived from the same event stream that drives claims, releases, results, and run transitions.
 
 `diff_href` and `diffstat_href` may resolve either to supervisor-run
 artifacts or to direct/manual landed artifacts under
@@ -839,6 +853,8 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `status`
 - `lane_title`
 - `epic_title`
+- `created_at`
+- `updated_at`
 - `claimed_by`
 - `claimed_at`
 - `total_compute_seconds`
@@ -851,6 +867,9 @@ Current `active_tasks[*]` keys summarize the operator-facing running/claimed vie
 - `workspace_mode`
 - `task_branch`
 - `target_branch`
+- `task_commit`
+- `task_commit_short`
+- `task_commit_url`
 - `prompt_href`
 - `thread_href`
 - `stdout_href`

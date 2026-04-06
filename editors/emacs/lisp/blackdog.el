@@ -22,6 +22,34 @@
 (require 'blackdog-thread)
 (require 'blackdog-spec)
 (require 'blackdog-telemetry)
+(require 'cl-lib)
+
+(defvar blackdog-skill-inspection-files
+  '(".codex/skills/blackdog/SKILL.md"
+    ".codex/skills/blackdog/agents/openai.yaml"
+    ".codex/skills/blackdog/references/task-shaping.md")
+  "Relative files that the skill inspection command can open.")
+
+(defun blackdog--skill-inspection-candidates (&optional root)
+  "Return inspectable Blackdog skill files under ROOT."
+  (let ((root (or root (blackdog-project-root))))
+    (cl-loop for relative in blackdog-skill-inspection-files
+             for path = (expand-file-name relative root)
+             when (file-exists-p path)
+             collect (cons (file-relative-name path root) relative))))
+
+(defun blackdog-open-skill (&optional root)
+  "Inspect the repo-local Blackdog skill files under ROOT."
+  (interactive)
+  (let* ((root (or root (blackdog-project-root)))
+         (candidates (blackdog--skill-inspection-candidates root)))
+    (unless candidates
+      (user-error "No Blackdog skill files were found under %s" root))
+    (blackdog-open-project-path
+     (cdr (assoc (completing-read "Skill file: " (mapcar #'car candidates) nil t nil nil (caar candidates))
+                 candidates))
+     root
+     t)))
 
 (defvar blackdog-prefix-map
   (let ((map (make-sparse-keymap)))
@@ -48,6 +76,9 @@
     (define-key map (kbd "A") #'blackdog-search-artifacts)
     (define-key map (kbd "m") #'blackdog-magit-status-for-task)
     (define-key map (kbd "d") #'blackdog-magit-diff-for-task)
+    (define-key map (kbd "L") #'blackdog-task-view-magit-log)
+    (define-key map (kbd "C") #'blackdog-task-view-magit-commit)
+    (define-key map (kbd "S") #'blackdog-open-skill)
     (define-key map (kbd ".") #'blackdog-dispatch)
     (define-key map (kbd "?") #'blackdog-dispatch)
     (define-key map (kbd "g") #'blackdog-refresh)
@@ -139,7 +170,10 @@
           ("g" "Refresh" blackdog-refresh)]
          ["Git"
           ("m" "Magit status" blackdog-magit-status-for-task)
-          ("d" "Magit diff" blackdog-magit-diff-for-task)]]))
+          ("d" "Magit diff" blackdog-magit-diff-for-task)
+          ("L" "Magit log" blackdog-task-view-magit-log)
+          ("C" "Open commit" blackdog-task-view-magit-commit)
+          ("S" "Inspect skill" blackdog-open-skill)]]))
   (defun blackdog-dispatch ()
     "Fallback command when Transient is unavailable."
     (interactive)

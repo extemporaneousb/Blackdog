@@ -23,7 +23,7 @@ from .store import load_events, load_inbox, load_state, load_task_results, list_
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 9
+UI_SNAPSHOT_SCHEMA_VERSION = 10
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 
@@ -108,6 +108,35 @@ def _run_git_capture(repo_root: Path, *args: str) -> str | None:
         return None
     text = completed.stdout.strip()
     return text or None
+
+
+def _git_commit_metadata(repo_root: Path, ref: str | None, *, github_repo_url: str | None = None) -> dict[str, Any] | None:
+    if not ref:
+        return None
+    commit = _run_git_capture(repo_root, "rev-parse", "--verify", ref)
+    if not commit:
+        return None
+    raw = _run_git_capture(
+        repo_root,
+        "show",
+        "-s",
+        "--date=iso-strict",
+        "--format=%H%x00%s%x00%an%x00%ad%x00%B",
+        commit,
+    )
+    if not raw:
+        return None
+    commit_hash, subject, author, committed_at, message = (raw.split("\x00", 4) + [""] * 5)[:5]
+    commit_hash = commit_hash or commit
+    return {
+        "commit": commit_hash,
+        "commit_short": _short_commit(commit_hash),
+        "commit_url": f"{github_repo_url}/commit/{commit_hash}" if github_repo_url else None,
+        "commit_subject": subject or None,
+        "commit_author": author or None,
+        "commit_at": committed_at or None,
+        "commit_message": message or None,
+    }
 
 
 def _github_repo_url(repo_root: Path) -> str | None:
@@ -491,6 +520,29 @@ def _build_task_activity(
         activity["latest_result_at"] = row.get("recorded_at")
         activity["latest_result_href"] = _artifact_href(paths, row.get("result_file"), must_exist=True)
     return activities
+
+
+def _build_task_lifecycle(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    lifecycle: dict[str, dict[str, Any]] = {}
+    for event in sorted(events, key=lambda row: str(row.get("at") or "")):
+        task_id = str(event.get("task_id") or "")
+        event_at = str(event.get("at") or "")
+        if not task_id or not event_at:
+            continue
+        event_type = str(event.get("type") or "")
+        entry = lifecycle.setdefault(
+            task_id,
+            {
+                "created_at": event_at,
+                "updated_at": event_at,
+            },
+        )
+        if event_type == "task_added" and not entry.get("created_at"):
+            entry["created_at"] = event_at
+        if not entry.get("created_at"):
+            entry["created_at"] = event_at
+        entry["updated_at"] = event_at
+    return lifecycle
 
 
 def _result_preview(row: dict[str, Any] | None) -> str | None:
@@ -1088,6 +1140,8 @@ def _card_status_chips(task_row: dict[str, Any]) -> list[dict[str, str]]:
 def _activity_message(event: dict[str, Any]) -> str:
     event_type = str(event.get("type") or "")
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    if event_type == "task_added":
+        return "created"
     if event_type == "claim":
         return "claimed"
     if event_type == "release":
@@ -1115,7 +1169,7 @@ def _activity_message(event: dict[str, Any]) -> str:
 
 def _build_task_timeline(events: list[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
     timelines: dict[str, list[dict[str, str]]] = {}
-    relevant = {"claim", "release", "complete", "child_launch", "child_finish", "task_result"}
+    relevant = {"task_added", "claim", "release", "complete", "child_launch", "child_finish", "task_result"}
     for event in sorted(events, key=lambda row: str(row.get("at") or "")):
         event_type = str(event.get("type") or "")
         task_id = str(event.get("task_id") or "")
@@ -1123,6 +1177,7 @@ def _build_task_timeline(events: list[dict[str, Any]]) -> dict[str, list[dict[st
             continue
         timelines.setdefault(task_id, []).append(
             {
+                "type": event_type,
                 "at": str(event.get("at") or ""),
                 "actor": str(event.get("actor") or ""),
                 "message": _activity_message(event),
@@ -1275,10 +1330,12 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     messages = load_inbox(profile.paths)
     results = load_task_results(profile.paths)
     task_activity = _build_task_activity(profile.paths, state, events, results)
+    task_lifecycle = _build_task_lifecycle(events)
     task_timeline = _build_task_timeline(events)
     task_results = _build_result_index(profile.paths, results)
     task_runs = _build_task_run_artifacts(profile.paths, events)
     threads, task_threads = _build_thread_snapshot_rows(profile.paths)
+    github_repo_url = _github_repo_url(profile.paths.project_root)
     summary = build_view_model(
         profile,
         snapshot,
@@ -1308,15 +1365,35 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     for task in ordered_tasks:
         status, detail = classify_task_status(task, snapshot, state, allow_high_risk=False)
         activity = task_activity.get(task.id, _empty_task_activity())
+        lifecycle = task_lifecycle.get(task.id, {})
         result_info = task_results.get(task.id, {})
         run_info = task_runs.get(task.id, {})
         conversation_threads = task_threads.get(task.id, [])
         lane_info = lane_positions.get(task.id, {})
+        task_commit = _git_commit_metadata(profile.paths.project_root, run_info.get("task_branch"), github_repo_url=github_repo_url)
+        landed_commit = _git_commit_metadata(profile.paths.project_root, run_info.get("landed_commit"), github_repo_url=github_repo_url)
+        activity_rows = list(task_timeline.get(task.id, []))
+        created_at = str(lifecycle.get("created_at") or "")
+        updated_at = str(lifecycle.get("updated_at") or "")
+        if activity_rows:
+            created_at = created_at or str(activity_rows[0].get("at") or "")
+            updated_at = updated_at or str(activity_rows[-1].get("at") or "")
         task_row = {
             "id": task.id,
             "title": task.title,
             "status": status,
             "detail": detail,
+            "created_at": created_at or None,
+            "updated_at": _latest_timestamp(
+                updated_at,
+                activity.get("claimed_at"),
+                activity.get("completed_at"),
+                activity.get("released_at"),
+                result_info.get("latest_result_at") or activity.get("latest_result_at"),
+                run_info.get("last_event_at"),
+            )
+            or created_at
+            or None,
             "wave": task.wave,
             "lane_id": task.lane_id,
             "lane_title": task.lane_title,
@@ -1339,7 +1416,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "lane_plan_index": lane_info.get("lane_plan_index", task.lane_order if task.lane_order is not None else 9999),
             "lane_position": lane_info.get("lane_position"),
             "lane_task_count": lane_info.get("lane_task_count"),
-            "activity": list(task_timeline.get(task.id, [])),
+            "activity": activity_rows,
             "claimed_by": activity.get("claimed_by"),
             "claimed_at": activity.get("claimed_at"),
             "completed_at": activity.get("completed_at"),
@@ -1388,6 +1465,16 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             "landed_commit_short": run_info.get("landed_commit_short"),
             "landed_commit_url": run_info.get("landed_commit_url"),
             "landed_commit_message": run_info.get("landed_commit_message"),
+            "task_commit": (task_commit or {}).get("commit"),
+            "task_commit_short": (task_commit or {}).get("commit_short"),
+            "task_commit_url": (task_commit or {}).get("commit_url"),
+            "task_commit_subject": (task_commit or {}).get("commit_subject"),
+            "task_commit_author": (task_commit or {}).get("commit_author"),
+            "task_commit_at": (task_commit or {}).get("commit_at"),
+            "task_commit_message": (task_commit or {}).get("commit_message"),
+            "landed_commit_subject": (landed_commit or {}).get("commit_subject"),
+            "landed_commit_author": (landed_commit or {}).get("commit_author"),
+            "landed_commit_at": (landed_commit or {}).get("commit_at"),
             "conversation_threads": conversation_threads,
             "conversation_thread_ids": [str(row.get("id") or "") for row in conversation_threads],
             "conversation_thread_count": len(conversation_threads),
@@ -2057,20 +2144,26 @@ __BLACKDOG_STYLES__
     }
 
     function commitBlock(task) {
-      if (!task.landed_commit && !task.landed_commit_message) {
-        return "";
-      }
       const parts = [];
-      const commitLabel = task.landed_commit_short || task.landed_commit || "";
-      if (task.landed_commit_url) {
-        parts.push(`<a class="text-link mono" href="${escapeHtml(task.landed_commit_url)}">${escapeHtml(commitLabel ? `Commit ${commitLabel}` : "Commit")}</a>`);
-      } else if (task.landed_commit) {
-        parts.push(`<p class="mono">${escapeHtml(commitLabel ? `Commit ${commitLabel}` : task.landed_commit)}</p>`);
-      }
-      if (task.landed_commit_message) {
-        parts.push(preBlock(task.landed_commit_message, "detail-pre detail-pre-compact"));
-      }
-      return parts.join("");
+      const commitEntry = (label, commit, shortCommit, url, message) => {
+        if (!commit && !message) {
+          return "";
+        }
+        const labelText = shortCommit || commit || "";
+        const chunk = [];
+        if (url) {
+          chunk.push(`<a class="text-link mono" href="${escapeHtml(url)}">${escapeHtml(labelText ? `${label} ${labelText}` : label)}</a>`);
+        } else if (commit) {
+          chunk.push(`<p class="mono">${escapeHtml(labelText ? `${label} ${labelText}` : commit)}</p>`);
+        }
+        if (message) {
+          chunk.push(preBlock(message, "detail-pre detail-pre-compact"));
+        }
+        return chunk.join("");
+      };
+      parts.push(commitEntry("Task Commit", task.task_commit, task.task_commit_short, task.task_commit_url, task.task_commit_message));
+      parts.push(commitEntry("Landed Commit", task.landed_commit, task.landed_commit_short, task.landed_commit_url, task.landed_commit_message));
+      return parts.filter(Boolean).join("");
     }
 
     function activityList(entries) {
@@ -2097,6 +2190,10 @@ __BLACKDOG_STYLES__
         task.lane_title || "",
         task.wave != null ? `Wave ${task.wave}` : "",
         task.total_compute_label ? `Compute ${task.total_compute_label}` : "",
+        task.created_at ? `Created ${formatActivityTimestamp(task.created_at)}` : "",
+        task.updated_at ? `Updated ${formatActivityTimestamp(task.updated_at)}` : "",
+        task.claimed_at ? `Claimed ${formatActivityTimestamp(task.claimed_at)}` : "",
+        task.task_commit_short ? `Commit ${task.task_commit_short}` : task.landed_commit_short ? `Commit ${task.landed_commit_short}` : "",
       ].filter(Boolean);
       const dependency = Array.isArray(task.predecessor_ids) && task.predecessor_ids.length
         ? `Depends on ${task.predecessor_ids.join(", ")}`
@@ -2220,6 +2317,11 @@ __BLACKDOG_STYLES__
       ];
 
       const runtimeRows = [
+        task.created_at ? `Created: ${task.created_at}` : "",
+        task.updated_at ? `Updated: ${task.updated_at}` : "",
+        task.claimed_at ? `Claimed: ${task.claimed_at}` : "",
+        task.task_commit_short ? `Task commit: ${task.task_commit_short}` : "",
+        task.landed_commit_short ? `Landed commit: ${task.landed_commit_short}` : "",
         task.operator_status_detail ? `Current detail: ${task.operator_status_detail}` : "",
         task.child_agent ? `Child agent: ${task.child_agent}` : "",
         task.target_branch ? `Branch path: ${task.task_branch || "task"} -> ${task.target_branch}` : "",

@@ -14,7 +14,10 @@
 (require 'subr-x)
 
 (declare-function blackdog-magit-diff-task "blackdog-magit" (task &optional root))
+(declare-function blackdog-magit-log-task "blackdog-magit" (task &optional root))
+(declare-function blackdog-magit-show-task-commit "blackdog-magit" (task &optional root))
 (declare-function blackdog-magit-status-task "blackdog-magit" (task &optional root))
+(declare-function blackdog-open-skill "blackdog" (&optional root))
 (declare-function blackdog-read-thread "blackdog-thread" (&optional prompt root task-id))
 (declare-function blackdog-thread-view "blackdog-thread" (thread &optional root))
 
@@ -36,6 +39,8 @@
     (define-key map (kbd "k") #'blackdog-task-remove)
     (define-key map (kbd "m") #'blackdog-task-view-magit-status)
     (define-key map (kbd "d") #'blackdog-task-view-magit-diff)
+    (define-key map (kbd "L") #'blackdog-task-view-magit-log)
+    (define-key map (kbd "C") #'blackdog-task-view-magit-commit)
     (define-key map (kbd "h") #'blackdog-task-open-conversation)
     (define-key map (kbd "p") #'blackdog-task-view-browse-prompt)
     (define-key map (kbd "t") #'blackdog-task-view-browse-thread)
@@ -45,6 +50,7 @@
     (define-key map (kbd "E") #'blackdog-task-open-stderr)
     (define-key map (kbd "D") #'blackdog-task-open-diff)
     (define-key map (kbd "M") #'blackdog-task-open-metadata)
+    (define-key map (kbd "S") #'blackdog-open-skill)
     (define-key map (kbd "F") #'blackdog-task-open-result)
     (define-key map (kbd "R") #'blackdog-task-open-run)
     map)
@@ -104,6 +110,9 @@
       (blackdog-task--insert-pairs
        `(("Status" . ,(or (alist-get 'operator_status task)
                           (alist-get 'status task)))
+         ("Created" . ,(or (alist-get 'created_at task) ""))
+         ("Updated" . ,(or (alist-get 'updated_at task) ""))
+         ("Claimed" . ,(or (alist-get 'claimed_at task) ""))
          ("Objective" . ,(or (alist-get 'objective_title task)
                              (alist-get 'objective task)
                              ""))
@@ -113,9 +122,24 @@
          ("Risk" . ,(or (alist-get 'risk task) ""))
          ("Branch" . ,(or (alist-get 'task_branch task) ""))
          ("Target" . ,(or (alist-get 'target_branch task) ""))
+         ("Task Commit" . ,(or (alist-get 'task_commit_short task)
+                               (alist-get 'task_commit task)
+                               ""))
+         ("Landed Commit" . ,(or (alist-get 'landed_commit_short task)
+                                 (alist-get 'landed_commit task)
+                                 ""))
          ("Latest Result" . ,(or (alist-get 'latest_result_status task) ""))))
       (blackdog-task--insert-lifecycle-actions task)
       (blackdog-task--insert-quick-links task)
+      (blackdog-task--insert-git-actions task)
+      (blackdog-task--insert-section "Task Commit"
+        (or (alist-get 'task_commit_message task)
+            (alist-get 'task_commit_subject task)
+            ""))
+      (blackdog-task--insert-section "Landed Commit"
+        (or (alist-get 'landed_commit_message task)
+            (alist-get 'landed_commit_subject task)
+            ""))
       (blackdog-task--insert-section "Safe First Slice"
         (or (alist-get 'safe_first_slice task) ""))
       (blackdog-task--insert-section "Why"
@@ -154,6 +178,20 @@
   (require 'blackdog-magit)
   (let ((task (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root)))
     (blackdog-magit-diff-task task blackdog-buffer-root)))
+
+(defun blackdog-task-view-magit-log ()
+  "Open the Magit log for the current task."
+  (interactive)
+  (require 'blackdog-magit)
+  (let ((task (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root)))
+    (blackdog-magit-log-task task blackdog-buffer-root)))
+
+(defun blackdog-task-view-magit-commit ()
+  "Open the Magit commit buffer for the current task."
+  (interactive)
+  (require 'blackdog-magit)
+  (let ((task (blackdog-task-by-id blackdog-task-id nil blackdog-buffer-root)))
+    (blackdog-magit-show-task-commit task blackdog-buffer-root)))
 
 (defun blackdog-task-browse-artifact (artifact &optional task root)
   "Open a read-only browser for TASK ARTIFACT from ROOT.
@@ -333,6 +371,22 @@ ARTIFACT should be `prompt' or `thread'."
        (lambda (_button)
          (funcall fn task)))))
   (insert "\n"))
+
+(defun blackdog-task--insert-git-actions (task)
+  "Insert commit browsing actions for TASK."
+  (when (or (alist-get 'task_commit task)
+            (alist-get 'landed_commit task)
+            (alist-get 'task_branch task))
+    (insert "Git\n")
+    (blackdog-task--insert-action-button
+     "Commit Log"
+     (lambda (_button)
+       (blackdog-task-view-magit-log)))
+    (blackdog-task--insert-action-button
+     "Open Commit"
+     (lambda (_button)
+       (blackdog-task-view-magit-commit)))
+    (insert "\n")))
 
 (defun blackdog-task--insert-conversation-links (task root)
   "Insert linked conversation-thread buttons for TASK under ROOT."

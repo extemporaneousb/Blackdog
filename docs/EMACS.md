@@ -20,12 +20,13 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 ## Current Feature Surface
 
 - dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
-- read-only task reader with task metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
+- read-only task reader with task lifecycle timestamps, branch/commit metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
 - tabulated Codex-session listing plus a dedicated session reader with collapsible timestamped user, assistant, tool-call, and tool-output sections
 - shared root-local snapshot caching so one queue pass can reuse the same snapshot across dashboard, task, result, run, and artifact views until the operator explicitly refreshes
-- Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks
+- Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks, with commit-log and commit-open hooks for task branches
 - minibuffer completion for task, artifact, and project-file lookup
+- a direct skill inspector that opens the repo-local `SKILL.md` / `agents/openai.yaml` files without introducing another prompt subsystem
 - incremental grep over the repo root or Blackdog control dir, with `consult-ripgrep` when available and `rgrep` otherwise
 - Codex-backed conversation buffers that let the operator write a freeform prompt, stream one live `codex exec --json` turn in Emacs, resume the same Codex session with follow-up prompts, and replay persisted session JSONL transcripts from `~/.codex/sessions/`
 - legacy Blackdog conversation-thread buffers remain available as artifact readers for Blackdog-owned prompt/task flows
@@ -165,6 +166,8 @@ For an active WTAM task:
 
 1. `blackdog-magit-status-task` resolves the task branch to a live worktree with `git worktree list --porcelain`.
 2. `blackdog-magit-diff-task` opens `target_branch..task_branch` in Magit when both branches still exist.
+3. `blackdog-magit-log-task` opens the task-range log when the task and target branches still exist, otherwise it falls back to the task or landed commit.
+4. `blackdog-magit-show-task-commit` opens the commit detail buffer for the task commit or landed commit.
 
 For a landed or cleaned-up task:
 
@@ -176,6 +179,7 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 ### Artifact and search pass
 
 - `C-c b a` opens prompt/thread/stdout/stderr/diff/metadata/result/run artifacts through minibuffer completion.
+- `C-c b S` opens the repo-local Blackdog skill files for prompt/skill inspection.
 - `C-c b A` searches the Blackdog control dir, which is the right place to grep old results, diffs, prompts, and supervisor artifacts.
 - `C-c b f` and `C-c b s` stay in project code and docs.
 
@@ -202,6 +206,8 @@ From the task reader, task picker, or dispatch menu:
 3. `l` or `C-c b l` releases a claimed task.
 4. `e` or `C-c b e` completes a task with an optional note.
 5. `k` or `C-c b k` removes a task after confirmation when the CLI allows removal.
+6. `L` or `C-c b L` opens a Magit log for the task branch or task commit.
+7. `C` or `C-c b C` opens the commit detail buffer for the task commit.
 
 Set `blackdog-default-agent` if you do not want Emacs writes to default to your login name.
 
@@ -362,6 +368,7 @@ Suggested prefix: `C-c b`
 | `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
 | `C-c b T` | `blackdog-find-codex-session` | Open a Codex session from completion. |
 | `C-c b a` | `blackdog-find-artifact` | Open a prompt/diff/result/run artifact from completion. |
+| `C-c b S` | `blackdog-open-skill` | Open the repo-local skill files for prompt and skill inspection. |
 | `C-c b n` | `blackdog-codex-compose-new` | Start a new freeform Codex session draft. |
 | `C-c b N` | `blackdog-spec-new` | Start a new structured spec-first task draft. |
 | `C-c b v` | `blackdog-telemetry-open` | Open CLI and supervisor telemetry. |
@@ -370,6 +377,8 @@ Suggested prefix: `C-c b`
 | `C-c b A` | `blackdog-search-artifacts` | Search the Blackdog control dir. |
 | `C-c b m` | `blackdog-magit-status-for-task` | Open Magit status for a task. |
 | `C-c b d` | `blackdog-magit-diff-for-task` | Open the task diff or saved diff artifact. |
+| `C-c b L` | `blackdog-task-view-magit-log` | Open the Magit log for a task branch or commit. |
+| `C-c b C` | `blackdog-task-view-magit-commit` | Open the Magit revision buffer for a task commit. |
 | `C-c b .` | `blackdog-dispatch` | Open the Transient dispatch menu. |
 | `C-c b ?` | `blackdog-dispatch` | Same as `.`. |
 | `C-c b g` | `blackdog-refresh` | Clear the cached snapshot and refresh the current Blackdog buffer. |
