@@ -652,6 +652,92 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertTrue(paths.html_file.exists())
         self.assertTrue(paths.html_file.with_name("backlog-index.html").exists())
 
+    def test_summary_filters_stale_supervisor_runtime_messages(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        for title in ("Historical runtime task", "Current operator task"):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                "Summary filtering should distinguish backlog signal from supervisor runtime artifacts.",
+                "--evidence",
+                "Open inbox rows may outlive the child run or completed task they came from.",
+                "--safe-first-slice",
+                "Keep only actionable inbox rows in summary output.",
+                "--path",
+                "README.md",
+                "--epic-title",
+                "Inbox hygiene",
+                "--lane-title",
+                "Inbox lane",
+                "--wave",
+                "0",
+            )
+        paths = self.runtime_paths()
+        task_ids = task_ids_by_title(self.root)
+        historical_task_id = task_ids["Historical runtime task"]
+        current_task_id = task_ids["Current operator task"]
+
+        run_cli("claim", "--project-root", str(self.root), "--agent", "codex", "--id", historical_task_id)
+        run_cli("complete", "--project-root", str(self.root), "--agent", "codex", "--id", historical_task_id)
+
+        send_message(
+            paths,
+            sender="supervisor",
+            recipient="supervisor/child-01",
+            body="Execute the historical task worktree.",
+            kind="instruction",
+            task_id=historical_task_id,
+            tags=["supervisor-run", "git-worktree"],
+        )
+        send_message(
+            paths,
+            sender="blackdog",
+            recipient="supervisor",
+            body="Historical landing warning.",
+            kind="warning",
+            task_id=historical_task_id,
+            tags=["dirty-primary", "land"],
+        )
+        send_message(
+            paths,
+            sender="user",
+            recipient="supervisor",
+            body="Review the current operator task before claiming it.",
+            kind="instruction",
+            task_id=current_task_id,
+            tags=["operator"],
+        )
+
+        summary = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "summary", "--project-root", str(self.root), "--format", "json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        snapshot = json.loads(
+            subprocess.run(
+                [sys.executable, "-m", "blackdog.cli", "snapshot", "--project-root", str(self.root)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertEqual([row["body"] for row in summary["open_messages"]], ["Review the current operator task before claiming it."])
+        self.assertEqual(len(snapshot["open_messages"]), 3)
+
     def test_thread_cli_creates_and_appends_entries(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         with redirect_stdout(io.StringIO()) as stdout:

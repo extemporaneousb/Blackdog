@@ -30,6 +30,7 @@ from .backlog import (
     update_task,
     render_plan_text,
     render_summary_text,
+    summary_open_messages,
     sync_state_for_backlog,
 )
 from .config import ConfigError, DEFAULT_SKILL_USAGE_HEURISTIC, load_profile
@@ -1087,14 +1088,17 @@ def cmd_task_run(args: argparse.Namespace) -> int:
 
 
 def _summary_view(profile, snapshot, state) -> dict[str, Any]:
-    return build_view_model(
+    messages = load_inbox(profile.paths)
+    view = build_view_model(
         profile,
         snapshot,
         state,
         events=load_events(profile.paths, limit=20),
-        messages=load_inbox(profile.paths),
+        messages=messages,
         results=load_task_results(profile.paths),
     )
+    view["open_messages"] = summary_open_messages(snapshot, state, messages)
+    return view
 
 
 def cmd_summary(args: argparse.Namespace) -> int:

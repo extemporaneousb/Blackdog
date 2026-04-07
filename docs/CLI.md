@@ -142,6 +142,8 @@ product development.
 - `blackdog comment --actor NAME --id TASK --body ...`
 - `blackdog events`
 
+`blackdog summary` is the backlog-facing status view. It reports runnable work plus open inbox rows that still look actionable from the backlog's point of view, and it intentionally filters out raw supervisor-runtime transport or warning messages for completed/unknown tasks. Use `blackdog inbox list` or `blackdog snapshot` when you need the full append-only inbox state instead of the summary's filtered view.
+
 `blackdog prompt` rewrites a raw prompt against the local repo contract. It emits low/medium/high complexity prompt profiles derived from the repo profile, routed docs, validation defaults, and the latest tune recommendation so host-repo skills can reuse Blackdog's repo-local guidance instead of rebuilding it from scratch.
 
 `blackdog thread ...` manages saved freeform conversation threads under the shared control root. Use it when the operator should write normal markdown conversation instead of filling a structured task-spec template:

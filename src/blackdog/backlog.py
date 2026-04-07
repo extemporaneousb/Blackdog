@@ -800,6 +800,32 @@ def build_view_model(
     }
 
 
+def summary_open_messages(
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("status") != "open":
+            continue
+        task_id = str(message.get("task_id") or "").strip()
+        if task_id:
+            if task_id not in snapshot.tasks:
+                continue
+            if task_done(task_id, state):
+                continue
+        sender = str(message.get("sender") or "").strip()
+        recipient = str(message.get("recipient") or "").strip()
+        tags = {str(tag).strip().lower() for tag in message.get("tags") or []}
+        if sender == "blackdog" and (recipient == "supervisor" or recipient.startswith("supervisor/")):
+            continue
+        if "supervisor-run" in tags:
+            continue
+        output.append(message)
+    return output
+
+
 def build_plan_view(
     profile: Profile,
     snapshot: BacklogSnapshot,
