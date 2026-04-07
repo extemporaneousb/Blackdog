@@ -183,6 +183,123 @@ Those focused tests should be the core gate. The existing CLI, supervisor, and
 render tests should remain integration coverage rather than the primary source
 of confidence in core semantics.
 
+## Core durable state tables, state machines, and invariants
+
+Phase 0 of the core hardening audit freezes the durable write-path contract to
+five artifacts:
+
+| Artifact | Core-owned state | Write model | Runtime view |
+| --- | --- | --- | --- |
+| `backlog-state.json` | `approval_tasks` | latest JSON object snapshot | approval state keyed by task id |
+| `backlog-state.json` | `task_claims` | latest JSON object snapshot | claim/completion state keyed by task id |
+| `events.jsonl` | event rows | append-only JSONL replay | factual history, never in-place mutation |
+| `inbox.jsonl` | message + resolve rows | append-only JSONL replay | effective inbox state keyed by `message_id` |
+| `task-results/<task-id>/*.json` | result rows | append-only per-task files | newest-first derived result history |
+
+The current runtime semantics for those artifacts are:
+
+- `approval_tasks` only exists for tasks whose backlog payload sets
+  `requires_approval = true`. `sync_state_for_backlog()` seeds missing entries
+  as `pending`, refreshes task metadata on every backlog load, and removes the
+  entry when the task no longer requires approval.
+- `task_claims` is the authoritative source for both active claims and durable
+  completion. `task_done()` only looks at `task_claims[task_id].status ==
+  "done"`, and `claim_is_active()` only treats `status == "claimed"` as an
+  active owner.
+- `events.jsonl` is append-only. Readers must derive current state from replay;
+  no event row is updated or deleted after it is written.
+- `inbox.jsonl` is append-only. `load_inbox()` rebuilds message state by
+  replaying rows in file order and folding them by `message_id`.
+- `task-results/<task-id>/*.json` is append-only evidence. `record_task_result()`
+  always writes a new timestamped file and appends a matching `task_result`
+  event; `load_task_results()` derives presentation order by sorting rows by
+  `recorded_at` descending.
+
+### `approval_tasks` semantic state machine
+
+Blackdog does not currently enforce a strict transition graph between every
+approval decision. The frozen semantic machine is:
+
+- `absent` means the task does not currently require approval or has never been
+  synchronized into state.
+- `pending` is the seeded default for a `requires_approval` task.
+- `approved`, `denied`, `deferred`, and `done` are the accepted stored decision
+  values written by `blackdog decide`.
+- Runnable checks only treat `approved` and `done` as approval-satisfied.
+- `blackdog complete` promotes any existing approval entry to `done`.
+- Clearing `requires_approval` or removing the task returns the entry to
+  `absent`.
+
+### `task_claims` semantic state machine
+
+The normal-flow claim machine is:
+
+- `absent` means there is no stored claim row for the task.
+- `claimed` is written by `blackdog claim` and `blackdog task run`.
+- `released` is written by `blackdog release` and clears pid-tracking fields.
+- `done` is written by `blackdog complete`, clears pid-tracking fields, and is
+  the only status that removes the task from runnable scheduling.
+
+Operational invariants:
+
+- Only `claimed` counts as an active owner.
+- `released` and `absent` are equivalent for runnable selection.
+- `done` is terminal for scheduler semantics even though forced administrative
+  rewrites can still mutate state outside the normal path.
+- `claimed_pid`, `claimed_process_missing_scans`,
+  `claimed_process_last_seen_at`, and `claimed_process_last_checked_at` are only
+  meaningful while the stored status is `claimed`.
+
+### `inbox.jsonl` replay state machine
+
+The inbox replay contract is:
+
+- `action = "message"` creates or replaces the current open message record for
+  that `message_id`.
+- `action = "resolve"` marks a previously seen message as resolved.
+- Resolve rows for unknown `message_id` values are ignored.
+- If multiple resolve rows exist for the same message, the last replayed row
+  wins for `resolved_at`, `resolved_by`, and `resolution_note`.
+
+### `task-results/<task-id>/*.json` append-only invariants
+
+- Result rows are immutable once written.
+- A result row must carry the required summary fields documented above, even
+  when `metadata` or `task_shaping_telemetry` is empty.
+- The `status` field is stored as the caller supplies it; current child/manual
+  workflows conventionally use `success`, `blocked`, or `partial`, but the file
+  contract is append-only evidence rather than an enum-enforced state machine.
+
+## Core coverage gate plan
+
+The core-only audit surface is frozen to `[tool.blackdog.coverage].shipped_surface`:
+
+- `src/blackdog/backlog.py`
+- `src/blackdog/config.py`
+- `src/blackdog/store.py`
+- `src/blackdog/worktree.py`
+
+The focused audit command is frozen to the current `Makefile` contract:
+
+- `make test-core` runs `PYTHONPATH=src python3 -m unittest tests/test_blackdog_cli.py -k core_audit`
+- `make coverage-core` runs the same focused audit through `blackdog coverage`
+  and writes `coverage/core-latest.json`
+
+The gate plan is intentionally two-phase:
+
+- Phase 0 gate: keep the shipped surface, focused audit command, and coverage
+  artifact path frozen; require `make test-core` and `make coverage-core` to
+  pass, but do not enforce a numeric coverage threshold yet.
+- Phase 1 hard gate: once the direct tests listed in the coverage gap audit
+  above land, require 100.0 percent aggregate coverage across the shipped
+  surface and 100.0 percent coverage for each shipped module before additional
+  core extraction or ownership moves.
+
+As of April 7, 2026, the current shipped-surface aggregate from
+`make coverage-core` is still well below that future 100 percent threshold, so
+Phase 0 stays evidence-only rather than pretending a numeric gate already
+exists.
+
 ## `<control_dir>/threads/<thread-id>/...`
 
 Conversation-thread runtime artifacts.

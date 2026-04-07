@@ -1336,6 +1336,34 @@ class BlackdogCliTests(unittest.TestCase):
             ],
         )
 
+    def test_core_audit_makefile_freezes_core_audit_command(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn(
+            "CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest tests/test_blackdog_cli.py -k core_audit",
+            makefile,
+        )
+        self.assertIn("CORE_COVERAGE_OUTPUT = coverage/core-latest.json", makefile)
+        self.assertIn("\ntest-core:\n\t$(CORE_AUDIT_COMMAND)\n", makefile)
+        self.assertIn(
+            '\ncoverage-core:\n\tPYTHONPATH=src python3 -m blackdog.cli coverage --project-root . --command "$(CORE_AUDIT_COMMAND)" --output $(CORE_COVERAGE_OUTPUT)\n',
+            makefile,
+        )
+
+    def test_core_audit_file_formats_freezes_state_machines_and_gate_plan(self) -> None:
+        file_formats = (ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
+        self.assertIn("## Core durable state tables, state machines, and invariants", file_formats)
+        self.assertIn("### `approval_tasks` semantic state machine", file_formats)
+        self.assertIn("### `task_claims` semantic state machine", file_formats)
+        self.assertIn("### `inbox.jsonl` replay state machine", file_formats)
+        self.assertIn("## Core coverage gate plan", file_formats)
+        self.assertIn("make test-core", file_formats)
+        self.assertIn("make coverage-core", file_formats)
+        self.assertIn("do not enforce a numeric coverage threshold yet", file_formats)
+        self.assertIn(
+            "require 100.0 percent aggregate coverage across the shipped\n  surface and 100.0 percent coverage for each shipped module",
+            file_formats,
+        )
+
     def test_core_audit_backlog_task_shaping_normalizes_and_rejects_invalid_values(self) -> None:
         shaped = backlog_module._coerce_task_shaping(
             {

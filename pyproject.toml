@@ -29,6 +29,9 @@ include = ["blackdog", "blackdog.*"]
 
 [tool.blackdog.coverage]
 artifact_output = "coverage/latest.json"
+# Phase 0 freezes the shipped core audit surface and evidence command.
+# Numeric gating stays documented-only until the direct core semantics tests
+# close the remaining gaps called out in docs/FILE_FORMATS.md.
 # Focus the audit surface on core state and backlog semantics; broad CLI,
 # supervisor, scaffold, and UI coverage stays in the repo-wide test suite.
 shipped_surface = [
