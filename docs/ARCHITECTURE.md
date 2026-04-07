@@ -245,6 +245,98 @@ but the browser now presents those details through objective progress,
 queue-health counts, and the task reader instead of a visible execution
 map.
 
+## Remodel evaluation and DAG reseeding
+
+The current remodel spans core extraction, runtime hardening, Blackdog
+dogfooding, and host-repo adapter surfaces. That breadth requires an
+explicit evaluation loop so later tasks can change shape without losing
+the target architecture.
+
+### What checkpoints are allowed to change
+
+Checkpoint review may change:
+
+- task ordering
+- lane and wave placement
+- predecessor edges between tasks
+- the size of the next implementation slice
+- additional hardening or migration tasks needed to reach the same target
+
+Checkpoint review must not change the target architecture implicitly. In
+particular, a checkpoint does not by itself authorize moving stateful
+behavior into prompt-only skills, abandoning WTAM for kept implementation
+changes, downgrading the shared control-root contract, or changing how
+repo-local runtime artifacts map to the documented file formats.
+
+Those changes require an intentional update to the charter and
+architecture docs first.
+
+### Checkpoint criteria
+
+The remodel should use four standing checkpoints:
+
+1. Core extraction
+   - Verify which logic belongs in the stable runtime/library boundary.
+   - Verify which contracts must stay dependency-light and repo-local.
+   - Verify that file-format and CLI documentation still describe the
+     intended ownership boundaries.
+2. Hardening
+   - Verify that claims, inbox traffic, structured results, WTAM
+     worktree flow, and delegated child startup/landing behavior are
+     reliable enough to keep dogfooding.
+   - Verify that failures are visible as product evidence and not
+     hidden by operator-only recovery steps.
+3. Blackdog proper
+   - Verify that Blackdog's own repo still uses the documented
+     manual-first contract when runtime-hardening work is incomplete.
+   - Verify that backlog shaping, result reporting, and rendered status
+     views are consistent with that contract.
+4. Adapters
+   - Verify that host-repo bootstrap, project-local skills, and related
+     integration surfaces can adopt the remodel without hidden
+     per-repo exceptions.
+
+### Required checkpoint evidence
+
+Each checkpoint should leave enough evidence that a later agent can
+reseed the DAG from files instead of memory:
+
+- doc updates when the intended contract changed
+- structured task results describing what changed, what was verified,
+  and what remains open
+- validation output appropriate to the touched surface
+- a clear statement of whether the checkpoint preserved or revised the
+  target architecture
+- explicit follow-up backlog tasks for unresolved gaps
+
+The evidence threshold is intentionally higher than "the current slice
+works on my branch." A checkpoint is complete only when later work can
+reconstruct the decision from docs, results, and backlog state.
+
+### DAG reseeding protocol
+
+When a checkpoint finishes, reseed the remaining DAG using existing
+Blackdog planning objects only:
+
+1. Compare the checkpoint outcome against `docs/CHARTER.md` and this
+   architecture doc.
+2. If the target architecture still holds, add or reshape follow-up
+   tasks without changing the target docs. Use task titles, `why`,
+   `evidence`, `safe_first_slice`, and predecessor relationships to
+   encode what the checkpoint learned.
+3. If the checkpoint shows that the target architecture must change,
+   update the target docs first, then reseed the remaining tasks
+   against that revised target.
+4. Preserve completed-task history. Reseeding should only modify
+   unfinished work, task ordering, or gating relationships.
+5. Record the reseed rationale in structured results and, when useful,
+   backlog comments so the next operator can see why the graph changed.
+
+In practice, checkpoint-driven reseeding should bias toward adding the
+smallest new task set that closes the newly discovered gap. Use extra
+parallelism only when the revised predecessor graph and validation plan
+still keep the charter legible.
+
 ## Static control surface
 
 Blackdog's browser surface is now a rendered artifact, not a runtime

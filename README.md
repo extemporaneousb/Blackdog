@@ -24,6 +24,12 @@ Planned but not implemented yet:
 - A write-enabled runtime UI for approvals or steering from the browser itself
 - A packaging/distribution path that removes the need for a preinstalled local Python environment in host repos
 
+The current remodel is checkpoint-driven. Blackdog now documents a
+standing review sequence for core extraction, runtime hardening,
+Blackdog-on-Blackdog dogfooding, and host-repo adapters so future DAG
+replanning can add follow-up work without silently changing the target
+architecture.
+
 ## What it provides
 
 - `blackdog`: core CLI for repo bootstrap, backlog parsing, validation, task selection, claims, approvals, completion, inbox messaging, task results, static HTML rendering, and supervisor control

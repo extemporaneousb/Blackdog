@@ -27,6 +27,55 @@ Blackdog is not only a task list. The target product is a coordinating agent int
 - Deploy Blackdog into one or more local host repositories and use it during real development.
 - Clarify the product contract so the backlog can target the intended multi-agent supervisor system instead of only the current single-process runtime.
 
+## Remodel checkpoints
+
+The remodel should advance through explicit evaluation checkpoints so later
+tasks can adjust sequencing and scope without drifting the target product.
+Those checkpoints evaluate whether the next slice still converges on the
+charter; they do not authorize ad hoc architecture changes by themselves.
+
+Checkpoint sequence for the current remodel:
+
+1. Core extraction checkpoint
+   - Confirm the runtime contract that must remain repo-local and
+     dependency-light.
+   - Confirm that backlog/state/events/inbox/results, prompt shaping, and
+     worktree lifecycle boundaries are still owned by real runtime code
+     instead of prompt-only behavior.
+2. Hardening checkpoint
+   - Confirm that WTAM, shared control-root behavior, claims/results/inbox,
+     and delegated child startup/landing semantics are reliable enough to
+     support continued dogfooding.
+   - Confirm that observed failures are turned into backlog evidence rather
+     than silently papered over.
+3. Blackdog proper checkpoint
+   - Confirm that Blackdog-on-Blackdog use still matches the manual-first
+     repo contract and that docs, CLI behavior, and runtime artifacts tell
+     one coherent story.
+   - Confirm that the product is still described as a backlog runtime with
+     supervision primitives until richer steering actually ships.
+4. Adapter checkpoint
+   - Confirm that host-repo bootstrap, repo-local skills, and related
+     integration surfaces can adopt the remodel without special-case hidden
+     state or per-repo architecture forks.
+
+Each checkpoint should produce grounded evidence before the backlog is
+reseeded:
+
+- updated docs when the contract or target architecture changed
+- task results that describe what changed, what was verified, and what
+  remains open
+- validation output appropriate to the touched surface
+- explicit backlog follow-up tasks for unresolved gaps, rather than keeping
+  the plan in chat-only memory
+
+Resequencing is allowed between checkpoints. Charter drift is not. If a
+checkpoint finds a better execution order, narrower intermediate slice, or
+additional hardening task, add that work without changing the target
+architecture. If a checkpoint finds that the target architecture itself is
+wrong, update the charter and architecture docs first and only then reseed
+follow-up work against the revised target.
+
 ## Blackdog repo working contract
 
 The Blackdog repo itself should use Blackdog claims, results, inbox messages, and supervisor runs as the default coordination surface.
