@@ -11,9 +11,12 @@
 
 ;;; Code:
 
+(require 'button)
 (require 'json)
 (require 'seq)
 (require 'subr-x)
+
+(declare-function blackdog-task-view "blackdog-task" (task &optional root))
 
 (defgroup blackdog nil
   "Operate Blackdog from Emacs."
@@ -42,6 +45,9 @@ fall back to `blackdog' on PATH."
 (defvar blackdog--telemetry-last-error nil)
 (defvar-local blackdog-buffer-root nil)
 (defvar-local blackdog-refresh-function nil)
+
+(defconst blackdog-task-id-regexp "\\b[A-Z][A-Z0-9]+-[0-9a-f]\\{6,\\}\\b"
+  "Regexp matching a Blackdog-style task identifier.")
 
 (defun blackdog-project-root (&optional dir)
   "Return the Blackdog project root above DIR or `default-directory'."
@@ -136,6 +142,15 @@ When FORCE is non-nil, refresh the cached snapshot."
               (equal task-id (alist-get 'id task)))
             (alist-get 'tasks (or snapshot (blackdog-snapshot root)))))
 
+(defun blackdog-open-task-by-id (task-id &optional root)
+  "Open TASK-ID from ROOT in the task reader."
+  (let* ((root (or root (blackdog-project-root)))
+         (task (blackdog-task-by-id task-id nil root)))
+    (unless task
+      (user-error "Task %s is not present in %s" task-id root))
+    (require 'blackdog-task)
+    (blackdog-task-view task root)))
+
 (defun blackdog-task-candidates (&optional snapshot root)
   "Return completion candidates for tasks from SNAPSHOT or ROOT."
   (mapcar
@@ -229,7 +244,23 @@ When OTHER-WINDOW is non-nil, use another window."
   (let ((target (blackdog-resolve-project-path path root)))
     (unless target
       (user-error "No project path available"))
-    (funcall (if other-window #'find-file-other-window #'find-file) target)))
+      (funcall (if other-window #'find-file-other-window #'find-file) target)))
+
+(defun blackdog-linkify-task-ids (start end &optional root)
+  "Turn Blackdog task IDs between START and END into task-reader buttons."
+  (let ((root (or root blackdog-buffer-root (blackdog-project-root))))
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward blackdog-task-id-regexp end t)
+        (let ((task-id (match-string-no-properties 0)))
+          (unless (button-at (match-beginning 0))
+            (make-text-button
+             (match-beginning 0)
+             (match-end 0)
+             'follow-link t
+             'help-echo "Open Blackdog task"
+             'action (lambda (_button)
+                       (blackdog-open-task-by-id task-id root)))))))))
 
 (defun blackdog-refresh (&optional root)
   "Refresh the current Blackdog buffer and clear cached data for ROOT."

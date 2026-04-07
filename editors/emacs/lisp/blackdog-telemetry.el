@@ -44,6 +44,11 @@ Set to nil or 0 to disable automatic refresh."
   :type 'integer
   :group 'blackdog)
 
+(defcustom blackdog-telemetry-auto-follow-output t
+  "When non-nil, keep live telemetry buffers scrolled to new output."
+  :type 'boolean
+  :group 'blackdog)
+
 (defvar-local blackdog-telemetry-actor nil
   "Supervisor actor for the current telemetry buffer.")
 
@@ -62,6 +67,9 @@ Set to nil or 0 to disable automatic refresh."
 (defvar-local blackdog-telemetry-last-status nil
   "Most recent supervisor status payload rendered in this buffer.")
 
+(defvar-local blackdog-telemetry-follow-output t
+  "When non-nil, keep the current telemetry buffer pinned to new output.")
+
 (defvar blackdog-telemetry-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -69,9 +77,11 @@ Set to nil or 0 to disable automatic refresh."
     (define-key map (kbd "c") #'blackdog-telemetry-clear-session)
     (define-key map (kbd "S") #'blackdog-telemetry-start-supervisor)
     (define-key map (kbd "x") #'blackdog-telemetry-stop-supervisor)
+    (define-key map (kbd "f") #'blackdog-telemetry-toggle-follow-output)
     (define-key map (kbd "u") #'blackdog-telemetry-open-latest-run)
     (define-key map (kbd "o") #'blackdog-telemetry-open-child-artifacts)
     (define-key map (kbd "r") #'blackdog-telemetry-open-runs)
+    (define-key map (kbd "V") #'blackdog-telemetry-open-snapshot-stats)
     map)
   "Keymap for `blackdog-telemetry-mode'.")
 
@@ -115,10 +125,23 @@ Set to nil or 0 to disable automatic refresh."
       (blackdog-telemetry-mode)
       (setq-local blackdog-buffer-root (or root (blackdog-project-root)))
       (setq-local blackdog-telemetry-actor (or actor blackdog-telemetry-supervisor-actor))
+      (setq-local blackdog-telemetry-follow-output blackdog-telemetry-auto-follow-output)
       (setq-local blackdog-refresh-function #'blackdog-telemetry-refresh)
       (add-hook 'kill-buffer-hook #'blackdog-telemetry--cleanup nil t)
       (blackdog-telemetry-refresh))
     (pop-to-buffer buffer)
+    buffer))
+
+(defun blackdog-telemetry-open-snapshot-stats (&optional root actor)
+  "Open telemetry and jump to the snapshot-stats section."
+  (interactive)
+  (let ((buffer (blackdog-telemetry-open root actor)))
+    (with-current-buffer buffer
+      (goto-char (point-min))
+      (when (search-forward "Snapshot Stats" nil t)
+        (beginning-of-line)
+        (when-let ((window (get-buffer-window buffer t)))
+          (set-window-point window (point)))))
     buffer))
 
 (defun blackdog-telemetry--cleanup ()
@@ -132,6 +155,14 @@ Set to nil or 0 to disable automatic refresh."
   (interactive)
   (blackdog-clear-telemetry)
   (blackdog-telemetry-refresh))
+
+(defun blackdog-telemetry-toggle-follow-output ()
+  "Toggle auto-follow for the current telemetry buffer."
+  (interactive)
+  (setq-local blackdog-telemetry-follow-output (not blackdog-telemetry-follow-output))
+  (blackdog-telemetry-refresh)
+  (message "Blackdog telemetry follow output %s"
+           (if blackdog-telemetry-follow-output "enabled" "disabled")))
 
 (defun blackdog-telemetry-start-supervisor (&optional root actor)
   "Start one asynchronous supervisor run for ROOT and ACTOR."
@@ -249,6 +280,7 @@ Set to nil or 0 to disable automatic refresh."
   (let* ((root (or blackdog-buffer-root (blackdog-project-root)))
          (actor (blackdog-telemetry--actor))
          (session (blackdog-telemetry-session-summary))
+         (point-before (point))
          (status-result (condition-case err
                             (cons 'ok (blackdog-telemetry-supervisor-status root actor))
                           (error (cons 'error (error-message-string err)))))
@@ -277,7 +309,9 @@ Set to nil or 0 to disable automatic refresh."
                (cdr snapshot-result)
                root)
             nil))
-         (point-before (point))
+         (live-active
+          (or (process-live-p blackdog-telemetry-supervisor-process)
+              (blackdog-telemetry--should-auto-refresh-p status-result)))
          (inhibit-read-only t))
     (erase-buffer)
     (setq-local blackdog-buffer-root root)
@@ -286,13 +320,20 @@ Set to nil or 0 to disable automatic refresh."
                 (and (eq (car status-result) 'ok) (cdr status-result)))
     (blackdog-telemetry--insert-controls status-result children)
     (blackdog-telemetry--insert-session session)
+    (blackdog-telemetry--insert-snapshot-stats snapshot-result)
     (blackdog-telemetry--insert-supervisor-status status-result)
     (blackdog-telemetry--insert-live-children children)
     (blackdog-telemetry--insert-live-output children)
     (blackdog-telemetry--insert-process-output)
     (blackdog-telemetry--insert-supervisor-recover recover-result)
     (blackdog-telemetry--insert-supervisor-report report-result)
-    (goto-char (min point-before (point-max)))
+    (blackdog-linkify-task-ids (point-min) (point-max) root)
+    (if (and live-active blackdog-telemetry-follow-output)
+        (progn
+          (goto-char (point-max))
+          (when-let ((window (get-buffer-window (current-buffer) t)))
+            (set-window-point window (point-max))))
+      (goto-char (min point-before (point-max))))
     (blackdog-telemetry--ensure-auto-refresh
      (blackdog-telemetry--should-auto-refresh-p status-result))))
 
@@ -360,11 +401,16 @@ Set to nil or 0 to disable automatic refresh."
      "Open Runs"
      (lambda (_button)
        (blackdog-telemetry-open-runs root)))
+    (insert "  ")
+    (blackdog-telemetry--insert-action-button
+     (format "Follow Output: %s" (if blackdog-telemetry-follow-output "on" "off"))
+     (lambda (_button)
+       (blackdog-telemetry-toggle-follow-output)))
     (when run-dir
       (insert "  ")
       (blackdog-telemetry--insert-action-button
        "Open Latest Run"
-       (lambda (_button)
+        (lambda (_button)
          (blackdog-open-href run-dir nil root t))))
     (when children
       (insert "  ")
@@ -419,6 +465,37 @@ Set to nil or 0 to disable automatic refresh."
                     (alist-get 'last_status row 0))))
   (insert "\n"))
 
+(defun blackdog-telemetry--insert-snapshot-stats (snapshot-result)
+  "Insert snapshot-derived status rows from SNAPSHOT-RESULT."
+  (insert "Snapshot Stats\n")
+  (pcase (car snapshot-result)
+    ('error
+     (insert (format "Unable to load snapshot: %s\n\n" (cdr snapshot-result))))
+    ('ok
+     (let* ((snapshot (cdr snapshot-result))
+            (counts (alist-get 'counts snapshot))
+            (queue (alist-get 'queue_status snapshot))
+            (hero (alist-get 'hero_highlights snapshot)))
+       (insert (format "Ready: %s  Claimed: %s  Waiting: %s  Done: %s\n"
+                       (alist-get 'ready counts 0)
+                       (alist-get 'claimed counts 0)
+                       (alist-get 'waiting counts 0)
+                       (alist-get 'done counts 0)))
+       (insert (format "Running: %s  Blocked: %s  Completed Today: %s  Total: %s\n"
+                       (alist-get 'running queue 0)
+                       (alist-get 'blocked queue 0)
+                       (alist-get 'completed_today queue 0)
+                       (alist-get 'completed_all_time queue 0)))
+       (when hero
+         (insert (format "Branch: %s  Commit: %s  Latest Run: %s\n"
+                         (or (alist-get 'branch hero) "")
+                         (or (alist-get 'commit hero) "")
+                         (or (alist-get 'latest_run hero) "")))
+         (insert (format "Completed Time: %s  Average Task: %s\n"
+                         (or (alist-get 'completed_task_time hero) "")
+                         (or (alist-get 'average_completed_task_time hero) ""))))
+       (insert "\n")))))
+
 (defun blackdog-telemetry--insert-supervisor-status (status-result)
   "Insert STATUS-RESULT into the current telemetry buffer."
   (insert "Supervisor Status\n")
@@ -428,6 +505,7 @@ Set to nil or 0 to disable automatic refresh."
     ('ok
      (let* ((status (cdr status-result))
             (latest-run (alist-get 'latest_run status))
+            (launch-defaults (alist-get 'launch_defaults status))
             (ready-tasks (alist-get 'ready_tasks status))
             (recent-results (alist-get 'recent_results status))
             (control-messages (alist-get 'open_control_messages status))
@@ -444,6 +522,13 @@ Set to nil or 0 to disable automatic refresh."
                          (or (alist-get 'status last-step) "")
                          (length (alist-get 'running_task_ids last-step))
                          (length (alist-get 'ready_task_ids last-step)))))
+       (when launch-defaults
+         (insert (format "Launch Defaults: model=%s  reasoning=%s  strategy=%s\n"
+                         (or (alist-get 'model launch-defaults) "default")
+                         (if (alist-get 'dynamic_reasoning launch-defaults)
+                             (or (alist-get 'dynamic_reasoning_summary launch-defaults) "dynamic")
+                           (or (alist-get 'reasoning_effort launch-defaults) "default"))
+                         (or (alist-get 'strategy launch-defaults) ""))))
        (insert (format "Ready Tasks: %s  Recent Results: %s  Open Controls: %s\n"
                        (length ready-tasks)
                        (length recent-results)

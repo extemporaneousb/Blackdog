@@ -19,10 +19,11 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 
 ## Current Feature Surface
 
-- dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, board tasks, and recent results
+- dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, task buckets (`Submitted`, `Claimed`, `Running`, and separate `Complete` failed/succeeded history), and recent results
+- dashboard cockpit actions for `New Chat`, `Chat History`, `Supervisor Monitor`, and `Snapshot Stats`, plus a latest-chat shortcut so the operator can resume conversation from the main board
 - read-only task reader with task lifecycle timestamps, branch/commit metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
-- tabulated Codex-session listing plus a dedicated session reader with collapsible timestamped user, assistant, tool-call, and tool-output sections
+- tabulated Codex-session listing plus a dedicated session reader with collapsible timestamped user, assistant, tool-call, and tool-output sections, per-chat model/reasoning controls, live auto-follow, and clickable Blackdog task references inside streamed output
 - shared root-local snapshot caching so one queue pass can reuse the same snapshot across dashboard, task, result, run, and artifact views until the operator explicitly refreshes
 - Magit-aware task navigation that prefers live worktrees and live `target..task` diffs, then falls back to saved diff artifacts for historical tasks, with commit-log and commit-open hooks for task branches
 - minibuffer completion for task, artifact, and project-file lookup
@@ -32,8 +33,8 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - legacy Blackdog conversation-thread buffers remain available as artifact readers for Blackdog-owned prompt/task flows
 - legacy spec-first authoring buffers remain available for structured task drafting, but they are no longer the default entrypoint
 - task lifecycle commands for claim, claim-and-launch, release, complete, and remove without leaving Emacs
-- telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog supervise status`, `recover`, and `report` summaries
-- live supervisor monitor that can start one async `blackdog supervise run`, request a draining stop, open the latest run directory, and tail live child stdout/stderr artifacts from `supervisor-runs/`
+- telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog snapshot`, `blackdog supervise status`, `recover`, and `report` summaries
+- live supervisor monitor that can start one async `blackdog supervise run`, request a draining stop, open the latest run directory, tail live child stdout/stderr artifacts from `supervisor-runs/`, auto-follow those updates, and expose a dedicated snapshot-stats jump point
 
 ## Frameworks To Leverage
 
@@ -157,8 +158,9 @@ If you package this outside the repo checkout, keep `lisp/` and `templates/` tog
 
 1. Open the dashboard with `C-c b b`.
 2. Expand sections with Magit motion and hit `RET` on a task to open the task reader.
-3. Use `m` for task-local Magit status or `d` for the task diff.
-4. Use `r` and `u` from the prefix map to move into result and run listings.
+3. Use the bucket headings to separate live queue work from completed history; each task row shows relative submitted/claimed/running or completed age when the snapshot has that lifecycle timestamp.
+4. Use `m` for task-local Magit status or `d` for the task diff.
+5. Use `r` and `u` from the prefix map to move into result and run listings.
 
 ### Task inspection and diff reading
 
@@ -185,11 +187,12 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 
 ### Codex-first conversation loop
 
-1. `C-c b n` opens a `Blackdog-Codex-Compose` buffer for freeform markdown.
-2. Write the operator request and press `C-c C-c`.
-3. Emacs launches `codex exec --json`, opens `Blackdog-Codex`, and streams live assistant commentary plus command activity into the buffer.
-4. Use `a` from the session reader to send the next prompt into the same Codex session with `codex exec resume --json`.
-5. Use `C-c b h` or `C-c b T` to reopen older Codex sessions for this repo from their persisted JSONL transcripts.
+1. `C-c b RET` resumes the latest repo-local chat if one exists; `C-c b n` always opens a fresh `Blackdog-Codex-Compose` buffer.
+2. Use `C-c C-s` in the compose buffer when you want to change the chat model or reasoning effort before sending the turn.
+3. Write the operator request and press `C-c C-c`.
+4. Emacs launches `codex exec --json`, opens `Blackdog-Codex`, streams live assistant commentary plus command activity into the buffer, auto-scrolls while the turn is running, and turns Blackdog task IDs in the output into clickable task-reader links.
+5. Use `a` to reply with the current settings, `S` to reply after editing model/reasoning, and `f` to toggle live auto-follow in the session reader.
+6. Use `C-c b h` or `C-c b T` to reopen older Codex sessions for this repo from their persisted JSONL transcripts.
 
 This keeps conversation state where it belongs: in Codex, not in a parallel Blackdog thread store.
 
@@ -214,11 +217,12 @@ Set `blackdog-default-agent` if you do not want Emacs writes to default to your 
 ### Telemetry and supervision
 
 1. `C-c b v` opens the telemetry buffer.
-2. `S` starts one asynchronous `blackdog supervise run` for the configured telemetry actor.
-3. `x` sends a `stop` inbox control so the run drains after current child work.
-4. `g` refreshes local counters plus `blackdog supervise status/recover/report`.
-5. `u` opens the latest run directory and `o` jumps into the latest child artifact directory.
-6. The monitor keeps polling live status while the run is active and tails the latest child `stderr.log` and `stdout.log` artifacts so the operator can watch agent output without leaving Emacs.
+2. `C-c b V` jumps straight to the `Snapshot Stats` section inside that monitor when you only want the snapshot-driven board metrics.
+3. `S` starts one asynchronous `blackdog supervise run` for the configured telemetry actor.
+4. `x` sends a `stop` inbox control so the run drains after current child work.
+5. `g` refreshes local counters plus `blackdog snapshot` and `blackdog supervise status/recover/report`.
+6. `u` opens the latest run directory, `o` jumps into the latest child artifact directory, and `f` toggles live auto-follow.
+7. The monitor keeps polling live status while the run is active, tails the latest child `stderr.log` and `stdout.log` artifacts, and turns emitted task IDs into clickable task-reader links so the operator can follow the run without leaving Emacs.
 
 ## UI Mocks
 
@@ -363,15 +367,17 @@ Suggested prefix: `C-c b`
 | `C-c b X` | `blackdog-stop-supervisor` | Request a draining stop for the telemetry actor's supervisor run. |
 | `C-c b u` | `blackdog-runs-open` | Browse supervisor run directories. |
 | `C-c b r` | `blackdog-results-open` | Browse latest task results. |
-| `C-c b h` | `blackdog-codex-sessions-open` | Browse Codex sessions for the current repo. |
+| `C-c b RET` | `blackdog-chat-resume-latest` | Resume the latest repo-local chat, or open a new chat when none exists. |
+| `C-c b h` | `blackdog-chat-history` | Browse chat sessions for the current repo. |
 | `C-c b H` | `blackdog-threads-open` | Browse legacy Blackdog conversation threads. |
 | `C-c b t` | `blackdog-find-task` | Open a task reader from completion. |
 | `C-c b T` | `blackdog-find-codex-session` | Open a Codex session from completion. |
 | `C-c b a` | `blackdog-find-artifact` | Open a prompt/diff/result/run artifact from completion. |
 | `C-c b S` | `blackdog-open-skill` | Open the repo-local skill files for prompt and skill inspection. |
-| `C-c b n` | `blackdog-codex-compose-new` | Start a new freeform Codex session draft. |
+| `C-c b n` | `blackdog-chat` | Start a new freeform Codex session draft. |
 | `C-c b N` | `blackdog-spec-new` | Start a new structured spec-first task draft. |
 | `C-c b v` | `blackdog-telemetry-open` | Open CLI and supervisor telemetry. |
+| `C-c b V` | `blackdog-open-snapshot-stats` | Jump straight to the snapshot-stats section inside telemetry. |
 | `C-c b f` | `blackdog-find-project-file` | Jump to a repo file. |
 | `C-c b s` | `blackdog-search-project` | Search the repo root. |
 | `C-c b A` | `blackdog-search-artifacts` | Search the Blackdog control dir. |
@@ -388,6 +394,10 @@ Suggested prefix: `C-c b`
 | Key | Purpose |
 | --- | --- |
 | `RET` | Open the task/result at point or toggle the current section. |
+| `n` | Start a new chat from the dashboard. |
+| `h` | Open chat history from the dashboard. |
+| `v` | Open the supervisor monitor. |
+| `V` | Jump to snapshot stats. |
 | `g` | Clear the cached snapshot and refresh the buffer. |
 | `r` | Jump to results. |
 | `s` | Jump to a task by completion. |
@@ -424,17 +434,17 @@ Suggested prefix: `C-c b`
 | --- | --- |
 | Results | `RET` opens the task reader, `f` opens the result file, `g` clears the cached snapshot and refreshes. |
 | Runs | `RET` opens the run directory, `t` opens the task reader, `g` clears the cached snapshot and refreshes. |
-| Codex Sessions | `RET` opens the session reader, `n` starts a new Codex conversation, `a` sends a follow-up prompt to the selected session, `o` opens the raw JSONL transcript, `g` refreshes. |
+| Codex Sessions | `RET` opens the session reader, `n` starts a new Codex conversation, `a` sends a follow-up prompt to the selected session, `S` sends a follow-up after editing model/reasoning, `o` opens the raw JSONL transcript, `g` refreshes. |
 
 ### Spec and telemetry
 
 | Buffer | Keys |
 | --- | --- |
-| Codex Compose | `C-c C-c` launches a new Codex turn or resumes the current session, `C-c C-k` closes the draft. |
-| Codex Session | `TAB` toggles the current section, `a` sends a follow-up prompt, `o` opens the raw session JSONL transcript, `e` opens the stderr buffer for the live process. |
+| Codex Compose | `C-c C-c` launches a new Codex turn or resumes the current session, `C-c C-s` edits model/reasoning settings, `C-c C-k` closes the draft. |
+| Codex Session | `TAB` toggles the current section, `a` sends a follow-up prompt, `S` sends a follow-up after editing model/reasoning, `f` toggles live auto-follow, `o` opens the raw session JSONL transcript, `e` opens the stderr buffer for the live process. |
 | Spec | `C-c C-o` previews the rewritten prompt, `C-c C-c` renders the draft payload, `C-c C-p` appends a code or data path. |
 | Spec Draft | `p` refreshes the prompt preview, `c` creates the task, `w` creates and launches it, `g` rerenders the draft. |
-| Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
+| Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `V` jumps to snapshot stats, `f` toggles live auto-follow, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
 
 ## Installation With use-package
 

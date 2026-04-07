@@ -45,6 +45,7 @@ DEFAULT_SUPERVISOR_COMMAND = (
     "exec",
     "--dangerously-bypass-approvals-and-sandbox",
 )
+VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
 DEFAULT_DOC_ROUTING = (
     "AGENTS.md",
     "docs/INDEX.md",
@@ -117,6 +118,9 @@ class Profile:
     validation_commands: tuple[str, ...]
     doc_routing_defaults: tuple[str, ...]
     supervisor_launch_command: tuple[str, ...]
+    supervisor_model: str | None
+    supervisor_reasoning_effort: str | None
+    supervisor_dynamic_reasoning: bool
     supervisor_max_parallel: int
     supervisor_workspace_mode: str
     pm_heuristics: dict[str, str]
@@ -297,6 +301,13 @@ def load_profile(project_root: Path | None = None) -> Profile:
         launch_command = tuple(str(item) for item in raw_launch_command)
     if not launch_command:
         raise ConfigError("supervisor.launch_command must contain at least one argv token")
+    model = str(supervisor.get("model") or "").strip() or None
+    reasoning_effort = str(supervisor.get("reasoning_effort") or "").strip() or None
+    if reasoning_effort is not None and reasoning_effort not in VALID_REASONING_EFFORTS:
+        raise ConfigError(
+            "supervisor.reasoning_effort must be one of: " + ", ".join(sorted(VALID_REASONING_EFFORTS))
+        )
+    dynamic_reasoning = bool(supervisor.get("dynamic_reasoning", False))
     workspace_mode = str(supervisor.get("workspace_mode") or "git-worktree").strip()
     if workspace_mode != "git-worktree":
         raise ConfigError("supervisor.workspace_mode must be 'git-worktree'")
@@ -319,6 +330,9 @@ def load_profile(project_root: Path | None = None) -> Profile:
             str(item) for item in taxonomy.get("doc_routing_defaults") or DEFAULT_DOC_ROUTING
         ),
         supervisor_launch_command=launch_command,
+        supervisor_model=model,
+        supervisor_reasoning_effort=reasoning_effort,
+        supervisor_dynamic_reasoning=dynamic_reasoning,
         supervisor_max_parallel=max_parallel,
         supervisor_workspace_mode=workspace_mode,
         pm_heuristics={str(key): str(value) for key, value in heuristics.items()},

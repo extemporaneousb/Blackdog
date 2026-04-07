@@ -4,14 +4,14 @@ This directory contains the local-use Emacs 30+ package for operating Blackdog i
 
 Current surfaces:
 
-- Magit-style dashboard for backlog state and recent results
+- Magit-style dashboard for backlog state, bucketed task queues, separate completed history, and direct cockpit actions for chat/monitor/stats
 - task reader with artifact links and Magit task actions
-- Codex-session browser and freeform markdown composer backed by the real Codex CLI
+- Codex-session browser and freeform markdown composer backed by the real Codex CLI, with per-chat model/reasoning controls, live auto-follow, and clickable Blackdog task references in streamed output
 - results and supervisor-run listings
 - task, artifact, and project-file completion
 - repo and artifact grep
 - conversation-first task drafting, with legacy spec drafting still available
-- telemetry and supervisor health
+- telemetry, snapshot stats, and supervisor health
 
 Minimal local install:
 

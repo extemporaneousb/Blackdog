@@ -16,7 +16,10 @@ require_claim_for_completion = true
 auto_render_html = true
 
 [supervisor]
-launch_command = ["/Applications/Codex.app/Contents/Resources/codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.4", "-c", "model_reasoning_effort=xhigh"]
+launch_command = ["/Applications/Codex.app/Contents/Resources/codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
+model = "gpt-5.4"
+reasoning_effort = "high"
+dynamic_reasoning = true
 max_parallel = 2
 
 [taxonomy]

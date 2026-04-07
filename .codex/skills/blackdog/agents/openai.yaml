@@ -1,4 +1,4 @@
 interface:
-  display_name: "Blackdog"
+  display_name: "Blackdog: Blackdog"
   short_description: "Project-local backlog control via Blackdog"
-  default_prompt: "Use Blackdog's project-local profile, skill, and shared control root for Blackdog to shape this request into measurable, consolidated backlog work and then review, claim, supervise, or report it through the repo CLI."
+  default_prompt: "Use $blackdog to shape or execute repo-specific backlog work for Blackdog through the local Blackdog contract."

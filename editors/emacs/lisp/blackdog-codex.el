@@ -39,11 +39,22 @@ When nil, prefer the Codex desktop app bundle and then fall back to
   :type 'boolean
   :group 'blackdog)
 
-(defcustom blackdog-codex-default-model nil
+(defcustom blackdog-codex-default-model "gpt-5.4"
   "Default Codex model for Emacs-launched session turns.
 
 When nil, defer to the user's Codex configuration."
   :type '(choice (const :tag "Config default" nil) string)
+  :group 'blackdog)
+
+(defcustom blackdog-codex-default-reasoning-effort "high"
+  "Default reasoning effort for Emacs-launched Codex session turns.
+
+When nil, defer to the user's Codex configuration."
+  :type '(choice (const :tag "Config default" nil)
+                 (choice (const "low")
+                         (const "medium")
+                         (const "high")
+                         (const "xhigh")))
   :group 'blackdog)
 
 (defcustom blackdog-codex-enable-search nil
@@ -54,6 +65,11 @@ When nil, defer to the user's Codex configuration."
 (defcustom blackdog-codex-extra-args nil
   "Additional CLI arguments appended to Emacs-launched Codex turns."
   :type '(repeat string)
+  :group 'blackdog)
+
+(defcustom blackdog-codex-auto-follow t
+  "When non-nil, keep live Codex session buffers scrolled to new output."
+  :type 'boolean
   :group 'blackdog)
 
 (defvar-local blackdog-codex-session-id nil)
@@ -68,6 +84,11 @@ When nil, defer to the user's Codex configuration."
 (defvar-local blackdog-codex-live-turn-started-at nil)
 (defvar-local blackdog-codex-live-output-remainder "")
 (defvar-local blackdog-codex-list-all-sessions nil)
+(defvar-local blackdog-codex-session-model nil)
+(defvar-local blackdog-codex-session-reasoning-effort nil)
+(defvar-local blackdog-codex-follow-output t)
+(defvar-local blackdog-codex-compose-model nil)
+(defvar-local blackdog-codex-compose-reasoning-effort nil)
 
 (defvar blackdog-codex-session-list-mode-map
   (let ((map (make-sparse-keymap)))
@@ -76,6 +97,7 @@ When nil, defer to the user's Codex configuration."
     (define-key map (kbd "RET") #'blackdog-codex-session-list-visit)
     (define-key map (kbd "n") #'blackdog-codex-compose-new)
     (define-key map (kbd "a") #'blackdog-codex-session-list-reply)
+    (define-key map (kbd "S") #'blackdog-codex-session-list-reply-with-settings)
     (define-key map (kbd "o") #'blackdog-codex-session-list-open-file)
     map)
   "Keymap for `blackdog-codex-session-list-mode'.")
@@ -88,8 +110,10 @@ When nil, defer to the user's Codex configuration."
     (define-key map (kbd "TAB") #'blackdog-codex-toggle-entry)
     (define-key map (kbd "<backtab>") #'blackdog-codex-cycle-buffer)
     (define-key map (kbd "a") #'blackdog-codex-compose-reply)
+    (define-key map (kbd "S") #'blackdog-codex-compose-reply-with-settings)
     (define-key map (kbd "o") #'blackdog-codex-open-session-file)
     (define-key map (kbd "e") #'blackdog-codex-open-stderr-buffer)
+    (define-key map (kbd "f") #'blackdog-codex-toggle-follow-output)
     map)
   "Keymap for `blackdog-codex-session-mode'.")
 
@@ -97,6 +121,7 @@ When nil, defer to the user's Codex configuration."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "C-c C-c") #'blackdog-codex-compose-submit)
+    (define-key map (kbd "C-c C-s") #'blackdog-codex-compose-edit-settings)
     (define-key map (kbd "C-c C-k") #'kill-current-buffer)
     map)
   "Keymap for `blackdog-codex-compose-mode'.")
@@ -116,11 +141,13 @@ When nil, defer to the user's Codex configuration."
   "Read-only Codex session view."
   (setq-local truncate-lines nil)
   (setq-local outline-regexp "^\\*+ ")
+  (setq-local blackdog-codex-follow-output blackdog-codex-auto-follow)
   (outline-minor-mode 1))
 
 (define-derived-mode blackdog-codex-compose-mode text-mode "Blackdog-Codex-Compose"
   "Compose a new Codex prompt or session reply."
-  (setq-local require-final-newline t))
+  (setq-local require-final-newline t)
+  (setq-local header-line-format '(:eval (blackdog-codex--compose-header-line))))
 
 (defun blackdog-codex-command ()
   "Return the Codex CLI path."
@@ -227,6 +254,55 @@ WIDTH defaults to 120 characters."
    ((stringp value) value)
    (t (let ((json-encoding-pretty-print t))
         (json-encode value)))))
+
+(defun blackdog-codex--normalize-setting (value)
+  "Return VALUE as a trimmed string or nil."
+  (let ((text (and value (string-trim (format "%s" value)))))
+    (unless (string-empty-p (or text ""))
+      text)))
+
+(defun blackdog-codex--session-model ()
+  "Return the effective model for the current session buffer."
+  (or (blackdog-codex--normalize-setting blackdog-codex-session-model)
+      (blackdog-codex--normalize-setting blackdog-codex-default-model)))
+
+(defun blackdog-codex--session-reasoning-effort ()
+  "Return the effective reasoning effort for the current session buffer."
+  (or (blackdog-codex--normalize-setting blackdog-codex-session-reasoning-effort)
+      (blackdog-codex--normalize-setting blackdog-codex-default-reasoning-effort)))
+
+(defun blackdog-codex--compose-model ()
+  "Return the effective model for the current compose buffer."
+  (or (blackdog-codex--normalize-setting blackdog-codex-compose-model)
+      (blackdog-codex--normalize-setting blackdog-codex-default-model)))
+
+(defun blackdog-codex--compose-reasoning-effort ()
+  "Return the effective reasoning effort for the current compose buffer."
+  (or (blackdog-codex--normalize-setting blackdog-codex-compose-reasoning-effort)
+      (blackdog-codex--normalize-setting blackdog-codex-default-reasoning-effort)))
+
+(defun blackdog-codex--compose-header-line ()
+  "Return the compose-buffer header line."
+  (format "Send: C-c C-c   Settings: C-c C-s   Model: %s   Reasoning: %s"
+          (or (blackdog-codex--compose-model) "config default")
+          (or (blackdog-codex--compose-reasoning-effort) "config default")))
+
+(defun blackdog-codex--read-model (current)
+  "Prompt for one model with CURRENT as the default."
+  (let ((value (read-string "Codex model (empty for config default): "
+                            nil nil (or current ""))))
+    (blackdog-codex--normalize-setting value)))
+
+(defun blackdog-codex--read-reasoning-effort (current)
+  "Prompt for one reasoning effort with CURRENT as the default."
+  (let* ((choices '("low" "medium" "high" "xhigh"))
+         (value (read-string
+                 "Reasoning effort (low|medium|high|xhigh, empty for config default): "
+                 nil nil (or current "")))
+         (normalized (blackdog-codex--normalize-setting value)))
+    (when (and normalized (not (member normalized choices)))
+      (user-error "Unsupported reasoning effort: %s" normalized))
+    normalized))
 
 (defun blackdog-codex--finalize-blocks (blocks)
   "Attach approximate turn durations to BLOCKS."
@@ -408,6 +484,9 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
    `("Updated" . ,(blackdog-codex--display-time (alist-get 'updated_at session)))
    `("Turns" . ,(format "%s" (or (alist-get 'turn_count session) 0)))
    `("Root" . ,(or (alist-get 'cwd session) blackdog-codex-session-root ""))
+   `("Model" . ,(or (blackdog-codex--session-model) "config default"))
+   `("Reasoning" . ,(or (blackdog-codex--session-reasoning-effort) "config default"))
+   `("Follow" . ,(if blackdog-codex-follow-output "on" "off"))
    `("File" . ,(or (alist-get 'file session) blackdog-codex-session-file ""))))
 
 (defun blackdog-codex--insert-pairs (pairs)
@@ -429,6 +508,14 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
    "Reply"
    (lambda (_button)
      (blackdog-codex-compose-reply)))
+  (blackdog-codex--insert-action-button
+   "Reply With Settings"
+   (lambda (_button)
+     (blackdog-codex-compose-reply-with-settings)))
+  (blackdog-codex--insert-action-button
+   (format "Follow Output: %s" (if blackdog-codex-follow-output "on" "off"))
+   (lambda (_button)
+     (blackdog-codex-toggle-follow-output)))
   (blackdog-codex--insert-action-button
    "Open Session File"
    (lambda (_button)
@@ -521,6 +608,10 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
                            (and blackdog-codex-session-id
                                 (blackdog-codex--locate-session-file blackdog-codex-session-id))))
          (session (and session-file (blackdog-codex-read-session-file session-file)))
+         (live-active (or (process-live-p blackdog-codex-session-process)
+                          blackdog-codex-live-items
+                          blackdog-codex-live-notices))
+         (point-before (point))
          (inhibit-read-only t))
     (setq-local blackdog-codex-session-file (or session-file blackdog-codex-session-file))
     (when (and session (not blackdog-codex-session-root))
@@ -531,9 +622,7 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
                     (or (alist-get 'title session) "Codex Session")))
     (blackdog-codex--insert-pairs (blackdog-codex--session-summary-lines session))
     (blackdog-codex--insert-actions)
-    (when (or (process-live-p blackdog-codex-session-process)
-              blackdog-codex-live-items
-              blackdog-codex-live-notices)
+    (when live-active
       (insert "Live Turn\n")
       (insert (format "Status   %s\n"
                       (if (process-live-p blackdog-codex-session-process)
@@ -556,7 +645,13 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
     (when session
       (insert "Transcript\n\n")
       (blackdog-codex--insert-blocks (alist-get 'blocks session)))
-    (goto-char (point-min))))
+    (blackdog-linkify-task-ids (point-min) (point-max) root)
+    (if (and live-active blackdog-codex-follow-output)
+        (progn
+          (goto-char (point-max))
+          (when-let ((window (get-buffer-window (current-buffer) t)))
+            (set-window-point window (point-max))))
+      (goto-char (min point-before (point-max))))))
 
 (defun blackdog-codex-open-session (session &optional root)
   "Open Codex SESSION in a dedicated reader buffer."
@@ -608,6 +703,14 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
     (user-error "No stderr buffer is available"))
   (pop-to-buffer blackdog-codex-session-stderr-buffer))
 
+(defun blackdog-codex-toggle-follow-output ()
+  "Toggle auto-follow for the current live Codex session buffer."
+  (interactive)
+  (setq-local blackdog-codex-follow-output (not blackdog-codex-follow-output))
+  (blackdog-codex-session-refresh)
+  (message "Blackdog Codex follow output %s"
+           (if blackdog-codex-follow-output "enabled" "disabled")))
+
 (defun blackdog-codex-session-list-refresh ()
   "Refresh the current Codex session list."
   (interactive)
@@ -655,7 +758,7 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
                                  (blackdog-codex-session-list
                                   blackdog-buffer-root
                                   blackdog-codex-list-all-sessions))))
-    (blackdog-codex-open-session session blackdog-buffer-root)))
+      (blackdog-codex-open-session session blackdog-buffer-root)))
 
 (defun blackdog-codex-session-list-reply ()
   "Reply to the Codex session at point."
@@ -667,6 +770,17 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
                                   blackdog-buffer-root
                                   blackdog-codex-list-all-sessions))))
     (blackdog-codex-compose-reply session blackdog-buffer-root)))
+
+(defun blackdog-codex-session-list-reply-with-settings ()
+  "Reply to the Codex session at point after editing launch settings."
+  (interactive)
+  (when-let* ((session-id (tabulated-list-get-id))
+              (session (seq-find (lambda (row)
+                                   (equal session-id (alist-get 'id row)))
+                                 (blackdog-codex-session-list
+                                  blackdog-buffer-root
+                                  blackdog-codex-list-all-sessions))))
+    (blackdog-codex-compose-reply-with-settings session blackdog-buffer-root)))
 
 (defun blackdog-codex-session-list-open-file ()
   "Open the raw session JSONL file at point."
@@ -688,6 +802,9 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
       (blackdog-codex-compose-mode)
       (setq-local blackdog-buffer-root (or root (blackdog-project-root)))
       (setq-local blackdog-codex-session-id nil)
+      (setq-local blackdog-codex-compose-model (blackdog-codex--normalize-setting blackdog-codex-default-model))
+      (setq-local blackdog-codex-compose-reasoning-effort
+                  (blackdog-codex--normalize-setting blackdog-codex-default-reasoning-effort))
       (insert "# Prompt\n\n"))
     (pop-to-buffer buffer)
     (goto-char (point-min))
@@ -705,34 +822,66 @@ When INCLUDE-ALL is non-nil, do not filter by ROOT."
     (with-current-buffer buffer
       (blackdog-codex-compose-mode)
       (setq-local blackdog-buffer-root (or root blackdog-buffer-root blackdog-codex-session-root (blackdog-project-root)))
-      (setq-local blackdog-codex-session-id session-id))
+      (setq-local blackdog-codex-session-id session-id)
+      (setq-local blackdog-codex-compose-model
+                  (or (blackdog-codex--normalize-setting blackdog-codex-session-model)
+                      (blackdog-codex--normalize-setting blackdog-codex-default-model)))
+      (setq-local blackdog-codex-compose-reasoning-effort
+                  (or (blackdog-codex--normalize-setting blackdog-codex-session-reasoning-effort)
+                      (blackdog-codex--normalize-setting blackdog-codex-default-reasoning-effort))))
     (pop-to-buffer buffer)
     buffer))
 
-(defun blackdog-codex--base-argv (root)
-  "Return common Codex argv fragments for ROOT."
+(defun blackdog-codex-compose-edit-settings ()
+  "Edit model and reasoning settings for the current compose buffer."
+  (interactive)
+  (unless (derived-mode-p 'blackdog-codex-compose-mode)
+    (user-error "Not in a Codex compose buffer"))
+  (setq-local blackdog-codex-compose-model
+              (blackdog-codex--read-model (blackdog-codex--compose-model)))
+  (setq-local blackdog-codex-compose-reasoning-effort
+              (blackdog-codex--read-reasoning-effort
+               (blackdog-codex--compose-reasoning-effort)))
+  (force-mode-line-update)
+  (message "Codex settings updated: model=%s reasoning=%s"
+           (or (blackdog-codex--compose-model) "config default")
+           (or (blackdog-codex--compose-reasoning-effort) "config default")))
+
+(defun blackdog-codex-compose-reply-with-settings (&optional session root)
+  "Reply to SESSION and prompt for model/reasoning settings first."
+  (interactive)
+  (let ((buffer (blackdog-codex-compose-reply session root)))
+    (with-current-buffer buffer
+      (blackdog-codex-compose-edit-settings))
+    buffer))
+
+(defun blackdog-codex--base-argv (root &optional model reasoning-effort)
+  "Return common Codex argv fragments for ROOT, MODEL, and REASONING-EFFORT."
   (append
    (when blackdog-codex-use-full-auto
      '("--full-auto"))
-   (when (and blackdog-codex-default-model
-              (not (string-empty-p blackdog-codex-default-model)))
-     (list "--model" blackdog-codex-default-model))
+   (when-let ((value (blackdog-codex--normalize-setting
+                      (or model blackdog-codex-default-model))))
+     (list "--model" value))
+   (when-let ((value (blackdog-codex--normalize-setting
+                      (or reasoning-effort blackdog-codex-default-reasoning-effort))))
+     (list "-c" (format "model_reasoning_effort=%s" value)))
    (when blackdog-codex-enable-search
      '("--search"))
    (when root
      (list "-C" root))
    blackdog-codex-extra-args))
 
-(defun blackdog-codex-exec-argv (root &optional session-id)
+(defun blackdog-codex-exec-argv (root &optional session-id model reasoning-effort)
   "Return the Codex argv used for ROOT and SESSION-ID.
 
 When SESSION-ID is nil, return argv for a new non-interactive session."
   (if session-id
       (append (list "exec" "resume")
-              (blackdog-codex--base-argv root)
+              (blackdog-codex--base-argv root model reasoning-effort)
               (list "--json" session-id "-"))
     (append (list "exec")
-            (blackdog-codex--base-argv root)
+            (blackdog-codex--base-argv root model reasoning-effort)
             (list "--json" "-"))))
 
 (defun blackdog-codex--live-timestamp ()
@@ -856,7 +1005,7 @@ When SESSION-ID is nil, return argv for a new non-interactive session."
           (blackdog-codex--push-live-notice (string-trim event)))
         (blackdog-codex-session-refresh)))))
 
-(defun blackdog-codex--start-session-process (buffer root prompt &optional session-id)
+(defun blackdog-codex--start-session-process (buffer root prompt &optional session-id model reasoning-effort)
   "Start a Codex turn in BUFFER for ROOT and PROMPT."
   (with-current-buffer buffer
     (when (process-live-p blackdog-codex-session-process)
@@ -876,12 +1025,15 @@ When SESSION-ID is nil, return argv for a new non-interactive session."
              :connection-type 'pipe
              :coding 'utf-8
              :command (append (list (blackdog-codex-command))
-                              (blackdog-codex-exec-argv root session-id))
+                              (blackdog-codex-exec-argv root session-id model reasoning-effort))
              :filter #'blackdog-codex--process-filter
              :sentinel #'blackdog-codex--process-sentinel)))
       (process-put process 'target-buffer buffer)
       (setq-local blackdog-codex-session-process process)
       (setq-local blackdog-codex-session-root root)
+      (setq-local blackdog-codex-session-model (blackdog-codex--normalize-setting model))
+      (setq-local blackdog-codex-session-reasoning-effort
+                  (blackdog-codex--normalize-setting reasoning-effort))
       (setq-local blackdog-codex-session-stdout-buffer stdout-buffer)
       (setq-local blackdog-codex-session-stderr-buffer stderr-buffer)
       (setq-local blackdog-codex-live-items nil)
@@ -895,7 +1047,7 @@ When SESSION-ID is nil, return argv for a new non-interactive session."
       (blackdog-codex-session-refresh)
       process)))
 
-(defun blackdog-codex-session-run (prompt &optional session-id root)
+(defun blackdog-codex-session-run (prompt &optional session-id root model reasoning-effort)
   "Start or resume one Codex session with PROMPT."
   (let* ((root (or root (blackdog-project-root)))
          (session (and session-id
@@ -911,9 +1063,21 @@ When SESSION-ID is nil, return argv for a new non-interactive session."
       (setq-local blackdog-codex-session-id session-id)
       (setq-local blackdog-codex-session-file (and session (alist-get 'file session)))
       (setq-local blackdog-codex-session-root (or (alist-get 'cwd session) root))
+      (setq-local blackdog-codex-session-model
+                  (blackdog-codex--normalize-setting
+                   (or model blackdog-codex-default-model)))
+      (setq-local blackdog-codex-session-reasoning-effort
+                  (blackdog-codex--normalize-setting
+                   (or reasoning-effort blackdog-codex-default-reasoning-effort)))
       (setq-local blackdog-refresh-function #'blackdog-codex-session-refresh)
       (blackdog-codex-session-refresh)
-      (blackdog-codex--start-session-process buffer root prompt session-id))
+      (blackdog-codex--start-session-process
+       buffer
+       root
+       prompt
+       session-id
+       blackdog-codex-session-model
+       blackdog-codex-session-reasoning-effort))
     (pop-to-buffer buffer)
     buffer))
 
@@ -923,11 +1087,13 @@ When SESSION-ID is nil, return argv for a new non-interactive session."
   (let ((root (or blackdog-buffer-root (blackdog-project-root)))
         (prompt (buffer-substring-no-properties (point-min) (point-max)))
         (session-id blackdog-codex-session-id)
+        (model (blackdog-codex--compose-model))
+        (reasoning-effort (blackdog-codex--compose-reasoning-effort))
         (draft-buffer (current-buffer)))
     (when (string-empty-p (string-trim prompt))
       (user-error "Prompt body is required"))
     (prog1
-        (blackdog-codex-session-run prompt session-id root)
+        (blackdog-codex-session-run prompt session-id root model reasoning-effort)
       (when (buffer-live-p draft-buffer)
         (kill-buffer draft-buffer)))))
 

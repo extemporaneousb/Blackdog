@@ -30,6 +30,8 @@
     ".codex/skills/blackdog/references/task-shaping.md")
   "Relative files that the skill inspection command can open.")
 
+(declare-function blackdog-dashboard-open "blackdog-dashboard" (&optional root))
+
 (defun blackdog--skill-inspection-candidates (&optional root)
   "Return inspectable Blackdog skill files under ROOT."
   (let ((root (or root (blackdog-project-root))))
@@ -51,8 +53,33 @@
      root
      t)))
 
+(defun blackdog-chat (&optional root)
+  "Open a new Blackdog chat composer for ROOT."
+  (interactive)
+  (blackdog-codex-compose-new root))
+
+(defun blackdog-chat-history (&optional root include-all)
+  "Open the Blackdog chat history browser for ROOT."
+  (interactive (list nil current-prefix-arg))
+  (blackdog-codex-sessions-open root include-all))
+
+(defun blackdog-chat-resume-latest (&optional root)
+  "Resume the latest Blackdog chat for ROOT, or open a new one."
+  (interactive)
+  (let* ((root (or root (blackdog-project-root)))
+         (latest (car (blackdog-codex-session-list root nil))))
+    (if latest
+        (blackdog-codex-open-session latest root)
+      (blackdog-chat root))))
+
+(defun blackdog-open-snapshot-stats (&optional root)
+  "Open the snapshot-stats section inside the telemetry monitor."
+  (interactive)
+  (blackdog-telemetry-open-snapshot-stats root))
+
 (defvar blackdog-prefix-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'blackdog-chat-resume-latest)
     (define-key map (kbd "b") #'blackdog-dashboard)
     (define-key map (kbd "c") #'blackdog-claim-task)
     (define-key map (kbd "w") #'blackdog-launch-task)
@@ -65,12 +92,13 @@
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "t") #'blackdog-find-task)
     (define-key map (kbd "T") #'blackdog-find-codex-session)
-    (define-key map (kbd "h") #'blackdog-codex-sessions-open)
+    (define-key map (kbd "h") #'blackdog-chat-history)
     (define-key map (kbd "H") #'blackdog-threads-open)
     (define-key map (kbd "a") #'blackdog-find-artifact)
-    (define-key map (kbd "n") #'blackdog-codex-compose-new)
+    (define-key map (kbd "n") #'blackdog-chat)
     (define-key map (kbd "N") #'blackdog-spec-new)
     (define-key map (kbd "v") #'blackdog-telemetry-open)
+    (define-key map (kbd "V") #'blackdog-open-snapshot-stats)
     (define-key map (kbd "f") #'blackdog-find-project-file)
     (define-key map (kbd "s") #'blackdog-search-project)
     (define-key map (kbd "A") #'blackdog-search-artifacts)
@@ -142,16 +170,17 @@
         "Dispatch Blackdog commands."
         [["Views"
           ("b" "Dashboard" blackdog-dashboard)
-          ("h" "Codex sessions" blackdog-codex-sessions-open)
-          ("H" "Blackdog threads" blackdog-threads-open)
+          ("n" "New chat" blackdog-chat)
+          ("h" "Chat history" blackdog-chat-history)
+          ("H" "Legacy threads" blackdog-threads-open)
           ("u" "Runs" blackdog-runs-open)
           ("r" "Results" blackdog-results-open)
           ("t" "Task" blackdog-find-task)
           ("T" "Codex session" blackdog-find-codex-session)
           ("a" "Artifact" blackdog-find-artifact)
-          ("n" "New Codex session" blackdog-codex-compose-new)
           ("N" "New spec" blackdog-spec-new)
           ("v" "Telemetry" blackdog-telemetry-open)
+          ("V" "Snapshot stats" blackdog-open-snapshot-stats)
           ("f" "Project file" blackdog-find-project-file)]
          ["Write"
           ("c" "Claim" blackdog-claim-task)

@@ -217,6 +217,7 @@
     (blackdog-thread--insert-actions thread)
     (blackdog-thread--insert-linked-tasks thread root)
     (blackdog-thread--insert-entries thread)
+    (blackdog-linkify-task-ids (point-min) (point-max) root)
     (goto-char (point-min))))
 
 (defun blackdog-thread-view (thread &optional root)

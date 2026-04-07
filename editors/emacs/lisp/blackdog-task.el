@@ -163,6 +163,7 @@
       (blackdog-task--insert-artifact-links "Artifacts" task)
       (blackdog-task--insert-activity "Activity"
                                       (alist-get 'activity task))
+      (blackdog-linkify-task-ids (point-min) (point-max) root)
       (goto-char (point-min)))))
 
 (defun blackdog-task-view-magit-status ()
@@ -311,6 +312,7 @@ ARTIFACT should be `prompt' or `thread'."
       (blackdog-task--insert-artifact-browser-actions task artifact)
       (insert (format "%s\n" (blackdog-task--artifact-kind-title artifact)))
       (insert-file-contents source-path)
+      (blackdog-linkify-task-ids (point-min) (point-max) root)
       (goto-char (point-min)))))
 
 (defun blackdog-task-artifact-view-open-source ()

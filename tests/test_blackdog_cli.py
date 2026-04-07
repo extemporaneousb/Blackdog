@@ -8878,6 +8878,181 @@ if __name__ == "__main__":
         self.assertIn("model=gpt-5.4-mini", result_rows[0]["validation"])
         self.assertIn("reasoning=xhigh", result_rows[0]["validation"])
 
+    def test_supervise_run_can_size_reasoning_dynamically_per_task(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
+            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]\n',
+            'launch_command = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]\n'
+            'model = "gpt-5.4"\n'
+            'reasoning_effort = "high"\n'
+            'dynamic_reasoning = true\n',
+        )
+        (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+        install_exec_launcher(
+            self.root,
+            """
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args == ["--help"]:
+        print("Commands:\\n  exec")
+        return 0
+    if not args or args[0] != "exec":
+        print("expected exec launcher", file=sys.stderr)
+        return 2
+    project_root = Path(os.environ["BLACKDOG_PROJECT_ROOT"])
+    task_id = os.environ["BLACKDOG_TASK_ID"]
+    actor = os.environ["BLACKDOG_AGENT_NAME"]
+    model = "default"
+    reasoning = "default"
+    if "-m" in args:
+        index = args.index("-m")
+        if index + 1 < len(args):
+            model = args[index + 1]
+    elif "--model" in args:
+        index = args.index("--model")
+        if index + 1 < len(args):
+            model = args[index + 1]
+    if "--effort" in args:
+        index = args.index("--effort")
+        if index + 1 < len(args):
+            reasoning = args[index + 1]
+    for index, token in enumerate(args):
+        if token == "-c" and index + 1 < len(args):
+            key, _, value = args[index + 1].partition("=")
+            if key == "model_reasoning_effort":
+                reasoning = value
+    Path(f"{task_id}-{model}-{reasoning}.txt").write_text(f"{model} {reasoning}\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], check=True)
+    subprocess.run(["git", "commit", "-m", f"Record dynamic reasoning for {task_id}"], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "blackdog.cli",
+            "result",
+            "record",
+            "--project-root",
+            str(project_root),
+            "--id",
+            task_id,
+            "--actor",
+            actor,
+            "--status",
+            "success",
+            "--what-changed",
+            f"completed {task_id} with model {model} and reasoning {reasoning}",
+            "--validation",
+            f"model={model}",
+            "--validation",
+            f"reasoning={reasoning}",
+        ],
+        check=True,
+        env=os.environ.copy(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""",
+            commit_message="Checkpoint dynamic reasoning launcher",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Routine task",
+            "--bucket",
+            "core",
+            "--priority",
+            "P2",
+            "--risk",
+            "low",
+            "--effort",
+            "S",
+            "--why",
+            "Routine work should stay on high effort.",
+            "--evidence",
+            "Dynamic sizing should not over-allocate bounded tasks.",
+            "--safe-first-slice",
+            "Launch one bounded child and inspect the resolved reasoning.",
+            "--path",
+            "README.md",
+        )
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Large task",
+            "--bucket",
+            "core",
+            "--priority",
+            "P1",
+            "--risk",
+            "medium",
+            "--effort",
+            "L",
+            "--why",
+            "Large tasks should get extra reasoning budget.",
+            "--evidence",
+            "Dynamic sizing should promote large work to xhigh.",
+            "--safe-first-slice",
+            "Launch one large child and inspect the resolved reasoning.",
+            "--path",
+            "README.md",
+        )
+        task_ids = task_ids_by_title(self.root)
+
+        payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "run",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--count",
+                    "2",
+                    "--poll-interval-seconds",
+                    "0",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+
+        self.assertTrue(payload["launch_settings"]["dynamic_reasoning"])
+        self.assertEqual(payload["launch_settings"]["model"], "gpt-5.4")
+        children = {row["task_id"]: row for row in payload["children"]}
+        self.assertEqual(children[task_ids["Routine task"]]["launch_settings"]["model"], "gpt-5.4")
+        self.assertEqual(children[task_ids["Routine task"]]["launch_settings"]["reasoning_effort"], "high")
+        self.assertEqual(children[task_ids["Large task"]]["launch_settings"]["model"], "gpt-5.4")
+        self.assertEqual(children[task_ids["Large task"]]["launch_settings"]["reasoning_effort"], "xhigh")
+
+        result_rows = {row["task_id"]: row for row in load_task_results(self.runtime_paths())}
+        self.assertIn("reasoning=high", result_rows[task_ids["Routine task"]]["validation"])
+        self.assertIn("reasoning=xhigh", result_rows[task_ids["Large task"]]["validation"])
+
     def test_supervise_run_performs_a_second_round_convergence_optimization_funnel(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
 
