@@ -13,6 +13,9 @@ dependencies = []
 
 [project.scripts]
 blackdog = "blackdog.cli:main"
+blackdog-core = "blackdog.cli:main_core"
+blackdog-proper = "blackdog.cli:main_proper"
+blackdog-devtool = "blackdog.cli:main_devtool"
 blackdog-skill = "blackdog.skill_cli:main"
 
 [tool.setuptools]

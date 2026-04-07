@@ -18,6 +18,13 @@ Group commands inherit the owner shown for their listed leaf verbs.
 The `blackdog` and `blackdog-skill` executables remain thin adapter shells even
 when the command they dispatch is owned by another layer.
 
+Split entrypoints now make that ownership visible directly:
+
+- `blackdog-core`: core-owned leaf commands only
+- `blackdog-proper`: Blackdog-product leaf commands only
+- `blackdog-devtool`: bootstrap/install/coverage tooling only
+- `blackdog`: compatibility umbrella that still exposes the full mixed surface while callers migrate
+
 ### `blackdog`
 
 | Owner | Commands |
@@ -28,8 +35,24 @@ when the command they dispatch is owned by another layer.
 | `extensions` | no built-in CLI commands today; extension packages should compose through the documented CLI and artifact contract |
 
 No executable `blackdog` command is currently marked as a compatibility shim in the parser. `task run` remains a convenience workflow surface, not a deprecation target in this audit.
-The stable executable names are still `blackdog`, `blackdog-skill`, and
-`python -m blackdog`; the remodel only changes their internal module homes.
+The stable executable names now include `blackdog-core`,
+`blackdog-proper`, and `blackdog-devtool` alongside `blackdog`,
+`blackdog-skill`, and `python -m blackdog`. The legacy `blackdog`
+surface remains available as a compatibility wrapper while callers move
+to owner-scoped entrypoints.
+
+### Owner-scoped entrypoints
+
+| Executable | Exposed commands |
+| --- | --- |
+| `blackdog-core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
+| `blackdog-proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render` |
+| `blackdog-devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
+
+Mixed command groups still appear where a parent container is needed to
+reach an allowed leaf. For example, `blackdog-core worktree preflight`
+remains valid even though the other `worktree` verbs belong to
+Blackdog proper.
 
 ## `blackdog`
 
