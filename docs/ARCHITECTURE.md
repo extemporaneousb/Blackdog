@@ -414,6 +414,9 @@ Each checkpoint should leave enough evidence that a later agent can
 reseed the DAG from files instead of memory:
 
 - doc updates when the intended contract changed
+- durable discovery artifacts such as the target package map, module
+  inventory, and other landed audit outputs that later tasks are meant
+  to consume
 - structured task results describing what changed, what was verified,
   and what remains open
 - validation output appropriate to the touched surface
@@ -430,8 +433,9 @@ reconstruct the decision from docs, results, and backlog state.
 When a checkpoint finishes, reseed the remaining DAG using existing
 Blackdog planning objects only:
 
-1. Compare the checkpoint outcome against `docs/CHARTER.md` and this
-   architecture doc.
+1. Compare the checkpoint outcome against `docs/CHARTER.md`, this
+   architecture doc, `docs/MODULE_INVENTORY.md`, and the relevant
+   completed task results that landed the checkpoint inputs.
 2. If the target architecture still holds, add or reshape follow-up
    tasks without changing the target docs. Use task titles, `why`,
    `evidence`, `safe_first_slice`, and predecessor relationships to
@@ -440,7 +444,8 @@ Blackdog planning objects only:
    update the target docs first, then reseed the remaining tasks
    against that revised target.
 4. Preserve completed-task history. Reseeding should only modify
-   unfinished work, task ordering, or gating relationships.
+   unfinished work, task ordering, or gating relationships; claimed or
+   completed tasks remain evidence, not rewrite targets.
 5. Record the reseed rationale in structured results and, when useful,
    backlog comments so the next operator can see why the graph changed.
 

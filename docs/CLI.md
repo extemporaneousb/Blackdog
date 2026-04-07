@@ -21,8 +21,8 @@ Group commands inherit the owner shown for their listed leaf verbs.
 | Owner | Commands |
 | --- | --- |
 | `devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
-| `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record`; `inbox send|list|resolve` |
-| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup` |
+| `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
+| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve` |
 | `viewer/adapter` | `snapshot`; `render` |
 
 No executable `blackdog` command is currently marked as a compatibility shim in the parser. `task run` remains a convenience workflow surface, not a deprecation target in this audit.
@@ -189,6 +189,11 @@ The prompt profiles now also carry calibrated task-shaping defaults by effort (`
 The command appends a `task_removed` event and rerenders the static board like other task-state mutations.
 
 `blackdog task edit` is the in-place mutation surface for thin UIs. It preserves the task id, updates the task block plus plan assignment, and rejects tasks that already have claim state or recorded results. Use it for operator edits before execution starts instead of teaching editors to rewrite backlog markdown directly.
+
+Checkpoint-driven DAG reseeding should use `task edit`, `remove`, and
+`add` only on unfinished work. Claimed or completed tasks stay in place
+as checkpoint evidence and should not be rewritten just to make the plan
+look cleaner.
 
 `blackdog task run` is the manual WTAM preparation surface. It claims the task for the selected agent, creates the default branch-backed worktree when one does not exist yet, or reuses the existing task worktree when it is already present. Pass `--format json` when an editor wants the returned branch/worktree contract instead of parsing shell text.
 
