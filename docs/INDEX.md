@@ -12,6 +12,7 @@ Use this index as the entrypoint for the repo-scoped Blackdog system.
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for `blackdog.toml`, backlog markdown, state, events, inbox, and task-result files
 - [docs/INTEGRATION.md](docs/INTEGRATION.md): current host-repo setup flow, configuration review points, and pilot rollout guidance
 - [docs/EXTRACTION_AUDIT.md](docs/EXTRACTION_AUDIT.md): extraction-risk audit for viewer, scaffold, supervisor, and Emacs adapter surfaces
+- [docs/OWNERSHIP_INVENTORY.md](docs/OWNERSHIP_INVENTORY.md): current file-level ownership map across core, proper, viewers, and clients for extraction planning
 
 ## Working Guidance
 
