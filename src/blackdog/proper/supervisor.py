@@ -365,6 +365,31 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
             "Pre-launch recovery: "
             f"{recovery.get('action')} | {recovery.get('task_id') or 'primary'} | {recovery.get('summary')}"
         )
+    recovery_needed = view.get("recovery_needed")
+    if isinstance(recovery_needed, dict):
+        lines.extend(["", "Recovery needed:"])
+        if recovery_needed["cases"]:
+            for case in recovery_needed["cases"]:
+                lines.append(f"- {case['task_id']} [{case['case']}] {case['summary']}")
+                child_result = case.get("latest_child_result_status")
+                if child_result is not None:
+                    lines.append(
+                        "  child result: "
+                        f"{child_result} by {case.get('latest_child_result_actor') or '?'}"
+                        f" @ {case.get('latest_child_result_recorded_at') or '?'}"
+                    )
+                supervisor_result = case.get("latest_supervisor_result_status")
+                if supervisor_result is not None:
+                    lines.append(
+                        "  supervisor result: "
+                        f"{supervisor_result} by {case.get('latest_supervisor_result_actor') or '?'}"
+                        f" @ {case.get('latest_supervisor_result_recorded_at') or '?'}"
+                    )
+                if case.get("land_error"):
+                    lines.append(f"  land_error: {case['land_error']}")
+                lines.append(f"  next: {', '.join(case['next_actions'])}")
+        else:
+            lines.append("- No recovery-needed child outcomes.")
     control = view.get("control_action")
     if isinstance(control, dict):
         lines.append(f"Run control: {control['action']} via {control['message_id']}")
@@ -706,6 +731,7 @@ def build_supervisor_recover_view(profile: Profile, *, actor: str) -> dict[str, 
                     {
                         "run_id": run["run_id"],
                         "task_id": child["task_id"],
+                        "child_agent": child.get("child_agent"),
                         "task_branch": child.get("task_branch"),
                         "target_branch": child.get("target_branch"),
                         "primary_worktree": child.get("primary_worktree"),
@@ -713,6 +739,10 @@ def build_supervisor_recover_view(profile: Profile, *, actor: str) -> dict[str, 
                         "child_artifact_dir": child.get("child_artifact_dir"),
                         "run_status": child.get("run_status"),
                         "claim_status": child.get("claim_status"),
+                        "final_task_status": child.get("final_task_status"),
+                        "branch_ahead": child.get("branch_ahead"),
+                        "landed": child.get("landed"),
+                        "land_error": child.get("land_error"),
                         "case": case.get("case"),
                         "severity": case.get("severity"),
                         "summary": case.get("summary"),
@@ -917,6 +947,220 @@ def _format_percent(attempted: int, total: int) -> float:
     return (attempted / total) * 100 if total else 0.0
 
 
+def _blank_recovery_result_fields() -> dict[str, Any]:
+    return {
+        "latest_result_status": None,
+        "latest_result_actor": None,
+        "latest_result_recorded_at": None,
+        "latest_result_needs_user_input": None,
+        "latest_result_file": None,
+        "latest_child_result_status": None,
+        "latest_child_result_actor": None,
+        "latest_child_result_recorded_at": None,
+        "latest_child_result_needs_user_input": None,
+        "latest_child_result_file": None,
+        "latest_supervisor_result_status": None,
+        "latest_supervisor_result_actor": None,
+        "latest_supervisor_result_recorded_at": None,
+        "latest_supervisor_result_needs_user_input": None,
+        "latest_supervisor_result_file": None,
+    }
+
+
+def _index_supervisor_results(
+    results: list[dict[str, Any]],
+    *,
+    actor: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    child_prefix = f"{actor}/child-"
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _set_result_fields(entry: dict[str, Any], prefix: str, row: dict[str, Any], actor_name: str) -> None:
+        status_key = f"{prefix}_status"
+        if entry[status_key] is not None:
+            return
+        entry[status_key] = row.get("status")
+        entry[f"{prefix}_actor"] = actor_name or None
+        entry[f"{prefix}_recorded_at"] = row.get("recorded_at")
+        entry[f"{prefix}_needs_user_input"] = bool(row.get("needs_user_input"))
+        entry[f"{prefix}_file"] = row.get("result_file")
+
+    for row in results:
+        task_id = str(row.get("task_id") or "")
+        run_id = str(row.get("run_id") or "")
+        if not task_id or not run_id:
+            continue
+        actor_name = str(row.get("actor") or "")
+        entry = index.setdefault((task_id, run_id), _blank_recovery_result_fields())
+        _set_result_fields(entry, "latest_result", row, actor_name)
+        if actor_name.startswith(child_prefix):
+            _set_result_fields(entry, "latest_child_result", row, actor_name)
+        elif actor_name == actor:
+            _set_result_fields(entry, "latest_supervisor_result", row, actor_name)
+    return index
+
+
+def _index_supervisor_results_by_task(
+    results: list[dict[str, Any]],
+    *,
+    actor: str,
+) -> dict[str, dict[str, Any]]:
+    child_prefix = f"{actor}/child-"
+    index: dict[str, dict[str, Any]] = {}
+
+    def _set_result_fields(entry: dict[str, Any], prefix: str, row: dict[str, Any], actor_name: str) -> None:
+        status_key = f"{prefix}_status"
+        if entry[status_key] is not None:
+            return
+        entry[status_key] = row.get("status")
+        entry[f"{prefix}_actor"] = actor_name or None
+        entry[f"{prefix}_recorded_at"] = row.get("recorded_at")
+        entry[f"{prefix}_needs_user_input"] = bool(row.get("needs_user_input"))
+        entry[f"{prefix}_file"] = row.get("result_file")
+
+    for row in results:
+        task_id = str(row.get("task_id") or "")
+        if not task_id:
+            continue
+        actor_name = str(row.get("actor") or "")
+        entry = index.setdefault(task_id, _blank_recovery_result_fields())
+        _set_result_fields(entry, "latest_result", row, actor_name)
+        if actor_name.startswith(child_prefix):
+            _set_result_fields(entry, "latest_child_result", row, actor_name)
+        elif actor_name == actor:
+            _set_result_fields(entry, "latest_supervisor_result", row, actor_name)
+    return index
+
+
+def _attach_recovery_result_fields(
+    cases: list[dict[str, Any]],
+    *,
+    result_index: dict[tuple[str, str], dict[str, Any]],
+    task_result_index: dict[str, dict[str, Any]] | None = None,
+    task_fallback_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for case in cases:
+        row = dict(case)
+        task_id = str(row.get("task_id") or "")
+        row.update(
+            result_index.get(
+                (task_id, str(row.get("run_id") or "")),
+                _blank_recovery_result_fields(),
+            )
+        )
+        task_fields = task_result_index.get(task_id) if task_result_index is not None else None
+        if (
+            task_fields is not None
+            and task_fallback_ids is not None
+            and task_id in task_fallback_ids
+            and row.get("latest_result_status") is None
+        ):
+            for prefix in ("latest_result", "latest_child_result", "latest_supervisor_result"):
+                for suffix in ("status", "actor", "recorded_at", "needs_user_input", "file"):
+                    key = f"{prefix}_{suffix}"
+                    if row.get(key) is None:
+                        row[key] = task_fields.get(key)
+        rows.append(row)
+    return rows
+
+
+def _recovery_needed_section(
+    cases: list[dict[str, Any]],
+    *,
+    result_index: dict[tuple[str, str], dict[str, Any]],
+    task_result_index: dict[str, dict[str, Any]] | None = None,
+    task_fallback_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    rows = _attach_recovery_result_fields(
+        cases,
+        result_index=result_index,
+        task_result_index=task_result_index,
+        task_fallback_ids=task_fallback_ids,
+    )
+    return {"count": len(rows), "cases": rows}
+
+
+def _run_status_for_attempt(attempt: dict[str, Any]) -> str:
+    if attempt.get("missing_process"):
+        return "interrupted"
+    if attempt.get("land_error"):
+        return "blocked"
+    if attempt.get("launch_error"):
+        return "launch-failed"
+    if attempt.get("exit_code") not in {0, None}:
+        return "failed"
+    final_task_status = str(attempt.get("final_task_status") or "")
+    if final_task_status == "finished":
+        return "done"
+    if final_task_status:
+        return final_task_status
+    if attempt.get("launched"):
+        return "running"
+    return "unknown"
+
+
+def _build_report_recovery_needed_cases(
+    runs: list[dict[str, Any]],
+    *,
+    result_index: dict[tuple[str, str], dict[str, Any]],
+    task_result_index: dict[str, dict[str, Any]] | None = None,
+    task_fallback_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    severity_rank = {"high": 3, "medium": 2, "low": 1}
+    for run in runs:
+        run_id = str(run.get("run_id") or "")
+        for attempt in run.get("attempts", []):
+            run_status = _run_status_for_attempt(attempt)
+            case = _recovery_case_recommendations(
+                {
+                    "run_status": run_status,
+                    "final_task_status": attempt.get("final_task_status"),
+                    "claim_status": None,
+                    "landed": attempt.get("landed"),
+                    "land_error": attempt.get("land_error"),
+                }
+            )
+            if case is None:
+                continue
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "task_id": str(attempt.get("task_id") or ""),
+                    "child_agent": attempt.get("child_agent"),
+                    "task_branch": attempt.get("branch"),
+                    "target_branch": attempt.get("target_branch"),
+                    "primary_worktree": None,
+                    "workspace": attempt.get("workspace"),
+                    "child_artifact_dir": attempt.get("artifacts_dir"),
+                    "run_status": run_status,
+                    "claim_status": None,
+                    "final_task_status": attempt.get("final_task_status"),
+                    "branch_ahead": attempt.get("branch_ahead"),
+                    "landed": attempt.get("landed"),
+                    "land_error": attempt.get("land_error"),
+                    "case": case.get("case"),
+                    "severity": case.get("severity"),
+                    "summary": case.get("summary"),
+                    "next_actions": list(case.get("next_actions") or []),
+                }
+            )
+    rows.sort(
+        key=lambda item: (
+            -severity_rank.get(str(item.get("severity") or "low"), 1),
+            str(item.get("run_id") or ""),
+            str(item.get("task_id") or ""),
+        )
+    )
+    return _attach_recovery_result_fields(
+        rows,
+        result_index=result_index,
+        task_result_index=task_result_index,
+        task_fallback_ids=task_fallback_ids,
+    )
+
+
 def build_supervisor_observation_view(
     profile: Profile,
     *,
@@ -926,6 +1170,8 @@ def build_supervisor_observation_view(
     status_by_run = _load_supervisor_recovery_status_files(profile, actor=actor)
     events_by_run = _load_run_events(profile, actor=actor)
     results = load_task_results(profile.paths)
+    result_index = _index_supervisor_results(results, actor=actor)
+    task_result_index = _index_supervisor_results_by_task(results, actor=actor)
     result_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in results:
         task_id = str(row.get("task_id") or "")
@@ -1040,6 +1286,23 @@ def build_supervisor_observation_view(
             "landing_success_rate": _format_percent(landed_attempts, startup_launches),
         },
     }
+    report_task_attempt_counts: Counter[str] = Counter()
+    for run in runs:
+        for attempt in run.get("attempts", []):
+            task_id = str(attempt.get("task_id") or "")
+            if task_id:
+                report_task_attempt_counts[task_id] += 1
+    task_fallback_ids = {task_id for task_id, count in report_task_attempt_counts.items() if count == 1}
+    recovery_needed_cases = _build_report_recovery_needed_cases(
+        runs,
+        result_index=result_index,
+        task_result_index=task_result_index,
+        task_fallback_ids=task_fallback_ids,
+    )
+    summary["recovery_needed"] = {
+        "count": len(recovery_needed_cases),
+        "case_count": dict(Counter(str(row.get("case") or "unknown") for row in recovery_needed_cases)),
+    }
 
     observations: list[dict[str, Any]] = []
     if startup_failures:
@@ -1096,6 +1359,10 @@ def build_supervisor_observation_view(
         "run_limit": run_limit,
         "runs": runs,
         "summary": summary,
+        "recovery_needed": {
+            "count": len(recovery_needed_cases),
+            "cases": recovery_needed_cases,
+        },
         "observations": observations,
     }
 
@@ -1147,6 +1414,29 @@ def _observation_text(view: dict[str, Any]) -> str:
         lines.append("  reasons:")
         for reason, count in sorted(landing["land_error_reason_count"].items()):
             lines.append(f"  - {reason}: {count}")
+    recovery_needed = view.get("recovery_needed")
+    if isinstance(recovery_needed, dict):
+        lines.extend(
+            [
+                "",
+                "Recovery needed:",
+                f"- cases={recovery_needed['count']}",
+            ]
+        )
+        for case in recovery_needed["cases"]:
+            lines.append(f"  - {case['task_id']} [{case['case']}] {case['summary']}")
+            child_result = case.get("latest_child_result_status")
+            if child_result is not None:
+                lines.append(
+                    "    child result: "
+                    f"{child_result} by {case.get('latest_child_result_actor') or '?'}"
+                )
+            supervisor_result = case.get("latest_supervisor_result_status")
+            if supervisor_result is not None:
+                lines.append(
+                    "    supervisor result: "
+                    f"{supervisor_result} by {case.get('latest_supervisor_result_actor') or '?'}"
+                )
     lines.extend(["", "Observations:"])
     if view["observations"]:
         for index, row in enumerate(view["observations"], start=1):
@@ -1619,6 +1909,9 @@ def build_supervisor_status_view(
     latest_run = _latest_run_status(profile, actor=actor)
     workspace_mode = str((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
     open_messages = load_inbox(profile.paths, recipient=actor, status="open")
+    results = load_task_results(profile.paths)
+    result_index = _index_supervisor_results(results, actor=actor)
+    task_result_index = _index_supervisor_results_by_task(results, actor=actor)
     control_messages = []
     for message in open_messages:
         action = _message_control_action(message)
@@ -1658,7 +1951,7 @@ def build_supervisor_status_view(
     ]
     recent_results = []
     child_actor_prefix = f"{actor}/child-"
-    for row in load_task_results(profile.paths):
+    for row in results:
         result_actor = str(row.get("actor") or "")
         if result_actor != actor and not result_actor.startswith(child_actor_prefix):
             continue
@@ -1678,12 +1971,24 @@ def build_supervisor_status_view(
         )
         if len(recent_results) >= SUPERVISOR_STATUS_RESULT_LIMIT:
             break
+    recover_view = build_supervisor_recover_view(profile, actor=actor)
+    recoverable_cases = list(recover_view.get("recoverable_cases") or [])
+    recovery_task_counts: Counter[str] = Counter(
+        str(case.get("task_id") or "") for case in recoverable_cases if str(case.get("task_id") or "")
+    )
+    task_fallback_ids = {task_id for task_id, count in recovery_task_counts.items() if count == 1}
     return {
         "actor": actor,
         "latest_run": latest_run,
         "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
         "launch_defaults": build_supervisor_launch_defaults_view(profile),
         "prelaunch_recovery": _plan_prelaunch_recovery(profile, actor=actor),
+        "recovery_needed": _recovery_needed_section(
+            recoverable_cases,
+            result_index=result_index,
+            task_result_index=task_result_index,
+            task_fallback_ids=task_fallback_ids,
+        ),
         "control_action": (
             {
                 "action": control_action,

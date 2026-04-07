@@ -5685,6 +5685,12 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["retry"]["retried_tasks"], [fixtures["task_ids"]["retry"]])
         self.assertEqual(payload["summary"]["output_shape"]["artifact_incomplete_attempts"], 2)
         self.assertEqual(payload["summary"]["landing"]["land_error_count"], 1)
+        self.assertEqual(payload["summary"]["recovery_needed"]["count"], 3)
+        self.assertEqual(
+            payload["summary"]["recovery_needed"]["case_count"],
+            {"blocked_by_dirty_primary": 1, "partial_run": 2},
+        )
+        self.assertEqual(payload["recovery_needed"]["count"], 3)
         self.assertEqual(len(payload["runs"]), 4)
         self.assertIn("landing_failures", {row["category"] for row in payload["observations"]})
         self.assertIn("startup_friction", {row["category"] for row in payload["observations"]})
@@ -5714,6 +5720,8 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(limited_payload["summary"]["runs_total"], 1)
         self.assertEqual(limited_payload["runs"][0]["run_id"], fixtures["run_ids"]["land_fail"])
+        self.assertEqual(limited_payload["recovery_needed"]["count"], 1)
+        self.assertEqual(limited_payload["recovery_needed"]["cases"][0]["task_id"], fixtures["task_ids"]["land_fail"])
 
     def test_supervise_report_text_output_includes_sections_and_attempts(self) -> None:
         fixtures = self._seed_supervisor_report_fixtures(actor="supervisor")
@@ -5740,6 +5748,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Retry pressure:", text)
         self.assertIn("Output-shape consistency:", text)
         self.assertIn("Landing outcomes:", text)
+        self.assertIn("Recovery needed:", text)
         self.assertIn(fixtures["task_ids"]["retry"], text)
         self.assertIn(fixtures["task_ids"]["launch_fail"], text)
         self.assertIn(fixtures["task_ids"]["land_fail"], text)
@@ -6015,6 +6024,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(".VE is unversioned", payload["workspace_contract"]["ve_expectation"])
         self.assertEqual(payload["launch_defaults"]["mode"], "exec")
         self.assertIn("strategy", payload["launch_defaults"])
+        self.assertEqual(payload["recovery_needed"]["count"], 0)
+        self.assertEqual(payload["recovery_needed"]["cases"], [])
         self.assertEqual(payload["control_action"], {"action": "stop", "message_id": stop_message["message_id"]})
         self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [stop_message["message_id"]])
         self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Status task one"])
@@ -6045,6 +6056,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
         self.assertIn(".VE rule: .VE is unversioned", text_output)
         self.assertIn("Launch defaults:", text_output)
+        self.assertIn("Recovery needed:", text_output)
+        self.assertIn("No recovery-needed child outcomes.", text_output)
         self.assertIn(f"Run control: stop via {stop_message['message_id']}", text_output)
         self.assertIn("Recent child-run results:", text_output)
 
@@ -7536,6 +7549,65 @@ if __name__ == "__main__":
         self.assertFalse(task["latest_run_landed"])
         self.assertIn("dirty primary worktree contract violation", task["latest_run_land_error"])
         self.assertIn("failed-to-land", [row["key"] for row in task["card_status_chips"]])
+        status_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "status",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(status_payload["recovery_needed"]["count"], 1)
+        status_case = status_payload["recovery_needed"]["cases"][0]
+        self.assertEqual(status_case["task_id"], task_id)
+        self.assertEqual(status_case["case"], "blocked_by_dirty_primary")
+        self.assertEqual(status_case["latest_child_result_status"], "success")
+        self.assertEqual(status_case["latest_supervisor_result_status"], "blocked")
+        self.assertIn("dirty primary worktree contract violation", status_case["land_error"])
+        report_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog.cli",
+                    "supervise",
+                    "report",
+                    "--project-root",
+                    str(self.root),
+                    "--actor",
+                    "supervisor",
+                    "--run-limit",
+                    "1",
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(report_payload["recovery_needed"]["count"], 1)
+        report_case = report_payload["recovery_needed"]["cases"][0]
+        self.assertEqual(report_case["task_id"], task_id)
+        self.assertEqual(report_case["case"], "blocked_by_dirty_primary")
+        self.assertEqual(report_case["latest_child_result_status"], "success")
+        self.assertEqual(report_case["latest_supervisor_result_status"], "blocked")
 
     def test_supervise_run_recovers_by_stashing_and_landing_before_new_child(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
