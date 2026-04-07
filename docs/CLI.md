@@ -4,28 +4,28 @@ The current CLI covers the backlog runtime, a draining supervisor runner, and a 
 
 When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
 
-## Layer ownership
+## Command ownership audit
 
 `blackdog` is a client adapter, not the architectural center of the
-system. When changing commands, use this ownership map:
+system. This audit uses four ownership buckets:
 
-- Core-backed runtime commands:
-  `validate`, `summary`, `next`, `backlog ...`, `add`, `remove`,
-  `plan`, `claim`, `release`, `complete`, `decide`, `comment`,
-  `events`, `inbox ...`, and `result record`.
-- Proper workflow commands:
-  `prompt`, `tune`, `thread ...`, `task edit|run`, `worktree ...`,
-  `supervise ...`, and `coverage`.
-- Viewer commands:
-  `snapshot` and `render`.
-- Host/client adapter commands:
-  `create-project`, `bootstrap`, `refresh`, `update-repo`,
-  `installs ...`, and the separate `blackdog-skill` entrypoint.
+- `core`: durable backlog/runtime/state lifecycle and WTAM execution primitives
+- `blackdog proper`: higher-level AI workflow surfaces layered on top of the core runtime
+- `viewer/adapter`: readonly render/snapshot surfaces for operators and external UIs
+- `devtool`: bootstrap, install-management, coverage, and compatibility tooling
 
-The rule for future work is simple: durable backlog/runtime semantics
-belong below the CLI in core, Blackdog-specific orchestration belongs
-in proper, readonly projections belong in viewers, and caller-specific
-wrappers stay in adapters.
+Group commands inherit the owner shown for their listed leaf verbs.
+
+### `blackdog`
+
+| Owner | Commands |
+| --- | --- |
+| `devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
+| `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight|start|land|cleanup`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record`; `inbox send|list|resolve` |
+| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report` |
+| `viewer/adapter` | `snapshot`; `render` |
+
+No executable `blackdog` command is currently marked as a compatibility shim in the parser. `task run` remains a convenience workflow surface, not a deprecation target in this audit.
 
 ## `blackdog`
 
@@ -292,6 +292,15 @@ before changing launch settings or child startup contract details.
 - `blackdog-skill new backlog --project-root PATH`
 - `blackdog-skill refresh backlog --project-root PATH`
 
-`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/<skill-name>/`.
+Ownership: `devtool`
 
-`blackdog-skill refresh backlog` remains as a compatibility wrapper around the managed skill refresh flow. It regenerates the project-local skill files from the current `blackdog.toml` profile without rebuilding backlog/runtime files, preserves locally modified managed files by writing `*.blackdog-new` sidecars, and is now usually superseded by `blackdog refresh`.
+Compatibility shims and preferred targets:
+
+| Legacy command | Preferred target |
+| --- | --- |
+| `blackdog-skill new backlog` | `blackdog bootstrap` |
+| `blackdog-skill refresh backlog` | `blackdog refresh` |
+
+`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a legacy compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/<skill-name>/`.
+
+`blackdog-skill refresh backlog` remains as a legacy compatibility wrapper around the managed skill refresh flow. It regenerates the project-local skill files from the current `blackdog.toml` profile without rebuilding backlog/runtime files, preserves locally modified managed files by writing `*.blackdog-new` sidecars, and is now usually superseded by `blackdog refresh`.

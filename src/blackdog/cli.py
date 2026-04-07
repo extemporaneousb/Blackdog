@@ -163,6 +163,69 @@ if __name__ == "__main__":
 """.strip()
 
 
+_COMMAND_AUDIT: dict[str, dict[str, Any]] = {
+    "create-project": {"owner": "devtool"},
+    "bootstrap": {"owner": "devtool"},
+    "refresh": {"owner": "devtool"},
+    "update-repo": {"owner": "devtool"},
+    "installs": {"owner": "devtool"},
+    "installs add": {"owner": "devtool"},
+    "installs list": {"owner": "devtool"},
+    "installs remove": {"owner": "devtool"},
+    "installs update": {"owner": "devtool"},
+    "installs observe": {"owner": "devtool"},
+    "init": {"owner": "core"},
+    "backlog": {"owner": "core"},
+    "backlog new": {"owner": "core"},
+    "backlog remove": {"owner": "core"},
+    "backlog reset": {"owner": "core"},
+    "validate": {"owner": "core"},
+    "add": {"owner": "core"},
+    "remove": {"owner": "core"},
+    "task": {"owner": "blackdog-proper"},
+    "task edit": {"owner": "blackdog-proper"},
+    "task run": {"owner": "blackdog-proper"},
+    "summary": {"owner": "core"},
+    "plan": {"owner": "core"},
+    "next": {"owner": "core"},
+    "snapshot": {"owner": "viewer-adapter"},
+    "prompt": {"owner": "blackdog-proper"},
+    "thread": {"owner": "blackdog-proper"},
+    "thread new": {"owner": "blackdog-proper"},
+    "thread list": {"owner": "blackdog-proper"},
+    "thread show": {"owner": "blackdog-proper"},
+    "thread append": {"owner": "blackdog-proper"},
+    "thread prompt": {"owner": "blackdog-proper"},
+    "thread task": {"owner": "blackdog-proper"},
+    "tune": {"owner": "blackdog-proper"},
+    "worktree": {"owner": "core"},
+    "worktree preflight": {"owner": "core"},
+    "worktree start": {"owner": "core"},
+    "worktree land": {"owner": "core"},
+    "worktree cleanup": {"owner": "core"},
+    "supervise": {"owner": "blackdog-proper"},
+    "supervise run": {"owner": "blackdog-proper"},
+    "supervise sweep": {"owner": "blackdog-proper"},
+    "supervise status": {"owner": "blackdog-proper"},
+    "supervise recover": {"owner": "blackdog-proper"},
+    "supervise report": {"owner": "blackdog-proper"},
+    "claim": {"owner": "core"},
+    "release": {"owner": "core"},
+    "complete": {"owner": "core"},
+    "decide": {"owner": "core"},
+    "comment": {"owner": "core"},
+    "events": {"owner": "core"},
+    "render": {"owner": "viewer-adapter"},
+    "result": {"owner": "core"},
+    "result record": {"owner": "core"},
+    "coverage": {"owner": "devtool"},
+    "inbox": {"owner": "core"},
+    "inbox send": {"owner": "core"},
+    "inbox list": {"owner": "core"},
+    "inbox resolve": {"owner": "core"},
+}
+
+
 def _load_runtime(project_root: Path | None = None):
     profile = load_profile(project_root)
     snapshot = load_backlog(profile.paths, profile)
@@ -213,6 +276,16 @@ def _normalize_repo_roots(raw_paths: list[str]) -> list[Path]:
         seen.add(key)
         roots.append(root)
     return roots
+
+
+def _apply_command_audit(parser: argparse.ArgumentParser, command_path: str) -> None:
+    audit = _COMMAND_AUDIT[command_path]
+    parser.set_defaults(
+        command_audit_path=command_path,
+        command_owner=audit["owner"],
+        command_compatibility_shim=bool(audit.get("compatibility_shim", False)),
+        command_deprecation_target=audit.get("deprecation_target"),
+    )
 
 
 def _tracked_install_index(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1826,10 +1899,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Blackdog CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # Devtool / host-install surfaces.
     p_create_project = subparsers.add_parser(
         "create-project",
         help="Create a new git repo, install Blackdog into a repo-local .VE, and bootstrap the project scaffold",
     )
+    _apply_command_audit(p_create_project, "create-project")
     p_create_project.add_argument("--project-root", required=True)
     p_create_project.add_argument("--project-name", default=None)
     p_create_project.add_argument("--blackdog-source", default=None)
@@ -1841,6 +1916,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_create_project.set_defaults(func=cmd_create_project)
 
     p_bootstrap = subparsers.add_parser("bootstrap", help="Initialize backlog artifacts and generate the project-local Blackdog skill")
+    _apply_command_audit(p_bootstrap, "bootstrap")
     p_bootstrap.add_argument("--project-root", default=".")
     p_bootstrap.add_argument("--project-name", default=None)
     p_bootstrap.add_argument("--force", action="store_true")
@@ -1855,6 +1931,7 @@ def build_parser() -> argparse.ArgumentParser:
         "refresh",
         help="Refresh the project-local Blackdog skill scaffold and branded HTML without overwriting locally modified managed files",
     )
+    _apply_command_audit(p_refresh, "refresh")
     p_refresh.add_argument("--project-root", default=".")
     p_refresh.set_defaults(func=cmd_refresh)
 
@@ -1862,6 +1939,7 @@ def build_parser() -> argparse.ArgumentParser:
         "update-repo",
         help="Reinstall Blackdog into another repo's .VE and refresh that repo's project-local scaffold",
     )
+    _apply_command_audit(p_update_repo, "update-repo")
     p_update_repo.add_argument("project_root")
     p_update_repo.add_argument("--blackdog-source", default=None)
     p_update_repo.set_defaults(func=cmd_update_repo)
@@ -1870,20 +1948,25 @@ def build_parser() -> argparse.ArgumentParser:
         "installs",
         help="Maintain a machine-local registry of Blackdog repos and observe/update them from this checkout",
     )
+    _apply_command_audit(p_installs, "installs")
     installs_subparsers = p_installs.add_subparsers(dest="installs_command", required=True)
     p_installs_add = installs_subparsers.add_parser("add", help="Register one or more Blackdog repos in the local install registry")
+    _apply_command_audit(p_installs_add, "installs add")
     p_installs_add.add_argument("--project-root", default=None)
     p_installs_add.add_argument("repo", nargs="+")
     p_installs_add.set_defaults(func=cmd_installs_add)
     p_installs_list = installs_subparsers.add_parser("list", help="List tracked Blackdog repos from the local install registry")
+    _apply_command_audit(p_installs_list, "installs list")
     p_installs_list.add_argument("--project-root", default=None)
     p_installs_list.add_argument("--format", choices=("text", "json"), default="text")
     p_installs_list.set_defaults(func=cmd_installs_list)
     p_installs_remove = installs_subparsers.add_parser("remove", help="Remove one or more repos from the local install registry")
+    _apply_command_audit(p_installs_remove, "installs remove")
     p_installs_remove.add_argument("--project-root", default=None)
     p_installs_remove.add_argument("repo", nargs="+")
     p_installs_remove.set_defaults(func=cmd_installs_remove)
     p_installs_update = installs_subparsers.add_parser("update", help="Push this Blackdog checkout into tracked repos")
+    _apply_command_audit(p_installs_update, "installs update")
     p_installs_update.add_argument("--project-root", default=None)
     p_installs_update.add_argument("--all", action="store_true")
     p_installs_update.add_argument("--blackdog-source", default=None)
@@ -1893,6 +1976,7 @@ def build_parser() -> argparse.ArgumentParser:
         "observe",
         help="Summarize tracked host backlog/tune state so this checkout can mine local repo intelligence",
     )
+    _apply_command_audit(p_installs_observe, "installs observe")
     p_installs_observe.add_argument("--project-root", default=None)
     p_installs_observe.add_argument("--all", action="store_true")
     p_installs_observe.add_argument("--format", choices=("text", "json"), default="text")
@@ -1900,7 +1984,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_installs_observe.add_argument("repo", nargs="*")
     p_installs_observe.set_defaults(func=cmd_installs_observe)
 
+    # Core runtime surfaces.
     p_init = subparsers.add_parser("init", help="Initialize repo-local Blackdog files without generating a project skill")
+    _apply_command_audit(p_init, "init")
     p_init.add_argument("--project-root", default=".")
     p_init.add_argument("--project-name", default=None)
     p_init.add_argument("--force", action="store_true")
@@ -1912,26 +1998,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=cmd_init)
 
     p_backlog = subparsers.add_parser("backlog", help="Manage default and named backlog artifact sets")
+    _apply_command_audit(p_backlog, "backlog")
     backlog_subparsers = p_backlog.add_subparsers(dest="backlog_command", required=True)
     p_backlog_new = backlog_subparsers.add_parser("new", help="Create a named backlog artifact set under the control root")
+    _apply_command_audit(p_backlog_new, "backlog new")
     p_backlog_new.add_argument("--project-root", default=None)
     p_backlog_new.add_argument("name")
     p_backlog_new.add_argument("--force", action="store_true")
     p_backlog_new.set_defaults(func=cmd_backlog_new)
     p_backlog_remove = backlog_subparsers.add_parser("remove", help="Delete a named backlog artifact set from the control root")
+    _apply_command_audit(p_backlog_remove, "backlog remove")
     p_backlog_remove.add_argument("--project-root", default=None)
     p_backlog_remove.add_argument("name")
     p_backlog_remove.set_defaults(func=cmd_backlog_remove)
     p_backlog_reset = backlog_subparsers.add_parser("reset", help="Rebuild the default backlog and runtime state from scratch")
+    _apply_command_audit(p_backlog_reset, "backlog reset")
     p_backlog_reset.add_argument("--project-root", default=None)
     p_backlog_reset.add_argument("--purge-named", action="store_true")
     p_backlog_reset.set_defaults(func=cmd_backlog_reset)
 
     p_validate = subparsers.add_parser("validate", help="Validate profile, backlog, state, inbox, and events")
+    _apply_command_audit(p_validate, "validate")
     p_validate.add_argument("--project-root", default=None)
     p_validate.set_defaults(func=cmd_validate)
 
     p_add = subparsers.add_parser("add", help="Add a backlog task")
+    _apply_command_audit(p_add, "add")
     p_add.add_argument("--project-root", default=None)
     p_add.add_argument("--actor", default="blackdog")
     p_add.add_argument("--title", required=True)
@@ -1960,14 +2052,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_add.set_defaults(func=cmd_add)
 
     p_remove = subparsers.add_parser("remove", help="Remove a backlog task that has not started execution")
+    _apply_command_audit(p_remove, "remove")
     p_remove.add_argument("--project-root", default=None)
     p_remove.add_argument("--actor", default="blackdog")
     p_remove.add_argument("--id", required=True)
     p_remove.set_defaults(func=cmd_remove)
 
+    # Blackdog-proper workflow surfaces.
     p_task = subparsers.add_parser("task", help="Task-scoped edit and manual-run surfaces for thin UIs")
+    _apply_command_audit(p_task, "task")
     task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
     p_task_edit = task_subparsers.add_parser("edit", help="Edit an unstarted task in place")
+    _apply_command_audit(p_task_edit, "task edit")
     p_task_edit.add_argument("--project-root", default=None)
     p_task_edit.add_argument("--actor", default="blackdog")
     p_task_edit.add_argument("--id", required=True)
@@ -1996,6 +2092,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_task_edit.add_argument("--wave", type=int, default=None)
     p_task_edit.set_defaults(func=cmd_task_edit)
     p_task_run = task_subparsers.add_parser("run", help="Claim a task and create or reuse its manual WTAM worktree")
+    _apply_command_audit(p_task_run, "task run")
     p_task_run.add_argument("--project-root", default=None)
     p_task_run.add_argument("--agent", required=True)
     p_task_run.add_argument("--id", required=True)
@@ -2009,28 +2106,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_task_run.set_defaults(func=cmd_task_run)
 
     p_summary = subparsers.add_parser("summary", help="Summarize backlog state")
+    _apply_command_audit(p_summary, "summary")
     p_summary.add_argument("--project-root", default=None)
     p_summary.add_argument("--format", choices=("text", "json"), default="text")
     p_summary.set_defaults(func=cmd_summary)
 
     p_plan = subparsers.add_parser("plan", help="Show epics, lanes, and waves from the backlog plan")
+    _apply_command_audit(p_plan, "plan")
     p_plan.add_argument("--project-root", default=None)
     p_plan.add_argument("--allow-high-risk", action="store_true")
     p_plan.add_argument("--format", choices=("text", "json"), default="text")
     p_plan.set_defaults(func=cmd_plan)
 
     p_next = subparsers.add_parser("next", help="Show next runnable tasks")
+    _apply_command_audit(p_next, "next")
     p_next.add_argument("--project-root", default=None)
     p_next.add_argument("--count", type=int, default=4)
     p_next.add_argument("--allow-high-risk", action="store_true")
     p_next.add_argument("--format", choices=("text", "json"), default="text")
     p_next.set_defaults(func=cmd_next)
 
+    # Viewer / adapter surfaces.
     p_snapshot = subparsers.add_parser("snapshot", help="Print the canonical static-HTML snapshot contract")
+    _apply_command_audit(p_snapshot, "snapshot")
     p_snapshot.add_argument("--project-root", default=None)
     p_snapshot.set_defaults(func=cmd_snapshot)
 
     p_prompt = subparsers.add_parser("prompt", help="Rewrite a prompt against the local repo contract")
+    _apply_command_audit(p_prompt, "prompt")
     p_prompt.add_argument("--project-root", default=None)
     p_prompt.add_argument("--complexity", choices=("low", "medium", "high"), default="medium")
     p_prompt.add_argument("--format", choices=("text", "json"), default="text")
@@ -2038,8 +2141,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_prompt.set_defaults(func=cmd_prompt)
 
     p_thread = subparsers.add_parser("thread", help="Manage freeform conversation threads")
+    _apply_command_audit(p_thread, "thread")
     thread_subparsers = p_thread.add_subparsers(dest="thread_command", required=True)
     p_thread_new = thread_subparsers.add_parser("new", help="Create a new conversation thread")
+    _apply_command_audit(p_thread_new, "thread new")
     p_thread_new.add_argument("--project-root", default=None)
     p_thread_new.add_argument("--actor", required=True)
     p_thread_new.add_argument("--title", required=True)
@@ -2047,16 +2152,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_thread_new.add_argument("--format", choices=("text", "json"), default="json")
     p_thread_new.set_defaults(func=cmd_thread_new)
     p_thread_list = thread_subparsers.add_parser("list", help="List conversation threads")
+    _apply_command_audit(p_thread_list, "thread list")
     p_thread_list.add_argument("--project-root", default=None)
     p_thread_list.add_argument("--task-id", default=None)
     p_thread_list.add_argument("--format", choices=("text", "json"), default="text")
     p_thread_list.set_defaults(func=cmd_thread_list)
     p_thread_show = thread_subparsers.add_parser("show", help="Show one conversation thread")
+    _apply_command_audit(p_thread_show, "thread show")
     p_thread_show.add_argument("--project-root", default=None)
     p_thread_show.add_argument("--id", required=True)
     p_thread_show.add_argument("--format", choices=("text", "json"), default="json")
     p_thread_show.set_defaults(func=cmd_thread_show)
     p_thread_append = thread_subparsers.add_parser("append", help="Append one entry to a conversation thread")
+    _apply_command_audit(p_thread_append, "thread append")
     p_thread_append.add_argument("--project-root", default=None)
     p_thread_append.add_argument("--id", required=True)
     p_thread_append.add_argument("--actor", required=True)
@@ -2068,12 +2176,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_thread_append.add_argument("--format", choices=("text", "json"), default="json")
     p_thread_append.set_defaults(func=cmd_thread_append)
     p_thread_prompt = thread_subparsers.add_parser("prompt", help="Rewrite a saved conversation thread against the local repo contract")
+    _apply_command_audit(p_thread_prompt, "thread prompt")
     p_thread_prompt.add_argument("--project-root", default=None)
     p_thread_prompt.add_argument("--id", required=True)
     p_thread_prompt.add_argument("--complexity", choices=("low", "medium", "high"), default="medium")
     p_thread_prompt.add_argument("--format", choices=("text", "json"), default="text")
     p_thread_prompt.set_defaults(func=cmd_thread_prompt)
     p_thread_task = thread_subparsers.add_parser("task", help="Create one backlog task from a saved conversation thread")
+    _apply_command_audit(p_thread_task, "thread task")
     p_thread_task.add_argument("--project-root", default=None)
     p_thread_task.add_argument("--id", required=True)
     p_thread_task.add_argument("--actor", required=True)
@@ -2091,18 +2201,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_thread_task.set_defaults(func=cmd_thread_task)
 
     p_tune = subparsers.add_parser("tune", help="Analyze self-tuning guidance and optionally seed a task")
+    _apply_command_audit(p_tune, "tune")
     p_tune.add_argument("--project-root", default=None)
     p_tune.add_argument("--actor", default="blackdog")
     p_tune.add_argument("--no-task", action="store_true")
     p_tune.set_defaults(func=cmd_tune)
 
     p_worktree = subparsers.add_parser("worktree", help="Branch-backed worktree lifecycle for implementation tasks")
+    _apply_command_audit(p_worktree, "worktree")
     worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
     p_worktree_preflight = worktree_subparsers.add_parser("preflight", help="Show current worktree/branch/backing model details")
+    _apply_command_audit(p_worktree_preflight, "worktree preflight")
     p_worktree_preflight.add_argument("--project-root", default=None)
     p_worktree_preflight.add_argument("--format", choices=("text", "json"), default="text")
     p_worktree_preflight.set_defaults(func=cmd_worktree_preflight)
     p_worktree_start = worktree_subparsers.add_parser("start", help="Create a branch-backed task worktree from the primary worktree")
+    _apply_command_audit(p_worktree_start, "worktree start")
     p_worktree_start.add_argument("--project-root", default=None)
     p_worktree_start.add_argument("--actor", default="blackdog")
     p_worktree_start.add_argument("--id", required=True)
@@ -2112,6 +2226,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_worktree_start.add_argument("--format", choices=("text", "json"), default="text")
     p_worktree_start.set_defaults(func=cmd_worktree_start)
     p_worktree_land = worktree_subparsers.add_parser("land", help="Fast-forward a task branch into the target branch")
+    _apply_command_audit(p_worktree_land, "worktree land")
     p_worktree_land.add_argument("--project-root", default=None)
     p_worktree_land.add_argument("--actor", default="blackdog")
     p_worktree_land.add_argument("--id", default=None)
@@ -2122,6 +2237,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_worktree_land.add_argument("--format", choices=("text", "json"), default="text")
     p_worktree_land.set_defaults(func=cmd_worktree_land)
     p_worktree_cleanup = worktree_subparsers.add_parser("cleanup", help="Remove a landed task worktree and optionally delete its branch")
+    _apply_command_audit(p_worktree_cleanup, "worktree cleanup")
     p_worktree_cleanup.add_argument("--project-root", default=None)
     p_worktree_cleanup.add_argument("--actor", default="blackdog")
     p_worktree_cleanup.add_argument("--id", default=None)
@@ -2131,8 +2247,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_worktree_cleanup.set_defaults(func=cmd_worktree_cleanup)
 
     p_supervise = subparsers.add_parser("supervise", help="Launch child agents against runnable backlog tasks")
+    _apply_command_audit(p_supervise, "supervise")
     supervise_subparsers = p_supervise.add_subparsers(dest="supervise_command", required=True)
     p_supervise_run = supervise_subparsers.add_parser("run", help="Drain runnable work with one supervisor run")
+    _apply_command_audit(p_supervise_run, "supervise run")
     p_supervise_run.add_argument("--project-root", default=None)
     p_supervise_run.add_argument("--actor", default="supervisor")
     p_supervise_run.add_argument("--id", action="append", default=[])
@@ -2145,23 +2263,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_run.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_run.set_defaults(func=cmd_supervise_run)
     p_supervise_sweep = supervise_subparsers.add_parser("sweep", help="Run one non-draining supervisor update cycle")
+    _apply_command_audit(p_supervise_sweep, "supervise sweep")
     p_supervise_sweep.add_argument("--project-root", default=None)
     p_supervise_sweep.add_argument("--actor", default="supervisor")
     p_supervise_sweep.add_argument("--allow-high-risk", action="store_true")
     p_supervise_sweep.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_sweep.set_defaults(func=cmd_supervise_sweep)
     p_supervise_status = supervise_subparsers.add_parser("status", help="Report latest run state, open controls, ready tasks, and recent child results")
+    _apply_command_audit(p_supervise_status, "supervise status")
     p_supervise_status.add_argument("--project-root", default=None)
     p_supervise_status.add_argument("--actor", default="supervisor")
     p_supervise_status.add_argument("--allow-high-risk", action="store_true")
     p_supervise_status.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_status.set_defaults(func=cmd_supervise_status)
     p_supervise_recover = supervise_subparsers.add_parser("recover", help="Report interrupt/blocked/partial cases and suggested recovery actions")
+    _apply_command_audit(p_supervise_recover, "supervise recover")
     p_supervise_recover.add_argument("--project-root", default=None)
     p_supervise_recover.add_argument("--actor", default="supervisor")
     p_supervise_recover.add_argument("--format", choices=("text", "json"), default="text")
     p_supervise_recover.set_defaults(func=cmd_supervise_recover)
     p_supervise_report = supervise_subparsers.add_parser("report", help="Show aggregated startup/retry/output-shape/landing observations")
+    _apply_command_audit(p_supervise_report, "supervise report")
     p_supervise_report.add_argument("--project-root", default=None)
     p_supervise_report.add_argument("--actor", default="supervisor")
     p_supervise_report.add_argument("--run-limit", type=int, default=0)
@@ -2169,6 +2291,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_supervise_report.set_defaults(func=cmd_supervise_report)
 
     p_claim = subparsers.add_parser("claim", help="Claim tasks for an agent")
+    _apply_command_audit(p_claim, "claim")
     p_claim.add_argument("--project-root", default=None)
     p_claim.add_argument("--agent", required=True)
     p_claim.add_argument("--id", action="append", default=[])
@@ -2179,6 +2302,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_claim.set_defaults(func=cmd_claim)
 
     p_release = subparsers.add_parser("release", help="Release a claimed task")
+    _apply_command_audit(p_release, "release")
     p_release.add_argument("--project-root", default=None)
     p_release.add_argument("--id", default=None)
     p_release.add_argument("--agent", default=None)
@@ -2187,6 +2311,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_release.set_defaults(func=cmd_release)
 
     p_complete = subparsers.add_parser("complete", help="Mark a task complete")
+    _apply_command_audit(p_complete, "complete")
     p_complete.add_argument("--project-root", default=None)
     p_complete.add_argument("--id", required=True)
     p_complete.add_argument("--agent", required=True)
@@ -2195,6 +2320,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_complete.set_defaults(func=cmd_complete)
 
     p_decide = subparsers.add_parser("decide", help="Record an approval decision")
+    _apply_command_audit(p_decide, "decide")
     p_decide.add_argument("--project-root", default=None)
     p_decide.add_argument("--id", required=True)
     p_decide.add_argument("--agent", required=True)
@@ -2203,6 +2329,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_decide.set_defaults(func=cmd_decide)
 
     p_comment = subparsers.add_parser("comment", help="Append a task or project comment to the event log")
+    _apply_command_audit(p_comment, "comment")
     p_comment.add_argument("--project-root", default=None)
     p_comment.add_argument("--actor", required=True)
     p_comment.add_argument("--id", default=None)
@@ -2211,19 +2338,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_comment.set_defaults(func=cmd_comment)
 
     p_events = subparsers.add_parser("events", help="List recent event-log rows")
+    _apply_command_audit(p_events, "events")
     p_events.add_argument("--project-root", default=None)
     p_events.add_argument("--id", default=None)
     p_events.add_argument("--limit", type=int, default=20)
     p_events.set_defaults(func=cmd_events)
 
     p_render = subparsers.add_parser("render", help="Render the static backlog HTML page")
+    _apply_command_audit(p_render, "render")
     p_render.add_argument("--project-root", default=None)
     p_render.add_argument("--actor", default="blackdog")
     p_render.set_defaults(func=cmd_render)
 
     p_result = subparsers.add_parser("result", help="Record a structured task result")
+    _apply_command_audit(p_result, "result")
     result_subparsers = p_result.add_subparsers(dest="result_command", required=True)
     p_result_record = result_subparsers.add_parser("record", help="Write a task-result JSON file")
+    _apply_command_audit(p_result_record, "result record")
     p_result_record.add_argument("--project-root", default=None)
     p_result_record.add_argument("--id", default=None)
     p_result_record.add_argument("--actor", default=None)
@@ -2238,14 +2369,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_result_record.set_defaults(func=cmd_result_record)
 
     p_coverage = subparsers.add_parser("coverage", help="Run validation checks and emit coverage report")
+    _apply_command_audit(p_coverage, "coverage")
     p_coverage.add_argument("--project-root", default=None)
     p_coverage.add_argument("--command", default=None)
     p_coverage.add_argument("--output", default=None)
     p_coverage.set_defaults(func=cmd_coverage)
 
     p_inbox = subparsers.add_parser("inbox", help="Inbox messaging for supervisor and child agents")
+    _apply_command_audit(p_inbox, "inbox")
     inbox_subparsers = p_inbox.add_subparsers(dest="inbox_command", required=True)
     p_inbox_send = inbox_subparsers.add_parser("send", help="Send an inbox message")
+    _apply_command_audit(p_inbox_send, "inbox send")
     p_inbox_send.add_argument("--project-root", default=None)
     p_inbox_send.add_argument("--sender", required=True)
     p_inbox_send.add_argument("--recipient", required=True)
@@ -2257,6 +2391,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inbox_send.set_defaults(func=cmd_inbox_send)
 
     p_inbox_list = inbox_subparsers.add_parser("list", help="List inbox messages")
+    _apply_command_audit(p_inbox_list, "inbox list")
     p_inbox_list.add_argument("--project-root", default=None)
     p_inbox_list.add_argument("--recipient", default=None)
     p_inbox_list.add_argument("--status", default=None)
@@ -2264,6 +2399,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inbox_list.set_defaults(func=cmd_inbox_list)
 
     p_inbox_resolve = inbox_subparsers.add_parser("resolve", help="Resolve an inbox message")
+    _apply_command_audit(p_inbox_resolve, "inbox resolve")
     p_inbox_resolve.add_argument("--project-root", default=None)
     p_inbox_resolve.add_argument("--message-id", required=True)
     p_inbox_resolve.add_argument("--actor", required=True)
