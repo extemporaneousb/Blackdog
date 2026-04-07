@@ -124,6 +124,36 @@ The emitted schema includes:
 - `covered_lines`
 - `coverage_percent`
 
+`[tool.blackdog.coverage].shipped_surface` defines the current focused audit
+surface for core semantics. In this repo that surface is now:
+
+- `src/blackdog/backlog.py`
+- `src/blackdog/config.py`
+- `src/blackdog/store.py`
+- `src/blackdog/worktree.py`
+
+Use `make coverage-core` to capture a focused coverage artifact at
+`coverage/core-latest.json` for that surface. `make coverage` remains the broad
+repo-level validation pass.
+
+Current gaps to close before a true 100 percent core gate is defensible:
+
+- `backlog.py`: add direct tests for runnable-state classification,
+  predecessor/approval transitions, and stale-state pruning in addition to
+  task-shaping coercion.
+- `config.py`: add direct tests for profile parsing failures, `@git-common`
+  path resolution, and default doc-routing/validation propagation.
+- `store.py`: add direct tests for malformed JSON and JSONL rejection,
+  append-only inbox replay, result ordering, and thread/result linkage
+  invariants.
+- `worktree.py`: add direct tests for branch-to-task mapping, worktree
+  contract reporting, and WTAM edge cases that do not require full supervisor
+  integration.
+
+Those focused tests should be the core gate. The existing CLI, supervisor, and
+render tests should remain integration coverage rather than the primary source
+of confidence in core semantics.
+
 ## `<control_dir>/threads/<thread-id>/...`
 
 Conversation-thread runtime artifacts.

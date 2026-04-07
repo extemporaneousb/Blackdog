@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -72,7 +73,7 @@ from blackdog.ui import (
     build_ui_snapshot,
     render_static_html,
 )
-from blackdog.worktree import WorktreeSpec
+from blackdog.worktree import WorktreeSpec, default_task_branch, task_id_for_branch
 
 
 def cli_env() -> dict[str, str]:
@@ -1321,6 +1322,98 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(len(payload["runs"]), 1)
         self.assertEqual(payload["runs"][0]["status"], "failed")
         self.assertEqual(payload["runs"][0]["returncode"], 1)
+
+    def test_core_audit_pyproject_shipped_surface_tracks_core_modules(self) -> None:
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        coverage_settings = pyproject["tool"]["blackdog"]["coverage"]
+        self.assertEqual(
+            coverage_settings["shipped_surface"],
+            [
+                "src/blackdog/backlog.py",
+                "src/blackdog/config.py",
+                "src/blackdog/store.py",
+                "src/blackdog/worktree.py",
+            ],
+        )
+
+    def test_core_audit_backlog_task_shaping_normalizes_and_rejects_invalid_values(self) -> None:
+        shaped = backlog_module._coerce_task_shaping(
+            {
+                "estimated_elapsed_minutes": "30",
+                "estimated_touched_paths": [" docs/FILE_FORMATS.md ", "", "tests/test_blackdog_cli.py", "docs/FILE_FORMATS.md"],
+                "estimated_worktrees": "2",
+                "parallelizable_groups": 1,
+            },
+            fallback_paths=["pyproject.toml"],
+        )
+        self.assertEqual(shaped["estimated_elapsed_minutes"], 30)
+        self.assertEqual(
+            shaped["estimated_touched_paths"],
+            ["docs/FILE_FORMATS.md", "tests/test_blackdog_cli.py"],
+        )
+        self.assertEqual(shaped["estimated_worktrees"], 2)
+        self.assertEqual(shaped["parallelizable_groups"], 1)
+
+        with self.assertRaises(backlog_module.BacklogError):
+            backlog_module._coerce_task_shaping(
+                {"estimated_validation_minutes": -5},
+                fallback_paths=["pyproject.toml"],
+            )
+
+    def test_core_audit_store_state_and_tracked_install_normalization_enforces_shape(self) -> None:
+        state_file = self.root / "backlog-state.json"
+        installs_file = self.root / "tracked-installs.json"
+
+        normalized_state = store_module.normalize_state({}, state_file=state_file)
+        self.assertEqual(normalized_state["schema_version"], 1)
+        self.assertEqual(normalized_state["approval_tasks"], {})
+        self.assertEqual(normalized_state["task_claims"], {})
+        with self.assertRaises(store_module.StoreError):
+            store_module.normalize_state({"approval_tasks": []}, state_file=state_file)
+
+        installs = store_module.normalize_tracked_installs(
+            {
+                "repos": [
+                    {"project_root": "/tmp/zeta", "project_name": "Zeta"},
+                    {"project_root": "/tmp/alpha", "project_name": "Alpha"},
+                    {"project_root": "/tmp/zeta", "project_name": "Duplicate"},
+                ]
+            },
+            installs_file=installs_file,
+        )
+        self.assertEqual([row["project_root"] for row in installs["repos"]], ["/tmp/alpha", "/tmp/zeta"])
+        with self.assertRaises(store_module.StoreError):
+            store_module.normalize_tracked_installs({"repos": [{}]}, installs_file=installs_file)
+
+    def test_core_audit_worktree_branch_mapping_round_trips_task_ids(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Core branch mapping",
+            "--bucket",
+            "core",
+            "--why",
+            "Core worktree semantics need a direct branch-to-task invariant check.",
+            "--evidence",
+            "The broad supervisor tests exercise branch names indirectly.",
+            "--safe-first-slice",
+            "Round-trip the task id through the default branch naming helper.",
+            "--path",
+            "tests/test_blackdog_cli.py",
+            "--wave",
+            "0",
+        )
+        profile = load_profile(self.root)
+        snapshot = load_backlog(profile.paths, profile)
+        task_id = next(iter(snapshot.tasks))
+        task = snapshot.tasks[task_id]
+        branch = default_task_branch(task)
+        self.assertEqual(task_id_for_branch(profile, branch), task_id)
+        self.assertEqual(task_id_for_branch(profile, f"{branch}-run-1234"), task_id)
+        self.assertIsNone(task_id_for_branch(profile, "agent/unrelated-task"))
 
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"
