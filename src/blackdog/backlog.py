@@ -11,7 +11,19 @@ import subprocess
 import textwrap
 
 from .config import Profile, ProjectPaths, slugify
-from .store import atomic_write_text, claim_is_active, load_events, load_state, load_task_results, locked_path, save_state
+from .store import (
+    approval_is_satisfied,
+    atomic_write_text,
+    claim_is_active,
+    claim_is_done,
+    load_events,
+    load_state,
+    load_task_results,
+    locked_path,
+    normalize_approval_entry,
+    normalize_claim_entry,
+    save_state,
+)
 
 
 TASK_BLOCK_RE = re.compile(r"```json backlog-task\n(.*?)\n```", re.S)
@@ -513,14 +525,14 @@ def load_backlog(paths: ProjectPaths, profile: Profile) -> BacklogSnapshot:
 
 def task_done(task_id: str, state: dict[str, Any]) -> bool:
     entry = state.get("task_claims", {}).get(task_id)
-    return bool(isinstance(entry, dict) and entry.get("status") == "done")
+    return claim_is_done(entry)
 
 
 def approval_satisfied(task: TaskInfo, state: dict[str, Any]) -> bool:
     if not bool(task.payload.get("requires_approval")):
         return True
     entry = state.get("approval_tasks", {}).get(task.id)
-    return bool(isinstance(entry, dict) and str(entry.get("status") or "").strip() in {"approved", "done"})
+    return approval_is_satisfied(entry)
 
 
 def active_claim_owner(task_id: str, state: dict[str, Any]) -> str | None:
@@ -574,8 +586,32 @@ def classify_task_status(task: TaskInfo, snapshot: BacklogSnapshot, state: dict[
 
 def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> dict[str, Any]:
     approvals = state.setdefault("approval_tasks", {})
+    claims = state.setdefault("task_claims", {})
+    if not isinstance(approvals, dict):
+        approvals = {}
+        state["approval_tasks"] = approvals
+    if not isinstance(claims, dict):
+        claims = {}
+        state["task_claims"] = claims
     seen_date = datetime.now().astimezone().date().isoformat()
+    active_task_ids = set(snapshot.tasks)
+    for task_id in list(approvals):
+        task = snapshot.tasks.get(task_id)
+        if task is None or not bool(task.payload.get("requires_approval")):
+            approvals.pop(task_id, None)
+    for task_id in list(claims):
+        if task_id not in active_task_ids:
+            claims.pop(task_id, None)
     for task in snapshot.tasks.values():
+        claim_entry = claims.get(task.id)
+        if isinstance(claim_entry, dict):
+            normalized_claim = dict(claim_entry)
+            normalized_claim["title"] = task.title
+            normalized_claim["bucket"] = task.payload["bucket"]
+            normalized_claim["paths"] = task.payload["paths"]
+            normalized_claim["priority"] = task.payload["priority"]
+            normalized_claim["risk"] = task.payload["risk"]
+            claims[task.id] = normalize_claim_entry(task.id, normalized_claim, state_file=Path("<memory>"))
         if not bool(task.payload.get("requires_approval")):
             continue
         entry = approvals.get(task.id) or {}
@@ -588,7 +624,9 @@ def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> 
         entry["bucket"] = task.payload["bucket"]
         entry["paths"] = task.payload["paths"]
         entry["approval_reason"] = task.payload["approval_reason"]
-        approvals[task.id] = entry
+        if task_done(task.id, state):
+            entry["status"] = "done"
+        approvals[task.id] = normalize_approval_entry(task.id, entry, state_file=Path("<memory>"))
     return state
 
 

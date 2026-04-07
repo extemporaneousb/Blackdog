@@ -200,20 +200,27 @@ The current runtime semantics for those artifacts are:
 
 - `approval_tasks` only exists for tasks whose backlog payload sets
   `requires_approval = true`. `sync_state_for_backlog()` seeds missing entries
-  as `pending`, refreshes task metadata on every backlog load, and removes the
-  entry when the task no longer requires approval.
+  as `pending`, refreshes task metadata on every backlog load, promotes already
+  completed tasks to `done`, and removes the entry when the task no longer
+  requires approval or the task no longer exists in the backlog snapshot.
 - `task_claims` is the authoritative source for both active claims and durable
   completion. `task_done()` only looks at `task_claims[task_id].status ==
   "done"`, and `claim_is_active()` only treats `status == "claimed"` as an
-  active owner.
+  active owner. Reconcile passes refresh stored task metadata from the backlog
+  and prune orphaned claim rows for task ids that no longer exist.
 - `events.jsonl` is append-only. Readers must derive current state from replay;
-  no event row is updated or deleted after it is written.
+  no event row is updated or deleted after it is written. Every row must remain
+  a JSON object with `event_id`, `type`, `at`, `actor`, and an object-valued
+  `payload`.
 - `inbox.jsonl` is append-only. `load_inbox()` rebuilds message state by
-  replaying rows in file order and folding them by `message_id`.
+  replaying rows in file order and folding them by `message_id`, after first
+  validating row shape (`action`, `message_id`, `at`, and the action-specific
+  required fields).
 - `task-results/<task-id>/*.json` is append-only evidence. `record_task_result()`
   always writes a new timestamped file and appends a matching `task_result`
   event; `load_task_results()` derives presentation order by sorting rows by
-  `recorded_at` descending.
+  `recorded_at` descending and rejects files that do not carry the required
+  summary fields.
 
 ### `approval_tasks` semantic state machine
 
@@ -248,7 +255,8 @@ Operational invariants:
   rewrites can still mutate state outside the normal path.
 - `claimed_pid`, `claimed_process_missing_scans`,
   `claimed_process_last_seen_at`, and `claimed_process_last_checked_at` are only
-  meaningful while the stored status is `claimed`.
+  meaningful while the stored status is `claimed`; reconcile/normalization drops
+  those fields for any other stored status.
 
 ### `inbox.jsonl` replay state machine
 
@@ -260,6 +268,8 @@ The inbox replay contract is:
 - Resolve rows for unknown `message_id` values are ignored.
 - If multiple resolve rows exist for the same message, the last replayed row
   wins for `resolved_at`, `resolved_by`, and `resolution_note`.
+- Replay first validates that message rows carry `sender`, `recipient`, `kind`,
+  `body`, and list-valued `tags`, and that resolve rows carry `actor`.
 
 ### `task-results/<task-id>/*.json` append-only invariants
 
@@ -269,6 +279,19 @@ The inbox replay contract is:
 - The `status` field is stored as the caller supplies it; current child/manual
   workflows conventionally use `success`, `blocked`, or `partial`, but the file
   contract is append-only evidence rather than an enum-enforced state machine.
+- Readers validate the result shape on load, including list-valued summary
+  fields plus object-valued `metadata` and `task_shaping_telemetry`.
+
+## `blackdog worktree preflight --format json` WTAM invariants
+
+The worktree contract JSON is a readonly invariant view over the current
+workspace. In addition to branch/worktree cleanliness facts, the payload now
+includes:
+
+- `current_task_id`: the backlog task id implied by the current branch name when
+  the branch matches a known task branch.
+- `current_branch_is_task_branch`: whether the current branch name resolves to a
+  known backlog task id.
 
 ## Core coverage gate plan
 

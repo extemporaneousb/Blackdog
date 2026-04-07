@@ -17,6 +17,11 @@ class StoreError(RuntimeError):
     pass
 
 
+APPROVAL_STATUSES = frozenset({"pending", "approved", "denied", "deferred", "done"})
+APPROVAL_SATISFIED_STATUSES = frozenset({"approved", "done"})
+CLAIM_STATUSES = frozenset({"claimed", "released", "done"})
+
+
 def _tracked_installs_file(paths: ProjectPaths) -> Path:
     return paths.control_dir / "tracked-installs.json"
 
@@ -38,6 +43,250 @@ def default_tracked_installs() -> dict[str, Any]:
         "schema_version": 1,
         "repos": [],
     }
+
+
+def _normalized_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_string_list(value: Any, *, field: str, source: Path) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise StoreError(f"{field} must be a list in {source}")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise StoreError(f"{field} must contain strings in {source}")
+        text = item.strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _normalize_optional_object(value: Any, *, field: str, source: Path) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise StoreError(f"{field} must be an object in {source}")
+    return dict(value)
+
+
+def _normalize_positive_int(value: Any, *, field: str, source: Path) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise StoreError(f"{field} must be an integer in {source}") from exc
+    if normalized < 1:
+        raise StoreError(f"{field} must be positive in {source}")
+    return normalized
+
+
+def _normalize_non_negative_int(value: Any, *, field: str, source: Path) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise StoreError(f"{field} must be an integer in {source}") from exc
+    if normalized < 0:
+        raise StoreError(f"{field} must be non-negative in {source}")
+    return normalized
+
+
+def approval_is_satisfied(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("status") or "").strip() in APPROVAL_SATISFIED_STATUSES
+
+
+def claim_is_done(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("status") or "").strip() == "done"
+
+
+def normalize_approval_entry(task_id: str, entry: dict[str, Any], *, state_file: Path) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise StoreError(f"approval_tasks[{task_id}] must be an object in {state_file}")
+    normalized = dict(entry)
+    status = str(normalized.get("status") or "pending").strip()
+    if status not in APPROVAL_STATUSES:
+        raise StoreError(
+            f"approval_tasks[{task_id}].status must be one of {sorted(APPROVAL_STATUSES)} in {state_file}"
+        )
+    normalized["status"] = status
+    first_seen = _normalized_optional_string(normalized.get("first_seen"))
+    if first_seen is not None:
+        normalized["first_seen"] = first_seen
+    else:
+        normalized.pop("first_seen", None)
+    last_seen = _normalized_optional_string(normalized.get("last_seen"))
+    if last_seen is not None:
+        normalized["last_seen"] = last_seen
+    else:
+        normalized.pop("last_seen", None)
+    title = _normalized_optional_string(normalized.get("title"))
+    if title is not None:
+        normalized["title"] = title
+    else:
+        normalized.pop("title", None)
+    bucket = _normalized_optional_string(normalized.get("bucket"))
+    if bucket is not None:
+        normalized["bucket"] = bucket
+    else:
+        normalized.pop("bucket", None)
+    approval_reason = _normalized_optional_string(normalized.get("approval_reason"))
+    if approval_reason is not None:
+        normalized["approval_reason"] = approval_reason
+    else:
+        normalized.pop("approval_reason", None)
+    normalized["paths"] = _normalize_string_list(normalized.get("paths"), field=f"approval_tasks[{task_id}].paths", source=state_file)
+    return normalized
+
+
+def normalize_claim_entry(task_id: str, entry: dict[str, Any], *, state_file: Path) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise StoreError(f"task_claims[{task_id}] must be an object in {state_file}")
+    normalized = dict(entry)
+    status = str(normalized.get("status") or "").strip()
+    if status not in CLAIM_STATUSES:
+        raise StoreError(f"task_claims[{task_id}].status must be one of {sorted(CLAIM_STATUSES)} in {state_file}")
+    normalized["status"] = status
+    for field in (
+        "title",
+        "bucket",
+        "priority",
+        "risk",
+        "claimed_by",
+        "claimed_at",
+        "released_by",
+        "released_at",
+        "release_note",
+        "completed_by",
+        "completed_at",
+        "completion_note",
+    ):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    normalized["paths"] = _normalize_string_list(normalized.get("paths"), field=f"task_claims[{task_id}].paths", source=state_file)
+    normalized.pop("claim_expires_at", None)
+    if status != "claimed":
+        normalized.pop("claimed_pid", None)
+        normalized.pop("claimed_process_missing_scans", None)
+        normalized.pop("claimed_process_last_seen_at", None)
+        normalized.pop("claimed_process_last_checked_at", None)
+        return normalized
+    if "claimed_pid" in normalized and normalized.get("claimed_pid") is not None:
+        normalized["claimed_pid"] = _normalize_positive_int(
+            normalized.get("claimed_pid"),
+            field=f"task_claims[{task_id}].claimed_pid",
+            source=state_file,
+        )
+    else:
+        normalized.pop("claimed_pid", None)
+    if "claimed_process_missing_scans" in normalized and normalized.get("claimed_process_missing_scans") is not None:
+        normalized["claimed_process_missing_scans"] = _normalize_non_negative_int(
+            normalized.get("claimed_process_missing_scans"),
+            field=f"task_claims[{task_id}].claimed_process_missing_scans",
+            source=state_file,
+        )
+    else:
+        normalized.pop("claimed_process_missing_scans", None)
+    for field in ("claimed_process_last_seen_at", "claimed_process_last_checked_at"):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    return normalized
+
+
+def normalize_event_row(payload: dict[str, Any], *, events_file: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise StoreError(f"Event row must be an object in {events_file}")
+    normalized = dict(payload)
+    event_id = _normalized_optional_string(normalized.get("event_id"))
+    if event_id is None:
+        raise StoreError(f"event_id is required in {events_file}")
+    event_type = _normalized_optional_string(normalized.get("type"))
+    if event_type is None:
+        raise StoreError(f"type is required in {events_file}")
+    actor = _normalized_optional_string(normalized.get("actor"))
+    if actor is None:
+        raise StoreError(f"actor is required in {events_file}")
+    at = _normalized_optional_string(normalized.get("at"))
+    if at is None:
+        raise StoreError(f"at is required in {events_file}")
+    normalized["event_id"] = event_id
+    normalized["type"] = event_type
+    normalized["actor"] = actor
+    normalized["at"] = at
+    normalized["task_id"] = _normalized_optional_string(normalized.get("task_id"))
+    normalized["payload"] = _normalize_optional_object(normalized.get("payload"), field="payload", source=events_file)
+    return normalized
+
+
+def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise StoreError(f"Inbox row must be an object in {inbox_file}")
+    normalized = dict(payload)
+    action = _normalized_optional_string(normalized.get("action"))
+    if action not in {"message", "resolve"}:
+        raise StoreError(f"action must be 'message' or 'resolve' in {inbox_file}")
+    message_id = _normalized_optional_string(normalized.get("message_id"))
+    if message_id is None:
+        raise StoreError(f"message_id is required in {inbox_file}")
+    at = _normalized_optional_string(normalized.get("at"))
+    if at is None:
+        raise StoreError(f"at is required in {inbox_file}")
+    normalized["action"] = action
+    normalized["message_id"] = message_id
+    normalized["at"] = at
+    if action == "message":
+        for field in ("sender", "recipient", "kind"):
+            value = _normalized_optional_string(normalized.get(field))
+            if value is None:
+                raise StoreError(f"{field} is required for message rows in {inbox_file}")
+            normalized[field] = value
+        normalized["task_id"] = _normalized_optional_string(normalized.get("task_id"))
+        normalized["reply_to"] = _normalized_optional_string(normalized.get("reply_to"))
+        normalized["body"] = str(normalized.get("body") or "")
+        normalized["tags"] = _normalize_string_list(normalized.get("tags"), field="tags", source=inbox_file)
+        return normalized
+    actor = _normalized_optional_string(normalized.get("actor"))
+    if actor is None:
+        raise StoreError(f"actor is required for resolve rows in {inbox_file}")
+    normalized["actor"] = actor
+    normalized["note"] = str(normalized.get("note") or "")
+    return normalized
+
+
+def normalize_task_result(payload: dict[str, Any], *, result_file: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise StoreError(f"Task-result payload must be an object: {result_file}")
+    normalized = dict(payload)
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    for field in ("task_id", "recorded_at", "actor", "run_id", "status"):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is None:
+            raise StoreError(f"{field} is required in {result_file}")
+        normalized[field] = value
+    for field in ("what_changed", "validation", "residual", "followup_candidates"):
+        normalized[field] = _normalize_string_list(normalized.get(field), field=field, source=result_file)
+    if not isinstance(normalized.get("needs_user_input"), bool):
+        raise StoreError(f"needs_user_input must be a boolean in {result_file}")
+    normalized["metadata"] = _normalize_optional_object(normalized.get("metadata"), field="metadata", source=result_file)
+    normalized["task_shaping_telemetry"] = _normalize_optional_object(
+        normalized.get("task_shaping_telemetry"),
+        field="task_shaping_telemetry",
+        source=result_file,
+    )
+    return normalized
 
 
 def normalize_tracked_installs(payload: dict[str, Any], *, installs_file: Path) -> dict[str, Any]:
@@ -103,6 +352,14 @@ def normalize_state(payload: dict[str, Any], *, state_file: Path) -> dict[str, A
         raise StoreError(f"approval_tasks must be an object in {state_file}")
     if not isinstance(payload["task_claims"], dict):
         raise StoreError(f"task_claims must be an object in {state_file}")
+    payload["approval_tasks"] = {
+        str(task_id): normalize_approval_entry(str(task_id), entry, state_file=state_file)
+        for task_id, entry in payload["approval_tasks"].items()
+    }
+    payload["task_claims"] = {
+        str(task_id): normalize_claim_entry(str(task_id), entry, state_file=state_file)
+        for task_id, entry in payload["task_claims"].items()
+    }
     return payload
 
 
@@ -155,7 +412,7 @@ def atomic_write_text(
 
 
 def save_state(state_file: Path, state: dict[str, Any]) -> None:
-    payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    payload = json.dumps(normalize_state(dict(state), state_file=state_file), indent=2, sort_keys=True) + "\n"
     with locked_path(state_file):
         atomic_write_text(state_file, payload)
 
@@ -174,7 +431,7 @@ def locked_state(state_file: Path) -> Iterator[dict[str, Any]]:
 
 
 def claim_is_active(entry: dict[str, Any]) -> bool:
-    return isinstance(entry, dict) and entry.get("status") == "claimed"
+    return isinstance(entry, dict) and str(entry.get("status") or "").strip() == "claimed"
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -211,14 +468,17 @@ def append_event(
     task_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    event = {
-        "event_id": uuid.uuid4().hex,
-        "type": event_type,
-        "at": now_iso(),
-        "actor": actor,
-        "task_id": task_id,
-        "payload": payload or {},
-    }
+    event = normalize_event_row(
+        {
+            "event_id": uuid.uuid4().hex,
+            "type": event_type,
+            "at": now_iso(),
+            "actor": actor,
+            "task_id": task_id,
+            "payload": payload or {},
+        },
+        events_file=paths.events_file,
+    )
     append_jsonl(paths.events_file, event)
     return event
 
@@ -246,7 +506,7 @@ def load_events(
     task_id: str | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    rows = load_jsonl(paths.events_file)
+    rows = [normalize_event_row(row, events_file=paths.events_file) for row in load_jsonl(paths.events_file)]
     if task_id:
         rows = [row for row in rows if row.get("task_id") == task_id]
     rows.sort(key=lambda row: str(row.get("at") or ""))
@@ -266,18 +526,21 @@ def send_message(
     reply_to: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
-    message = {
-        "action": "message",
-        "message_id": uuid.uuid4().hex,
-        "at": now_iso(),
-        "sender": sender,
-        "recipient": recipient,
-        "kind": kind,
-        "task_id": task_id,
-        "reply_to": reply_to,
-        "tags": tags or [],
-        "body": body,
-    }
+    message = normalize_inbox_row(
+        {
+            "action": "message",
+            "message_id": uuid.uuid4().hex,
+            "at": now_iso(),
+            "sender": sender,
+            "recipient": recipient,
+            "kind": kind,
+            "task_id": task_id,
+            "reply_to": reply_to,
+            "tags": tags or [],
+            "body": body,
+        },
+        inbox_file=paths.inbox_file,
+    )
     append_jsonl(paths.inbox_file, message)
     append_event(
         paths,
@@ -296,13 +559,16 @@ def resolve_message(
     actor: str,
     note: str = "",
 ) -> dict[str, Any]:
-    row = {
-        "action": "resolve",
-        "message_id": message_id,
-        "at": now_iso(),
-        "actor": actor,
-        "note": note,
-    }
+    row = normalize_inbox_row(
+        {
+            "action": "resolve",
+            "message_id": message_id,
+            "at": now_iso(),
+            "actor": actor,
+            "note": note,
+        },
+        inbox_file=paths.inbox_file,
+    )
     append_jsonl(paths.inbox_file, row)
     append_event(
         paths,
@@ -320,7 +586,7 @@ def load_inbox(
     status: str | None = None,
     task_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    rows = load_jsonl(paths.inbox_file)
+    rows = [normalize_inbox_row(row, inbox_file=paths.inbox_file) for row in load_jsonl(paths.inbox_file)]
     messages: dict[str, dict[str, Any]] = {}
     for row in rows:
         action = str(row.get("action") or "")
@@ -375,21 +641,24 @@ def record_task_result(
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     safe_run = run_id or uuid.uuid4().hex[:8]
     result_path = result_dir / f"{timestamp}-{safe_run}.json"
-    payload = {
-        "schema_version": 1,
-        "task_id": task_id,
-        "recorded_at": now_iso(),
-        "actor": actor,
-        "run_id": safe_run,
-        "status": status,
-        "what_changed": what_changed,
-        "validation": validation,
-        "residual": residual,
-        "needs_user_input": needs_user_input,
-        "followup_candidates": followup_candidates,
-        "metadata": metadata or {},
-        "task_shaping_telemetry": task_shaping_telemetry or {},
-    }
+    payload = normalize_task_result(
+        {
+            "schema_version": 1,
+            "task_id": task_id,
+            "recorded_at": now_iso(),
+            "actor": actor,
+            "run_id": safe_run,
+            "status": status,
+            "what_changed": what_changed,
+            "validation": validation,
+            "residual": residual,
+            "needs_user_input": needs_user_input,
+            "followup_candidates": followup_candidates,
+            "metadata": metadata or {},
+            "task_shaping_telemetry": task_shaping_telemetry or {},
+        },
+        result_file=result_path,
+    )
     atomic_write_text(result_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     append_event(
         paths,
@@ -421,8 +690,7 @@ def load_task_results(paths: ProjectPaths, *, task_id: str | None = None) -> lis
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise StoreError(f"Invalid task-result JSON {path}: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise StoreError(f"Task-result payload must be an object: {path}")
+        payload = normalize_task_result(payload, result_file=path)
         payload["result_file"] = str(path)
         results.append(payload)
     results.sort(key=lambda row: str(row.get("recorded_at") or ""), reverse=True)

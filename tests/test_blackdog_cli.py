@@ -73,7 +73,7 @@ from blackdog.ui import (
     build_ui_snapshot,
     render_static_html,
 )
-from blackdog.worktree import WorktreeSpec, default_task_branch, task_id_for_branch
+from blackdog.worktree import WorktreeSpec, default_task_branch, task_id_for_branch, worktree_contract
 
 
 def cli_env() -> dict[str, str]:
@@ -1468,6 +1468,176 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(task_id_for_branch(profile, branch), task_id)
         self.assertEqual(task_id_for_branch(profile, f"{branch}-run-1234"), task_id)
         self.assertIsNone(task_id_for_branch(profile, "agent/unrelated-task"))
+
+    def test_core_audit_backlog_reconcile_prunes_orphans_and_promotes_done_approval(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        profile = load_profile(self.root)
+        backlog_module.add_task(
+            profile,
+            title="Reconcile canonical state",
+            bucket="core",
+            priority="P1",
+            risk="medium",
+            effort="M",
+            why="Core state should reconcile approval and claim semantics from one pass.",
+            evidence="The previous sync logic only seeded approval rows and left stale runtime entries behind.",
+            safe_first_slice="Prune orphans and promote completed approval rows during backlog sync.",
+            paths=["src/blackdog/store.py"],
+            checks=[],
+            docs=["docs/FILE_FORMATS.md"],
+            domains=["state"],
+            packages=[],
+            affected_paths=["src/blackdog/store.py"],
+            task_shaping=None,
+            objective="Core hardening",
+            requires_approval=True,
+            approval_reason="This task changes durable runtime semantics.",
+            epic_id="core-hardening",
+            epic_title="Core hardening",
+            lane_id="hardening-audit",
+            lane_title="Hardening audit",
+            wave=0,
+        )
+        snapshot = load_backlog(profile.paths, profile)
+        task_id = next(iter(snapshot.tasks))
+        reconciled = backlog_module.sync_state_for_backlog(
+            {
+                "schema_version": 1,
+                "approval_tasks": {
+                    task_id: {"status": "pending"},
+                    "BLACK-orphan": {"status": "pending"},
+                },
+                "task_claims": {
+                    task_id: {
+                        "status": "done",
+                        "claimed_by": "codex",
+                        "claimed_pid": 1234,
+                        "claimed_process_missing_scans": 4,
+                    },
+                    "BLACK-orphan": {"status": "claimed", "claimed_by": "stale-agent"},
+                },
+            },
+            snapshot,
+        )
+        self.assertNotIn("BLACK-orphan", reconciled["approval_tasks"])
+        self.assertNotIn("BLACK-orphan", reconciled["task_claims"])
+        self.assertEqual(reconciled["approval_tasks"][task_id]["status"], "done")
+        self.assertEqual(reconciled["approval_tasks"][task_id]["title"], snapshot.tasks[task_id].title)
+        self.assertEqual(
+            reconciled["approval_tasks"][task_id]["approval_reason"],
+            "This task changes durable runtime semantics.",
+        )
+        self.assertNotIn("claimed_pid", reconciled["task_claims"][task_id])
+        self.assertNotIn("claimed_process_missing_scans", reconciled["task_claims"][task_id])
+
+    def test_core_audit_store_artifact_normalizers_enforce_core_shapes(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        append_jsonl(
+            paths.inbox_file,
+            {
+                "action": "message",
+                "message_id": "msg-1",
+                "at": "2026-04-07T12:00:00-07:00",
+                "sender": "supervisor",
+                "recipient": "child",
+                "kind": "instruction",
+                "task_id": "BLACK-demo",
+                "reply_to": "",
+                "tags": [" supervisor-run ", "", "git-worktree"],
+                "body": "Do the task.",
+            },
+        )
+        append_jsonl(
+            paths.inbox_file,
+            {
+                "action": "resolve",
+                "message_id": "msg-1",
+                "at": "2026-04-07T12:05:00-07:00",
+                "actor": "supervisor",
+                "note": "done",
+            },
+        )
+        inbox_rows = load_inbox(paths)
+        self.assertEqual(inbox_rows[0]["tags"], ["supervisor-run", "git-worktree"])
+        self.assertEqual(inbox_rows[0]["status"], "resolved")
+        self.assertEqual(inbox_rows[0]["resolved_by"], "supervisor")
+
+        paths.events_file.write_text(
+            json.dumps(
+                {
+                    "event_id": "evt-1",
+                    "type": "claim",
+                    "at": "2026-04-07T12:00:00-07:00",
+                    "actor": "codex",
+                    "task_id": "BLACK-demo",
+                    "payload": [],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(store_module.StoreError):
+            load_events(paths)
+
+    def test_core_audit_task_result_loading_rejects_missing_summary_fields(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        result_dir = paths.results_dir / "BLACK-demo"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        (result_dir / "20260407-120000-demo.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "task_id": "BLACK-demo",
+                    "recorded_at": "2026-04-07T12:00:00-07:00",
+                    "actor": "codex",
+                    "run_id": "demo",
+                    "status": "success",
+                    "what_changed": ["did the thing"],
+                    "validation": [],
+                    "residual": [],
+                    "followup_candidates": [],
+                    "metadata": {},
+                    "task_shaping_telemetry": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(store_module.StoreError):
+            load_task_results(paths, task_id="BLACK-demo")
+
+    def test_core_audit_worktree_contract_reports_branch_task_invariants(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "WTAM invariant task",
+            "--bucket",
+            "core",
+            "--why",
+            "Worktree contract should report the task implied by the current branch.",
+            "--evidence",
+            "Preflight only exposed the branch name, not whether it matched a known task.",
+            "--safe-first-slice",
+            "Surface the derived task id in the worktree contract.",
+            "--path",
+            "src/blackdog/worktree.py",
+            "--wave",
+            "0",
+        )
+        profile = load_profile(self.root)
+        snapshot = load_backlog(profile.paths, profile)
+        task = next(iter(snapshot.tasks.values()))
+        branch = default_task_branch(task)
+        subprocess.run(["git", "-C", str(self.root), "checkout", "-b", branch], check=True, capture_output=True, text=True)
+        contract = worktree_contract(profile, workspace=self.root)
+        self.assertEqual(contract["current_task_id"], task.id)
+        self.assertTrue(contract["current_branch_is_task_branch"])
+        self.assertEqual(contract["current_branch"], branch)
 
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"

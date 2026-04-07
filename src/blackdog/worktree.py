@@ -244,13 +244,17 @@ def worktree_contract(
     resolved_workspace = _repo_root(workspace or profile.paths.project_root)
     primary_root = find_primary_worktree(profile.paths.project_root)
     target_branch = _run_git(primary_root, "rev-parse", "--abbrev-ref", "HEAD")
+    current_branch = _run_git(resolved_workspace, "rev-parse", "--abbrev-ref", "HEAD")
+    current_task_id = task_id_for_branch(profile, current_branch)
     ignore_prefixes = _runtime_ignore_prefixes(profile, repo_root=primary_root)
     workspace_blackdog = resolved_workspace / ".VE" / "bin" / "blackdog"
     workspace_has_local_blackdog = workspace_blackdog.is_file() and os.access(workspace_blackdog, os.X_OK)
     return {
         "workspace_mode": workspace_mode or profile.supervisor_workspace_mode,
         "current_worktree": str(resolved_workspace),
-        "current_branch": _run_git(resolved_workspace, "rev-parse", "--abbrev-ref", "HEAD"),
+        "current_branch": current_branch,
+        "current_task_id": current_task_id,
+        "current_branch_is_task_branch": current_task_id is not None,
         "current_is_primary": _is_primary_worktree(resolved_workspace),
         "primary_worktree": str(primary_root),
         "primary_branch": target_branch,
