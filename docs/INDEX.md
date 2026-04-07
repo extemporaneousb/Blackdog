@@ -9,6 +9,7 @@ Use this index as the entrypoint for the repo-scoped Blackdog system.
 - [docs/CLI.md](docs/CLI.md): command reference for `blackdog`, including `blackdog bootstrap`, and the `blackdog-skill` compatibility wrapper
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for `blackdog.toml`, backlog markdown, state, events, inbox, and task-result files
 - [docs/INTEGRATION.md](docs/INTEGRATION.md): current host-repo setup flow, configuration review points, and pilot rollout guidance
+- [docs/EXTRACTION_AUDIT.md](docs/EXTRACTION_AUDIT.md): extraction-risk audit for viewer, scaffold, supervisor, and Emacs adapter surfaces
 
 ## Working Guidance
 
