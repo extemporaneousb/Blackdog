@@ -11,10 +11,12 @@ system. This audit uses four ownership buckets:
 
 - `core`: durable backlog/runtime/file-state contracts plus WTAM safety inspection primitives
 - `blackdog proper`: workflow orchestration and product policy layered on top of the core runtime
-- `viewer/adapter`: readonly render/snapshot surfaces for operators and external UIs
+- `extensions`: optional operator-specific integrations that consume documented product contracts
 - `devtool`: bootstrap, install-management, coverage, and compatibility tooling
 
 Group commands inherit the owner shown for their listed leaf verbs.
+The `blackdog` and `blackdog-skill` executables remain thin adapter shells even
+when the command they dispatch is owned by another layer.
 
 ### `blackdog`
 
@@ -22,10 +24,12 @@ Group commands inherit the owner shown for their listed leaf verbs.
 | --- | --- |
 | `devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
 | `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
-| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve` |
-| `viewer/adapter` | `snapshot`; `render` |
+| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render` |
+| `extensions` | no built-in CLI commands today; extension packages should compose through the documented CLI and artifact contract |
 
 No executable `blackdog` command is currently marked as a compatibility shim in the parser. `task run` remains a convenience workflow surface, not a deprecation target in this audit.
+The stable executable names are still `blackdog`, `blackdog-skill`, and
+`python -m blackdog`; the remodel only changes their internal module homes.
 
 ## `blackdog`
 
@@ -111,7 +115,11 @@ blackdog installs observe --all
 
 `blackdog installs add` stores repo roots under the shared control root for the current development checkout. `installs update` pushes the current Blackdog source into those tracked repos by calling the same `update-repo` flow per target. `installs observe` reads each tracked repo's backlog and tune state, and now also emits host-integration findings for wrapper-skill naming, prompt metadata, WTAM guidance, and task-shaping/history signals so the dev checkout can mine local host-repo intelligence without baking those machine-local paths into the skill scaffold or the host repos themselves.
 
-`blackdog worktree ...` is the implementation-work entrypoint. WTAM is the implementation model:
+`blackdog worktree ...` is the implementation-work entrypoint. Ownership splits
+inside this group are intentional: `worktree preflight` is the core WTAM safety
+inspection surface, while `worktree start|land|cleanup` are Blackdog-proper
+workflow orchestration on top of that contract. WTAM is the implementation
+model:
 
 - implementation work should happen from a branch-backed task worktree, not the primary checkout
 - `blackdog worktree start` creates a task branch from the primary worktree branch and returns a structured worktree spec

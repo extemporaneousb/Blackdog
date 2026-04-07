@@ -27,7 +27,7 @@ from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
 from blackdog import ui as ui_module
 from blackdog.backlog import load_backlog, render_backlog_plan_block, render_task_section
-from blackdog.cli import main as blackdog_main
+from blackdog.cli import _COMMAND_AUDIT, main as blackdog_main
 from blackdog.config import default_host_skill_name, load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import (
@@ -1374,6 +1374,17 @@ class BlackdogCliTests(unittest.TestCase):
             '\ncoverage-core:\n\tPYTHONPATH=src python3 -m blackdog.cli coverage --project-root . --command "$(CORE_AUDIT_COMMAND)" --output $(CORE_COVERAGE_OUTPUT)\n',
             makefile,
         )
+
+    def test_command_audit_freezes_current_layer_ownership_split(self) -> None:
+        self.assertEqual(_COMMAND_AUDIT["worktree"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["worktree preflight"]["owner"], "core")
+        self.assertEqual(_COMMAND_AUDIT["worktree start"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["worktree land"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["worktree cleanup"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["inbox"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["inbox send"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["snapshot"]["owner"], "blackdog-proper")
+        self.assertEqual(_COMMAND_AUDIT["render"]["owner"], "blackdog-proper")
 
     def test_core_audit_file_formats_freezes_state_machines_and_gate_plan(self) -> None:
         file_formats = (ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")

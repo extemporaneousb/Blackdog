@@ -75,37 +75,61 @@ on core rather than extending it.
 
 ## Target package map
 
-This is the target ownership map for extraction work. The layer names
-describe the contract; exact file names can change as code moves.
+This package topology is the frozen extraction target. Blackdog stays
+one distribution and one top-level namespace (`blackdog`), but
+internal ownership must converge on these three layers before major
+code motion starts.
 
-1. `blackdog.core`
-   - Durable backlog/runtime primitives.
-   - Current homes: `config.py`, the durable backlog/task logic in
-     `backlog.py`, state/result/thread storage in `store.py`, and the
-     stable WTAM contract facts in `worktree.py`.
+| Target layer | Owns | Transitional homes today |
+| --- | --- | --- |
+| `blackdog.core` | Durable backlog/runtime contracts: profile/path resolution, backlog parsing, deterministic state transitions, durable artifact I/O, stable WTAM safety inspection, and canonical read models over the artifact set. | `config.py`, the durable backlog/task logic in `backlog.py`, durable storage in `store.py`, and the WTAM contract facts currently mixed into `worktree.py`. |
+| `blackdog.proper` | The shipped Blackdog product on top of core: CLI and skill entrypoints, prompt/tune/report policy, repo bootstrap/refresh/update flows, project-local skill generation, the shipped HTML board and snapshot composition, and supervisor orchestration. | `cli.py`, `skill_cli.py`, `supervisor.py`, `scaffold.py`, `ui.py`, `ui.css`, and product-heavy portions of `backlog.py` and `worktree.py`. |
+| `extensions` | Optional operator-specific integrations that consume documented Blackdog contracts. | `editors/emacs/` and any future VS Code package, alternate viewer, or host-specific wrapper package. |
 
-2. `blackdog.proper`
-   - The shipped Blackdog product layered on top of core.
-   - Owns the CLI surface, prompt/tune/report helpers, repo
-     bootstrap/refresh/update behavior, project-local skill
-     generation, the shipped static HTML board, and supervisor
-     orchestration.
-   - Current homes: `cli.py`, `skill_cli.py`, `supervisor.py`,
-     `scaffold.py`, and the shipped render surface in `ui.py` and
-     `ui.css`.
+Integrations should read stable artifact contracts from `core` and
+drive writes through documented `blackdog proper` commands rather than
+private imports or raw file edits.
 
-3. `extensions`
-   - Optional adapters and operator-specific surfaces that consume
-     Blackdog through documented contracts.
-   - Owns editor integrations, alternate viewers, host-specific
-     wrappers, and future environment-specific plugins.
-   - Current homes: `editors/emacs/` and any future repo- or
-     environment-specific integration package.
+### Stable entrypoints and compatibility shims
 
-The adapter rule for this remodel is simple: integrations should read
-stable artifact contracts from `core` and drive writes through
-documented `blackdog proper` commands rather than private imports or
-raw file edits.
+The stable user-facing entrypoints do not change during the remodel:
+
+- console script `blackdog`
+- console script `blackdog-skill`
+- module entrypoint `python -m blackdog`
+
+Until extraction is complete, these current top-level modules are
+compatibility shims or transitional homes and must stay
+import-compatible:
+
+- `blackdog.cli`
+- `blackdog.skill_cli`
+- `blackdog.backlog`
+- `blackdog.store`
+- `blackdog.worktree`
+- `blackdog.supervisor`
+- `blackdog.ui`
+- `blackdog.scaffold`
+
+New behavior belongs in the correct layer first. Compatibility shims
+may forward imports or `main()` entrypoints, but they must not become a
+second architecture.
+
+### Migration sequence
+
+Extraction work should follow this order:
+
+1. Create the target internal homes under `blackdog.core` and
+   `blackdog.proper` without changing public executable names or
+   durable artifact contracts.
+2. Move implementation into those homes while keeping the current
+   top-level modules as import-preserving shims.
+3. Switch internal imports and packaging entrypoints only after the
+   new homes exist and tests cover the transition.
+4. Move editor- or host-specific behavior behind `extensions`
+   boundaries instead of expanding the product runtime.
+5. Remove temporary top-level shims only after in-repo imports, docs,
+   and tests stop depending on them.
 
 ## Non-goals for this slice
 
@@ -248,15 +272,15 @@ The current file-level ownership map is:
 | `src/blackdog/config.py` | Repo profile and path resolution, including shared control-root layout. | Strict core. |
 | `src/blackdog/backlog.py` | Backlog parser/validator/scheduler plus prompt/tune/view/render helpers. | Mixed. Split core parser/planner logic from Blackdog-proper prompt/view helpers. |
 | `src/blackdog/store.py` | Atomic JSON/JSONL persistence plus inbox, thread, and result convenience APIs. | Mixed. Keep low-level artifact I/O and durable state/result persistence in core; move inbox/thread collaboration helpers to Blackdog proper. |
-| `src/blackdog/worktree.py` | WTAM workspace contract, git worktree lifecycle, landing, rebasing, and cleanup. | Blackdog proper. Keep the safety contract, but do not treat branch orchestration as strict core. |
-| `src/blackdog/cli.py` | User-facing command surface that composes every lower layer. | Blackdog proper. |
+| `src/blackdog/worktree.py` | WTAM workspace contract, git worktree lifecycle, landing, rebasing, and cleanup. | Mixed. Keep contract inspection and WTAM invariants in core; move lifecycle orchestration to Blackdog proper. |
+| `src/blackdog/cli.py` | User-facing command surface that composes every lower layer. | Blackdog proper. Thin the executable shell over time, but keep workflow ownership in the product layer. |
 | `src/blackdog/supervisor.py` | Delegated child orchestration, launch prompts, recovery, and run artifacts. | Blackdog proper. |
 | `src/blackdog/ui.py` | Static snapshot shaping and the shipped HTML rendering support. | Blackdog proper. |
 | `src/blackdog/ui.css` | Styling for the shipped HTML board. | Blackdog proper. |
 | `src/blackdog/scaffold.py` | Host-repo bootstrap, refresh, update, and project-local skill generation. | Blackdog proper. |
 | `src/blackdog/skill_cli.py` | Skill-scaffold management entrypoint. | Blackdog proper. |
-| `src/blackdog/__main__.py` | Thin executable wrapper around the CLI. | Blackdog proper. |
-| `src/blackdog/__init__.py` | Package metadata surface. | Blackdog proper. |
+| `src/blackdog/__main__.py` | Thin executable wrapper around the CLI. | Blackdog proper boundary shim. |
+| `src/blackdog/__init__.py` | Package metadata surface. | Package metadata only; do not treat it as a behavior layer. |
 
 The three target modules in this audit should be treated as follows:
 
