@@ -26,6 +26,10 @@ The layer contract for the remodel is frozen in [docs/BOUNDARIES.md](docs/BOUNDA
 - `blackdog proper` owns the shipped Blackdog product surface on top of those primitives
 - `extensions` own optional adapters such as editor integrations
 
+Integrations should compose through the stable `core` artifacts and
+the documented `blackdog proper` CLI/write surfaces. Current Python
+module names are not the adapter contract.
+
 Current file placement is transitional and does not override that charter.
 
 ## Current architecture
@@ -71,49 +75,51 @@ on core rather than extending it.
 
 ## Target package map
 
-This is the target namespace map for extraction work. The package names
-describe ownership boundaries; exact file names can change as code
-moves.
+This is the target ownership map for extraction work. The layer names
+describe the contract; exact file names can change as code moves.
 
 1. `blackdog.core`
    - Durable backlog/runtime primitives.
    - Current homes: `config.py`, the durable backlog/task logic in
      `backlog.py`, state/result/thread storage in `store.py`, and the
-     WTAM git/worktree primitives in `worktree.py`.
+     stable WTAM contract facts in `worktree.py`.
 
 2. `blackdog.proper`
-   - Blackdog product workflows layered on top of core.
-   - Owns supervisor orchestration, prompt/tune policy, task/thread
-     operator workflows, and repo bootstrap/refresh/update behavior.
-   - Current homes: `supervisor.py`, workflow-heavy CLI behavior in
-     `cli.py`, and scaffold/bootstrap logic in `scaffold.py`.
+   - The shipped Blackdog product layered on top of core.
+   - Owns the CLI surface, prompt/tune/report helpers, repo
+     bootstrap/refresh/update behavior, project-local skill
+     generation, the shipped static HTML board, and supervisor
+     orchestration.
+   - Current homes: `cli.py`, `skill_cli.py`, `supervisor.py`,
+     `scaffold.py`, and the shipped render surface in `ui.py` and
+     `ui.css`.
 
-3. `blackdog.viewers`
-   - Read-only projections of core/proper state for humans.
-   - Owns snapshot shaping, static HTML rendering, and packaged viewer
-     assets.
-   - Current homes: `ui.py` and `ui.css`.
+3. `extensions`
+   - Optional adapters and operator-specific surfaces that consume
+     Blackdog through documented contracts.
+   - Owns editor integrations, alternate viewers, host-specific
+     wrappers, and future environment-specific plugins.
+   - Current homes: `editors/emacs/` and any future repo- or
+     environment-specific integration package.
 
-4. `blackdog.adapters`
-   - Client entrypoints that translate a specific caller into
-     core/proper operations.
-   - Owns the shell CLI surface, skill CLI, managed skill wrappers,
-     Codex launch integration, and editor-facing adapters.
-   - Current homes: `cli.py`, `skill_cli.py`, the launcher/scaffold
-     edges in `scaffold.py`, and client code under `editors/`.
+The adapter rule for this remodel is simple: integrations should read
+stable artifact contracts from `core` and drive writes through
+documented `blackdog proper` commands rather than private imports or
+raw file edits.
 
 ## Non-goals for this slice
 
 - Do not split Blackdog into multiple Python distributions. The target
   remains one `blackdog` package namespace with internal subpackages.
-- Do not move durable write-path logic into viewers or client
-  adapters.
+- Do not move durable write-path logic into optional extensions or
+  client adapters.
 - Do not let core depend on HTML/CSS assets, Codex launch details,
   prompt text, or editor UX.
 - Do not treat current monolithic module names as a stable contract.
   The boundary matters; the interim filenames do not.
-- Do not expand viewers into a write-enabled control plane. The HTML
-  surface stays a readonly projection over snapshot data.
+- Do not expand optional viewers into a write-enabled control plane.
+  The shipped HTML board stays a readonly projection over snapshot
+  data.
 
 ## Main layers
 
@@ -163,7 +169,7 @@ The current runtime still needs a finer file-level split than the high-level lay
 
 - `core` runtime files that should define the durable contract
 - `proper` Blackdog product subsystems that should sit above that core
-- `adapter` surfaces such as CLI, scaffold, and editor integrations
+- `extension` surfaces such as editor integrations and alternate viewers
 - `removal target` compatibility or legacy surfaces that should disappear after newer paths fully replace them
 
 ## Why this split
@@ -228,11 +234,12 @@ For this repo, the strict ownership boundary should be:
   and the minimum git/workspace invariants required to keep WTAM safe.
 - Blackdog proper: operator-facing orchestration built on that core,
   including CLI command composition, prompt/tune helpers, threads,
-  inbox coordination, worktree lifecycle orchestration, and supervisor
-  behavior.
-- Extension/viewer/adoption: readonly HTML/CSS rendering, packaged UI
-  assets, scaffold/bootstrap flows, and generated skill/adoption
-  surfaces.
+  inbox coordination, worktree lifecycle orchestration, repo
+  bootstrap/refresh, generated skills, the shipped static board, and
+  supervisor behavior.
+- Extensions: optional editor integrations, alternate viewers, and
+  host-specific wrappers that consume stable artifact and CLI
+  contracts.
 
 The current file-level ownership map is:
 
@@ -244,10 +251,10 @@ The current file-level ownership map is:
 | `src/blackdog/worktree.py` | WTAM workspace contract, git worktree lifecycle, landing, rebasing, and cleanup. | Blackdog proper. Keep the safety contract, but do not treat branch orchestration as strict core. |
 | `src/blackdog/cli.py` | User-facing command surface that composes every lower layer. | Blackdog proper. |
 | `src/blackdog/supervisor.py` | Delegated child orchestration, launch prompts, recovery, and run artifacts. | Blackdog proper. |
-| `src/blackdog/ui.py` | Static snapshot shaping and HTML rendering support. | Extension/viewer. |
-| `src/blackdog/ui.css` | Rendered board styling. | Extension/viewer. |
-| `src/blackdog/scaffold.py` | Host-repo bootstrap, refresh, update, and HTML refresh wiring. | Extension/viewer/adoption. |
-| `src/blackdog/skill_cli.py` | Skill-scaffold management entrypoint. | Extension/viewer/adoption. |
+| `src/blackdog/ui.py` | Static snapshot shaping and the shipped HTML rendering support. | Blackdog proper. |
+| `src/blackdog/ui.css` | Styling for the shipped HTML board. | Blackdog proper. |
+| `src/blackdog/scaffold.py` | Host-repo bootstrap, refresh, update, and project-local skill generation. | Blackdog proper. |
+| `src/blackdog/skill_cli.py` | Skill-scaffold management entrypoint. | Blackdog proper. |
 | `src/blackdog/__main__.py` | Thin executable wrapper around the CLI. | Blackdog proper. |
 | `src/blackdog/__init__.py` | Package metadata surface. | Blackdog proper. |
 
@@ -268,8 +275,9 @@ This implies a concrete refactor order:
 3. Treat `worktree.py` as Blackdog proper from the start; only extract
    tiny readonly WTAM facts into core if another package truly needs
    them.
-4. Leave `ui.py`, `ui.css`, `scaffold.py`, and `skill_cli.py` outside
-   the core boundary entirely.
+4. Keep `ui.py`, `ui.css`, `scaffold.py`, and `skill_cli.py` in
+   Blackdog proper while optional integrations continue to consume them
+   through documented contracts.
 
 For a Blackdog development checkout that manages multiple local host
 repos, that same control root now also carries a machine-local tracked

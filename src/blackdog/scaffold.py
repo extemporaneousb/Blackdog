@@ -123,6 +123,7 @@ def _ensure_baseline_agents_file(project_root: Path) -> None:
         "Until this file is updated, follow a minimal standard:\n"
         "- Keep dependency-light changes when possible.\n"
         "- Use repository-local `./.VE/bin/blackdog`/`blackdog-skill` when present.\n"
+        "- Treat documented Blackdog CLI commands and artifact files as the integration surface; do not hand-edit backlog state.\n"
         "- Keep implementation changes in branch-backed task worktrees.\n"
         "- Preserve this repository's existing operational contract.\n",
         encoding="utf-8",
@@ -506,6 +507,13 @@ description: "Use the project-local Blackdog backlog contract for {profile.proje
 
 Use the local Blackdog CLI instead of mutating backlog state by hand.
 
+## Blackdog Layer Contract
+
+- `core` is the durable contract: `blackdog.toml` plus the canonical artifact files under the control root.
+- `blackdog proper` is the shipped product surface: the `blackdog` and `blackdog-skill` CLIs, prompt/tune/report helpers, bootstrap/refresh flows, the generated project-local skill, the shipped static HTML board, and supervisor orchestration.
+- Optional repo-specific skills, editor integrations, or wrappers should compose through documented CLI behavior and stable artifact/snapshot files rather than private Blackdog Python imports.
+- Prefer CLI writes for backlog/runtime state transitions. Treat raw files as durable contracts to read and validate, not an ad hoc mutation surface.
+
 ## CLI Entry Points
 
 - Blackdog CLI: `{cli_command}`
@@ -606,6 +614,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `{control_root}`.
+- Treat the documented CLI plus stable control-root artifacts as the supported integration contract for repo-local adapters and skills.
 - Regenerate this skill after profile changes with `{cli_command} refresh` or `{skill_command} refresh backlog --project-root .`.
 
 ## Repo Defaults

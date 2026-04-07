@@ -1840,6 +1840,7 @@ class BlackdogCliTests(unittest.TestCase):
         agents_body = agents_file.read_text(encoding="utf-8")
         self.assertIn("# AGENTS", agents_body)
         self.assertIn("This repository was scaffolded with Blackdog.", agents_body)
+        self.assertIn("do not hand-edit backlog state", agents_body)
 
         agents_file.write_text("# AGENTS\n\nHost-specific contract.\n", encoding="utf-8")
         second_payload = json.loads(
@@ -2960,6 +2961,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Control root:", refreshed_text)
         self.assertIn("@git-common", refreshed_text)
         self.assertIn("`make test`", refreshed_text)
+        self.assertIn("## Blackdog Layer Contract", refreshed_text)
+        self.assertIn("Optional repo-specific skills, editor integrations, or wrappers should compose through documented CLI behavior", refreshed_text)
         self.assertIn("Run `./.VE/bin/blackdog refresh`", refreshed_text)
         self.assertIn("Before any repo edit you intend to keep", refreshed_text)
         self.assertIn("## Task Shaping", refreshed_text)
@@ -6423,6 +6426,7 @@ if __name__ == "__main__":
         self.assertIn(".VE is unversioned and bound to this worktree path", prompt_text)
         self.assertIn("Skip manual startup and completion steps like `blackdog worktree preflight`", prompt_text)
         self.assertIn("Prefer Blackdog CLI output over direct reads of raw state files", prompt_text)
+        self.assertIn("Treat documented Blackdog CLI commands and stable artifact files as the integration contract", prompt_text)
         self.assertIn("Commit your code changes on that task branch", prompt_text)
         self.assertIn(f"Do not run `{child_run_dir / 'blackdog-child'} complete` for this task from a branch-backed child run", prompt_text)
         paths = self.runtime_paths()

@@ -24,6 +24,28 @@ This document describes the current integration path for adopting Blackdog in an
 - richer active-run steering beyond simple stop control messages
 - a write-enabled runtime UI for approvals or steering from the browser
 
+## Product and integration contract
+
+Blackdog uses three layers when another repo or tool integrates with
+it:
+
+- `core`: the durable repo-local profile plus the canonical backlog,
+  state, events, inbox, results, threads, and snapshot artifacts
+- `blackdog proper`: the shipped `blackdog`/`blackdog-skill` CLI
+  workflows, bootstrap/refresh/update flows, prompt/tune/report
+  helpers, project-local skill scaffold, static HTML board, and
+  supervisor run protocol
+- `extensions`: optional editor integrations, repo-local wrapper
+  skills, monitoring tools, or other host-specific adapters
+
+The contract rule is:
+
+- extensions should compose through documented CLI behavior and stable
+  artifact/snapshot files
+- the CLI remains the write path for backlog/runtime state transitions
+- integrations should not hand-edit backlog state files or depend on
+  the current Python module layout as a public API
+
 ## Fresh repo creation flow
 
 1. Run `blackdog create-project --project-root /path/to/repo --project-name "Repo Name"` from the current Blackdog checkout.
@@ -102,6 +124,7 @@ If the repo was already open before bootstrap, reopen the repo or refresh the ru
 
 Blackdog does not currently call an external skill-authoring workflow at bootstrap time.
 It generates and refreshes the project-local skill deterministically from `blackdog.toml` so it stays aligned with the repo contract.
+That generated skill is part of Blackdog proper's shipped product surface; repo-specific follow-on skills should treat it as a wrapper over the CLI and stable artifact contracts, not as a replacement source of runtime truth.
 
 ## Recommended repo-specific configuration review
 
@@ -133,6 +156,7 @@ For implementation tasks, the intended operator model is now explicit and hard-g
 The generated skill should mirror that hard gate, enumerate the repo docs from `taxonomy.doc_routing_defaults`, and carry the repo's `pm_heuristics.skill_usage` guidance so agents see both the worktree contract and the host repo's task-shaping philosophy before they edit.
 
 When a host repo builds additional skills on top of Blackdog, prefer routing those skills through `blackdog prompt` or `blackdog tune --no-task` first. That lets the repo-local profile, doc routing, validation defaults, and WTAM rules shape the final prompt before the higher-level skill starts work.
+Those follow-on skills should then keep using documented CLI commands and stable artifact/snapshot files for stateful operations rather than hand-editing backlog files or depending on private module imports.
 
 Delegated child runs use the same lifecycle: the coordinating supervisor stays in the primary worktree, launches each child in a branch-backed task worktree, expects a commit on that branch, and lands it through the primary worktree after a successful run. WTAM is the only kept-change implementation path.
 

@@ -76,7 +76,7 @@ CLAIM_LIVENESS_SCAN_INTERVAL_SECONDS = 60.0
 CLAIM_LIVENESS_MISSING_SCAN_LIMIT = 2
 DYNAMIC_REASONING_BASE_EFFORT = "high"
 DYNAMIC_REASONING_COMPLEX_EFFORT = "xhigh"
-CHILD_PROMPT_TEMPLATE_VERSION = 2
+CHILD_PROMPT_TEMPLATE_VERSION = 3
 CHILD_PROTOCOL_HELPER = "blackdog-child"
 
 SUPERVISOR_REPORT_REQUIRED_ARTIFACTS = ("prompt", "stdout", "stderr", "metadata")
@@ -124,6 +124,7 @@ Required operating rules:
 {venv_rule}
 - This branch-backed child run is already claimed and prepared. Skip manual startup and completion steps like `blackdog worktree preflight`, `blackdog claim`, and `blackdog complete`.
 - Prefer Blackdog CLI output over direct reads of raw state files when checking claims, inbox state, results, or task status.
+- Treat documented Blackdog CLI commands and stable artifact files as the integration contract; do not hand-edit backlog state or rely on private module imports when a CLI write path exists.
 - Work only on `{task_id}`.
 - Use the current directory for code edits.
 - For Blackdog state commands, always target the central root with `--project-root {project_root}`.
