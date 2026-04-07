@@ -27,7 +27,14 @@ from blackdog import backlog as backlog_module
 from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
 from blackdog import ui as ui_module
-from blackdog.backlog import load_backlog, render_backlog_plan_block, render_task_section
+from blackdog.backlog import (
+    CORE_EXPORT_SCHEMA_VERSION,
+    build_core_export,
+    load_backlog,
+    render_backlog_plan_block,
+    render_task_section,
+    sync_state_for_backlog,
+)
 from blackdog.cli import _COMMAND_AUDIT, main as blackdog_main
 from blackdog.config import default_host_skill_name, load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
@@ -37,6 +44,7 @@ from blackdog.store import (
     load_events,
     load_inbox,
     load_jsonl,
+    load_state,
     load_tracked_installs,
     load_task_results,
     record_task_result,
@@ -3740,6 +3748,63 @@ class BlackdogCliTests(unittest.TestCase):
             datetime.fromisoformat(snapshot["content_updated_at"]),
             datetime.fromisoformat(snapshot["last_checked_at"]),
         )
+
+    def test_snapshot_embeds_neutral_core_export_contract(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Core export sample",
+            "--bucket",
+            "core",
+            "--objective",
+            "OBJ-1",
+            "--domain",
+            "state",
+            "--why",
+            "Need a stable machine contract that is not shaped around the board.",
+            "--evidence",
+            "Extensions should be able to consume backlog facts without UI-only fields.",
+            "--safe-first-slice",
+            "Expose one task through a neutral export and keep board projections separate.",
+            "--path",
+            "src/blackdog/core/backlog.py",
+            "--epic-title",
+            "Core export",
+            "--lane-title",
+            "Export lane",
+            "--wave",
+            "0",
+        )
+        task_id = task_ids_by_title(self.root)["Core export sample"]
+        run_cli("claim", "--project-root", str(self.root), "--agent", "agent/core", "--id", task_id)
+
+        profile = load_profile(self.root)
+        backlog_snapshot = load_backlog(profile.paths, profile)
+        state = sync_state_for_backlog(load_state(profile.paths.state_file), backlog_snapshot)
+        direct_core_export = build_core_export(profile, backlog_snapshot, state)
+        ui_snapshot = build_ui_snapshot(profile)
+
+        self.assertEqual(ui_snapshot["core_export"], direct_core_export)
+        self.assertEqual(ui_snapshot["core_export"]["schema_version"], CORE_EXPORT_SCHEMA_VERSION)
+        self.assertEqual(ui_snapshot["core_export"]["project_name"], ui_snapshot["project_name"])
+        self.assertEqual(ui_snapshot["core_export"]["plan"], ui_snapshot["plan"])
+
+        core_task = next(row for row in ui_snapshot["core_export"]["tasks"] if row["id"] == task_id)
+        ui_task = next(row for row in ui_snapshot["tasks"] if row["id"] == task_id)
+
+        self.assertEqual(core_task["claim_status"], "claimed")
+        self.assertEqual(core_task["claimed_by"], "agent/core")
+        self.assertNotIn("operator_status", core_task)
+        self.assertNotIn("links", core_task)
+        self.assertNotIn("latest_run_status", core_task)
+        self.assertNotIn("conversation_threads", core_task)
+        self.assertEqual(core_task["objective_title"], ui_task["objective_title"])
+        self.assertEqual(ui_task["operator_status"], "Claimed")
+        self.assertIn("links", ui_task)
+        self.assertIn("dialog_status_chips", ui_task)
 
     def test_snapshot_includes_freshness_timestamps(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

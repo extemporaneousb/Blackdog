@@ -12,10 +12,8 @@ import re
 import subprocess
 
 from ..backlog import (
-    build_plan_view,
+    build_core_export,
     build_tune_analysis,
-    build_view_model,
-    classify_task_status,
     load_backlog,
     sync_state_for_backlog,
 )
@@ -1506,6 +1504,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     events = load_events(profile.paths)
     messages = load_inbox(profile.paths)
     results = load_task_results(profile.paths)
+    core_export = build_core_export(profile, snapshot, state, messages=messages, results=results)
     task_activity = _build_task_activity(profile.paths, state, events, results)
     task_lifecycle = _build_task_lifecycle(events)
     task_timeline = _build_task_timeline(events)
@@ -1524,21 +1523,14 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         [run.get("landed_commit") for run in task_runs.values()],
         github_repo_url=github_repo_url,
     )
-    summary = build_view_model(
-        profile,
-        snapshot,
-        state,
-        events=events[-20:],
-        messages=messages,
-        results=results,
-    )
-    plan = build_plan_view(profile, snapshot, state)
+    plan = core_export["plan"]
     lane_positions = _lane_task_positions(snapshot.plan)
     objective_titles = {
         str(row.get("id") or ""): str(row.get("title") or "")
-        for row in summary.get("objective_rows", [])
+        for row in core_export.get("objectives", [])
         if str(row.get("id") or "").strip()
     }
+    core_task_rows = {str(row["id"]): row for row in core_export["tasks"]}
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
     ordered_tasks = sorted(
@@ -1551,7 +1543,6 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         ),
     )
     for task in ordered_tasks:
-        status, detail = classify_task_status(task, snapshot, state, allow_high_risk=False)
         activity = task_activity.get(task.id, _empty_task_activity())
         lifecycle = task_lifecycle.get(task.id, {})
         result_info = task_results.get(task.id, {})
@@ -1569,10 +1560,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             created_at = created_at or str(activity_rows[0].get("at") or "")
             updated_at = updated_at or str(activity_rows[-1].get("at") or "")
         task_row = {
-            "id": task.id,
-            "title": task.title,
-            "status": status,
-            "detail": detail,
+            **core_task_rows[task.id],
             "created_at": created_at or None,
             "updated_at": _latest_timestamp(
                 updated_at,
@@ -1584,25 +1572,9 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             )
             or created_at
             or None,
-            "wave": task.wave,
-            "lane_id": task.lane_id,
-            "lane_title": task.lane_title,
-            "epic_title": task.epic_title,
-            "priority": task.payload["priority"],
-            "risk": task.payload["risk"],
-            "objective": task.payload.get("objective") or "",
             "objective_title": objective_titles.get(str(task.payload.get("objective") or "").strip())
             or str(task.payload.get("objective") or "").strip()
             or "Unassigned",
-            "domains": list(task.payload.get("domains", [])),
-            "safe_first_slice": task.payload["safe_first_slice"],
-            "why": task.payload.get("why") or "",
-            "evidence": task.payload.get("evidence") or "",
-            "paths": list(task.payload.get("paths") or []),
-            "checks": list(task.payload.get("checks") or []),
-            "docs": list(task.payload.get("docs") or []),
-            "task_shaping": task.payload.get("task_shaping"),
-            "predecessor_ids": list(task.predecessor_ids),
             "lane_plan_index": lane_info.get("lane_plan_index", task.lane_order if task.lane_order is not None else 9999),
             "lane_position": lane_info.get("lane_position"),
             "lane_task_count": lane_info.get("lane_task_count"),
@@ -1696,7 +1668,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
                 "preview": _result_preview(row),
             }
         )
-    open_messages = [row for row in summary["open_messages"][:10]]
+    open_messages = [row for row in core_export["open_messages"][:10]]
     board_tasks = [row for row in tasks if row.get("lane_id")]
     active_tasks = [
         row
@@ -1712,12 +1684,13 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         )
     )
     workspace_contract = worktree_contract(profile)
-    headers = dict(snapshot.headers)
+    headers = dict(core_export["headers"])
     generated_at = now_iso()
     supervisor_last_checked_at = _latest_supervisor_check_at(profile)
     last_checked_at = _latest_timestamp(supervisor_last_checked_at, generated_at) or generated_at
     content_updated_at = _latest_timestamp(*[row.get("at") for row in events]) or generated_at
     last_activity = _latest_activity(events)
+    recent_events = events[-10:]
 
     return {
         "schema_version": UI_SNAPSHOT_SCHEMA_VERSION,
@@ -1725,10 +1698,11 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "content_updated_at": content_updated_at,
         "last_checked_at": last_checked_at,
         "supervisor_last_checked_at": supervisor_last_checked_at,
-        "project_name": profile.project_name,
-        "project_root": str(profile.paths.project_root),
-        "control_dir": str(profile.paths.control_dir),
-        "profile_file": str(profile.paths.profile_file),
+        "project_name": core_export["project_name"],
+        "project_root": core_export["project_root"],
+        "control_dir": core_export["control_dir"],
+        "profile_file": core_export["profile_file"],
+        "core_export": core_export,
         "workspace_contract": workspace_contract,
         "headers": headers,
         "hero_highlights": _build_hero_highlights(
@@ -1737,19 +1711,19 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             tasks=focus_tasks,
         ),
         "last_activity": last_activity,
-        "counts": summary["counts"],
-        "total": summary["total"],
+        "counts": core_export["counts"],
+        "total": core_export["total"],
         "queue_status": {
             **_build_queue_status(tasks),
             "last_sweep_completed": _last_supervisor_sweep_completed_count(events),
         },
-        "push_objective": summary["push_objective"],
-        "objectives": summary["objectives"],
+        "push_objective": core_export["push_objective"],
+        "objectives": core_export["objectives"],
         "focus_task_ids": sorted(focus_task_ids),
-        "next_rows": summary["next_rows"],
+        "next_rows": core_export["next_rows"],
         "open_messages": open_messages,
         "recent_results": recent_results,
-        "recent_events": summary["recent_events"],
+        "recent_events": recent_events,
         "plan": plan,
         "threads": threads,
         "unattended_tuning": unattended_tuning,

@@ -690,19 +690,83 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
 
 Canonical static-page snapshot payload.
 
-This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias).
+This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias). The payload is Blackdog-product/UI owned even though it now embeds a neutral core export at `core_export`.
+
 Representative top-level keys include:
 
 - `project_name`
 - `project_root`
 - `control_dir`
 - `profile_file`
+- `core_export`
 - `workspace_contract`
 - `board_tasks`
 - `tasks`
 - `queue_status`
 - `recent_results`
 - `links`
+
+`core_export` is the stable machine contract that `blackdog.core` now owns. It is intentionally distinct from the board/editor projection around it.
+
+Current `core_export` keys include:
+
+- `schema_version`
+- `generated_at`
+- `project_name`
+- `project_root`
+- `control_dir`
+- `profile_file`
+- `headers`
+- `counts`
+- `total`
+- `push_objective`
+- `release_gates`
+- `objectives`
+- `next_rows`
+- `open_messages`
+- `plan`
+- `tasks`
+
+Current `core_export.tasks[*]` keys include durable backlog/runtime facts only:
+
+- `id`
+- `title`
+- `status`
+- `detail`
+- `bucket`
+- `priority`
+- `risk`
+- `effort`
+- `objective`
+- `objective_title`
+- `epic_title`
+- `lane_id`
+- `lane_title`
+- `wave`
+- `domains`
+- `safe_first_slice`
+- `why`
+- `evidence`
+- `paths`
+- `checks`
+- `docs`
+- `task_shaping`
+- `predecessor_ids`
+- `requires_approval`
+- `approval_reason`
+- `approval_status`
+- `claim_status`
+- `claimed_by`
+- `claimed_at`
+- `released_by`
+- `released_at`
+- `release_note`
+- `completed_by`
+- `completed_at`
+- `completion_note`
+- `latest_result_status`
+- `latest_result_at`
+- `latest_result_actor`
 
 `queue_status` contains board counter fields:
 - `running`
@@ -925,6 +989,7 @@ Top-level keys:
 - `project_root`
 - `control_dir`
 - `profile_file`
+- `core_export`
 - `workspace_contract`
 - `headers`
 - `hero_highlights`
@@ -1038,6 +1103,8 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `latest_run_landed`
 - `latest_run_land_error`
 - `operator_status`
+
+The UI/task projection intentionally extends `core_export.tasks[*]` with board-only fields such as `activity`, `conversation_*`, `operator_status*`, task/run artifact hrefs, model-response excerpts, and landing metadata. Those extensions are not part of the neutral core export contract.
 - `operator_status_key`
 - `operator_status_detail`
 - `links`

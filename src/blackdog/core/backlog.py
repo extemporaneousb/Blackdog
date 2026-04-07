@@ -17,6 +17,7 @@ from .store import (
     claim_is_active,
     claim_is_done,
     load_events,
+    load_inbox,
     load_state,
     load_task_results,
     locked_path,
@@ -104,6 +105,7 @@ PROMPT_COMPLEXITY_PROFILES = {
         "include_prompt_tuning": True,
     },
 }
+CORE_EXPORT_SCHEMA_VERSION = 1
 
 
 class BacklogError(RuntimeError):
@@ -700,6 +702,20 @@ def _objective_row_key(objective_id: str) -> str:
     return normalized or UNASSIGNED_OBJECTIVE_KEY
 
 
+def _latest_result_index(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    latest_by_task: dict[str, dict[str, Any]] = {}
+    for row in results:
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id or task_id in latest_by_task:
+            continue
+        latest_by_task[task_id] = {
+            "status": row.get("status"),
+            "recorded_at": row.get("recorded_at"),
+            "actor": row.get("actor"),
+        }
+    return latest_by_task
+
+
 def build_view_model(
     profile: Profile,
     snapshot: BacklogSnapshot,
@@ -955,6 +971,111 @@ def build_plan_view(
         "epics": epics,
         "lanes": ordered_lanes,
         "waves": ordered_waves,
+    }
+
+
+def build_core_export(
+    profile: Profile,
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    *,
+    messages: list[dict[str, Any]] | None = None,
+    results: list[dict[str, Any]] | None = None,
+    allow_high_risk: bool = False,
+) -> dict[str, Any]:
+    message_rows = messages if messages is not None else load_inbox(profile.paths)
+    result_rows = results if results is not None else load_task_results(profile.paths)
+    summary = build_view_model(
+        profile,
+        snapshot,
+        state,
+        events=[],
+        messages=message_rows,
+        results=result_rows,
+        allow_high_risk=allow_high_risk,
+    )
+    plan = build_plan_view(profile, snapshot, state, allow_high_risk=allow_high_risk)
+    objective_titles = {
+        str(row.get("id") or ""): str(row.get("title") or "")
+        for row in summary.get("objectives", [])
+        if str(row.get("id") or "").strip()
+    }
+    latest_results = _latest_result_index(result_rows)
+    tasks: list[dict[str, Any]] = []
+    ordered_tasks = sorted(
+        snapshot.tasks.values(),
+        key=lambda task: (
+            task.wave if task.wave is not None else 9999,
+            task.lane_order if task.lane_order is not None else 9999,
+            task.lane_position if task.lane_position is not None else 9999,
+            task.id,
+        ),
+    )
+    for task in ordered_tasks:
+        status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
+        claim_entry = state.get("task_claims", {}).get(task.id) or {}
+        approval_entry = state.get("approval_tasks", {}).get(task.id) or {}
+        result_info = latest_results.get(task.id, {})
+        objective_id = str(task.payload.get("objective") or "").strip()
+        tasks.append(
+            {
+                "id": task.id,
+                "title": task.title,
+                "status": status,
+                "detail": detail,
+                "bucket": task.payload["bucket"],
+                "priority": task.payload["priority"],
+                "risk": task.payload["risk"],
+                "effort": task.payload["effort"],
+                "objective": objective_id,
+                "objective_title": objective_titles.get(objective_id) or objective_id or UNASSIGNED_OBJECTIVE_TITLE,
+                "epic_title": task.epic_title,
+                "lane_id": task.lane_id,
+                "lane_title": task.lane_title,
+                "wave": task.wave,
+                "domains": list(task.payload.get("domains", [])),
+                "safe_first_slice": task.payload["safe_first_slice"],
+                "why": str(task.payload.get("why") or task.narrative.why or ""),
+                "evidence": str(task.payload.get("evidence") or task.narrative.evidence or ""),
+                "paths": list(task.payload.get("paths") or []),
+                "checks": list(task.payload.get("checks") or []),
+                "docs": list(task.payload.get("docs") or []),
+                "task_shaping": task.payload.get("task_shaping"),
+                "predecessor_ids": list(task.predecessor_ids),
+                "requires_approval": bool(task.payload.get("requires_approval")),
+                "approval_reason": str(task.payload.get("approval_reason") or ""),
+                "approval_status": str(approval_entry.get("status") or "not_required"),
+                "claim_status": str(claim_entry.get("status") or "absent"),
+                "claimed_by": claim_entry.get("claimed_by"),
+                "claimed_at": claim_entry.get("claimed_at"),
+                "released_by": claim_entry.get("released_by"),
+                "released_at": claim_entry.get("released_at"),
+                "release_note": claim_entry.get("release_note"),
+                "completed_by": claim_entry.get("completed_by"),
+                "completed_at": claim_entry.get("completed_at"),
+                "completion_note": claim_entry.get("completion_note"),
+                "latest_result_status": result_info.get("status"),
+                "latest_result_at": result_info.get("recorded_at"),
+                "latest_result_actor": result_info.get("actor"),
+            }
+        )
+    return {
+        "schema_version": CORE_EXPORT_SCHEMA_VERSION,
+        "generated_at": now_iso(),
+        "project_name": profile.project_name,
+        "project_root": str(profile.paths.project_root),
+        "control_dir": str(profile.paths.control_dir),
+        "profile_file": str(profile.paths.profile_file),
+        "headers": dict(snapshot.headers),
+        "counts": summary["counts"],
+        "total": summary["total"],
+        "push_objective": summary["push_objective"],
+        "release_gates": summary["release_gates"],
+        "objectives": summary["objectives"],
+        "next_rows": summary["next_rows"],
+        "open_messages": summary["open_messages"],
+        "plan": plan,
+        "tasks": tasks,
     }
 
 
