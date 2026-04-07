@@ -12,6 +12,7 @@
 (require 'blackdog-artifacts)
 (require 'button)
 (require 'subr-x)
+(require 'time-date)
 
 (declare-function blackdog-magit-diff-task "blackdog-magit" (task &optional root))
 (declare-function blackdog-magit-log-task "blackdog-magit" (task &optional root))
@@ -77,6 +78,115 @@
   "Read-only Blackdog prompt/thread browser."
   (setq-local truncate-lines nil))
 
+(defun blackdog-task--lifecycle-state (task)
+  "Return the normalized lifecycle state for TASK."
+  (let ((state (downcase (string-trim (or (alist-get 'status task)
+                                          (alist-get 'operator_status_key task)
+                                          "")))))
+    (if (string= state "complete")
+        "done"
+      state)))
+
+(defun blackdog-task--result-count (task)
+  "Return the recorded result count for TASK."
+  (let ((value (alist-get 'result_count task)))
+    (cond
+     ((integerp value) value)
+     ((numberp value) (truncate value))
+     ((stringp value) (string-to-number value))
+     (t 0))))
+
+(defun blackdog-task--timestamp-seconds (timestamp)
+  "Return TIMESTAMP as seconds since the epoch."
+  (when (and (stringp timestamp) (not (string-empty-p timestamp)))
+    (ignore-errors
+      (float-time (date-to-time timestamp)))))
+
+(defun blackdog-task--duration-label (started-at finished-at)
+  "Return a compact duration label from STARTED-AT to FINISHED-AT."
+  (let ((started-seconds (blackdog-task--timestamp-seconds started-at))
+        (finished-seconds (blackdog-task--timestamp-seconds finished-at)))
+    (when (and started-seconds
+               finished-seconds
+               (<= started-seconds finished-seconds))
+      (blackdog-format-duration-seconds
+       (floor (- finished-seconds started-seconds))))))
+
+(defun blackdog-task--on-task-time (task)
+  "Return the best available on-task duration label for TASK."
+  (or (let ((label (alist-get 'total_compute_label task)))
+        (and (stringp label) (not (string-empty-p label)) label))
+      (let ((label (alist-get 'active_compute_label task)))
+        (and (stringp label) (not (string-empty-p label)) label))
+      (blackdog-task--duration-label (alist-get 'claimed_at task)
+                                     (or (alist-get 'completed_at task)
+                                         (alist-get 'released_at task)))))
+
+(defun blackdog-task--summary-pairs (task)
+  "Return aligned summary rows for TASK."
+  (let ((completed-at (or (alist-get 'completed_at task) ""))
+        (updated-at (or (alist-get 'updated_at task) ""))
+        (on-task-time (blackdog-task--on-task-time task)))
+    (delq nil
+          (list
+           (cons "Status" (or (alist-get 'operator_status task)
+                               (alist-get 'status task)))
+           (and on-task-time (cons "On Task Time" on-task-time))
+           (cons "Created" (or (alist-get 'created_at task) ""))
+           (cons "Claimed" (or (alist-get 'claimed_at task) ""))
+           (if (not (string-empty-p completed-at))
+               (cons "Completed" completed-at)
+             (cons "Updated" updated-at))
+           (cons "Objective" (or (alist-get 'objective_title task)
+                                  (alist-get 'objective task)
+                                  ""))
+           (cons "Lane" (or (alist-get 'lane_title task) ""))
+           (cons "Wave" (format "%s" (or (alist-get 'wave task) "")))
+           (cons "Priority" (or (alist-get 'priority task) ""))
+           (cons "Risk" (or (alist-get 'risk task) ""))
+           (cons "Branch" (or (alist-get 'task_branch task) ""))
+           (cons "Target" (or (alist-get 'target_branch task) ""))
+           (cons "Task Commit" (or (alist-get 'task_commit_short task)
+                                    (alist-get 'task_commit task)
+                                    ""))
+           (cons "Landed Commit" (or (alist-get 'landed_commit_short task)
+                                      (alist-get 'landed_commit task)
+                                      ""))
+           (cons "Latest Result" (or (alist-get 'latest_result_status task) ""))))))
+
+(defun blackdog-task--lifecycle-action-allowed-p (task action)
+  "Return non-nil when ACTION is valid for TASK."
+  (let ((status (blackdog-task--lifecycle-state task))
+        (result-count (blackdog-task--result-count task)))
+    (pcase action
+      ('claim (string= status "ready"))
+      ('launch (member status '("ready" "claimed")))
+      ('release (string= status "claimed"))
+      ('complete (string= status "claimed"))
+      ('remove (and (not (member status '("claimed" "done")))
+                    (zerop result-count)))
+      (_ nil))))
+
+(defun blackdog-task--lifecycle-action-label (action)
+  "Return the display label for lifecycle ACTION."
+  (pcase action
+    ('claim "Claim")
+    ('launch "Launch Worktree")
+    ('release "Release")
+    ('complete "Complete")
+    ('remove "Remove")
+    (_ (capitalize (symbol-name action)))))
+
+(defun blackdog-task--ensure-lifecycle-action-allowed (task action)
+  "Raise a user error when ACTION is not valid for TASK."
+  (unless (blackdog-task--lifecycle-action-allowed-p task action)
+    (user-error "%s is not available for task %s (%s)"
+                (blackdog-task--lifecycle-action-label action)
+                (or (alist-get 'id task) "unknown")
+                (or (alist-get 'operator_status task)
+                    (alist-get 'status task)
+                    "unknown"))))
+
 (defun blackdog-task-view (task &optional root)
   "Open TASK from ROOT in a dedicated reader buffer."
   (interactive (list (blackdog-read-task)))
@@ -107,28 +217,7 @@
       (insert (format "%s  %s\n\n"
                       (alist-get 'id task)
                       (alist-get 'title task)))
-      (blackdog-task--insert-pairs
-       `(("Status" . ,(or (alist-get 'operator_status task)
-                          (alist-get 'status task)))
-         ("Created" . ,(or (alist-get 'created_at task) ""))
-         ("Updated" . ,(or (alist-get 'updated_at task) ""))
-         ("Claimed" . ,(or (alist-get 'claimed_at task) ""))
-         ("Objective" . ,(or (alist-get 'objective_title task)
-                             (alist-get 'objective task)
-                             ""))
-         ("Lane" . ,(or (alist-get 'lane_title task) ""))
-         ("Wave" . ,(format "%s" (or (alist-get 'wave task) "")))
-         ("Priority" . ,(or (alist-get 'priority task) ""))
-         ("Risk" . ,(or (alist-get 'risk task) ""))
-         ("Branch" . ,(or (alist-get 'task_branch task) ""))
-         ("Target" . ,(or (alist-get 'target_branch task) ""))
-         ("Task Commit" . ,(or (alist-get 'task_commit_short task)
-                               (alist-get 'task_commit task)
-                               ""))
-         ("Landed Commit" . ,(or (alist-get 'landed_commit_short task)
-                                 (alist-get 'landed_commit task)
-                                 ""))
-         ("Latest Result" . ,(or (alist-get 'latest_result_status task) ""))))
+      (blackdog-task--insert-pairs (blackdog-task--summary-pairs task))
       (blackdog-task--insert-lifecycle-actions task)
       (blackdog-task--insert-quick-links task)
       (blackdog-task--insert-git-actions task)
@@ -360,19 +449,26 @@ ARTIFACT should be `prompt' or `thread'."
 
 (defun blackdog-task--insert-lifecycle-actions (task)
   "Insert task lifecycle action buttons for TASK."
-  (insert "Actions\n")
-  (dolist (row `(("Claim" . ,#'blackdog-task-claim)
-                 ("Launch Worktree" . ,#'blackdog-task-launch)
-                 ("Release" . ,#'blackdog-task-release)
-                 ("Complete" . ,#'blackdog-task-complete)
-                 ("Remove" . ,#'blackdog-task-remove)))
-    (let ((label (car row))
-          (fn (cdr row)))
-      (blackdog-task--insert-action-button
-       label
-       (lambda (_button)
-         (funcall fn task)))))
-  (insert "\n"))
+  (let ((rows '((claim "Claim" blackdog-task-claim)
+                (launch "Launch Worktree" blackdog-task-launch)
+                (release "Release" blackdog-task-release)
+                (complete "Complete" blackdog-task-complete)
+                (remove "Remove" blackdog-task-remove)))
+        (inserted nil))
+    (dolist (row rows)
+      (let ((action (nth 0 row))
+            (label (nth 1 row))
+            (fn (nth 2 row)))
+        (when (blackdog-task--lifecycle-action-allowed-p task action)
+          (unless inserted
+            (insert "Actions\n")
+            (setq inserted t))
+          (blackdog-task--insert-action-button
+           label
+           (lambda (_button)
+             (funcall fn task))))))
+    (when inserted
+      (insert "\n"))))
 
 (defun blackdog-task--insert-git-actions (task)
   "Insert commit browsing actions for TASK."
@@ -475,78 +571,78 @@ ARTIFACT should be `prompt' or `thread'."
   (interactive)
   (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
          (task (blackdog-task--task-for-action task))
-         (task-id (alist-get 'id task))
-         (agent (blackdog-task--command-agent "Claim")))
+         (task-id (alist-get 'id task)))
     (unless task
       (user-error "No task selected"))
-    (apply #'blackdog--call-json root
-           (list "claim" "--agent" agent "--id" task-id))
-    (blackdog-task--refresh-after-mutation root)
-    (message "Claimed %s as %s" task-id agent)))
+    (blackdog-task--ensure-lifecycle-action-allowed task 'claim)
+    (let ((agent (blackdog-task--command-agent "Claim")))
+      (apply #'blackdog--call-json root
+             (list "claim" "--agent" agent "--id" task-id))
+      (blackdog-task--refresh-after-mutation root)
+      (message "Claimed %s as %s" task-id agent))))
 
 (defun blackdog-task-launch (&optional task root)
   "Claim TASK when needed, then start its WTAM worktree from ROOT."
   (interactive)
   (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
          (task (blackdog-task--task-for-action task))
-         (task-id (alist-get 'id task))
-         (status-key (or (alist-get 'operator_status_key task)
-                         (alist-get 'status task)
-                         ""))
-         (claimed-by (or (alist-get 'claimed_by task) ""))
-         (agent (blackdog-task--command-agent "Launch")))
+         (task-id (alist-get 'id task)))
     (unless task
       (user-error "No task selected"))
-    (when (member status-key '("done" "complete"))
-      (user-error "Task %s is already complete" task-id))
-    (when (and (string= status-key "claimed")
-               (not (string-empty-p claimed-by))
-               (not (string= claimed-by agent)))
-      (user-error "Task %s is claimed by %s" task-id claimed-by))
-    (unless (string= status-key "claimed")
-      (apply #'blackdog--call-json root
-             (list "claim" "--agent" agent "--id" task-id)))
-    (let* ((payload (apply #'blackdog--call-json root
-                           (list "worktree" "start"
-                                 "--actor" agent
-                                 "--id" task-id
-                                 "--format" "json")))
-           (worktree-path (alist-get 'worktree_path payload)))
-      (blackdog-task--refresh-after-mutation root)
-      (blackdog-task--open-worktree worktree-path)
-      (message "Started %s in %s" task-id worktree-path)
-      payload)))
+    (blackdog-task--ensure-lifecycle-action-allowed task 'launch)
+    (let* ((status-key (blackdog-task--lifecycle-state task))
+           (claimed-by (or (alist-get 'claimed_by task) ""))
+           (agent (blackdog-task--command-agent "Launch")))
+      (when (and (string= status-key "claimed")
+                 (not (string-empty-p claimed-by))
+                 (not (string= claimed-by agent)))
+        (user-error "Task %s is claimed by %s" task-id claimed-by))
+      (unless (string= status-key "claimed")
+        (apply #'blackdog--call-json root
+               (list "claim" "--agent" agent "--id" task-id)))
+      (let* ((payload (apply #'blackdog--call-json root
+                             (list "worktree" "start"
+                                   "--actor" agent
+                                   "--id" task-id
+                                   "--format" "json")))
+             (worktree-path (alist-get 'worktree_path payload)))
+        (blackdog-task--refresh-after-mutation root)
+        (blackdog-task--open-worktree worktree-path)
+        (message "Started %s in %s" task-id worktree-path)
+        payload))))
 
 (defun blackdog-task-release (&optional task root)
   "Release TASK from ROOT for the default Emacs agent."
   (interactive)
   (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
          (task (blackdog-task--task-for-action task))
-         (task-id (alist-get 'id task))
-         (agent (blackdog-task--command-agent "Release")))
+         (task-id (alist-get 'id task)))
     (unless task
       (user-error "No task selected"))
-    (apply #'blackdog--call root
-           (list "release" "--agent" agent "--id" task-id))
-    (blackdog-task--refresh-after-mutation root)
-    (message "Released %s as %s" task-id agent)))
+    (blackdog-task--ensure-lifecycle-action-allowed task 'release)
+    (let ((agent (blackdog-task--command-agent "Release")))
+      (apply #'blackdog--call root
+             (list "release" "--agent" agent "--id" task-id))
+      (blackdog-task--refresh-after-mutation root)
+      (message "Released %s as %s" task-id agent))))
 
 (defun blackdog-task-complete (&optional task root)
   "Complete TASK from ROOT for the default Emacs agent."
   (interactive)
   (let* ((root (or root blackdog-buffer-root (blackdog-project-root)))
          (task (blackdog-task--task-for-action task))
-         (task-id (alist-get 'id task))
-         (agent (blackdog-task--command-agent "Complete"))
-         (note (read-string "Completion note (optional): " nil nil "")))
+         (task-id (alist-get 'id task)))
     (unless task
       (user-error "No task selected"))
-    (apply #'blackdog--call root
-           (append (list "complete" "--agent" agent "--id" task-id)
-                   (unless (string-empty-p note)
-                     (list "--note" note))))
-    (blackdog-task--refresh-after-mutation root)
-    (message "Completed %s as %s" task-id agent)))
+    (blackdog-task--ensure-lifecycle-action-allowed task 'complete)
+    (let ((agent (blackdog-task--command-agent "Complete"))
+          (note (read-string "Completion note (optional): " nil nil "")))
+      (apply #'blackdog--call root
+             (append (list "complete" "--agent" agent "--id" task-id)
+                     (unless (string-empty-p note)
+                       (list "--note" note))))
+      (blackdog-task--refresh-after-mutation root)
+      (message "Completed %s as %s" task-id agent))))
 
 (defun blackdog-task-remove (&optional task root)
   "Remove TASK from ROOT after confirmation."
@@ -558,6 +654,7 @@ ARTIFACT should be `prompt' or `thread'."
          (actor (blackdog-task--command-agent "Remove")))
     (unless task
       (user-error "No task selected"))
+    (blackdog-task--ensure-lifecycle-action-allowed task 'remove)
     (unless (yes-or-no-p (format "Remove %s (%s)? " task-id title))
       (user-error "Task removal cancelled"))
     (apply #'blackdog--call-json root
