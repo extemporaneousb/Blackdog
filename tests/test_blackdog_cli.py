@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta
+import importlib
 import io
 import json
 import os
@@ -608,6 +609,20 @@ class BlackdogCliTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def test_package_skeleton_keeps_legacy_imports_aliasing_new_modules(self) -> None:
+        module_aliases = {
+            "blackdog.config": "blackdog.core.config",
+            "blackdog.store": "blackdog.core.store",
+            "blackdog.scaffold": "blackdog.proper.scaffold",
+            "blackdog.supervisor": "blackdog.proper.supervisor",
+            "blackdog.threads": "blackdog.proper.threads",
+            "blackdog.ui": "blackdog.proper.ui",
+            "blackdog.worktree": "blackdog.proper.worktree",
+        }
+
+        for legacy_name, new_name in module_aliases.items():
+            self.assertIs(importlib.import_module(legacy_name), importlib.import_module(new_name))
 
     def test_init_add_and_summary(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
