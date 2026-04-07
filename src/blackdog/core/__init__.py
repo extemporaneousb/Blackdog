@@ -1,7 +1,8 @@
 """Core Blackdog runtime contracts.
 
-The mixed task-policy surface still lives in ``blackdog.backlog`` until the
-frozen core/proper split is carved more finely.
+``blackdog.core.backlog`` is the transitional implementation home for the
+durable backlog runtime while prompt/tune and rendering helpers are still
+being split more finely across the frozen core/proper boundary.
 """
 
-__all__ = ["config", "store"]
+__all__ = ["backlog", "config", "store"]

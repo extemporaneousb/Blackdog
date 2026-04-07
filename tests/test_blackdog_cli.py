@@ -613,6 +613,7 @@ class BlackdogCliTests(unittest.TestCase):
     def test_package_skeleton_keeps_legacy_imports_aliasing_new_modules(self) -> None:
         module_aliases = {
             "blackdog.config": "blackdog.core.config",
+            "blackdog.backlog": "blackdog.core.backlog",
             "blackdog.store": "blackdog.core.store",
             "blackdog.scaffold": "blackdog.proper.scaffold",
             "blackdog.supervisor": "blackdog.proper.supervisor",
