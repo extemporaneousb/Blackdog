@@ -10,6 +10,34 @@ By default, the rendered HTML board is repo-branded:
 - named backlog: `<control_dir>/backlogs/<slug>/<project-slug>-<slug>-backlog.html`
 - compatibility alias: `backlog-index.html` beside the rendered HTML file
 
+## Core charter for file contracts
+
+This document covers both the frozen `blackdog.core` contract and
+Blackdog-product artifacts layered on top of it.
+
+Treat these as the required core contract for extraction and hardening
+work:
+
+- `blackdog.toml`
+- `<control_dir>/backlog.md`
+- `<control_dir>/backlog-state.json`
+- `<control_dir>/events.jsonl`
+- `<control_dir>/inbox.jsonl`
+- `<control_dir>/task-results/`
+- `blackdog worktree preflight --format json`
+
+Treat these as Blackdog-product surfaces that must not be used to
+expand `blackdog.core` by default:
+
+- `<control_dir>/threads/`
+- `<control_dir>/supervisor-runs/`
+- `<control_dir>/tracked-installs.json`
+- `.codex/skills/<skill-name>/.blackdog-managed.json`
+- the rendered HTML page and `blackdog snapshot` payload
+
+Current file placement is transitional; ownership follows this charter,
+not whichever module or command currently writes a file.
+
 ## `blackdog.toml`
 
 Repo-local profile file.
@@ -130,7 +158,8 @@ surface for core semantics. In this repo that surface is now:
 - `src/blackdog/backlog.py`
 - `src/blackdog/config.py`
 - `src/blackdog/store.py`
-- `src/blackdog/worktree.py`
+- `src/blackdog/worktree.py` (transitional: only WTAM safety facts
+  belong in core; lifecycle orchestration belongs in `blackdog proper`)
 
 Use `make coverage-core` to capture a focused coverage artifact at
 `coverage/core-latest.json` for that surface. `make coverage` remains the broad
@@ -157,6 +186,9 @@ of confidence in core semantics.
 ## `<control_dir>/threads/<thread-id>/...`
 
 Conversation-thread runtime artifacts.
+
+These files are Blackdog-product collaboration artifacts layered on top
+of the core backlog/state contract.
 
 Each thread directory contains:
 

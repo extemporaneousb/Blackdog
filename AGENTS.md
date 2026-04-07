@@ -49,13 +49,19 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
 ## Target Package Boundaries
 
 - Keep `blackdog.core` limited to durable backlog/runtime contracts:
-  profile/path resolution, backlog parsing, state transitions, inbox,
-  results, and WTAM primitives.
+  profile/path resolution, canonical backlog/state/event/inbox/result
+  formats, deterministic plan/state semantics, and WTAM safety facts
+  other layers consume.
+- `blackdog.core` explicitly excludes prompt/tune/report helpers,
+  thread or inbox operator workflows, worktree start/land/cleanup
+  orchestration, supervisor child-launch policy, bootstrap/refresh
+  flows, and rendered HTML/view composition.
 - Put prompt/tune policy, supervisor orchestration, task/thread
-  operator flows, and bootstrap/refresh logic in `blackdog.proper`,
-  not in core.
-- Put readonly snapshot shaping and static HTML/CSS rendering in
-  `blackdog.viewers`; viewers must not become a write path.
+  operator flows, WTAM lifecycle orchestration, and
+  bootstrap/refresh/update logic in `blackdog.proper`, not in core.
+- Put readonly snapshot/view composition and static HTML/CSS
+  rendering in `blackdog.viewers`; viewers must not become a write
+  path.
 - Keep shell/editor/Codex/skill entrypoints as thin
   `blackdog.adapters` over core/proper behavior.
 - If a change needs client-specific context to make sense, it does not

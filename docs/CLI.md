@@ -9,8 +9,8 @@ When a repo keeps Blackdog in a repo-local virtual environment, prefer that entr
 `blackdog` is a client adapter, not the architectural center of the
 system. This audit uses four ownership buckets:
 
-- `core`: durable backlog/runtime/state lifecycle and WTAM execution primitives
-- `blackdog proper`: higher-level AI workflow surfaces layered on top of the core runtime
+- `core`: durable backlog/runtime/file-state contracts plus WTAM safety inspection primitives
+- `blackdog proper`: workflow orchestration and product policy layered on top of the core runtime
 - `viewer/adapter`: readonly render/snapshot surfaces for operators and external UIs
 - `devtool`: bootstrap, install-management, coverage, and compatibility tooling
 
@@ -21,8 +21,8 @@ Group commands inherit the owner shown for their listed leaf verbs.
 | Owner | Commands |
 | --- | --- |
 | `devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
-| `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight|start|land|cleanup`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record`; `inbox send|list|resolve` |
-| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report` |
+| `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record`; `inbox send|list|resolve` |
+| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup` |
 | `viewer/adapter` | `snapshot`; `render` |
 
 No executable `blackdog` command is currently marked as a compatibility shim in the parser. `task run` remains a convenience workflow surface, not a deprecation target in this audit.

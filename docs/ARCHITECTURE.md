@@ -45,20 +45,25 @@ durable, dependency-light runtime contract shared by every client.
 
 Core owns:
 
-- repo-local profile loading, path resolution, and file-format
-  contracts
-- backlog parsing, task selection, and plan semantics
-- durable state transitions for claims, approvals, inbox messages,
-  events, and structured task results
-- WTAM workspace and landing primitives that can be expressed without
-  Codex-, HTML-, or editor-specific policy
+- repo-local profile loading, path resolution, and canonical
+  file-format contracts for backlog, state, events, inbox, and
+  structured task results
+- backlog parsing, plan interpretation, runnable-task selection, and
+  dependency checks
+- deterministic state transitions for claims, release, completion,
+  comments, approvals, events, and structured results
+- WTAM safety/read-model primitives such as workspace-contract
+  inspection, branch/path facts, and dirty-check invariants other
+  layers consume
 
 Core does not own:
 
+- worktree start/land/cleanup orchestration, rebasing, stashing, or
+  landing policy
+- thread/inbox operator workflows or delegated child-launch protocol
 - HTML rendering or snapshot presentation choices
-- project skill scaffolding or host bootstrap/update flows
-- prompt/tune heuristics
-- supervisor child-launch policy
+- project skill scaffolding or host bootstrap/refresh/update flows
+- prompt/tune/report heuristics
 - editor-facing conversation UX or client-specific thread workflows
 
 Everything outside that boundary belongs in higher layers that depend
