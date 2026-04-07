@@ -38,10 +38,9 @@ exist. Richer write-enabled runtime steering still does not.
    - Defines id prefix, bucket/domain taxonomy, defaults, and artifact paths.
 
 2. `src/blackdog/`
-   - Core runtime.
-   - Owns backlog parsing, validation, selection, state transitions,
-     events, inbox messages, structured results, HTML view generation,
-     and the static snapshot renderer.
+   - Current implementation package.
+   - Still mixes strict-core runtime code with Blackdog-specific
+     orchestration and viewer/adoption surfaces.
 	 
 
 3. Shared git control root
@@ -108,6 +107,65 @@ exist. Richer write-enabled runtime steering still does not.
 This layout resolves mutable runtime files from one shared git control
 root rather than repo-root runtime directories, so the working tree no
 longer carries duplicate execution state.
+
+## Strict core boundary audit
+
+The current package already has a useful dependency shape: the UI,
+scaffold, CLI, and supervisor layers all depend on `backlog.py`,
+`store.py`, `worktree.py`, and `config.py`; those lower modules do not
+import `ui.py`, `supervisor.py`, `scaffold.py`, or `cli.py` back. That
+means the repo can tighten the core boundary by splitting files along
+existing dependency direction rather than rewriting everything first.
+
+For this repo, the strict ownership boundary should be:
+
+- Strict core: durable backlog/state contracts, deterministic plan and
+  selection logic, profile/path resolution, append-only artifact I/O,
+  and the minimum git/workspace invariants required to keep WTAM safe.
+- Blackdog proper: operator-facing orchestration built on that core,
+  including CLI command composition, prompt/tune helpers, threads,
+  inbox coordination, worktree lifecycle orchestration, and supervisor
+  behavior.
+- Extension/viewer/adoption: readonly HTML/CSS rendering, packaged UI
+  assets, scaffold/bootstrap flows, and generated skill/adoption
+  surfaces.
+
+The current file-level ownership map is:
+
+| File | Current role | Target owner |
+| --- | --- | --- |
+| `src/blackdog/config.py` | Repo profile and path resolution, including shared control-root layout. | Strict core. |
+| `src/blackdog/backlog.py` | Backlog parser/validator/scheduler plus prompt/tune/view/render helpers. | Mixed. Split core parser/planner logic from Blackdog-proper prompt/view helpers. |
+| `src/blackdog/store.py` | Atomic JSON/JSONL persistence plus inbox, thread, and result convenience APIs. | Mixed. Keep low-level artifact I/O and durable state/result persistence in core; move inbox/thread collaboration helpers to Blackdog proper. |
+| `src/blackdog/worktree.py` | WTAM workspace contract, git worktree lifecycle, landing, rebasing, and cleanup. | Blackdog proper. Keep the safety contract, but do not treat branch orchestration as strict core. |
+| `src/blackdog/cli.py` | User-facing command surface that composes every lower layer. | Blackdog proper. |
+| `src/blackdog/supervisor.py` | Delegated child orchestration, launch prompts, recovery, and run artifacts. | Blackdog proper. |
+| `src/blackdog/ui.py` | Static snapshot shaping and HTML rendering support. | Extension/viewer. |
+| `src/blackdog/ui.css` | Rendered board styling. | Extension/viewer. |
+| `src/blackdog/scaffold.py` | Host-repo bootstrap, refresh, update, and HTML refresh wiring. | Extension/viewer/adoption. |
+| `src/blackdog/skill_cli.py` | Skill-scaffold management entrypoint. | Extension/viewer/adoption. |
+| `src/blackdog/__main__.py` | Thin executable wrapper around the CLI. | Blackdog proper. |
+| `src/blackdog/__init__.py` | Package metadata surface. | Blackdog proper. |
+
+The three target modules in this audit should be treated as follows:
+
+| File | What must remain in strict core | What should move out of strict core |
+| --- | --- | --- |
+| `src/blackdog/backlog.py` | Backlog markdown/JSON parsing, task and plan validation, state sync, runnable-task selection, and task status classification. | Prompt profiles, tuning analysis, text rendering helpers, and other operator-facing narrative helpers. |
+| `src/blackdog/store.py` | File locking, atomic writes, state/event loading, claim persistence, result persistence, and schema normalization for durable artifacts. | Inbox messaging, thread authoring/linkage, and other conversational collaboration helpers. |
+| `src/blackdog/worktree.py` | The WTAM safety contract itself: primary-worktree detection, dirty-path checks, branch/path facts, and per-worktree `.VE` expectations. | Worktree creation, landing, cleanup, rebasing, stashing, and other orchestration commands that sit above the core artifact model. |
+
+This implies a concrete refactor order:
+
+1. Split `backlog.py` into a core backlog model/planner surface and a
+   Blackdog-proper prompt/view surface.
+2. Split `store.py` into core artifact persistence and Blackdog-proper
+   inbox/thread collaboration services.
+3. Treat `worktree.py` as Blackdog proper from the start; only extract
+   tiny readonly WTAM facts into core if another package truly needs
+   them.
+4. Leave `ui.py`, `ui.css`, `scaffold.py`, and `skill_cli.py` outside
+   the core boundary entirely.
 
 For a Blackdog development checkout that manages multiple local host
 repos, that same control root now also carries a machine-local tracked
