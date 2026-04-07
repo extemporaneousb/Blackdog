@@ -62,6 +62,15 @@ exist. Richer write-enabled runtime steering still does not.
    - Uses a project-specific wrapper token by default (`blackdog-<project-slug>`).
    - Tells an AI agent how to use the local CLI, local artifact paths, and the host repo's planning policy.
 
+## Ownership map
+
+The current runtime still needs a finer file-level split than the high-level layers above. Use `docs/MODULE_INVENTORY.md` as the working inventory for:
+
+- `core` runtime files that should define the durable contract
+- `proper` Blackdog product subsystems that should sit above that core
+- `adapter` surfaces such as CLI, scaffold, and editor integrations
+- `removal target` compatibility or legacy surfaces that should disappear after newer paths fully replace them
+
 ## Why this split
 
 - It avoids version skew between the repo and globally installed skill
