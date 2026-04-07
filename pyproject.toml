@@ -23,6 +23,9 @@ blackdog = ["ui.css"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# Keep one distribution while extracting internal `blackdog.*`
+# subpackages behind the documented core/proper/viewers/adapters split.
+include = ["blackdog", "blackdog.*"]
 
 [tool.blackdog.coverage]
 artifact_output = "coverage/latest.json"

@@ -4,6 +4,29 @@ The current CLI covers the backlog runtime, a draining supervisor runner, and a 
 
 When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
 
+## Layer ownership
+
+`blackdog` is a client adapter, not the architectural center of the
+system. When changing commands, use this ownership map:
+
+- Core-backed runtime commands:
+  `validate`, `summary`, `next`, `backlog ...`, `add`, `remove`,
+  `plan`, `claim`, `release`, `complete`, `decide`, `comment`,
+  `events`, `inbox ...`, and `result record`.
+- Proper workflow commands:
+  `prompt`, `tune`, `thread ...`, `task edit|run`, `worktree ...`,
+  `supervise ...`, and `coverage`.
+- Viewer commands:
+  `snapshot` and `render`.
+- Host/client adapter commands:
+  `create-project`, `bootstrap`, `refresh`, `update-repo`,
+  `installs ...`, and the separate `blackdog-skill` entrypoint.
+
+The rule for future work is simple: durable backlog/runtime semantics
+belong below the CLI in core, Blackdog-specific orchestration belongs
+in proper, readonly projections belong in viewers, and caller-specific
+wrappers stay in adapters.
+
 ## `blackdog`
 
 ### Project setup

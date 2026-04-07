@@ -46,6 +46,21 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
   root; use it to track Blackdog follow-up work.
 - Update docs in `docs/` when CLI behavior or file formats change.
 
+## Target Package Boundaries
+
+- Keep `blackdog.core` limited to durable backlog/runtime contracts:
+  profile/path resolution, backlog parsing, state transitions, inbox,
+  results, and WTAM primitives.
+- Put prompt/tune policy, supervisor orchestration, task/thread
+  operator flows, and bootstrap/refresh logic in `blackdog.proper`,
+  not in core.
+- Put readonly snapshot shaping and static HTML/CSS rendering in
+  `blackdog.viewers`; viewers must not become a write path.
+- Keep shell/editor/Codex/skill entrypoints as thin
+  `blackdog.adapters` over core/proper behavior.
+- If a change needs client-specific context to make sense, it does not
+  belong in core.
+
 ## Validation
 
 - Run `make test` after meaningful Python changes.

@@ -30,6 +30,77 @@ inbox messages, structured results, HTML rendering, a canonical
 snapshot contract, per-task workspaces, and child-agent launches
 exist. Richer write-enabled runtime steering still does not.
 
+## Core charter
+
+The refactor target is a smaller `blackdog.core` that owns only the
+durable, dependency-light runtime contract shared by every client.
+
+Core owns:
+
+- repo-local profile loading, path resolution, and file-format
+  contracts
+- backlog parsing, task selection, and plan semantics
+- durable state transitions for claims, approvals, inbox messages,
+  events, and structured task results
+- WTAM workspace and landing primitives that can be expressed without
+  Codex-, HTML-, or editor-specific policy
+
+Core does not own:
+
+- HTML rendering or snapshot presentation choices
+- project skill scaffolding or host bootstrap/update flows
+- prompt/tune heuristics
+- supervisor child-launch policy
+- editor-facing conversation UX or client-specific thread workflows
+
+Everything outside that boundary belongs in higher layers that depend
+on core rather than extending it.
+
+## Target package map
+
+This is the target namespace map for extraction work. The package names
+describe ownership boundaries; exact file names can change as code
+moves.
+
+1. `blackdog.core`
+   - Durable backlog/runtime primitives.
+   - Current homes: `config.py`, the durable backlog/task logic in
+     `backlog.py`, state/result/thread storage in `store.py`, and the
+     WTAM git/worktree primitives in `worktree.py`.
+
+2. `blackdog.proper`
+   - Blackdog product workflows layered on top of core.
+   - Owns supervisor orchestration, prompt/tune policy, task/thread
+     operator workflows, and repo bootstrap/refresh/update behavior.
+   - Current homes: `supervisor.py`, workflow-heavy CLI behavior in
+     `cli.py`, and scaffold/bootstrap logic in `scaffold.py`.
+
+3. `blackdog.viewers`
+   - Read-only projections of core/proper state for humans.
+   - Owns snapshot shaping, static HTML rendering, and packaged viewer
+     assets.
+   - Current homes: `ui.py` and `ui.css`.
+
+4. `blackdog.adapters`
+   - Client entrypoints that translate a specific caller into
+     core/proper operations.
+   - Owns the shell CLI surface, skill CLI, managed skill wrappers,
+     Codex launch integration, and editor-facing adapters.
+   - Current homes: `cli.py`, `skill_cli.py`, the launcher/scaffold
+     edges in `scaffold.py`, and client code under `editors/`.
+
+## Non-goals for this slice
+
+- Do not split Blackdog into multiple Python distributions. The target
+  remains one `blackdog` package namespace with internal subpackages.
+- Do not move durable write-path logic into viewers or client
+  adapters.
+- Do not let core depend on HTML/CSS assets, Codex launch details,
+  prompt text, or editor UX.
+- Do not treat current monolithic module names as a stable contract.
+  The boundary matters; the interim filenames do not.
+- Do not expand viewers into a write-enabled control plane. The HTML
+  surface stays a readonly projection over snapshot data.
 
 ## Main layers
 
