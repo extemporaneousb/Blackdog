@@ -20,7 +20,7 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 ## Current Feature Surface
 
 - dashboard buffer backed by `blackdog snapshot` with Magit-style sections for overview, objectives, task buckets (`Submitted`, `Claimed`, `Running`, and separate `Complete` failed/succeeded history), and recent results
-- dashboard cockpit actions for `New Chat`, `Chat History`, `Supervisor Monitor`, and `Snapshot Stats`, plus a latest-chat shortcut so the operator can resume conversation from the main board
+- dashboard cockpit actions for `New Chat`, `Chat History`, `Supervisor Monitor`, `Snapshot Stats`, and `Unattended Tuning`, plus a latest-chat shortcut so the operator can resume conversation from the main board
 - read-only task reader with task lifecycle timestamps, branch/commit metadata, latest result summaries, clickable project paths, dedicated prompt/thread browsers, and clickable prompt/thread/stdout/stderr/diff/metadata/result/run artifacts
 - tabulated listings for latest results and supervisor run directories
 - tabulated Codex-session listing plus a dedicated session reader with collapsible timestamped user, assistant, tool-call, and tool-output sections, per-chat model/reasoning controls, live auto-follow, and clickable Blackdog task references inside streamed output
@@ -34,7 +34,7 @@ This document describes the shipped Emacs 30+ package that sits on top of those 
 - legacy spec-first authoring buffers remain available for structured task drafting, but they are no longer the default entrypoint
 - task lifecycle commands for claim, claim-and-launch, release, complete, and remove without leaving Emacs
 - telemetry buffer combining Emacs-side CLI timing/failure counters with `blackdog snapshot`, `blackdog supervise status`, `recover`, and `report` summaries
-- live supervisor monitor that can start one async `blackdog supervise run`, request a draining stop, open the latest run directory, tail live child stdout/stderr artifacts from `supervisor-runs/`, auto-follow those updates, and expose a dedicated snapshot-stats jump point
+- live supervisor monitor that can start one async `blackdog supervise run`, request a draining stop, open the latest run directory, tail live child stdout/stderr artifacts from `supervisor-runs/`, auto-follow those updates, and expose dedicated jump points for snapshot stats and unattended-tuning summaries
 
 ## Frameworks To Leverage
 
@@ -218,11 +218,12 @@ Set `blackdog-default-agent` if you do not want Emacs writes to default to your 
 
 1. `C-c b v` opens the telemetry buffer.
 2. `C-c b V` jumps straight to the `Snapshot Stats` section inside that monitor when you only want the snapshot-driven board metrics.
-3. `S` starts one asynchronous `blackdog supervise run` for the configured telemetry actor.
-4. `x` sends a `stop` inbox control so the run drains after current child work.
-5. `g` refreshes local counters plus `blackdog snapshot` and `blackdog supervise status/recover/report`.
-6. `u` opens the latest run directory, `o` jumps into the latest child artifact directory, and `f` toggles live auto-follow.
-7. The monitor keeps polling live status while the run is active, tails the latest child `stderr.log` and `stdout.log` artifacts, and turns emitted task IDs into clickable task-reader links so the operator can follow the run without leaving Emacs.
+3. `C-c b U` jumps straight to the `Unattended Tuning` section when you want tracked-host tuning data without scrolling through the full monitor.
+4. `S` starts one asynchronous `blackdog supervise run` for the configured telemetry actor.
+5. `x` sends a `stop` inbox control so the run drains after current child work.
+6. `g` refreshes local counters plus `blackdog snapshot` and `blackdog supervise status/recover/report`.
+7. `u` opens the latest run directory, `o` jumps into the latest child artifact directory, and `f` toggles live auto-follow.
+8. The monitor keeps polling live status while the run is active, tails the latest child `stderr.log` and `stdout.log` artifacts, and turns emitted task IDs into clickable task-reader links so the operator can follow the run without leaving Emacs.
 
 ## UI Mocks
 
@@ -378,6 +379,7 @@ Suggested prefix: `C-c b`
 | `C-c b N` | `blackdog-spec-new` | Start a new structured spec-first task draft. |
 | `C-c b v` | `blackdog-telemetry-open` | Open CLI and supervisor telemetry. |
 | `C-c b V` | `blackdog-open-snapshot-stats` | Jump straight to the snapshot-stats section inside telemetry. |
+| `C-c b U` | `blackdog-open-unattended-tuning` | Jump straight to the unattended-tuning section inside telemetry. |
 | `C-c b f` | `blackdog-find-project-file` | Jump to a repo file. |
 | `C-c b s` | `blackdog-search-project` | Search the repo root. |
 | `C-c b A` | `blackdog-search-artifacts` | Search the Blackdog control dir. |
@@ -398,6 +400,7 @@ Suggested prefix: `C-c b`
 | `h` | Open chat history from the dashboard. |
 | `v` | Open the supervisor monitor. |
 | `V` | Jump to snapshot stats. |
+| `U` | Jump to unattended tuning. |
 | `g` | Clear the cached snapshot and refresh the buffer. |
 | `r` | Jump to results. |
 | `s` | Jump to a task by completion. |
@@ -444,7 +447,7 @@ Suggested prefix: `C-c b`
 | Codex Session | `TAB` toggles the current section, `a` sends a follow-up prompt, `S` sends a follow-up after editing model/reasoning, `f` toggles live auto-follow, `o` opens the raw session JSONL transcript, `e` opens the stderr buffer for the live process. |
 | Spec | `C-c C-o` previews the rewritten prompt, `C-c C-c` renders the draft payload, `C-c C-p` appends a code or data path. |
 | Spec Draft | `p` refreshes the prompt preview, `c` creates the task, `w` creates and launches it, `g` rerenders the draft. |
-| Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `V` jumps to snapshot stats, `f` toggles live auto-follow, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
+| Telemetry | `S` starts one async supervisor run, `x` requests a draining stop, `u` opens the latest run directory, `o` opens the latest child artifact directory, `V` jumps to snapshot stats, `U` jumps to unattended tuning, `f` toggles live auto-follow, `r` opens the run listing, `g` refreshes supervisor/session data, `c` clears the session counters and refreshes. |
 
 ## Installation With use-package
 

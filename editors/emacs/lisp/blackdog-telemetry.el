@@ -82,6 +82,7 @@ Set to nil or 0 to disable automatic refresh."
     (define-key map (kbd "o") #'blackdog-telemetry-open-child-artifacts)
     (define-key map (kbd "r") #'blackdog-telemetry-open-runs)
     (define-key map (kbd "V") #'blackdog-telemetry-open-snapshot-stats)
+    (define-key map (kbd "U") #'blackdog-telemetry-open-unattended-tuning)
     map)
   "Keymap for `blackdog-telemetry-mode'.")
 
@@ -135,10 +136,19 @@ Set to nil or 0 to disable automatic refresh."
 (defun blackdog-telemetry-open-snapshot-stats (&optional root actor)
   "Open telemetry and jump to the snapshot-stats section."
   (interactive)
+  (blackdog-telemetry--open-section "Snapshot Stats" root actor))
+
+(defun blackdog-telemetry-open-unattended-tuning (&optional root actor)
+  "Open telemetry and jump to the unattended-tuning section."
+  (interactive)
+  (blackdog-telemetry--open-section "Unattended Tuning" root actor))
+
+(defun blackdog-telemetry--open-section (heading root actor)
+  "Open telemetry for ROOT and ACTOR, then jump to HEADING."
   (let ((buffer (blackdog-telemetry-open root actor)))
     (with-current-buffer buffer
       (goto-char (point-min))
-      (when (search-forward "Snapshot Stats" nil t)
+      (when (search-forward heading nil t)
         (beginning-of-line)
         (when-let ((window (get-buffer-window buffer t)))
           (set-window-point window (point)))))
@@ -321,6 +331,7 @@ Set to nil or 0 to disable automatic refresh."
     (blackdog-telemetry--insert-controls status-result children)
     (blackdog-telemetry--insert-session session)
     (blackdog-telemetry--insert-snapshot-stats snapshot-result)
+    (blackdog-telemetry--insert-unattended-tuning snapshot-result)
     (blackdog-telemetry--insert-supervisor-status status-result)
     (blackdog-telemetry--insert-live-children children)
     (blackdog-telemetry--insert-live-output children)
@@ -494,6 +505,63 @@ Set to nil or 0 to disable automatic refresh."
          (insert (format "Completed Time: %s  Average Task: %s\n"
                          (or (alist-get 'completed_task_time hero) "")
                          (or (alist-get 'average_completed_task_time hero) ""))))
+       (insert "\n")))))
+
+(defun blackdog-telemetry--insert-unattended-tuning (snapshot-result)
+  "Insert unattended-tuning rows derived from SNAPSHOT-RESULT."
+  (insert "Unattended Tuning\n")
+  (pcase (car snapshot-result)
+    ('error
+     (insert (format "Unable to load unattended tuning: %s\n\n" (cdr snapshot-result))))
+    ('ok
+     (let* ((snapshot (cdr snapshot-result))
+            (tuning (alist-get 'unattended_tuning snapshot))
+            (recommendation (and (listp tuning) (alist-get 'recommendation tuning)))
+            (time (and (listp tuning) (alist-get 'time tuning)))
+            (missteps (and (listp tuning) (alist-get 'missteps tuning)))
+            (severity (and (listp tuning) (alist-get 'finding_severity_counts tuning)))
+            (focus-rows (and (listp tuning) (alist-get 'focus_counts tuning)))
+            (hosts (and (listp tuning) (alist-get 'hosts tuning))))
+       (insert (format "Focus: %s\n" (or (alist-get 'focus recommendation) "unknown")))
+       (insert (format "Summary: %s\n"
+                       (or (alist-get 'summary recommendation)
+                           "No unattended tuning summary is available yet.")))
+       (insert (format "Hosts observed: %s/%s  Stale: %s  High severity: %s\n"
+                       (alist-get 'observed_repo_count tuning 0)
+                       (alist-get 'tracked_repo_count tuning 0)
+                       (alist-get 'stale_repo_count tuning 0)
+                       (alist-get 'high severity 0)))
+       (insert (format "Recorded tasks: %s  Timing samples: %s  Retries: %s  Landing failures: %s\n"
+                       (alist-get 'tasks_with_recorded_compute time 0)
+                       (alist-get 'estimated_time_samples time 0)
+                       (alist-get 'retry_total missteps 0)
+                       (alist-get 'landing_failures missteps 0)))
+       (when focus-rows
+         (insert "Focus counts\n")
+         (dolist (row focus-rows)
+           (insert (format "- %s  %s\n"
+                           (alist-get 'focus row)
+                           (alist-get 'count row 0)))))
+       (if hosts
+           (progn
+             (insert "Tracked hosts\n")
+             (dolist (row hosts)
+               (insert (format "- %s  %s\n"
+                               (or (alist-get 'project_name row) "")
+                               (or (alist-get 'tune_summary row) "No tune summary recorded.")))
+               (insert (format "  Observed: %s  Focus: %s  Findings: %s  Ready: %s  Claimed: %s  Waiting: %s  Done: %s\n"
+                               (or (alist-get 'observed_at row) "pending")
+                               (or (alist-get 'tune_focus row) "unknown")
+                               (alist-get 'finding_total row 0)
+                               (alist-get 'ready (alist-get 'counts row) 0)
+                               (alist-get 'claimed (alist-get 'counts row) 0)
+                               (alist-get 'waiting (alist-get 'counts row) 0)
+                               (alist-get 'done (alist-get 'counts row) 0)))
+               (when-let ((finding (alist-get 'top_finding row)))
+                 (insert (format "  Top finding: [%s] %s\n"
+                                 (or (alist-get 'severity finding) "")
+                                 (or (alist-get 'finding finding) ""))))))
+         (insert "No tracked host observations are available.\n"))
        (insert "\n")))))
 
 (defun blackdog-telemetry--insert-supervisor-status (status-result)

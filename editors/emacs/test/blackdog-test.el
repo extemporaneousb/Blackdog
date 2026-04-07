@@ -736,7 +736,9 @@ Mention the current backlog lane and code/data attachments.
   (should (eq 'blackdog-stop-supervisor
               (lookup-key blackdog-prefix-map (kbd "X"))))
   (should (eq 'blackdog-open-snapshot-stats
-              (lookup-key blackdog-prefix-map (kbd "V")))))
+              (lookup-key blackdog-prefix-map (kbd "V"))))
+  (should (eq 'blackdog-open-unattended-tuning
+              (lookup-key blackdog-prefix-map (kbd "U")))))
 
 (ert-deftest blackdog-spec-new-loads-template ()
   (let ((buffer nil))
@@ -1070,6 +1072,21 @@ Mention the current backlog lane and code/data attachments.
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory temp-dir t))))
+
+(ert-deftest blackdog-telemetry-open-unattended-tuning-jumps-to-section ()
+  (let ((buffer (generate-new-buffer " *blackdog-telemetry-tuning*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert "Supervisor Controls\n\nSnapshot Stats\n\nUnattended Tuning\nFocus: retry_pressure\n"))
+          (cl-letf (((symbol-function #'blackdog-telemetry-open)
+                     (lambda (&optional _root _actor)
+                       buffer)))
+            (blackdog-telemetry-open-unattended-tuning blackdog-test-root)
+            (with-current-buffer buffer
+              (should (looking-at "Unattended Tuning")))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest blackdog-snapshot-live-loads-the-project ()
   (let ((command (blackdog-test--cli-command)))

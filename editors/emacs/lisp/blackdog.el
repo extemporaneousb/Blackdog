@@ -77,6 +77,11 @@
   (interactive)
   (blackdog-telemetry-open-snapshot-stats root))
 
+(defun blackdog-open-unattended-tuning (&optional root)
+  "Open the unattended-tuning section inside the telemetry monitor."
+  (interactive)
+  (blackdog-telemetry-open-unattended-tuning root))
+
 (defvar blackdog-prefix-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'blackdog-chat-resume-latest)
@@ -99,6 +104,7 @@
     (define-key map (kbd "N") #'blackdog-spec-new)
     (define-key map (kbd "v") #'blackdog-telemetry-open)
     (define-key map (kbd "V") #'blackdog-open-snapshot-stats)
+    (define-key map (kbd "U") #'blackdog-open-unattended-tuning)
     (define-key map (kbd "f") #'blackdog-find-project-file)
     (define-key map (kbd "s") #'blackdog-search-project)
     (define-key map (kbd "A") #'blackdog-search-artifacts)
@@ -181,6 +187,7 @@
           ("N" "New spec" blackdog-spec-new)
           ("v" "Telemetry" blackdog-telemetry-open)
           ("V" "Snapshot stats" blackdog-open-snapshot-stats)
+          ("U" "Unattended tuning" blackdog-open-unattended-tuning)
           ("f" "Project file" blackdog-find-project-file)]
          ["Write"
           ("c" "Claim" blackdog-claim-task)

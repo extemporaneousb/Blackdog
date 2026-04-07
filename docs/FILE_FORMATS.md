@@ -731,11 +731,14 @@ Top-level keys:
 - `total`
 - `push_objective`
 - `objectives`
+- `focus_task_ids`
 - `next_rows`
 - `open_messages`
 - `recent_results`
 - `recent_events`
 - `plan`
+- `threads`
+- `unattended_tuning`
 - `tasks`
 - `board_tasks`
 - `graph`
@@ -759,6 +762,7 @@ Top-level keys:
 Current `links` keys:
 
 - `backlog`
+- `state`
 - `html`
 - `events`
 - `inbox`
@@ -898,6 +902,31 @@ Current `threads[*]` rows summarize saved project conversations:
 - `thread_file_href`
 - `entries_href`
 
+Current `unattended_tuning` keys summarize tracked-host tuning posture:
+
+- `recommendation`
+- `coverage_gaps`
+- `time`
+- `missteps`
+- `calibration`
+- `tracked_repo_count`
+- `observed_repo_count`
+- `stale_repo_count`
+- `finding_severity_counts`
+- `focus_counts`
+- `hosts`
+
+Current `unattended_tuning.hosts[*]` rows include:
+
+- `project_name`
+- `project_root`
+- `observed_at`
+- `tune_focus`
+- `tune_summary`
+- `counts`
+- `finding_total`
+- `top_finding`
+
 Current `hero_highlights` keys summarize the hero's workspace/activity strip:
 
 - `branch`
@@ -922,10 +951,11 @@ Layout projections:
 - The control panel renders a compact branch/commit line, a fixed hero timing line (time since last check, time since last update, total time on sweep, total time on backlog), a progress bar, and artifact links.
 - The board does not render an objectives table or release-gate panel in the static snapshot.
 - `links.threads` points at the saved conversation-thread directory root.
+- The dedicated `Unattended Tuning` band uses `unattended_tuning.recommendation`, aggregate runtime counters, tracked-host focus counts, and per-host summaries from the tracked-install registry.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
 - The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
 - `Completed Tasks` renders a flat list of the most recent completed cards by completion time.
-- The browser renders a split `Backlog Control`/`Status` top row, then a split `Execution Map`/`Completed Tasks` row. Execution-map and completed-task cards stay clickable.
+- The browser renders a split `Backlog Control`/`Status` top row, a full-width `Unattended Tuning` row, then a split `Execution Map`/`Completed Tasks` row. Execution-map and completed-task cards stay clickable.
 - Focused task rows derive from lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
 - When supervisor run artifacts exist, the task reader can render a capped stdout-derived model response inline and expose landed-commit metadata, including a GitHub commit URL when the repo origin resolves to GitHub.

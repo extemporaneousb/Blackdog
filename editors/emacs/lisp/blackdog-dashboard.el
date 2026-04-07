@@ -21,6 +21,7 @@
 (declare-function blackdog-chat "blackdog" (&optional root))
 (declare-function blackdog-chat-history "blackdog" (&optional root include-all))
 (declare-function blackdog-open-snapshot-stats "blackdog" (&optional root))
+(declare-function blackdog-open-unattended-tuning "blackdog" (&optional root))
 (declare-function blackdog-telemetry-open "blackdog-telemetry" (&optional root actor))
 (declare-function blackdog-codex-open-session "blackdog-codex" (session &optional root))
 (declare-function blackdog-codex-session-list "blackdog-codex" (&optional root include-all))
@@ -141,6 +142,7 @@
     (define-key map (kbd "h") #'blackdog-chat-history)
     (define-key map (kbd "v") #'blackdog-telemetry-open)
     (define-key map (kbd "V") #'blackdog-open-snapshot-stats)
+    (define-key map (kbd "U") #'blackdog-open-unattended-tuning)
     (define-key map (kbd "r") #'blackdog-results-open)
     (define-key map (kbd "s") #'blackdog-find-task)
     map)
@@ -235,6 +237,12 @@
      'follow-link t
      'action (lambda (_button)
                (blackdog-open-snapshot-stats blackdog-buffer-root)))
+    (insert "  ")
+    (insert-text-button
+     "Unattended Tuning"
+     'follow-link t
+     'action (lambda (_button)
+               (blackdog-open-unattended-tuning blackdog-buffer-root)))
     (insert "\n")
     (when latest-session
       (insert "Latest Chat     ")

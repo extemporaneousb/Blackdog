@@ -92,6 +92,10 @@ h3 {
   align-items: stretch;
 }
 
+.panel-row-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .control-panel,
 .status-panel,
 .board-panel,
@@ -416,6 +420,25 @@ h3 {
   color: var(--muted);
   font-size: 0.86rem;
   font-weight: 600;
+}
+
+.tuning-stats {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.tuning-hosts {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.tuning-host-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(23, 26, 25, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.56);
 }
 
 .lane-board,

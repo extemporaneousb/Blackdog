@@ -3368,6 +3368,78 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertGreater(rendered_last_checked, rendered_content_updated)
         self.assertEqual(rendered_snapshot["supervisor_last_checked_at"], snapshot["supervisor_last_checked_at"])
 
+    def test_snapshot_and_render_include_unattended_tuning_panel(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        paths = self.runtime_paths()
+        host_one = self.root / "host-one"
+        host_two = self.root / "host-two"
+        store_module.save_tracked_installs(
+            paths,
+            {
+                "schema_version": 1,
+                "repos": [
+                    {
+                        "project_root": str(host_one),
+                        "project_name": "Host One",
+                        "profile_file": str(host_one / "blackdog.toml"),
+                        "control_dir": str(host_one / ".blackdog"),
+                        "blackdog_cli": str(host_one / ".VE/bin/blackdog"),
+                        "added_at": "2026-04-06T09:00:00-07:00",
+                        "last_observation": {
+                            "at": "2026-04-06T09:15:00-07:00",
+                            "counts": {"ready": 2, "claimed": 1, "waiting": 0, "done": 5},
+                            "next_rows": [{"id": "HOST-1", "title": "Host backlog task"}],
+                            "host_integration_findings": [
+                                {
+                                    "category": "wrapper_naming",
+                                    "severity": "high",
+                                    "finding": "Wrapper skill still uses the generic blackdog token.",
+                                },
+                                {
+                                    "category": "history_signals",
+                                    "severity": "low",
+                                    "finding": "Task-time history coverage is still sparse.",
+                                },
+                            ],
+                            "tune_focus": "wrapper_naming",
+                            "tune_summary": "Rename the wrapper skill to the project-local default.",
+                        },
+                    },
+                    {
+                        "project_root": str(host_two),
+                        "project_name": "Host Two",
+                        "profile_file": str(host_two / "blackdog.toml"),
+                        "control_dir": str(host_two / ".blackdog"),
+                        "blackdog_cli": str(host_two / ".VE/bin/blackdog"),
+                        "added_at": "2026-04-06T09:05:00-07:00",
+                        "last_observation": {},
+                    },
+                ],
+            },
+        )
+
+        snapshot = build_ui_snapshot(load_profile(self.root))
+        tuning = snapshot["unattended_tuning"]
+        self.assertEqual(tuning["tracked_repo_count"], 2)
+        self.assertEqual(tuning["observed_repo_count"], 1)
+        self.assertEqual(tuning["stale_repo_count"], 1)
+        self.assertEqual(tuning["finding_severity_counts"]["high"], 1)
+        self.assertEqual(tuning["finding_severity_counts"]["low"], 1)
+        self.assertEqual(tuning["focus_counts"], [{"focus": "wrapper_naming", "count": 1}])
+        self.assertEqual(tuning["hosts"][0]["project_name"], "Host One")
+        self.assertEqual(tuning["hosts"][0]["finding_total"], 2)
+        self.assertEqual(tuning["hosts"][1]["project_name"], "Host Two")
+        self.assertIsNone(tuning["hosts"][1]["observed_at"])
+
+        run_cli("render", "--project-root", str(self.root), "--actor", "tester")
+        rendered_html = paths.html_file.read_text(encoding="utf-8")
+        self.assertIn('id="tuning-band"', rendered_html)
+        self.assertIn('id="tuning-panel"', rendered_html)
+        self.assertIn("function renderUnattendedTuningPanel()", rendered_html)
+        self.assertIn("renderUnattendedTuningPanel();", rendered_html)
+        rendered_snapshot = html_snapshot(paths.html_file)
+        self.assertEqual(rendered_snapshot["unattended_tuning"]["observed_repo_count"], 1)
+
     def test_ui_helper_pid_artifact_and_read_fallbacks(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()

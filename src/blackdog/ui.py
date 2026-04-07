@@ -13,17 +13,18 @@ import subprocess
 
 from .backlog import (
     build_plan_view,
+    build_tune_analysis,
     build_view_model,
     classify_task_status,
     load_backlog,
     sync_state_for_backlog,
 )
 from .config import Profile, ProjectPaths
-from .store import load_events, load_inbox, load_state, load_task_results, list_threads, now_iso
+from .store import load_events, load_inbox, load_state, load_task_results, load_tracked_installs, list_threads, now_iso
 from .worktree import worktree_contract
 
 
-UI_SNAPSHOT_SCHEMA_VERSION = 10
+UI_SNAPSHOT_SCHEMA_VERSION = 11
 EMBEDDED_RESPONSE_CHAR_LIMIT = 24_000
 PROGRESS_STATUS_KEYS = ("running", "claimed", "ready", "waiting", "blocked", "failed", "complete")
 _GIT_FIELD_SEPARATOR = "\x1f"
@@ -866,6 +867,95 @@ def _build_thread_snapshot_rows(paths: ProjectPaths) -> tuple[list[dict[str, Any
     return rows, task_index
 
 
+def _build_unattended_tuning(profile: Profile) -> dict[str, Any]:
+    analysis = build_tune_analysis(profile)
+    registry = load_tracked_installs(profile.paths)
+    repos = registry.get("repos") if isinstance(registry.get("repos"), list) else []
+    severity_order = {"high": 0, "medium": 1, "low": 2}
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    focus_counts: dict[str, int] = {}
+    observed_hosts = 0
+    host_rows: list[dict[str, Any]] = []
+
+    for row in repos:
+        if not isinstance(row, dict):
+            continue
+        observation = row.get("last_observation") if isinstance(row.get("last_observation"), dict) else {}
+        counts = observation.get("counts") if isinstance(observation.get("counts"), dict) else {}
+        findings = observation.get("host_integration_findings") if isinstance(observation.get("host_integration_findings"), list) else []
+        observed_at = _text_label(observation.get("at"))
+        tune_focus = _text_label(observation.get("tune_focus"))
+        if observed_at:
+            observed_hosts += 1
+        if tune_focus:
+            focus_counts[tune_focus] = focus_counts.get(tune_focus, 0) + 1
+
+        finding_rows = [finding for finding in findings if isinstance(finding, dict)]
+        for finding in finding_rows:
+            severity = _text_label(finding.get("severity"))
+            if severity in severity_counts:
+                severity_counts[severity] += 1
+        top_finding = (
+            sorted(
+                finding_rows,
+                key=lambda finding: (
+                    severity_order.get(str(finding.get("severity") or "").strip().lower(), 99),
+                    str(finding.get("category") or ""),
+                    str(finding.get("finding") or ""),
+                ),
+            )[0]
+            if finding_rows
+            else None
+        )
+
+        host_rows.append(
+            {
+                "project_name": str(row.get("project_name") or Path(str(row.get("project_root") or "")).name or "Unknown host"),
+                "project_root": str(row.get("project_root") or ""),
+                "observed_at": observed_at,
+                "tune_focus": tune_focus,
+                "tune_summary": _text_label(observation.get("tune_summary")),
+                "counts": {
+                    "ready": int(counts.get("ready") or 0),
+                    "claimed": int(counts.get("claimed") or 0),
+                    "waiting": int(counts.get("waiting") or 0),
+                    "done": int(counts.get("done") or 0),
+                },
+                "finding_total": len(finding_rows),
+                "top_finding": top_finding,
+            }
+        )
+
+    host_rows.sort(
+        key=lambda row: (
+            0 if row.get("observed_at") else 1,
+            -int(row.get("finding_total") or 0),
+            severity_order.get(
+                str(((row.get("top_finding") or {}).get("severity") or "")).strip().lower(),
+                99,
+            ),
+            str(row.get("project_name") or "").lower(),
+        )
+    )
+
+    return {
+        "recommendation": analysis.get("recommendation") or {},
+        "coverage_gaps": list(analysis.get("coverage_gaps") or []),
+        "time": dict((analysis.get("categories") or {}).get("time") or {}),
+        "missteps": dict((analysis.get("categories") or {}).get("missteps") or {}),
+        "calibration": dict((analysis.get("categories") or {}).get("calibration") or {}),
+        "tracked_repo_count": len(host_rows),
+        "observed_repo_count": observed_hosts,
+        "stale_repo_count": max(0, len(host_rows) - observed_hosts),
+        "finding_severity_counts": severity_counts,
+        "focus_counts": [
+            {"focus": focus, "count": count}
+            for focus, count in sorted(focus_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "hosts": host_rows,
+    }
+
+
 def _title_label(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1421,6 +1511,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
     task_results = _build_result_index(profile.paths, results)
     task_runs = _build_task_run_artifacts(profile.paths, events)
     threads, task_threads = _build_thread_snapshot_rows(profile.paths)
+    unattended_tuning = _build_unattended_tuning(profile)
     github_repo_url = _github_repo_url(profile.paths.project_root)
     task_branch_metadata = _git_branch_metadata_batch(
         profile.paths.project_root,
@@ -1660,6 +1751,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         "recent_events": summary["recent_events"],
         "plan": plan,
         "threads": threads,
+        "unattended_tuning": unattended_tuning,
         "tasks": tasks,
         "board_tasks": board_tasks,
         "graph": {
@@ -1743,6 +1835,21 @@ __BLACKDOG_STYLES__
             <div id="status-next-lines" class="status-next-lines"></div>
           </div>
         </aside>
+      </section>
+
+      <section id="tuning-band" class="panel-row panel-row-single" data-panel="tuning">
+        <section id="tuning-panel" class="panel board-panel">
+          <div class="section-head section-head-inline">
+            <div>
+              <h2>Unattended Tuning</h2>
+              <p id="tuning-copy" class="section-copy"></p>
+            </div>
+            <span id="tuning-summary" class="section-meta"></span>
+          </div>
+          <div id="tuning-stats" class="stats tuning-stats"></div>
+          <div id="tuning-focuses" class="reader-statuses"></div>
+          <div id="tuning-hosts" class="tuning-hosts"></div>
+        </section>
       </section>
 
       <section id="middle-band" class="panel-row panel-row-middle">
@@ -2186,6 +2293,69 @@ __BLACKDOG_STYLES__
         : `<div class="status-next-line"><strong>No queued work</strong><span>All active lanes are waiting on completion.</span></div>`;
     }
 
+    function renderUnattendedTuningPanel() {
+      const tuning = snapshot.unattended_tuning || {};
+      const recommendation = tuning.recommendation || {};
+      const time = tuning.time || {};
+      const missteps = tuning.missteps || {};
+      const severityCounts = tuning.finding_severity_counts || {};
+      const hosts = Array.isArray(tuning.hosts) ? tuning.hosts : [];
+      const focusRows = Array.isArray(tuning.focus_counts) ? tuning.focus_counts : [];
+      const stats = [
+        ["Recorded tasks", Number(time.tasks_with_recorded_compute || 0)],
+        ["Timing samples", Number(time.estimated_time_samples || 0)],
+        ["Retries", Number(missteps.retry_total || 0)],
+        ["Landing failures", Number(missteps.landing_failures || 0)],
+        ["Observed hosts", Number(tuning.observed_repo_count || 0)],
+        ["High severity", Number(severityCounts.high || 0)],
+      ];
+
+      document.getElementById("tuning-copy").textContent = recommendation.summary || "No unattended tuning summary is available yet.";
+      document.getElementById("tuning-summary").textContent = `${Number(tuning.observed_repo_count || 0)}/${Number(tuning.tracked_repo_count || 0)} tracked hosts observed`;
+      document.getElementById("tuning-stats").innerHTML = stats.map(([label, value]) => `
+        <div class="stat-card">
+          <span class="stat-label">${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("");
+
+      const focusChips = focusRows.length
+        ? focusRows.map((row) => chip(`${row.focus} (${row.count})`, "subtle"))
+        : [chip(recommendation.focus || "no-focus", "subtle")];
+      document.getElementById("tuning-focuses").innerHTML = focusChips.join("");
+
+      document.getElementById("tuning-hosts").innerHTML = hosts.length
+        ? hosts.map((host) => {
+            const counts = host.counts || {};
+            const finding = host.top_finding || {};
+            const hostMeta = [
+              host.observed_at ? `Observed ${formatTimestamp(host.observed_at)}` : "Observation pending",
+              host.tune_focus ? `Focus ${host.tune_focus}` : "",
+              `Ready ${Number(counts.ready || 0)}`,
+              `Claimed ${Number(counts.claimed || 0)}`,
+              `Waiting ${Number(counts.waiting || 0)}`,
+              `Done ${Number(counts.done || 0)}`,
+            ].filter(Boolean);
+            return `
+              <article class="tuning-host-card">
+                <div class="result-top">
+                  <div>
+                    <h3>${escapeHtml(host.project_name || "Unknown host")}</h3>
+                    <p class="task-summary">${escapeHtml(host.tune_summary || "No tune summary recorded.")}</p>
+                  </div>
+                  <div class="result-chips">
+                    ${host.finding_total ? chip(`${host.finding_total} findings`, finding.severity || "subtle") : chip("No findings", "complete")}
+                  </div>
+                </div>
+                <div class="task-meta">${hostMeta.map((row) => `<span>${escapeHtml(row)}</span>`).join("")}</div>
+                ${host.project_root ? `<p class="mono">${escapeHtml(host.project_root)}</p>` : ""}
+                ${finding.finding ? `<p class="task-summary">${escapeHtml(finding.finding)}</p>` : ""}
+              </article>
+            `;
+          }).join("")
+        : `<div class="status-next-line"><strong>No tracked host observations</strong><span>Run installs observe after host updates to populate unattended tuning data.</span></div>`;
+    }
+
     function detailBlock(label, content, options = {}) {
       if (!content) {
         return "";
@@ -2473,6 +2643,7 @@ __BLACKDOG_STYLES__
     autoReloadEnabled = readAutoReloadPreference();
     startAutoReloadTimer();
     renderStatusPanel();
+    renderUnattendedTuningPanel();
     renderExecutionMap();
     renderCompletedPanel();
     wireStaticEvents();
