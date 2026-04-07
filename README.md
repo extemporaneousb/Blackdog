@@ -4,6 +4,14 @@ Blackdog is a repo-scoped backlog runtime for AI-assisted software work and a fo
 
 It keeps backlog semantics, state transitions, event history, structured task results, inbox messages, and status views in repo-local code plus a shared local control root instead of hiding them inside global skills or ad hoc scripts.
 
+The remodel uses a frozen three-layer boundary:
+
+- `core`: durable backlog/runtime primitives and WTAM contracts
+- `blackdog proper`: the shipped Blackdog CLI, scaffold, supervisor, skill, and static board surfaces
+- `extensions`: optional adapters such as the Emacs workbench
+
+See [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the ownership contract and extraction phases.
+
 ## Current status
 
 Implemented today:
@@ -32,7 +40,7 @@ architecture.
 
 ## What it provides
 
-- `blackdog`: core CLI for repo bootstrap, backlog parsing, validation, task selection, claims, approvals, completion, inbox messaging, task results, static HTML rendering, and supervisor control
+- `blackdog`: primary Blackdog CLI for repo bootstrap, backlog parsing, validation, task selection, claims, approvals, completion, inbox messaging, task results, static HTML rendering, and supervisor control
 - `blackdog-skill`: compatibility wrapper for project-specific skill generation
 - `AGENTS.md`: baseline host-repo operating instructions generated on bootstrap when absent
 - `blackdog.toml`: repo-local profile for id prefixes, bucket/domain taxonomy, defaults, and heuristics
@@ -125,4 +133,5 @@ This repo uses a top-level `.VE/` virtual environment for local Blackdog develop
 
 See [docs/INDEX.md](docs/INDEX.md) for the full document map.
 See [docs/CHARTER.md](docs/CHARTER.md) for the product charter and [docs/INTEGRATION.md](docs/INTEGRATION.md) for host-repo setup guidance.
+See [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the frozen split between `core`, `blackdog proper`, and `extensions`.
 See [docs/EMACS.md](docs/EMACS.md) for the local Emacs 30+ workbench architecture, dependency tiers, keybindings, installation, workflows, and packaging notes.

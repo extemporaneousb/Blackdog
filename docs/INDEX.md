@@ -5,6 +5,7 @@ Use this index as the entrypoint for the repo-scoped Blackdog system.
 ## Document Map
 
 - [docs/CHARTER.md](docs/CHARTER.md): product intent, current-vs-target scope, and success criteria for the multi-agent backlog system
+- [docs/BOUNDARIES.md](docs/BOUNDARIES.md): frozen ownership split between `core`, `blackdog proper`, and optional `extensions`
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): system boundaries, data flow, and the split between repo-local contract and shared runtime state
 - [docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md): file-level ownership tags and extraction targets across core runtime, Blackdog proper, adapters, and removal candidates
 - [docs/CLI.md](docs/CLI.md): command reference for `blackdog`, including `blackdog bootstrap`, and the `blackdog-skill` compatibility wrapper
@@ -21,3 +22,4 @@ Use this index as the entrypoint for the repo-scoped Blackdog system.
 
 Current direction:
 - Treat the shared git control root as the runtime contract and `blackdog.toml` as the repo-local entrypoint.
+- Treat `docs/BOUNDARIES.md` as the ownership contract for what belongs in `core`, `blackdog proper`, and `extensions`.

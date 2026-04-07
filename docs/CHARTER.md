@@ -21,6 +21,10 @@ Blackdog is not only a task list. The target product is a coordinating agent int
 - Worktree-native execution: multi-agent development should respect the operational lessons from worktree-based flows rather than treating them as an afterthought.
 - Human-auditable control: users should be able to inspect backlog state, child-agent results, and steering decisions from repo files and generated views.
 
+Layer ownership for the remodel is frozen separately in
+[docs/BOUNDARIES.md](docs/BOUNDARIES.md). Use that document when deciding what
+belongs in `core`, `blackdog proper`, or optional `extensions`.
+
 ## Near-term goals
 
 - Get Blackdog itself using Blackdog as its primary working contract.

@@ -20,6 +20,14 @@ development.
 
 The backlog system should live in the repo that depends on it. Skills should explain how to use it, but they should not be the source of executable state logic.
 
+The layer contract for the remodel is frozen in [docs/BOUNDARIES.md](docs/BOUNDARIES.md):
+
+- `core` owns the durable backlog/runtime primitives
+- `blackdog proper` owns the shipped Blackdog product surface on top of those primitives
+- `extensions` own optional adapters such as editor integrations
+
+Current file placement is transitional and does not override that charter.
+
 ## Current architecture
 
 Today Blackdog implements the durable backlog runtime, the
@@ -109,9 +117,13 @@ moves.
    - Defines id prefix, bucket/domain taxonomy, defaults, and artifact paths.
 
 2. `src/blackdog/`
-   - Current implementation package.
-   - Still mixes strict-core runtime code with Blackdog-specific
-     orchestration and viewer/adoption surfaces.
+   - Current implementation package for both `core` and `blackdog proper`.
+   - Today it mixes backlog/runtime primitives with product surfaces
+     such as CLI, scaffolding, HTML rendering, prompt helpers, and
+     supervisor orchestration.
+   - The remodel should separate those concerns according to
+     `docs/BOUNDARIES.md` instead of treating the whole package as
+     `core`.
 	 
 
 3. Shared git control root
@@ -132,6 +144,13 @@ moves.
    - Generated under `.codex/skills/<skill-name>/`.
    - Uses a project-specific wrapper token by default (`blackdog-<project-slug>`).
    - Tells an AI agent how to use the local CLI, local artifact paths, and the host repo's planning policy.
+
+5. Extensions
+   - Optional surfaces layered on top of documented Blackdog product
+     contracts.
+   - Today the clearest shipped example is the Emacs workbench under
+     `editors/emacs/`, which should stay outside the minimal runtime
+     charter.
 
 ## Ownership map
 
