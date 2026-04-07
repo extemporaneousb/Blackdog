@@ -5,6 +5,7 @@
 ;;; Commentary:
 
 ;; Freeform conversation threads for prompt authoring, preview, and task launch.
+;; This is an adapter over Blackdog's thread layer, not a core state surface.
 
 ;;; Code:
 

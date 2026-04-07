@@ -44,6 +44,7 @@ from .store import (
     save_state,
     send_message,
 )
+from .threads import mirror_task_result_to_threads
 from .worktree import (
     DirtyPrimaryWorktreeError,
     WorktreeError,
@@ -1373,7 +1374,7 @@ def _run_prelaunch_recovery(profile: Profile, *, actor: str, run_id: str) -> dic
             actor=actor,
             note=f"Supervisor recovered blocked landing by landing {branch} into {target_branch}.",
         )
-        record_task_result(
+        result_path = record_task_result(
             profile.paths,
             task_id=task_id,
             actor=actor,
@@ -1391,6 +1392,24 @@ def _run_prelaunch_recovery(profile: Profile, *, actor: str, run_id: str) -> dic
             followup_candidates=[],
             run_id=run_id,
         )
+        mirror_task_result_to_threads(
+            profile.paths,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[
+                f"Recovered the blocked child branch for {task_id} before launching new work.",
+                f"Landed {branch} into {target_branch}.",
+            ],
+            validation=[
+                f"Recovered landing for {branch} into {target_branch}.",
+                f"Landed commit: {payload.get('landed_commit')}",
+            ],
+            residual=[],
+            needs_user_input=False,
+            result_path=result_path,
+            run_id=run_id,
+        )
         _emit_render(profile)
         return {"action": action, "task_id": task_id, "task_branch": branch, "land_result": payload}
     if action == "commit":
@@ -1406,7 +1425,7 @@ def _run_prelaunch_recovery(profile: Profile, *, actor: str, run_id: str) -> dic
             actor=actor,
             note=f"Supervisor recovered blocked landing by committing the primary dirty state for {task_id}.",
         )
-        record_task_result(
+        result_path = record_task_result(
             profile.paths,
             task_id=task_id,
             actor=actor,
@@ -1424,6 +1443,26 @@ def _run_prelaunch_recovery(profile: Profile, *, actor: str, run_id: str) -> dic
             ],
             needs_user_input=False,
             followup_candidates=[],
+            run_id=run_id,
+        )
+        mirror_task_result_to_threads(
+            profile.paths,
+            task_id=task_id,
+            actor=actor,
+            status="success",
+            what_changed=[
+                f"Recovered the blocked landing for {task_id} by committing the primary dirty state.",
+                f"Committed paths: {', '.join(dirty_paths)}",
+            ],
+            validation=[
+                f"Recovered primary commit: {payload['commit']}",
+                f"Commit message: {payload['message']}",
+            ],
+            residual=[
+                f"Task branch {branch} is left in place for inspection because the recovery landed through the primary worktree commit path."
+            ],
+            needs_user_input=False,
+            result_path=result_path,
             run_id=run_id,
         )
         _emit_render(profile)
@@ -2327,7 +2366,7 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
             "run_dir": str(child.run_dir),
         }
     )
-    record_task_result(
+    result_path = record_task_result(
         profile.paths,
         task_id=child.task.id,
         actor=actor,
@@ -2349,6 +2388,28 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         followup_candidates=list(child.land_followup_candidates),
         run_id=child.run_dir.name,
         metadata=result_metadata,
+    )
+    mirror_task_result_to_threads(
+        profile.paths,
+        task_id=child.task.id,
+        actor=actor,
+        status=status,
+        what_changed=[
+            f"Supervisor captured the child run outcome for {child.child_agent}.",
+            f"Workspace: {child.workspace}",
+            f"Stdout: {child.stdout_file}",
+            f"Stderr: {child.stderr_file}",
+        ]
+        + (
+            [f"Landed commit: {child.land_result['landed_commit']}"]
+            if child.land_result is not None and child.land_result.get("landed_commit")
+            else []
+        ),
+        validation=validation,
+        residual=residual,
+        needs_user_input=child.land_needs_user_input,
+        result_path=result_path,
+        run_id=child.run_dir.name,
     )
     if child.final_task_status != "done":
         _release_if_still_claimed(

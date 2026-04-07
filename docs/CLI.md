@@ -177,6 +177,10 @@ product development.
 - `thread task` creates one backlog task from the saved conversation and links that task back to the thread.
 - `thread list` and `thread show` are the read surfaces for Emacs and shell operators.
 
+Thread storage, task linkage, and thread-aware result mirroring are a
+Blackdog-product conversation layer. They sit above the minimal
+`blackdog.core` task/result write path rather than expanding it.
+
 The prompt profiles now also carry calibrated task-shaping defaults by effort (`S`/`M`/`L`) derived from completed work in the repo. That lets tune improve prompt generation, not just reporting: prompts can ask for explicit estimate snapshots that match the repo's observed task history instead of generic defaults.
 
 `blackdog remove` deletes a task from the backlog plan and task block when execution has not materially started. Removal is intentionally conservative:
@@ -247,7 +251,11 @@ The snapshot now also includes project-level `threads` rows plus per-task conver
 
 `result record` now merges operator-supplied `--task-shaping-telemetry` with the runtime facts Blackdog can derive automatically: the current task-shaping estimate snapshot, aggregate task time derived from claims, reclaim count, worktree count, retry count, landing-failure count, best-effort changed-paths from the current git checkout, and prompt-tuning/context metrics derived from the task contract (`context_doc_count`, `context_check_count`, `context_path_count`, `context_packet_score`, `misstep_total`, and related fields).
 
-When a task is linked to one or more saved conversation threads, `result record` also appends an assistant entry to those threads using the result summary and any recorded runtime duration.
+The durable `task-results/<task-id>/*.json` write remains a core
+artifact operation. When a thread-aware surface calls `result record`
+for a task linked to one or more saved conversation threads, Blackdog
+also mirrors an assistant entry into those threads using the same
+result summary and any recorded runtime duration.
 
 ### Coverage reporting
 

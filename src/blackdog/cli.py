@@ -48,18 +48,13 @@ from .scaffold import (
 )
 from .store import (
     StoreError,
-    append_thread_entry,
     append_event,
     claim_is_active,
     claim_task_entry,
-    create_thread,
-    link_thread_task,
     load_events,
     load_inbox,
     load_state,
     load_task_results,
-    load_thread,
-    list_threads,
     locked_state,
     now_iso,
     record_comment,
@@ -82,6 +77,14 @@ from .supervisor import (
     render_supervisor_observation_output,
     run_supervisor,
     run_supervisor_sweep,
+)
+from .threads import (
+    append_thread_entry,
+    create_thread,
+    link_thread_task,
+    list_threads,
+    load_thread,
+    mirror_task_result_to_threads,
 )
 from .ui import UIError, build_ui_snapshot
 from .worktree import (
@@ -1532,6 +1535,20 @@ def cmd_result_record(args: argparse.Namespace) -> int:
         needs_user_input=args.needs_user_input,
         followup_candidates=args.followup,
         run_id=args.run_id,
+        task_shaping_telemetry=task_shaping_telemetry,
+    )
+    result_run_id = Path(result_path).stem.split("-", 2)[2]
+    mirror_task_result_to_threads(
+        profile.paths,
+        task_id=task_id,
+        actor=actor,
+        status=args.status,
+        what_changed=args.what_changed,
+        validation=args.validation,
+        residual=args.residual,
+        needs_user_input=args.needs_user_input,
+        result_path=result_path,
+        run_id=result_run_id,
         task_shaping_telemetry=task_shaping_telemetry,
     )
     _emit_render(profile)

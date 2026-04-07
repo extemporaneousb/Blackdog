@@ -36,7 +36,6 @@ from blackdog.store import (
     load_events,
     load_inbox,
     load_jsonl,
-    load_thread,
     load_tracked_installs,
     load_task_results,
     record_task_result,
@@ -45,6 +44,7 @@ from blackdog.store import (
     send_message,
 )
 from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
+from blackdog.threads import load_thread
 from blackdog.ui import (
     UIError,
     UI_SNAPSHOT_SCHEMA_VERSION,
@@ -793,7 +793,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(updated["latest_entry_role"], "assistant")
         self.assertEqual(updated["entries"][-1]["duration_seconds"], 125)
 
-    def test_thread_task_links_thread_and_result_record_appends_assistant_entry(self) -> None:
+    def test_thread_task_links_thread_and_cli_result_record_appends_assistant_entry(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
         with redirect_stdout(io.StringIO()) as stdout:
@@ -837,12 +837,38 @@ class BlackdogCliTests(unittest.TestCase):
             task_id=task_id,
             actor="codex",
             status="success",
-            what_changed=["Created the conversation-first launch path."],
-            validation=["make test-emacs"],
-            residual=["No live streaming reply yet."],
+            what_changed=["Persisted the task result without touching thread state."],
+            validation=["store-only-check"],
+            residual=[],
             needs_user_input=False,
             followup_candidates=[],
             task_shaping_telemetry={"actual_task_seconds": 90},
+        )
+        thread = load_thread(paths, thread_id)
+        self.assertEqual(thread["entry_count"], 1)
+
+        self.assertEqual(
+            run_cli(
+                "result",
+                "record",
+                "--project-root",
+                str(self.root),
+                "--id",
+                task_id,
+                "--actor",
+                "codex",
+                "--status",
+                "success",
+                "--what-changed",
+                "Created the conversation-first launch path.",
+                "--validation",
+                "make test-emacs",
+                "--residual",
+                "No live streaming reply yet.",
+                "--task-shaping-telemetry",
+                json.dumps({"actual_task_seconds": 90}),
+            ),
+            0,
         )
         thread = load_thread(paths, thread_id)
         self.assertEqual(thread["entry_count"], 2)

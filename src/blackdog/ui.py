@@ -20,7 +20,8 @@ from .backlog import (
     sync_state_for_backlog,
 )
 from .config import Profile, ProjectPaths
-from .store import load_events, load_inbox, load_state, load_task_results, load_tracked_installs, list_threads, now_iso
+from .store import load_events, load_inbox, load_state, load_task_results, load_tracked_installs, now_iso
+from .threads import list_threads
 from .worktree import worktree_contract
 
 
