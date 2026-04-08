@@ -24,11 +24,11 @@ reference. Keep those details in:
 
 Blackdog is a repo-versioned backlog system built in three layers:
 
-| Layer | Purpose | Must not absorb |
-| --- | --- | --- |
-| `blackdog.core` | Durable backlog/runtime contract shared by every Blackdog client. | Supervisor policy, HTML/view composition, skill scaffolding, editor UX, and other product-specific behavior. |
-| `blackdog.proper` | The shipped Blackdog product built on top of `core`. | Optional editor or host-specific integrations. |
-| `extensions` | Optional adapters and operator surfaces that consume documented Blackdog contracts. | Canonical runtime state formats or write-path rules. |
+| Layer             | Purpose                                                                             | Must not absorb                                                                                              |
+|-------------------|-------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------|
+| `blackdog.core`   | Durable backlog/runtime contract shared by every Blackdog client.                   | Supervisor policy, HTML/view composition, skill scaffolding, editor UX, and other product-specific behavior. |
+| `blackdog.proper` | The shipped Blackdog product built on top of `core`.                                | Optional editor or host-specific integrations.                                                               |
+| `extensions`      | Optional adapters and operator surfaces that consume documented Blackdog contracts. | Canonical runtime state formats or write-path rules.                                                         |
 
 The critical architectural rule is that `core` defines the contract and
 every other layer composes it. Blackdog should not keep redefining that
