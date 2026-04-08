@@ -44,10 +44,17 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertIn("make coverage-core", file_formats)
         self.assertIn("test_core_*.py", file_formats)
         self.assertIn("do not enforce a numeric coverage threshold yet", file_formats)
+        self.assertIn("pass/fail signal is command success plus the frozen artifact write", file_formats)
+        self.assertIn("explicitly turns on the Phase 1\nnumeric gate", file_formats)
         self.assertIn(
             "require 100.0 percent aggregate coverage across the shipped\n  surface and 100.0 percent coverage for each shipped module",
             file_formats,
         )
+
+    def test_core_audit_cli_docs_keep_phase_zero_coverage_gate_non_numeric(self) -> None:
+        cli_doc = (cli_tests.ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
+        self.assertIn("`make coverage-core` must complete successfully and write its artifact", cli_doc)
+        self.assertIn("does not fail the command just because the shipped-surface percentage", cli_doc)
 
     def test_core_audit_import_boundaries_stay_within_blackdog_core(self) -> None:
         violations = self.core_import_boundary_violations()

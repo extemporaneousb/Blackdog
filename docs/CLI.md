@@ -303,6 +303,10 @@ result summary and any recorded runtime duration.
 
 When `[tool.blackdog.coverage].shipped_surface` is configured and `--command`
 is supplied, the coverage payload is filtered to that focused audit surface.
+For the current core-hardening Phase 0 gate, that focused run is evidence-only:
+`make coverage-core` must complete successfully and write its artifact, but
+Blackdog does not fail the command just because the shipped-surface percentage
+is below 100 percent yet.
 Blackdog also ignores stdlib trace `>>>>>>` markers for non-executable
 multiline signature continuation lines while still counting real missing trace
 lines as uncovered.

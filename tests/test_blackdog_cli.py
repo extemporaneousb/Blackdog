@@ -1434,6 +1434,47 @@ class BlackdogCliTests(unittest.TestCase):
             {"src/blackdog/coverage_target.py": payload["runs"][0]["coverage"]["src/blackdog/coverage_target.py"]},
         )
 
+    def test_coverage_command_keeps_focused_shipped_surface_runs_non_numeric_in_phase_zero(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        (self.root / "pyproject.toml").write_text(
+            "[tool.blackdog.coverage]\n"
+            'shipped_surface = ["src/blackdog/coverage_target.py"]\n',
+            encoding="utf-8",
+        )
+        package_dir = self.root / "src" / "blackdog"
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "coverage_target.py").write_text(
+            "flag = False\n"
+            "if flag:\n"
+            "    print('missing branch')\n"
+            "print('coverage branch ok')\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "coverage",
+                "--project-root",
+                str(self.root),
+                "--command",
+                "PYTHONPATH=src python3 -m blackdog.coverage_target",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "passed")
+        module = payload["summary"]["modules"]["src/blackdog/coverage_target.py"]
+        self.assertEqual(module["coverage_percent"], 75.0)
+        self.assertEqual(payload["runs"][0]["status"], "passed")
+
     def test_coverage_command_reports_failure_for_failing_validation(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         fail_script = self.root / "coverage_fail.py"

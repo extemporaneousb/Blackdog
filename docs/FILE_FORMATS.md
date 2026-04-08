@@ -351,16 +351,19 @@ The gate plan is intentionally two-phase:
 
 - Phase 0 gate: keep the shipped surface, focused audit command, and coverage
   artifact path frozen; require `make test-core` and `make coverage-core` to
-  pass, but do not enforce a numeric coverage threshold yet.
+  pass, but do not enforce a numeric coverage threshold yet. The current
+  pass/fail signal is command success plus the frozen artifact write, not a
+  minimum coverage percentage.
 - Phase 1 hard gate: once the direct tests listed in the coverage gap audit
   above land, require 100.0 percent aggregate coverage across the shipped
   surface and 100.0 percent coverage for each shipped module before additional
   core extraction or ownership moves.
 
-As of April 8, 2026, the current shipped-surface aggregate from
-`make coverage-core` is still well below that future 100 percent threshold, so
-Phase 0 stays evidence-only rather than pretending a numeric gate already
-exists.
+Phase 0 stays evidence-only until Blackdog explicitly turns on the Phase 1
+numeric gate. A current `make coverage-core` run may report less than 100.0
+percent or even happen to hit 100.0 percent, but the shipped-surface pass/fail
+contract still comes from command success plus artifact retention rather than a
+coverage threshold.
 
 ## `<control_dir>/threads/<thread-id>/...`
 
