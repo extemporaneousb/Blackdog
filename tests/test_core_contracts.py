@@ -5,7 +5,6 @@ import tomllib
 from tests import test_blackdog_cli as cli_tests
 from tests.core_audit_support import CoreAuditTestCase
 
-
 class CoreContractAuditTests(CoreAuditTestCase):
     def test_core_audit_pyproject_shipped_surface_tracks_core_modules(self) -> None:
         pyproject = tomllib.loads((cli_tests.ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -49,6 +48,14 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertIn(
             "require 100.0 percent aggregate coverage across the shipped\n  surface and 100.0 percent coverage for each shipped module",
             file_formats,
+        )
+
+    def test_core_audit_import_boundaries_stay_within_blackdog_core(self) -> None:
+        violations = self.core_import_boundary_violations()
+        self.assertEqual(
+            violations,
+            [],
+            "Core modules must not import Blackdog proper or extension surfaces:\n" + "\n".join(violations),
         )
 
     def test_core_audit_state_machine_vocab_is_frozen_in_code(self) -> None:
