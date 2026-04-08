@@ -345,7 +345,7 @@ The core-only audit surface is frozen to `[tool.blackdog.coverage].shipped_surfa
 
 The focused audit command is frozen to the current `Makefile` contract:
 
-- `make test-core` runs `PYTHONPATH=src python3 -m unittest tests/test_blackdog_cli.py -k core_audit`
+- `make test-core` runs `PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py'`
 - `make coverage-core` runs the same focused audit through `blackdog coverage`
   and writes `coverage/core-latest.json`
 

@@ -1,6 +1,6 @@
 .PHONY: test test-core test-emacs coverage coverage-core
 
-CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest tests/test_blackdog_cli.py -k core_audit
+CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py'
 CORE_COVERAGE_OUTPUT = coverage/core-latest.json
 
 test:
