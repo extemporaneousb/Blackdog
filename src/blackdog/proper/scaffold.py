@@ -590,6 +590,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 ## Static Board
 
 - `{html_path}` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
+- `blackdog snapshot` and the embedded HTML payload remain Blackdog-product surfaces, but machine-readable repo/header/plan/task facts flow through the neutral `core_export`; prefer that export for extensions instead of the surrounding board-only projection fields.
 - The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
 - The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
 - The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.

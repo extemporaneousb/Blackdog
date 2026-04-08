@@ -803,7 +803,7 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
 
 Canonical static-page snapshot payload.
 
-This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias). The payload is Blackdog-product/UI owned even though it now embeds a neutral core export at `core_export`.
+This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias). The payload is Blackdog-product/UI owned even though it now embeds a neutral core export at `core_export`. The shipped board reads its repo/header, plan/lane, and next-runnable contract surfaces through that neutral export; duplicated top-level aliases remain compatibility fields around the board projection.
 
 Representative top-level keys include:
 
@@ -1130,6 +1130,7 @@ Top-level keys:
 `generated_at` is the snapshot creation timestamp.
 `content_updated_at` is the latest event timestamp from the source backlog/events stream (or `generated_at` when no event timestamp is available).
 `last_checked_at` is the latest supervisor heartbeat timestamp when present, falling back to `generated_at`.
+The current static board consumes repo/header, plan/lane, and next-runnable data from `core_export`; the duplicated top-level aliases remain for compatibility and board-local convenience.
 
 `queue_status` includes the counters used by the top-right status panel in the current static board:
 - `running`: tasks currently executing (`operator_status_key == "running"`).

@@ -1387,6 +1387,12 @@ def _lane_task_positions(plan: dict[str, Any]) -> dict[str, dict[str, int]]:
     positions: dict[str, dict[str, int]] = {}
     for lane_index, lane in enumerate(plan.get("lanes", [])):
         task_ids = [str(item) for item in lane.get("task_ids", [])]
+        if not task_ids:
+            task_ids = [
+                str(item.get("id") or "")
+                for item in lane.get("tasks", [])
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ]
         lane_size = len(task_ids)
         for task_index, task_id in enumerate(task_ids, start=1):
             positions[task_id] = {
@@ -1524,12 +1530,7 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
         github_repo_url=github_repo_url,
     )
     plan = core_export["plan"]
-    lane_positions = _lane_task_positions(snapshot.plan)
-    objective_titles = {
-        str(row.get("id") or ""): str(row.get("title") or "")
-        for row in core_export.get("objectives", [])
-        if str(row.get("id") or "").strip()
-    }
+    lane_positions = _lane_task_positions(plan)
     core_task_rows = {str(row["id"]): row for row in core_export["tasks"]}
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
@@ -1572,9 +1573,6 @@ def build_ui_snapshot(profile: Profile) -> dict[str, Any]:
             )
             or created_at
             or None,
-            "objective_title": objective_titles.get(str(task.payload.get("objective") or "").strip())
-            or str(task.payload.get("objective") or "").strip()
-            or "Unassigned",
             "lane_plan_index": lane_info.get("lane_plan_index", task.lane_order if task.lane_order is not None else 9999),
             "lane_position": lane_info.get("lane_position"),
             "lane_task_count": lane_info.get("lane_task_count"),
@@ -1874,9 +1872,14 @@ __BLACKDOG_STYLES__
 
   <script>
     const snapshot = JSON.parse(document.getElementById("blackdog-snapshot").textContent);
+    const coreExport = snapshot.core_export || {};
     const allTasks = Array.isArray(snapshot.tasks) ? snapshot.tasks.slice() : [];
     const allTasksById = new Map(allTasks.map((task) => [String(task.id), task]));
-    const lanePlan = Array.isArray(snapshot.plan?.lanes) ? snapshot.plan.lanes.slice() : [];
+    const lanePlan = Array.isArray(coreExport.plan?.lanes)
+      ? coreExport.plan.lanes.slice()
+      : Array.isArray(snapshot.plan?.lanes)
+        ? snapshot.plan.lanes.slice()
+        : [];
     const focusTaskIds = new Set(
       Array.isArray(snapshot.focus_task_ids) ? snapshot.focus_task_ids.map((taskId) => String(taskId)) : []
     );
@@ -1892,7 +1895,6 @@ __BLACKDOG_STYLES__
     const completedTasks = allTasks
       .filter((task) => normalizeStatus(task.operator_status_key) === "complete")
       .sort((left, right) => completionEpoch(right) - completionEpoch(left));
-    const openMessages = Array.isArray(snapshot.open_messages) ? snapshot.open_messages.slice() : [];
     function escapeHtml(value) {
       return String(value ?? "")
         .replaceAll("&", "&amp;")
@@ -2063,7 +2065,11 @@ __BLACKDOG_STYLES__
     }
 
     function nextRows() {
-      const next = Array.isArray(snapshot.next_rows) ? snapshot.next_rows.slice(0, 2) : [];
+      const next = Array.isArray(coreExport.next_rows)
+        ? coreExport.next_rows.slice(0, 2)
+        : Array.isArray(snapshot.next_rows)
+          ? snapshot.next_rows.slice(0, 2)
+          : [];
       if (next.length) {
         return next;
       }
@@ -2214,10 +2220,10 @@ __BLACKDOG_STYLES__
 
     function renderHeader() {
       const heroHighlights = snapshot.hero_highlights || {};
-      const headers = snapshot.headers || {};
+      const headers = coreExport.headers || snapshot.headers || {};
       const activity = snapshot.last_activity || {};
       const overallProgress = progressMetrics(trackedTasks);
-      const repoRoot = snapshot.project_root || headers["Repo root"] || "";
+      const repoRoot = coreExport.project_root || snapshot.project_root || headers["Repo root"] || "";
       const metaItems = [
         renderMetaItem("Active Branch", heroHighlights.branch || headers["Target branch"] || "", { mono: true }),
         renderMetaItem("Commit", heroHighlights.commit || headers["Target commit"] || "", { mono: true }),

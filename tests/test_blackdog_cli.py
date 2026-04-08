@@ -3653,6 +3653,84 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("links", ui_task)
         self.assertIn("dialog_status_chips", ui_task)
 
+    def test_snapshot_lane_positions_follow_neutral_plan_order(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        for title, lane_title in (
+            ("Lane zeta task", "Zeta lane"),
+            ("Lane alpha task", "Alpha lane"),
+        ):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "html",
+                "--why",
+                "Need consistent lane metadata between the board snapshot and the neutral export.",
+                "--evidence",
+                "The board should not expose lane indices that disagree with core_export.plan ordering.",
+                "--safe-first-slice",
+                "Feed lane order through the neutral plan export and keep board enrichments on top.",
+                "--path",
+                "src/blackdog/proper/ui.py",
+                "--epic-title",
+                "Board export",
+                "--lane-title",
+                lane_title,
+                "--wave",
+                "0",
+            )
+
+        ui_snapshot = build_ui_snapshot(load_profile(self.root))
+        self.assertEqual(
+            [lane["title"] for lane in ui_snapshot["core_export"]["plan"]["lanes"]],
+            ["Alpha lane", "Zeta lane"],
+        )
+        tasks_by_title = {row["title"]: row for row in ui_snapshot["tasks"]}
+        self.assertEqual(tasks_by_title["Lane alpha task"]["lane_plan_index"], 0)
+        self.assertEqual(tasks_by_title["Lane alpha task"]["lane_position"], 1)
+        self.assertEqual(tasks_by_title["Lane zeta task"]["lane_plan_index"], 1)
+        self.assertEqual(tasks_by_title["Lane zeta task"]["lane_position"], 1)
+
+    def test_render_static_html_reads_contract_owned_fields_from_core_export(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        run_cli(
+            "add",
+            "--project-root",
+            str(self.root),
+            "--title",
+            "Render export sample",
+            "--bucket",
+            "html",
+            "--why",
+            "Need the static board to consume neutral export data for contract-owned fields.",
+            "--evidence",
+            "The page runtime should read plan, headers, and next rows from core_export.",
+            "--safe-first-slice",
+            "Switch one render path to core_export with compatibility fallbacks.",
+            "--path",
+            "src/blackdog/proper/ui.py",
+            "--epic-title",
+            "Board export",
+            "--lane-title",
+            "Render lane",
+            "--wave",
+            "0",
+        )
+
+        profile = load_profile(self.root)
+        snapshot = build_ui_snapshot(profile)
+        rendered_html = render_static_html(snapshot, profile.paths.html_file)
+
+        self.assertIn("const coreExport = snapshot.core_export || {};", rendered_html)
+        self.assertIn("Array.isArray(coreExport.plan?.lanes)", rendered_html)
+        self.assertIn("Array.isArray(coreExport.next_rows)", rendered_html)
+        self.assertIn("const headers = coreExport.headers || snapshot.headers || {};", rendered_html)
+        self.assertIn("const repoRoot = coreExport.project_root || snapshot.project_root || headers[\"Repo root\"] || \"\";", rendered_html)
+        self.assertEqual(html_snapshot(profile.paths.html_file)["core_export"], snapshot["core_export"])
+
     def test_snapshot_includes_freshness_timestamps(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
