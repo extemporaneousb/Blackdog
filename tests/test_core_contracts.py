@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import io
 import tomllib
+from contextlib import redirect_stderr
 
 from tests import test_blackdog_cli as cli_tests
 from tests.core_audit_support import CoreAuditTestCase
 
+
 class CoreContractAuditTests(CoreAuditTestCase):
+    def test_core_audit_pyproject_scripts_freeze_public_executables(self) -> None:
+        pyproject = tomllib.loads((cli_tests.ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(
+            pyproject["project"]["scripts"],
+            {
+                "blackdog": "blackdog.cli:main",
+                "blackdog-core": "blackdog.cli:main_core",
+                "blackdog-proper": "blackdog.cli:main_proper",
+                "blackdog-devtool": "blackdog.cli:main_devtool",
+                "blackdog-skill": "blackdog.skill_cli:main",
+            },
+        )
+
     def test_core_audit_pyproject_shipped_surface_tracks_core_modules(self) -> None:
         pyproject = tomllib.loads((cli_tests.ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         coverage_settings = pyproject["tool"]["blackdog"]["coverage"]
@@ -55,6 +71,77 @@ class CoreContractAuditTests(CoreAuditTestCase):
         cli_doc = (cli_tests.ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
         self.assertIn("`make coverage-core` must complete successfully and write its artifact", cli_doc)
         self.assertIn("does not fail the command just because the shipped-surface percentage", cli_doc)
+
+    def test_core_audit_owner_scoped_parsers_gate_public_commands(self) -> None:
+        core_parser = cli_tests.cli_module.build_parser(
+            description="Blackdog core CLI",
+            allowed_owners=frozenset({"core"}),
+        )
+        core_args = core_parser.parse_args(["summary"])
+        self.assertEqual(core_args.command_owner, "core")
+        preflight_args = core_parser.parse_args(["worktree", "preflight"])
+        self.assertEqual(preflight_args.command_owner, "core")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                core_parser.parse_args(["render"])
+        self.assertEqual(error.exception.code, 2)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                core_parser.parse_args(["worktree", "start", "--id", "BLACK-demo"])
+        self.assertEqual(error.exception.code, 2)
+
+        proper_parser = cli_tests.cli_module.build_parser(
+            description="Blackdog proper CLI",
+            allowed_owners=frozenset({"blackdog-proper"}),
+        )
+        proper_args = proper_parser.parse_args(["render"])
+        self.assertEqual(proper_args.command_owner, "blackdog-proper")
+        start_args = proper_parser.parse_args(["worktree", "start", "--id", "BLACK-demo"])
+        self.assertEqual(start_args.command_owner, "blackdog-proper")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                proper_parser.parse_args(["summary"])
+        self.assertEqual(error.exception.code, 2)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                proper_parser.parse_args(["worktree", "preflight"])
+        self.assertEqual(error.exception.code, 2)
+
+        devtool_parser = cli_tests.cli_module.build_parser(
+            description="Blackdog devtool CLI",
+            allowed_owners=frozenset({"devtool"}),
+        )
+        devtool_args = devtool_parser.parse_args(["coverage"])
+        self.assertEqual(devtool_args.command_owner, "devtool")
+        bootstrap_args = devtool_parser.parse_args(["bootstrap", "--project-root", ".", "--project-name", "Demo"])
+        self.assertEqual(bootstrap_args.command_owner, "devtool")
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                devtool_parser.parse_args(["summary"])
+        self.assertEqual(error.exception.code, 2)
+
+    def test_core_audit_docs_freeze_public_executables_and_packaging_scope(self) -> None:
+        readme = (cli_tests.ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`blackdog-core`", readme)
+        self.assertIn("`blackdog-proper`", readme)
+        self.assertIn("`blackdog-devtool`", readme)
+        self.assertIn("`python -m blackdog`", readme)
+        self.assertIn("compatibility umbrella CLI", readme)
+        self.assertIn("legacy compatibility wrapper", readme)
+
+        architecture = (cli_tests.ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        self.assertIn("`blackdog-core`", architecture)
+        self.assertIn("`blackdog-proper`", architecture)
+        self.assertIn("`blackdog-devtool`", architecture)
+        self.assertIn("stable public surface", architecture)
+
+        cli_doc = (cli_tests.ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
+        self.assertIn("The packaged executable contract is the `[project.scripts]` table", cli_doc)
+        self.assertIn("owner-filtered parser surface", cli_doc)
+
+        file_formats = (cli_tests.ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
+        self.assertIn("Executable and module packaging surfaces are intentionally out of scope", file_formats)
+        self.assertIn("[docs/CLI.md](docs/CLI.md)", file_formats)
 
     def test_core_audit_import_boundaries_stay_within_blackdog_core(self) -> None:
         violations = self.core_import_boundary_violations()

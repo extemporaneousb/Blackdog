@@ -55,9 +55,17 @@ Still in progress:
 
 ## What it provides
 
-- `blackdog`: the main product CLI
-- `blackdog-skill`: compatibility wrapper for project-local skill
-  generation
+- `blackdog`: compatibility umbrella CLI over the full mixed public
+  surface
+- `blackdog-core`: core-only executable for durable backlog/runtime
+  commands
+- `blackdog-proper`: product-only executable for workflow,
+  supervisor, inbox, snapshot, and render commands
+- `blackdog-devtool`: setup, refresh, install-management, and coverage
+  executable
+- `blackdog-skill`: legacy compatibility wrapper for project-local
+  skill generation
+- `python -m blackdog`: module entrypoint equivalent to `blackdog`
 - `blackdog.toml`: repo-local profile and path entrypoint
 - a shared control-root runtime state layout, which defaults to
   `@git-common/blackdog`
@@ -73,6 +81,10 @@ python3 -m venv .VE
 source .VE/bin/activate
 python -m pip install -e .
 ```
+
+That install exposes `blackdog`, `blackdog-core`,
+`blackdog-proper`, `blackdog-devtool`, and `blackdog-skill` in the
+environment's `bin/` directory.
 
 ## Fresh host install
 

@@ -75,7 +75,8 @@ on top of `core`.
 
 Blackdog proper owns:
 
-- the `blackdog`, `blackdog-skill`, and `python -m blackdog`
+- the `blackdog`, `blackdog-core`, `blackdog-proper`,
+  `blackdog-devtool`, `blackdog-skill`, and `python -m blackdog`
   entrypoints
 - workflow orchestration such as `worktree start|land|cleanup`
 - the branch-backed worktree lifecycle plus supervisor run/recovery
@@ -181,6 +182,10 @@ Compatibility matters during extraction:
 - `blackdog.supervisor`
 - `blackdog.ui`
 - `blackdog.scaffold`
+
+The packaged executable names in `pyproject.toml` are part of that
+same stable public surface even while internal module ownership keeps
+moving.
 
 Those module paths remain stable entrypoints or shims until the new
 internal homes fully replace them. The boundary matters more than the

@@ -15,6 +15,12 @@ By default, the rendered HTML board is repo-branded:
 This document covers both the frozen `blackdog.core` contract and
 Blackdog-product artifacts layered on top of it.
 
+Executable and module packaging surfaces are intentionally out of scope
+here: freeze those in `pyproject.toml`,
+[docs/CLI.md](docs/CLI.md), and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+This document only freezes durable runtime artifacts and their write
+semantics.
+
 Treat these as the required core contract for extraction and hardening
 work:
 

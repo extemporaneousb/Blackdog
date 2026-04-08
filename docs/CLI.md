@@ -25,6 +25,12 @@ Split entrypoints now make that ownership visible directly:
 - `blackdog-devtool`: bootstrap/install/coverage tooling only
 - `blackdog`: compatibility umbrella that still exposes the full mixed surface while callers migrate
 
+The packaged executable contract is the `[project.scripts]` table in
+`pyproject.toml`: `blackdog`, `blackdog-core`, `blackdog-proper`,
+`blackdog-devtool`, and `blackdog-skill`, plus the `python -m
+blackdog` module entrypoint. Contract tests should treat that map and
+the owner-filtered parser surface as part of the stable public API.
+
 ### `blackdog`
 
 | Owner | Commands |
