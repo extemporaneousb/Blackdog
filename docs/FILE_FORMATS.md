@@ -222,6 +222,16 @@ The current runtime semantics for those artifacts are:
   `recorded_at` descending and rejects files that do not carry the required
   summary fields.
 
+`blackdog.backlog.reconcile_runtime_artifacts()` is the canonical read path over
+those five artifacts. It:
+
+- runs the same state reconciliation logic every core command already depends
+  on;
+- returns deterministic reconcile counters such as pruned claim/approval rows
+  and promoted done approvals; and
+- powers `blackdog validate`, which now performs strict artifact checks over the
+  live inbox/result surfaces instead of only returning lightweight counters.
+
 ### `approval_tasks` semantic state machine
 
 Blackdog does not currently enforce a strict transition graph between every
@@ -288,6 +298,8 @@ The corresponding code-level state sets are:
   contract is append-only evidence rather than an enum-enforced state machine.
 - Readers validate the result shape on load, including list-valued summary
   fields plus object-valued `metadata` and `task_shaping_telemetry`.
+- Strict runtime validation also requires every result file to retain a matching
+  `task_result` event carrying the same `task_id`, `run_id`, and `result_file`.
 
 ## `blackdog worktree preflight --format json` WTAM invariants
 

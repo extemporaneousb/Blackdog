@@ -26,6 +26,8 @@ from .backlog import (
     seed_tune_task,
     load_backlog,
     next_runnable_tasks,
+    reconcile_runtime_artifacts,
+    reconcile_state_for_backlog,
     remove_task,
     update_task,
     render_plan_text,
@@ -233,7 +235,7 @@ def _load_runtime(project_root: Path | None = None):
     profile = load_profile(project_root)
     snapshot = load_backlog(profile.paths, profile)
     state = load_state(profile.paths.state_file)
-    state = sync_state_for_backlog(state, snapshot)
+    state, _ = reconcile_state_for_backlog(state, snapshot)
     save_state(profile.paths.state_file, state)
     return profile, snapshot, state
 
@@ -476,15 +478,14 @@ def _resolve_tracked_install_targets(profile, *, raw_targets: list[str], all_tra
 
 def _observe_tracked_install(project_root: Path, *, next_limit: int) -> dict[str, Any]:
     profile = load_profile(project_root)
-    snapshot = load_backlog(profile.paths, profile)
-    state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    runtime = reconcile_runtime_artifacts(profile, event_limit=20)
     view = build_view_model(
         profile,
-        snapshot,
-        state,
-        events=load_events(profile.paths, limit=20),
-        messages=load_inbox(profile.paths),
-        results=load_task_results(profile.paths),
+        runtime.snapshot,
+        runtime.state,
+        events=runtime.events,
+        messages=runtime.messages,
+        results=runtime.results,
     )
     analysis = build_tune_analysis(profile)
     return {
@@ -954,18 +955,27 @@ def cmd_backlog_reset(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    profile, snapshot, state = _load_runtime(Path(args.project_root) if args.project_root else None)
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    runtime = reconcile_runtime_artifacts(profile, strict_validate=True)
     payload = {
         "project": profile.project_name,
         "backlog_file": str(profile.paths.backlog_file),
         "state_file": str(profile.paths.state_file),
         "events_file": str(profile.paths.events_file),
         "inbox_file": str(profile.paths.inbox_file),
-        "tasks": len(snapshot.tasks),
-        "lanes": len(snapshot.plan.get("lanes", [])),
-        "epics": len(snapshot.plan.get("epics", [])),
-        "claims": sum(1 for entry in state.get("task_claims", {}).values() if isinstance(entry, dict) and claim_is_active(entry)),
-        "open_messages": len([row for row in load_inbox(profile.paths) if row.get("status") == "open"]),
+        "results_dir": str(profile.paths.results_dir),
+        "tasks": len(runtime.snapshot.tasks),
+        "lanes": len(runtime.snapshot.plan.get("lanes", [])),
+        "epics": len(runtime.snapshot.plan.get("epics", [])),
+        "claims": sum(
+            1 for entry in runtime.state.get("task_claims", {}).values() if isinstance(entry, dict) and claim_is_active(entry)
+        ),
+        "events": len(runtime.events),
+        "messages": len(runtime.messages),
+        "open_messages": len([row for row in runtime.messages if row.get("status") == "open"]),
+        "results": len(runtime.results),
+        "reconcile": runtime.reconcile,
+        "strict_validation": runtime.strict_validation or {"task_result_events": 0, "issue_count": 0, "issue_count_by_kind": {}, "issues": []},
     }
     print(json.dumps(payload, indent=2))
     return 0
@@ -1164,16 +1174,17 @@ def cmd_task_run(args: argparse.Namespace) -> int:
 
 
 def _summary_view(profile, snapshot, state) -> dict[str, Any]:
-    messages = load_inbox(profile.paths)
+    runtime = reconcile_runtime_artifacts(profile, snapshot=snapshot, event_limit=20)
+    messages = runtime.messages
     view = build_view_model(
         profile,
         snapshot,
-        state,
-        events=load_events(profile.paths, limit=20),
+        runtime.state,
+        events=runtime.events,
         messages=messages,
-        results=load_task_results(profile.paths),
+        results=runtime.results,
     )
-    view["open_messages"] = summary_open_messages(snapshot, state, messages)
+    view["open_messages"] = summary_open_messages(snapshot, runtime.state, messages)
     return view
 
 

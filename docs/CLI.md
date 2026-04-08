@@ -78,6 +78,11 @@ Blackdog proper.
 
 Use `blackdog create-project` when you want Blackdog to create a brand-new git repo, install itself into that repo's `.VE`, and bootstrap the local contract in one step. Use `blackdog bootstrap` for normal host-repo adoption into an existing repo. Use `blackdog refresh` when the host repo already has Blackdog installed and you want to regenerate the branded board plus managed project-local skill files without overwriting locally modified managed files. Use `blackdog update-repo` from a Blackdog source checkout when you want to reinstall Blackdog into another repo's `.VE` and immediately run that same refresh flow. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
 
+`blackdog validate` now runs the canonical core reconcile pass before reporting
+counts. It also performs strict runtime checks over the current inbox/result
+surfaces, including the invariant that every result file still has a matching
+`task_result` event.
+
 ### Installation and host bootstrap
 
 For a brand-new host repo from the current Blackdog checkout:

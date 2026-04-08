@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha1
@@ -248,6 +250,17 @@ class BacklogSnapshot:
     sections: dict[str, list[str]]
     tasks: dict[str, TaskInfo]
     plan: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReconciledRuntime:
+    snapshot: BacklogSnapshot
+    state: dict[str, Any]
+    events: list[dict[str, Any]]
+    messages: list[dict[str, Any]]
+    results: list[dict[str, Any]]
+    reconcile: dict[str, Any]
+    strict_validation: dict[str, Any] | None = None
 
 
 def now_iso() -> str:
@@ -590,7 +603,10 @@ def classify_task_status(task: TaskInfo, snapshot: BacklogSnapshot, state: dict[
     return "ready", "claimable now"
 
 
-def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> dict[str, Any]:
+def reconcile_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> tuple[dict[str, Any], dict[str, Any]]:
+    before = deepcopy(state if isinstance(state, dict) else {})
+    if not isinstance(state, dict):
+        state = {}
     approvals = state.setdefault("approval_tasks", {})
     claims = state.setdefault("task_claims", {})
     if not isinstance(approvals, dict):
@@ -633,7 +649,215 @@ def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> 
         if task_done(task.id, state):
             entry["status"] = APPROVAL_STATUS_DONE
         approvals[task.id] = normalize_approval_entry(task.id, entry, state_file=Path("<memory>"))
-    return state
+    before_approvals = before.get("approval_tasks") if isinstance(before.get("approval_tasks"), dict) else {}
+    before_claims = before.get("task_claims") if isinstance(before.get("task_claims"), dict) else {}
+    runtime_claim_fields = {
+        "claimed_pid",
+        "claimed_process_missing_scans",
+        "claimed_process_last_seen_at",
+        "claimed_process_last_checked_at",
+    }
+    report = {
+        "state_reconciled": before != state,
+        "approval_rows": len(approvals),
+        "claim_rows": len(claims),
+        "active_claims": sum(1 for entry in claims.values() if claim_is_active(entry)),
+        "done_claims": sum(1 for entry in claims.values() if claim_is_done(entry)),
+        "pruned_approval_rows": len(set(before_approvals) - set(approvals)),
+        "pruned_claim_rows": len(set(before_claims) - set(claims)),
+        "seeded_approval_rows": len(set(approvals) - set(before_approvals)),
+        "promoted_done_approvals": sum(
+            1
+            for task_id, entry in approvals.items()
+            if str(entry.get("status") or "") == APPROVAL_STATUS_DONE
+            and str((before_approvals.get(task_id) or {}).get("status") or "") != APPROVAL_STATUS_DONE
+        ),
+        "updated_claim_rows": sum(
+            1
+            for task_id in set(before_claims) & set(claims)
+            if before_claims.get(task_id) != claims.get(task_id)
+        ),
+        "claim_runtime_fields_dropped": sum(
+            1
+            for task_id in set(before_claims) & set(claims)
+            if any(field in (before_claims.get(task_id) or {}) for field in runtime_claim_fields)
+            and all(field not in (claims.get(task_id) or {}) for field in runtime_claim_fields)
+        ),
+    }
+    return state, report
+
+
+def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> dict[str, Any]:
+    reconciled, _ = reconcile_state_for_backlog(state, snapshot)
+    return reconciled
+
+
+def _strict_runtime_validation(
+    snapshot: BacklogSnapshot,
+    *,
+    events: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    task_ids = set(snapshot.tasks)
+    task_result_event_keys: set[tuple[str, str, str]] = set()
+    task_result_events = 0
+
+    for message in messages:
+        task_id = str(message.get("task_id") or "").strip()
+        if task_id and task_id not in task_ids:
+            issues.append(
+                {
+                    "kind": "inbox_unknown_task",
+                    "task_id": task_id,
+                    "message_id": str(message.get("message_id") or ""),
+                    "status": str(message.get("status") or ""),
+                }
+            )
+
+    for event in events:
+        if str(event.get("type") or "") != "task_result":
+            continue
+        task_result_events += 1
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        task_id = str(event.get("task_id") or "").strip()
+        run_id = str(payload.get("run_id") or "").strip()
+        result_file = str(payload.get("result_file") or "").strip()
+        if not run_id or not result_file:
+            issues.append(
+                {
+                    "kind": "task_result_event_missing_fields",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "result_file": result_file,
+                }
+            )
+            continue
+        result_path = Path(result_file)
+        if not result_path.exists():
+            issues.append(
+                {
+                    "kind": "task_result_event_missing_file",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "result_file": result_file,
+                }
+            )
+            continue
+        if task_id and result_path.parent.name != task_id:
+            issues.append(
+                {
+                    "kind": "task_result_event_task_mismatch",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "result_file": result_file,
+                }
+            )
+            continue
+        task_result_event_keys.add((task_id, run_id, result_file))
+
+    for row in results:
+        task_id = str(row.get("task_id") or "").strip()
+        run_id = str(row.get("run_id") or "").strip()
+        result_file = str(row.get("result_file") or "").strip()
+        if task_id and task_id not in task_ids:
+            issues.append(
+                {
+                    "kind": "result_unknown_task",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "result_file": result_file,
+                }
+            )
+        if result_file:
+            result_path = Path(result_file)
+            if task_id and result_path.parent.name != task_id:
+                issues.append(
+                    {
+                        "kind": "result_file_task_mismatch",
+                        "task_id": task_id,
+                        "run_id": run_id,
+                        "result_file": result_file,
+                    }
+                )
+        if (task_id, run_id, result_file) not in task_result_event_keys:
+            issues.append(
+                {
+                    "kind": "result_missing_task_result_event",
+                    "task_id": task_id,
+                    "run_id": run_id,
+                    "result_file": result_file,
+                }
+            )
+
+    issues.sort(
+        key=lambda row: (
+            str(row.get("kind") or ""),
+            str(row.get("task_id") or ""),
+            str(row.get("message_id") or ""),
+            str(row.get("run_id") or ""),
+            str(row.get("result_file") or ""),
+        )
+    )
+    return {
+        "task_result_events": task_result_events,
+        "issue_count": len(issues),
+        "issue_count_by_kind": dict(Counter(str(row.get("kind") or "unknown") for row in issues)),
+        "issues": issues,
+    }
+
+
+def _strict_validation_error(report: dict[str, Any]) -> str:
+    issues = list(report.get("issues") or [])
+    preview: list[str] = []
+    for issue in issues[:3]:
+        detail = (
+            str(issue.get("message_id") or "")
+            or str(issue.get("task_id") or "")
+            or str(issue.get("result_file") or "")
+            or str(issue.get("run_id") or "")
+            or "unknown"
+        )
+        preview.append(f"{issue.get('kind')} ({detail})")
+    suffix = f"; +{len(issues) - len(preview)} more" if len(issues) > len(preview) else ""
+    return f"Strict validation failed with {len(issues)} issue(s): {'; '.join(preview)}{suffix}"
+
+
+def reconcile_runtime_artifacts(
+    profile: Profile,
+    *,
+    snapshot: BacklogSnapshot | None = None,
+    event_limit: int | None = None,
+    strict_validate: bool = False,
+) -> ReconciledRuntime:
+    snapshot = snapshot or load_backlog(profile.paths, profile)
+    original_state = load_state(profile.paths.state_file)
+    state, reconcile = reconcile_state_for_backlog(deepcopy(original_state), snapshot)
+    if state != original_state:
+        save_state(profile.paths.state_file, state)
+    events = load_events(profile.paths, limit=event_limit)
+    messages = load_inbox(profile.paths)
+    results = load_task_results(profile.paths)
+    strict_validation = None
+    if strict_validate:
+        strict_validation = _strict_runtime_validation(
+            snapshot,
+            events=load_events(profile.paths),
+            messages=messages,
+            results=results,
+        )
+        if strict_validation["issue_count"]:
+            raise BacklogError(_strict_validation_error(strict_validation))
+    return ReconciledRuntime(
+        snapshot=snapshot,
+        state=state,
+        events=events,
+        messages=messages,
+        results=results,
+        reconcile=reconcile,
+        strict_validation=strict_validation,
+    )
 
 
 def next_runnable_tasks(
