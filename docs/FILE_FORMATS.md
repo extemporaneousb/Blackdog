@@ -561,11 +561,14 @@ Canonical event types include:
 - `landed_commit`
 - `launch_command`
 - `launch_command_strategy`
+- `launch_settings`
 - `prompt_template_version`
 - `prompt_template_hash`
 - `prompt_hash`
 
-`launch_command` is the resolved argv prefix and includes prompt-mode launch behavior (for example, replacing default `codex` with desktop `Codex.app`), while `prompt_*` fields capture the child prompt fingerprint used for that run.
+`launch_command` is the resolved argv prefix and includes launcher selection details (for example, replacing default `codex` with desktop `Codex.app`), `launch_settings` captures the resolved launcher/model/reasoning view for that attempt, and `prompt_*` fields capture the child prompt fingerprint used for that run.
+
+When Blackdog can build launch telemetry before a child process starts, `child_launch_failed` payloads should also carry `launch_command`, `launch_command_strategy`, and `launch_settings` so report surfaces can explain launch-policy failures instead of only the error text.
 
 `worktree_land` event payloads carry the landed branch outcome for direct/manual WTAM flow:
 
@@ -671,6 +674,7 @@ Required keys:
 - `metadata_file`
 - `launch_command`
 - `launch_command_strategy`
+- `launch_settings`
 - `prompt_template_version`
 - `prompt_template_hash`
 - `prompt_hash`
@@ -694,6 +698,9 @@ Current keys:
 - `status_file`
 - `supervisor_pid`
 - `last_checked_at`
+- `launch_command`
+- `launch_overrides`
+- `launch_settings`
 - `steps`
 - `recovery_actions`
 - `completed_at`
@@ -768,8 +775,8 @@ The shipped code freezes these literals in `blackdog.proper.supervisor` through
 
 Use these artifacts and payloads to measure delegated-child ergonomics:
 
-- `blackdog supervise status --format json` for current run state and
-  pre-launch recovery context.
+- `blackdog supervise status --format json` for current run state,
+  actual latest-run launch settings, and pre-launch recovery context.
 - `blackdog supervise recover --format json` for blocked/partial child
   execution and explicit recoverable cases.
 - `blackdog supervise report --format json` for startup friction, retry
@@ -778,9 +785,11 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
   `result record`, `inbox`, and `release`.
 - `supervise report` payload fields:
   - `summary.startup`, `summary.retry`, `summary.output_shape`, `summary.landing`
+  - `runs[*].launch_settings`
   - `runs[*].attempts[*].launch_error`, `artifacts_dir`, `prompt_exists`,
     `stdout_exists`, `stderr_exists`, `metadata_exists`,
     `artifact_count`, `artifact_complete`, `metadata_valid`
+  - `runs[*].attempts[*].launch_settings`
   - `runs[*].attempts[*].branch_ahead`, `landed`, `land_error`
   - `observations` with actionable severity buckets
   - `observations[*].category` values include

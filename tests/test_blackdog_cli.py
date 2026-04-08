@@ -5333,11 +5333,50 @@ class BlackdogCliTests(unittest.TestCase):
             "launch_fail": "report-launch-fail-task",
             "land_fail": "report-land-fail-task",
         }
+        run_launch_settings = {
+            run_ids["retry_a"]: {
+                "command": ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.4"],
+                "strategy": "profile",
+                "launcher": "codex",
+                "mode": "exec",
+                "model": "gpt-5.4",
+                "reasoning_effort": "high",
+                "config_overrides": {},
+            },
+            run_ids["retry_b"]: {
+                "command": ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.4-mini"],
+                "strategy": "profile",
+                "launcher": "codex",
+                "mode": "exec",
+                "model": "gpt-5.4-mini",
+                "reasoning_effort": "xhigh",
+                "config_overrides": {},
+            },
+            run_ids["launch_fail"]: {
+                "command": ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"],
+                "strategy": "profile",
+                "launcher": "codex",
+                "mode": "exec",
+                "model": "gpt-5.4",
+                "reasoning_effort": "high",
+                "config_overrides": {},
+            },
+            run_ids["land_fail"]: {
+                "command": ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"],
+                "strategy": "profile",
+                "launcher": "codex",
+                "mode": "exec",
+                "model": "gpt-5.4",
+                "reasoning_effort": "high",
+                "config_overrides": {},
+            },
+        }
 
         def write_run_status(run_id: str, *, task_id: str, final_status: str) -> None:
             run_dir = paths.supervisor_runs_dir / run_id
             status_file = run_dir / "status.json"
             status_file.parent.mkdir(parents=True, exist_ok=True)
+            launch_settings = run_launch_settings[run_id]
             status_file.write_text(
                 json.dumps(
                     {
@@ -5349,6 +5388,12 @@ class BlackdogCliTests(unittest.TestCase):
                         "run_dir": str(run_dir),
                         "status_file": str(status_file),
                         "supervisor_pid": os.getpid(),
+                        "launch_command": list(launch_settings["command"]),
+                        "launch_overrides": {
+                            "model": launch_settings["model"],
+                            "reasoning_effort": launch_settings["reasoning_effort"],
+                        },
+                        "launch_settings": dict(launch_settings),
                         "steps": [
                             {"index": 1, "at": "2026-03-14T09:00:00-07:00", "status": "running"},
                             {"index": 2, "at": "2026-03-14T09:02:00-07:00", "status": final_status},
@@ -5472,6 +5517,9 @@ class BlackdogCliTests(unittest.TestCase):
                     "final_task_status": "done",
                     "branch_ahead": False,
                     "landed": True,
+                    "launch_command": list(run_launch_settings[run_ids["retry_b"]]["command"]),
+                    "launch_command_strategy": run_launch_settings[run_ids["retry_b"]]["strategy"],
+                    "launch_settings": dict(run_launch_settings[run_ids["retry_b"]]),
                 },
             },
         )
@@ -5502,6 +5550,9 @@ class BlackdogCliTests(unittest.TestCase):
                     "run_id": run_ids["launch_fail"],
                     "error": "failed to execute child command",
                     "child_agent": f"{actor}/child-{task_ids['launch_fail']}",
+                    "launch_command": list(run_launch_settings[run_ids["launch_fail"]]["command"]),
+                    "launch_command_strategy": run_launch_settings[run_ids["launch_fail"]]["strategy"],
+                    "launch_settings": dict(run_launch_settings[run_ids["launch_fail"]]),
                 },
             },
         )
@@ -5605,6 +5656,13 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(payload["recovery_needed"]["count"], 3)
         self.assertEqual(len(payload["runs"]), 4)
+        runs_by_id = {row["run_id"]: row for row in payload["runs"]}
+        self.assertEqual(runs_by_id[fixtures["run_ids"]["retry_b"]]["launch_settings"]["model"], "gpt-5.4-mini")
+        self.assertEqual(runs_by_id[fixtures["run_ids"]["retry_b"]]["launch_settings"]["reasoning_effort"], "xhigh")
+        self.assertEqual(
+            runs_by_id[fixtures["run_ids"]["launch_fail"]]["attempts"][0]["launch_settings"]["model"],
+            "gpt-5.4",
+        )
         self.assertIn("landing_failures", {row["category"] for row in payload["observations"]})
         self.assertIn("startup_friction", {row["category"] for row in payload["observations"]})
         limited_payload = json.loads(
@@ -5666,6 +5724,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(fixtures["task_ids"]["launch_fail"], text)
         self.assertIn(fixtures["task_ids"]["land_fail"], text)
         self.assertIn("landing errors=1", text)
+        self.assertIn("launch: codex | strategy profile | model gpt-5.4-mini | reasoning xhigh", text)
 
     def test_supervise_recover_reports_structured_cases_in_json(self) -> None:
         fixture = self._seed_supervisor_recovery_fixtures(actor="supervisor")
@@ -5830,6 +5889,32 @@ class BlackdogCliTests(unittest.TestCase):
                     "run_dir": str(run_dir),
                     "status_file": str(status_file),
                     "supervisor_pid": os.getpid(),
+                    "launch_command": [
+                        "codex",
+                        "exec",
+                        "--dangerously-bypass-approvals-and-sandbox",
+                        "-m",
+                        "gpt-5.4-mini",
+                    ],
+                    "launch_overrides": {
+                        "model": "gpt-5.4-mini",
+                        "reasoning_effort": "xhigh",
+                    },
+                    "launch_settings": {
+                        "command": [
+                            "codex",
+                            "exec",
+                            "--dangerously-bypass-approvals-and-sandbox",
+                            "-m",
+                            "gpt-5.4-mini",
+                        ],
+                        "strategy": "profile",
+                        "launcher": "codex",
+                        "mode": "exec",
+                        "model": "gpt-5.4-mini",
+                        "reasoning_effort": "xhigh",
+                        "config_overrides": {},
+                    },
                     "steps": [
                         {
                             "index": 1,
@@ -5931,6 +6016,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["latest_run"]["run_id"], "abcd1234")
         self.assertEqual(payload["latest_run"]["status_file"], str(status_file))
         self.assertEqual(payload["latest_run"]["status"], "stopped")
+        self.assertEqual(payload["latest_run"]["launch_settings"]["model"], "gpt-5.4-mini")
+        self.assertEqual(payload["latest_run"]["launch_settings"]["reasoning_effort"], "xhigh")
         self.assertEqual(payload["workspace_contract"]["workspace_mode"], "git-worktree")
         self.assertEqual(payload["workspace_contract"]["target_branch"], "main")
         self.assertIsInstance(payload["workspace_contract"]["primary_dirty"], bool)
@@ -5966,6 +6053,10 @@ class BlackdogCliTests(unittest.TestCase):
         ).stdout
         self.assertIn("Latest run: stopped | abcd1234 | steps 1 | workspace git-worktree", text_output)
         self.assertIn("Last checked: 2026-03-13T12:00:05-07:00", text_output)
+        self.assertIn(
+            "Latest run launch: codex | strategy profile | model gpt-5.4-mini | reasoning xhigh",
+            text_output,
+        )
         self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
         self.assertIn(".VE rule: .VE is unversioned", text_output)
         self.assertIn("Launch defaults:", text_output)
