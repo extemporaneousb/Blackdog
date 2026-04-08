@@ -12,10 +12,9 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertEqual(
             coverage_settings["shipped_surface"],
             [
-                "src/blackdog/backlog.py",
-                "src/blackdog/config.py",
-                "src/blackdog/store.py",
-                "src/blackdog/worktree.py",
+                "src/blackdog/core/backlog.py",
+                "src/blackdog/core/config.py",
+                "src/blackdog/core/store.py",
             ],
         )
 

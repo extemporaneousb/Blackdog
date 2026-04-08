@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import dis
 import json
 import os
 import re
@@ -11,6 +13,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from types import CodeType
 from typing import Any
 
 from .backlog import (
@@ -603,16 +606,63 @@ def _build_trace_runner(parts: list[str], *, cover_dir: Path) -> list[str]:
     return command
 
 
-def _parse_coverage_file(path: Path) -> tuple[int, int]:
+def _source_executable_lines(source: Path) -> set[int]:
+    try:
+        compiled = compile(source.read_text(encoding="utf-8"), str(source), "exec")
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+
+    executable: set[int] = set()
+
+    def visit(code: CodeType) -> None:
+        executable.update(lineno for _, lineno in dis.findlinestarts(code) if lineno is not None and lineno > 0)
+        for const in code.co_consts:
+            if isinstance(const, CodeType):
+                visit(const)
+
+    visit(compiled)
+    return executable
+
+
+def _definition_header_continuation_lines(source: Path) -> set[int]:
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return set()
+
+    ignored: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if not node.body:
+            continue
+        start = getattr(node, "lineno", None)
+        first_body_line = getattr(node.body[0], "lineno", None)
+        if not isinstance(start, int) or not isinstance(first_body_line, int):
+            continue
+        if first_body_line - start <= 1:
+            continue
+        ignored.update(range(start + 1, first_body_line))
+    return ignored
+
+
+def _parse_coverage_file(path: Path, *, source: Path | None = None) -> tuple[int, int]:
+    executable_lines = _source_executable_lines(source) if source is not None else None
+    header_continuations = _definition_header_continuation_lines(source) if source is not None else set()
     covered = 0
     total = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         match = _COVERAGE_LINE_RE.match(line)
         if match is None:
             continue
         code = match.group("code").strip()
         if not code:
             continue
+        if match.group("missing") is not None:
+            if lineno in header_continuations:
+                continue
+            if executable_lines is not None and lineno not in executable_lines:
+                continue
         total += 1
         if match.group("count") is not None and match.group("count").strip():
             covered += 1
@@ -634,6 +684,43 @@ def _coverage_source(profile_root: Path, source_root: Path, cover_file: Path) ->
     return target
 
 
+def _normalized_shipped_surface(project_root: Path, coverage_settings: dict[str, object]) -> tuple[str, ...]:
+    raw_surface = coverage_settings.get("shipped_surface")
+    if not isinstance(raw_surface, list):
+        return ()
+    surface: list[str] = []
+    seen: set[str] = set()
+    resolved_root = project_root.resolve()
+    for entry in raw_surface:
+        if not isinstance(entry, str):
+            continue
+        resolved = (project_root / Path(entry)).resolve()
+        try:
+            relative = resolved.relative_to(resolved_root)
+        except ValueError:
+            continue
+        key = str(relative)
+        if key in seen:
+            continue
+        seen.add(key)
+        surface.append(key)
+    return tuple(surface)
+
+
+def _filter_coverage_modules(
+    modules: dict[str, dict[str, int | float]],
+    *,
+    shipped_surface: tuple[str, ...] | None,
+) -> dict[str, dict[str, int | float]]:
+    if not shipped_surface:
+        return modules
+    return {
+        module_path: modules[module_path].copy()
+        for module_path in shipped_surface
+        if module_path in modules
+    }
+
+
 def _truncate_text(value: str, *, max_chars: int = 6_000) -> str | None:
     value = value.strip()
     if not value:
@@ -649,7 +736,7 @@ def _collect_trace_coverage(profile_root: Path, source_root: Path, *, cover_dir:
         source = _coverage_source(profile_root, source_root, cover_file)
         if source is None:
             continue
-        covered, total = _parse_coverage_file(cover_file)
+        covered, total = _parse_coverage_file(cover_file, source=source)
         if total <= 0:
             continue
         key = str(source.relative_to(profile_root))
@@ -676,7 +763,13 @@ def _merge_coverage(
     return merged
 
 
-def _run_coverage_command(command: str, *, project_root: Path, cover_dir: Path) -> dict[str, Any]:
+def _run_coverage_command(
+    command: str,
+    *,
+    project_root: Path,
+    cover_dir: Path,
+    shipped_surface: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     env_assignments, command_parts = _parse_trace_command(command)
     env = os.environ.copy()
     env.update(env_assignments)
@@ -691,6 +784,7 @@ def _run_coverage_command(command: str, *, project_root: Path, cover_dir: Path) 
     )
     elapsed = time.perf_counter() - start
     coverage = _collect_trace_coverage(project_root, project_root / "src", cover_dir=cover_dir)
+    coverage = _filter_coverage_modules(coverage, shipped_surface=shipped_surface)
     status = "passed" if completed.returncode == 0 else "failed"
     return {
         "command": command,
@@ -1570,12 +1664,14 @@ def cmd_result_record(args: argparse.Namespace) -> int:
 def cmd_coverage(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
     coverage_settings = _load_coverage_profile_settings(profile.paths.project_root)
+    shipped_surface = _normalized_shipped_surface(profile.paths.project_root, coverage_settings)
     default_output = coverage_settings.get("artifact_output")
     output_path = args.output
     if output_path is None and isinstance(default_output, str) and default_output.strip():
         output_path = str(Path(default_output))
 
     commands = [args.command] if args.command else list(profile.validation_commands)
+    focused_surface = shipped_surface if args.command and shipped_surface else None
     runs: list[dict[str, Any]] = []
     merged_modules: dict[str, dict[str, int | float]] = {}
     status = "passed"
@@ -1585,6 +1681,7 @@ def cmd_coverage(args: argparse.Namespace) -> int:
                 command,
                 project_root=profile.paths.project_root,
                 cover_dir=Path(raw_tmp_dir),
+                shipped_surface=focused_surface,
             )
         merged_modules = _merge_coverage(merged_modules, run["coverage"])
         runs.append(run)

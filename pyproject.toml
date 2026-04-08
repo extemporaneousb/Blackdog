@@ -38,8 +38,7 @@ artifact_output = "coverage/latest.json"
 # Focus the audit surface on core state and backlog semantics; broad CLI,
 # supervisor, scaffold, and UI coverage stays in the repo-wide test suite.
 shipped_surface = [
-  "src/blackdog/backlog.py",
-  "src/blackdog/config.py",
-  "src/blackdog/store.py",
-  "src/blackdog/worktree.py",
+  "src/blackdog/core/backlog.py",
+  "src/blackdog/core/config.py",
+  "src/blackdog/core/store.py",
 ]

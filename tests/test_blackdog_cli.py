@@ -24,6 +24,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from blackdog import backlog as backlog_module
+from blackdog import cli as cli_module
 from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
 from blackdog import supervisor as supervisor_module
@@ -1337,6 +1338,7 @@ class BlackdogCliTests(unittest.TestCase):
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         target_script = self.root / "src" / "blackdog" / "coverage_branch_target.py"
         target_script.parent.mkdir(parents=True, exist_ok=True)
+        (target_script.parent / "__init__.py").write_text("", encoding="utf-8")
         target_script.write_text(
             "flag = False\n"
             "if flag:\n"
@@ -1367,6 +1369,70 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(module["covered"], 3)
         self.assertEqual(module["total"], 4)
         self.assertEqual(module["coverage_percent"], 75.0)
+
+    def test_parse_coverage_file_ignores_non_executable_multiline_signature_markers(self) -> None:
+        source = self.root / "sample.py"
+        source.write_text(
+            "def demo(\n"
+            "    value: int,\n"
+            ") -> int:\n"
+            "    return value\n",
+            encoding="utf-8",
+        )
+        cover = self.root / "sample.cover"
+        cover.write_text(
+            "    1: def demo(\n"
+            ">>>>>>     value: int,\n"
+            ">>>>>> ) -> int:\n"
+            "    1:     return value\n",
+            encoding="utf-8",
+        )
+        covered, total = cli_module._parse_coverage_file(cover, source=source)
+        self.assertEqual((covered, total), (2, 2))
+
+    def test_coverage_command_filters_focused_runs_to_shipped_surface(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        (self.root / "pyproject.toml").write_text(
+            "[tool.blackdog.coverage]\n"
+            'shipped_surface = ["src/blackdog/coverage_target.py"]\n',
+            encoding="utf-8",
+        )
+        package_dir = self.root / "src" / "blackdog"
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "coverage_extra.py").write_text("VALUE = 7\n", encoding="utf-8")
+        (package_dir / "coverage_target.py").write_text(
+            "from blackdog import coverage_extra\n"
+            "print(coverage_extra.VALUE)\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog.cli",
+                "coverage",
+                "--project-root",
+                str(self.root),
+                "--command",
+                "PYTHONPATH=src python3 -m blackdog.coverage_target",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["summary"]["modules"],
+            {"src/blackdog/coverage_target.py": payload["summary"]["modules"]["src/blackdog/coverage_target.py"]},
+        )
+        self.assertEqual(
+            payload["runs"][0]["coverage"],
+            {"src/blackdog/coverage_target.py": payload["runs"][0]["coverage"]["src/blackdog/coverage_target.py"]},
+        )
 
     def test_coverage_command_reports_failure_for_failing_validation(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

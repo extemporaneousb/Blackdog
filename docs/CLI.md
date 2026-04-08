@@ -301,6 +301,12 @@ result summary and any recorded runtime duration.
 - `--output` writes the same JSON report to disk for retention.
 - Return code is non-zero when any validation command fails.
 
+When `[tool.blackdog.coverage].shipped_surface` is configured and `--command`
+is supplied, the coverage payload is filtered to that focused audit surface.
+Blackdog also ignores stdlib trace `>>>>>>` markers for non-executable
+multiline signature continuation lines while still counting real missing trace
+lines as uncovered.
+
 ### Delegated child telemetry workflow
 
 For delegated ergonomics reviews, use:

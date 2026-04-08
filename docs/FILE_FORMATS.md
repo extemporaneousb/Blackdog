@@ -141,7 +141,9 @@ The emitted schema includes:
   - `stdout`
   - `stderr`
   - `coverage`
-- `summary`: aggregated coverage totals for modules under `src/`
+- `summary`: aggregated coverage totals for modules under `src/`, or the focused
+  shipped surface when a coverage run uses `--command` with
+  `[tool.blackdog.coverage].shipped_surface` configured.
 
 `runs[*].coverage` maps `module_path` → `{covered, total, coverage_percent}`.
 `summary` also includes:
@@ -155,29 +157,26 @@ The emitted schema includes:
 `[tool.blackdog.coverage].shipped_surface` defines the current focused audit
 surface for core semantics. In this repo that surface is now:
 
-- `src/blackdog/backlog.py`
-- `src/blackdog/config.py`
-- `src/blackdog/store.py`
-- `src/blackdog/worktree.py` (transitional: only WTAM safety facts
-  belong in core; lifecycle orchestration belongs in `blackdog proper`)
+- `src/blackdog/core/backlog.py`
+- `src/blackdog/core/config.py`
+- `src/blackdog/core/store.py`
 
 Use `make coverage-core` to capture a focused coverage artifact at
 `coverage/core-latest.json` for that surface. `make coverage` remains the broad
-repo-level validation pass.
+repo-level validation pass. While deriving those totals, Blackdog ignores
+stdlib trace `>>>>>>` markers for non-executable multiline signature
+continuation lines and still counts real missing trace lines as uncovered.
 
 Current gaps to close before a true 100 percent core gate is defensible:
 
-- `backlog.py`: add direct tests for runnable-state classification,
+- `blackdog.core.backlog.py`: add direct tests for runnable-state classification,
   predecessor/approval transitions, and stale-state pruning in addition to
   task-shaping coercion.
-- `config.py`: add direct tests for profile parsing failures, `@git-common`
+- `blackdog.core.config.py`: add direct tests for profile parsing failures, `@git-common`
   path resolution, and default doc-routing/validation propagation.
-- `store.py`: add direct tests for malformed JSON and JSONL rejection,
+- `blackdog.core.store.py`: add direct tests for malformed JSON and JSONL rejection,
   append-only inbox replay, result ordering, and thread/result linkage
   invariants.
-- `worktree.py`: add direct tests for branch-to-task mapping, worktree
-  contract reporting, and WTAM edge cases that do not require full supervisor
-  integration.
 
 Those focused tests should be the core gate. The existing CLI, supervisor, and
 render tests should remain integration coverage rather than the primary source
@@ -338,10 +337,9 @@ The readonly worktree contract also freezes two derived states:
 
 The core-only audit surface is frozen to `[tool.blackdog.coverage].shipped_surface`:
 
-- `src/blackdog/backlog.py`
-- `src/blackdog/config.py`
-- `src/blackdog/store.py`
-- `src/blackdog/worktree.py`
+- `src/blackdog/core/backlog.py`
+- `src/blackdog/core/config.py`
+- `src/blackdog/core/store.py`
 
 The focused audit command is frozen to the current `Makefile` contract:
 
@@ -359,7 +357,7 @@ The gate plan is intentionally two-phase:
   surface and 100.0 percent coverage for each shipped module before additional
   core extraction or ownership moves.
 
-As of April 7, 2026, the current shipped-surface aggregate from
+As of April 8, 2026, the current shipped-surface aggregate from
 `make coverage-core` is still well below that future 100 percent threshold, so
 Phase 0 stays evidence-only rather than pretending a numeric gate already
 exists.
