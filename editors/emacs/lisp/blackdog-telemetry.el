@@ -484,7 +484,7 @@ Set to nil or 0 to disable automatic refresh."
      (insert (format "Unable to load snapshot: %s\n\n" (cdr snapshot-result))))
     ('ok
      (let* ((snapshot (cdr snapshot-result))
-            (counts (alist-get 'counts snapshot))
+            (counts (blackdog-core-counts snapshot))
             (queue (alist-get 'queue_status snapshot))
             (hero (alist-get 'hero_highlights snapshot)))
        (insert (format "Ready: %s  Claimed: %s  Waiting: %s  Done: %s\n"

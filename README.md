@@ -74,6 +74,26 @@ Still in progress:
   scaffold for host repos
 - optional extension surfaces such as `editors/emacs/`
 
+## External client contract
+
+External adapters should treat `blackdog snapshot` as a product-owned
+envelope and `snapshot.core_export` as the stable shared machine
+contract. Read shared backlog/runtime facts such as project identity,
+counts, objectives, plan rows, open inbox rows, and durable task state
+from `core_export`; treat top-level snapshot fields like `tasks`,
+`board_tasks`, `queue_status`, run metadata, and artifact hrefs as the
+board/editor projection.
+
+Minimal example:
+
+```bash
+blackdog snapshot | jq '.core_export.tasks[] | {id, title, claim_status, latest_result_status}'
+```
+
+Legacy `blackdog thread ...` commands manage Blackdog-owned prompt/task
+threads. Client-native chat/session storage such as Codex transcripts is
+separate from that thread artifact surface.
+
 ## Quick start
 
 ```bash

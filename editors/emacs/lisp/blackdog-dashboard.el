@@ -159,7 +159,7 @@
          (snapshot (blackdog-snapshot root))
          (buffer (get-buffer-create
                   (format "*Blackdog: %s*"
-                          (alist-get 'project_name snapshot)))))
+                          (blackdog-project-name snapshot)))))
     (with-current-buffer buffer
       (blackdog-dashboard-mode)
       (setq-local blackdog-buffer-root root)
@@ -201,8 +201,8 @@
 
 (defun blackdog-dashboard--insert-hero (snapshot)
   "Insert the hero banner from SNAPSHOT."
-  (let ((project (alist-get 'project_name snapshot))
-        (root (alist-get 'project_root snapshot))
+  (let ((project (blackdog-project-name snapshot))
+        (root (blackdog-project-root-path snapshot))
         (highlights (alist-get 'hero_highlights snapshot))
         (latest-session (car (blackdog-codex-session-list blackdog-buffer-root nil))))
     (insert (format "%s\n%s\n\n" project root))
@@ -260,7 +260,7 @@
   "Insert queue overview data from SNAPSHOT."
   (magit-insert-section (overview)
     (magit-insert-heading "Overview")
-    (let ((counts (alist-get 'counts snapshot))
+    (let ((counts (blackdog-core-counts snapshot))
           (queue (alist-get 'queue_status snapshot)))
       (insert (format "Ready: %s  Claimed: %s  Waiting: %s  Done: %s\n"
                       (alist-get 'ready counts)
@@ -278,7 +278,7 @@
   "Insert objective summaries from SNAPSHOT."
   (magit-insert-section (objectives)
     (magit-insert-heading "Objectives")
-    (if-let ((objectives (alist-get 'objectives snapshot)))
+    (if-let ((objectives (blackdog-core-objectives snapshot)))
         (dolist (row objectives)
           (insert (format "- [%s/%s] %s\n"
                           (alist-get 'done row)
@@ -289,7 +289,7 @@
 
 (defun blackdog-dashboard--insert-tasks (snapshot)
   "Insert board tasks from SNAPSHOT."
-  (let* ((all-tasks (alist-get 'tasks snapshot))
+  (let* ((all-tasks (blackdog-ui-task-rows snapshot))
          (board-tasks (or (alist-get 'board_tasks snapshot)
                           (seq-filter (lambda (task)
                                         (alist-get 'lane_id task))

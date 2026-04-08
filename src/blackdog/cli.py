@@ -1729,7 +1729,7 @@ def _resolve_optional_body_text(value: str | None, *, command: str, required: bo
 
 
 def _thread_prompt_source(thread: dict[str, Any]) -> str:
-    lines = [f"Conversation Thread\n{thread['title']}"]
+    lines = [f"Blackdog Conversation Thread\n{thread['title']}"]
     for entry in thread.get("entries", []):
         details = [str(entry.get("created_at") or "").strip()]
         actor = str(entry.get("actor") or "").strip()
@@ -1761,14 +1761,14 @@ def _thread_latest_user_body(thread: dict[str, Any]) -> str:
 def _thread_task_defaults(thread: dict[str, Any]) -> dict[str, str]:
     latest_user_body = _thread_latest_user_body(thread)
     thread_id = str(thread.get("thread_id") or "").strip()
-    title = str(thread.get("title") or "").strip() or thread_id or "Conversation thread"
-    why = latest_user_body or f"Continue the work described in conversation thread {thread_id}."
+    title = str(thread.get("title") or "").strip() or thread_id or "Blackdog conversation thread"
+    why = latest_user_body or f"Continue the work described in Blackdog conversation thread {thread_id}."
     evidence = (
-        f"Conversation thread {thread_id} is stored as a first-class runtime artifact with "
+        f"Blackdog conversation thread {thread_id} is stored as a first-class runtime artifact with "
         f"{int(thread.get('entry_count') or 0)} entries. Treat that conversation as the operator-authored source of truth."
     )
     safe_first_slice = (
-        f"Review conversation thread {thread_id}, inspect any referenced code or linked tasks, and execute the "
+        f"Review Blackdog conversation thread {thread_id}, inspect any referenced code or linked tasks, and execute the "
         "smallest next slice implied by the latest user entry before broadening scope."
     )
     return {
@@ -1782,7 +1782,7 @@ def _thread_task_defaults(thread: dict[str, Any]) -> dict[str, str]:
 
 def _render_thread_list_text(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return "No threads.\n"
+        return "No Blackdog threads.\n"
     lines = []
     for row in rows:
         lines.append(
@@ -2419,7 +2419,10 @@ def _build_proper_parsers(subparsers, *, allowed_owners: frozenset[str] | None) 
             p_task_run.set_defaults(func=cmd_task_run)
 
     if _command_enabled("snapshot", allowed_owners):
-        p_snapshot = subparsers.add_parser("snapshot", help="Print the canonical static-HTML snapshot contract")
+        p_snapshot = subparsers.add_parser(
+            "snapshot",
+            help="Print the Blackdog snapshot envelope with its stable core_export contract",
+        )
         _apply_command_audit(p_snapshot, "snapshot")
         p_snapshot.add_argument("--project-root", default=None)
         p_snapshot.set_defaults(func=cmd_snapshot)
@@ -2442,11 +2445,17 @@ def _build_proper_parsers(subparsers, *, allowed_owners: frozenset[str] | None) 
         "thread task",
     )
     if _any_command_enabled(thread_commands, allowed_owners):
-        p_thread = subparsers.add_parser("thread", help="Manage freeform conversation threads")
+        p_thread = subparsers.add_parser(
+            "thread",
+            help="Manage Blackdog-owned freeform conversation threads",
+        )
         _apply_command_audit(p_thread, "thread")
         thread_subparsers = p_thread.add_subparsers(dest="thread_command", required=True)
         if _command_enabled("thread new", allowed_owners):
-            p_thread_new = thread_subparsers.add_parser("new", help="Create a new conversation thread")
+            p_thread_new = thread_subparsers.add_parser(
+                "new",
+                help="Create a new Blackdog-owned conversation thread",
+            )
             _apply_command_audit(p_thread_new, "thread new")
             p_thread_new.add_argument("--project-root", default=None)
             p_thread_new.add_argument("--actor", required=True)
@@ -2455,21 +2464,30 @@ def _build_proper_parsers(subparsers, *, allowed_owners: frozenset[str] | None) 
             p_thread_new.add_argument("--format", choices=("text", "json"), default="json")
             p_thread_new.set_defaults(func=cmd_thread_new)
         if _command_enabled("thread list", allowed_owners):
-            p_thread_list = thread_subparsers.add_parser("list", help="List conversation threads")
+            p_thread_list = thread_subparsers.add_parser(
+                "list",
+                help="List Blackdog-owned conversation threads",
+            )
             _apply_command_audit(p_thread_list, "thread list")
             p_thread_list.add_argument("--project-root", default=None)
             p_thread_list.add_argument("--task-id", default=None)
             p_thread_list.add_argument("--format", choices=("text", "json"), default="text")
             p_thread_list.set_defaults(func=cmd_thread_list)
         if _command_enabled("thread show", allowed_owners):
-            p_thread_show = thread_subparsers.add_parser("show", help="Show one conversation thread")
+            p_thread_show = thread_subparsers.add_parser(
+                "show",
+                help="Show one Blackdog-owned conversation thread",
+            )
             _apply_command_audit(p_thread_show, "thread show")
             p_thread_show.add_argument("--project-root", default=None)
             p_thread_show.add_argument("--id", required=True)
             p_thread_show.add_argument("--format", choices=("text", "json"), default="json")
             p_thread_show.set_defaults(func=cmd_thread_show)
         if _command_enabled("thread append", allowed_owners):
-            p_thread_append = thread_subparsers.add_parser("append", help="Append one entry to a conversation thread")
+            p_thread_append = thread_subparsers.add_parser(
+                "append",
+                help="Append one entry to a Blackdog-owned conversation thread",
+            )
             _apply_command_audit(p_thread_append, "thread append")
             p_thread_append.add_argument("--project-root", default=None)
             p_thread_append.add_argument("--id", required=True)
@@ -2484,7 +2502,7 @@ def _build_proper_parsers(subparsers, *, allowed_owners: frozenset[str] | None) 
         if _command_enabled("thread prompt", allowed_owners):
             p_thread_prompt = thread_subparsers.add_parser(
                 "prompt",
-                help="Rewrite a saved conversation thread against the local repo contract",
+                help="Rewrite a saved Blackdog-owned conversation thread against the local repo contract",
             )
             _apply_command_audit(p_thread_prompt, "thread prompt")
             p_thread_prompt.add_argument("--project-root", default=None)
@@ -2495,7 +2513,7 @@ def _build_proper_parsers(subparsers, *, allowed_owners: frozenset[str] | None) 
         if _command_enabled("thread task", allowed_owners):
             p_thread_task = thread_subparsers.add_parser(
                 "task",
-                help="Create one backlog task from a saved conversation thread",
+                help="Create one backlog task from a saved Blackdog-owned conversation thread",
             )
             _apply_command_audit(p_thread_task, "thread task")
             p_thread_task.add_argument("--project-root", default=None)

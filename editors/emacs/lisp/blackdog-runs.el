@@ -53,7 +53,7 @@
          (tasks (seq-filter
                  (lambda (task)
                    (and (alist-get 'run_dir_href task)))
-                 (alist-get 'tasks snapshot))))
+                 (blackdog-ui-task-rows snapshot))))
     (setq tabulated-list-entries
           (mapcar (lambda (task)
                     (list

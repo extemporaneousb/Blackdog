@@ -1,3 +1,10 @@
+"""Blackdog-owned conversation thread storage.
+
+These thread artifacts are part of the Blackdog product layer for
+prompt/task workflows. They are distinct from external client chat or
+session stores such as Codex transcripts.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime

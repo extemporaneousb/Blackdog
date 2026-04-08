@@ -194,6 +194,35 @@ Mention the current backlog lane and code/data attachments.
     (should (equal "https://example.com"
                    (blackdog-resolve-href "https://example.com" snapshot)))))
 
+(ert-deftest blackdog-core-export-prefers-embedded-contract ()
+  (let* ((snapshot '((project_name . "Board Name")
+                     (counts . ((ready . 1)))
+                     (tasks . (((id . "UI-1") (title . "UI task"))))
+                     (core_export . ((project_name . "Core Name")
+                                     (counts . ((ready . 3)))
+                                     (objectives . (((title . "Core objective"))))
+                                     (tasks . (((id . "CORE-1") (title . "Core task")))))))))
+    (should (equal "Core Name" (blackdog-project-name snapshot)))
+    (should (equal 3 (alist-get 'ready (blackdog-core-counts snapshot))))
+    (should (equal "Core objective"
+                   (alist-get 'title (car (blackdog-core-objectives snapshot)))))
+    (should (equal "CORE-1"
+                   (alist-get 'id (car (blackdog-core-task-rows snapshot)))))
+    (should (equal "UI-1"
+                   (alist-get 'id (car (blackdog-ui-task-rows snapshot)))))))
+
+(ert-deftest blackdog-core-export-falls-back-to-top-level-snapshot ()
+  (let ((snapshot '((project_name . "Blackdog")
+                    (counts . ((ready . 2)))
+                    (objectives . (((title . "Top-level objective"))))
+                    (tasks . (((id . "TASK-1") (title . "Top-level task")))))))
+    (should (equal "Blackdog" (blackdog-project-name snapshot)))
+    (should (equal 2 (alist-get 'ready (blackdog-core-counts snapshot))))
+    (should (equal "Top-level objective"
+                   (alist-get 'title (car (blackdog-core-objectives snapshot)))))
+    (should (equal "TASK-1"
+                   (alist-get 'id (car (blackdog-core-task-rows snapshot)))))))
+
 (ert-deftest blackdog-task-candidates-include-id-and-title ()
   (let* ((snapshot '((tasks . (((id . "TASK-1")
                                 (title . "First task")
@@ -1094,6 +1123,7 @@ Mention the current backlog lane and code/data attachments.
     (let ((blackdog-default-command command)
           (snapshot (blackdog-snapshot blackdog-test-root t)))
       (should (equal "Blackdog" (alist-get 'project_name snapshot)))
+      (should (alist-get 'core_export snapshot))
       (should (alist-get 'tasks snapshot))
       (should (alist-get 'control_dir snapshot)))))
 
@@ -1104,7 +1134,10 @@ Mention the current backlog lane and code/data attachments.
     (should (stringp (cdr (assoc "project_name" snapshot))))
     (should (stringp (cdr (assoc "project_root" snapshot))))
     (should (numberp (cdr (assoc "schema_version" snapshot))))
+    (should (alist-get "core_export" snapshot nil nil #'string=))
     (should (sequencep (cdr (assoc "tasks" snapshot))))
+    (should (sequencep (cdr (assoc "tasks"
+                                   (alist-get "core_export" snapshot nil nil #'string=)))))
     (should (sequencep (cdr (assoc "recent_results" snapshot))))))
 
 (ert-deftest blackdog-test-task-result-fixture-shape ()

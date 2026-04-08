@@ -80,8 +80,17 @@ Notes:
 2. Prefer `./.VE/bin/blackdog` for that worktree; fall back to `blackdog` on `PATH`.
 3. Call `blackdog snapshot` and cache the parsed JSON per root.
 4. Reuse that cached snapshot across the current operator pass until the operator explicitly refreshes.
-5. Render dashboard, task reader, and result buffers from snapshot rows.
-6. Resolve artifact hrefs against `snapshot.control_dir`.
+5. Read shared backlog/runtime facts from `snapshot.core_export`.
+6. Render dashboard, task reader, and result buffers from the appropriate projection rows.
+7. Resolve artifact hrefs against `snapshot.control_dir`.
+
+Shared contract rule:
+
+- use `snapshot.core_export` for project identity, counts, objectives,
+  plan data, open inbox rows, and durable task state
+- use top-level `snapshot.tasks`, `board_tasks`, `recent_results`,
+  `queue_status`, and run/artifact href fields only when Emacs needs
+  board-only or task-reader-only projection data
 
 ### Write path
 
@@ -95,7 +104,7 @@ The package should shell out to Blackdog CLI commands for any durable state chan
 
 The current package keeps write logic thin and CLI-authoritative. Emacs adds safe wrappers for task capture, Codex-session launch/resume, and core task lifecycle actions, while Blackdog and Codex still own the durable state transitions and validation rules.
 
-Codex conversations are now Codex-owned, not Blackdog-owned. Emacs shells out to `codex exec --json` for a new local session turn, `codex exec resume --json` for follow-up turns, and replays the persisted JSONL transcript under `~/.codex/sessions/` for browse and resume behavior.
+Codex conversations are now Codex-owned, not Blackdog-owned. Emacs shells out to `codex exec --json` for a new local session turn, `codex exec resume --json` for follow-up turns, and replays the persisted JSONL transcript under `~/.codex/sessions/` for browse and resume behavior. Blackdog threads remain a separate product artifact surface for legacy prompt/task flows.
 
 ### Git / Worktree semantics
 
@@ -117,7 +126,7 @@ For a task row:
 2. `thread_href` points at the best available raw child transcript and currently prefers a non-empty `stderr.log`, then falls back to `stdout.log`.
 3. direct/manual WTAM tasks may not have a thread artifact, so the reader leaves thread browsing unavailable instead of guessing.
 
-The Emacs task reader uses dedicated prompt/thread buffers for those artifacts so operators can stay inside the workbench, while the raw files remain available through the artifact list and minibuffer artifact picker.
+The Emacs task reader uses dedicated prompt/thread buffers for those artifacts so operators can stay inside the workbench, while the raw files remain available through the artifact list and minibuffer artifact picker. Those thread artifacts are Blackdog-owned run/task artifacts, not the default Codex session history surface.
 
 ### Codex session workflow
 
@@ -194,7 +203,7 @@ That is the intended worktree-diff reading model: prefer live Git state while th
 5. Use `a` to reply with the current settings, `S` to reply after editing model/reasoning, and `f` to toggle live auto-follow in the session reader.
 6. Use `C-c b h` or `C-c b T` to reopen older Codex sessions for this repo from their persisted JSONL transcripts.
 
-This keeps conversation state where it belongs: in Codex, not in a parallel Blackdog thread store.
+This keeps conversation state where it belongs: in Codex, not in a parallel Blackdog thread store. The legacy thread browser remains available only for Blackdog-owned prompt/task artifacts that still exist under the shared control root.
 
 ### Structured spec drafting
 

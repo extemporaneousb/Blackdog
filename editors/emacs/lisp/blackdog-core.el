@@ -132,15 +132,58 @@ When FORCE is non-nil, refresh the cached snapshot."
           (puthash root snapshot blackdog--snapshot-cache)
           snapshot))))
 
+(defun blackdog-core-export (&optional snapshot root)
+  "Return the stable `core_export' payload from SNAPSHOT or ROOT.
+
+When the snapshot predates `core_export', fall back to the snapshot
+itself so older fixtures and repos still read cleanly."
+  (let ((snapshot (or snapshot (blackdog-snapshot root))))
+    (or (alist-get 'core_export snapshot) snapshot)))
+
+(defun blackdog-project-name (&optional snapshot root)
+  "Return the project name from SNAPSHOT or ROOT."
+  (or (alist-get 'project_name (blackdog-core-export snapshot root))
+      (alist-get 'project_name (or snapshot (blackdog-snapshot root)))))
+
+(defun blackdog-project-root-path (&optional snapshot root)
+  "Return the project root path from SNAPSHOT or ROOT."
+  (or (alist-get 'project_root (blackdog-core-export snapshot root))
+      (alist-get 'project_root (or snapshot (blackdog-snapshot root)))))
+
 (defun blackdog-control-dir (&optional snapshot root)
   "Return the Blackdog control dir from SNAPSHOT or ROOT."
   (alist-get 'control_dir (or snapshot (blackdog-snapshot root))))
+
+(defun blackdog-core-counts (&optional snapshot root)
+  "Return shared backlog/runtime counts from SNAPSHOT or ROOT."
+  (or (alist-get 'counts (blackdog-core-export snapshot root))
+      (alist-get 'counts (or snapshot (blackdog-snapshot root)))))
+
+(defun blackdog-core-objectives (&optional snapshot root)
+  "Return shared objective rows from SNAPSHOT or ROOT."
+  (or (alist-get 'objectives (blackdog-core-export snapshot root))
+      (alist-get 'objectives (or snapshot (blackdog-snapshot root)))))
+
+(defun blackdog-core-task-rows (&optional snapshot root)
+  "Return shared task rows from SNAPSHOT or ROOT."
+  (or (alist-get 'tasks (blackdog-core-export snapshot root))
+      (alist-get 'tasks (or snapshot (blackdog-snapshot root)))))
+
+(defun blackdog-ui-task-rows (&optional snapshot root)
+  "Return the UI task projection from SNAPSHOT or ROOT."
+  (alist-get 'tasks (or snapshot (blackdog-snapshot root))))
 
 (defun blackdog-task-by-id (task-id &optional snapshot root)
   "Return TASK-ID from SNAPSHOT or ROOT."
   (seq-find (lambda (task)
               (equal task-id (alist-get 'id task)))
-            (alist-get 'tasks (or snapshot (blackdog-snapshot root)))))
+            (blackdog-ui-task-rows snapshot root)))
+
+(defun blackdog-core-task-by-id (task-id &optional snapshot root)
+  "Return TASK-ID from the shared `core_export' contract."
+  (seq-find (lambda (task)
+              (equal task-id (alist-get 'id task)))
+            (blackdog-core-task-rows snapshot root)))
 
 (defun blackdog-open-task-by-id (task-id &optional root)
   "Open TASK-ID from ROOT in the task reader."
@@ -162,7 +205,7 @@ When FORCE is non-nil, refresh the cached snapshot."
                    (alist-get 'id task)
                    (alist-get 'title task))
            task))
-   (alist-get 'tasks (or snapshot (blackdog-snapshot root)))))
+   (blackdog-ui-task-rows snapshot root)))
 
 (defun blackdog-read-task (&optional prompt snapshot root)
   "Read one task from SNAPSHOT or ROOT with PROMPT."

@@ -51,7 +51,7 @@
          (snapshot (blackdog-snapshot root))
          (tasks (seq-filter (lambda (task)
                               (alist-get 'latest_result_status task))
-                            (alist-get 'tasks snapshot))))
+                            (blackdog-ui-task-rows snapshot))))
     (setq tabulated-list-entries
           (mapcar
            (lambda (task)

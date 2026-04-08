@@ -963,7 +963,7 @@ class BlackdogCliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["thread_id"], thread_id)
         self.assertEqual(payload["thread_title"], "Prompt preview")
-        self.assertIn("Conversation Thread", payload["original_prompt"])
+        self.assertIn("Blackdog Conversation Thread", payload["original_prompt"])
         self.assertIn("Turn this freeform conversation", payload["original_prompt"])
 
     def test_installs_registry_persists_and_observes_host_repos(self) -> None:

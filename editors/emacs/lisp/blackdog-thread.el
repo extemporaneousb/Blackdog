@@ -4,8 +4,10 @@
 
 ;;; Commentary:
 
-;; Freeform conversation threads for prompt authoring, preview, and task launch.
-;; This is an adapter over Blackdog's thread layer, not a core state surface.
+;; Legacy Blackdog-owned conversation threads for prompt authoring,
+;; preview, and task launch. This remains an adapter over Blackdog's
+;; product thread layer, not a core state surface and not the default
+;; Codex chat workflow.
 
 ;;; Code:
 
@@ -356,7 +358,7 @@
     (tabulated-list-print t)))
 
 (defun blackdog-threads-open (&optional root)
-  "Open the Blackdog conversation-thread browser for ROOT."
+  "Open the Blackdog-owned conversation-thread browser for ROOT."
   (interactive)
   (let ((buffer (get-buffer-create "*Blackdog Threads*")))
     (with-current-buffer buffer

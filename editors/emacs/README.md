@@ -13,6 +13,12 @@ Current surfaces:
 - conversation-first task drafting, with legacy spec drafting still available
 - telemetry, snapshot stats, and supervisor health
 
+Contract notes:
+
+- shared backlog/runtime reads should come from `blackdog snapshot` via `snapshot.core_export`
+- top-level `snapshot.tasks`, `board_tasks`, run metadata, and artifact hrefs remain the UI projection for task-reader and artifact-heavy views
+- Codex sessions are the default chat surface; `blackdog-thread.el` stays as a legacy reader/writer for Blackdog-owned prompt/task threads
+
 Minimal local install:
 
 ```elisp

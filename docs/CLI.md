@@ -214,7 +214,7 @@ product development.
 
 `blackdog prompt` rewrites a raw prompt against the local repo contract. It emits low/medium/high complexity prompt profiles derived from the repo profile, routed docs, validation defaults, and the latest tune recommendation so host-repo skills can reuse Blackdog's repo-local guidance instead of rebuilding it from scratch.
 
-`blackdog thread ...` manages saved freeform conversation threads under the shared control root. Use it when the operator should write normal markdown conversation instead of filling a structured task-spec template:
+`blackdog thread ...` manages saved Blackdog-owned freeform conversation threads under the shared control root. Use it when the operator should write normal markdown conversation for a Blackdog prompt/task flow instead of filling a structured task-spec template:
 
 - `thread new` creates a conversation thread, optionally with the first user entry.
 - `thread append` adds one user/assistant/system entry, preserving timestamp, actor, optional task link, and optional response duration.
@@ -225,6 +225,9 @@ product development.
 Thread storage, task linkage, and thread-aware result mirroring are a
 Blackdog-product conversation layer. They sit above the minimal
 `blackdog.core` task/result write path rather than expanding it.
+They are also distinct from client-native chat/session storage such as
+Codex session transcripts: `thread` is a Blackdog artifact surface, not
+the default chat transport for every extension.
 
 The prompt profiles now also carry calibrated task-shaping defaults by effort (`S`/`M`/`L`) derived from completed work in the repo. That lets tune improve prompt generation, not just reporting: prompts can ask for explicit estimate snapshots that match the repo's observed task history instead of generic defaults.
 
@@ -285,6 +288,19 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 `blackdog supervise report` is the operator metrics surface. It reads historical supervisor events/status/results and summarizes startup friction (launch pressure/failures), retry pressure (task re-run rate), output-shape consistency (expected artifact presence), landing outcomes (landing failures and success), and a `recovery_needed` section that highlights child attempts whose output exists but still needs operator or supervisor follow-up. Per-run rows now include the persisted run launch settings, and attempt rows surface the resolved child launch settings whenever the launch telemetry was recorded. This report is read-only and intended for quick ergonomics diagnostics across the most recent runs.
 
 `blackdog snapshot` prints the canonical JSON contract embedded into the static repo-branded backlog HTML page (by default `<project-slug>-backlog.html`, with a compatibility copy at `backlog-index.html`). That payload is still a Blackdog-product UI snapshot, but it now embeds a neutral machine contract at `core_export` so extensions do not need to depend on board-shaped fields. `core_export` carries the stable backlog/runtime facts shared by clients: repo identity, headers, counts, push/release metadata, open inbox rows, plan view, next-runnable rows, and task rows built from backlog/state/result data. The shipped board now reads its repo/header, plan/lane, and next-runnable surfaces through that neutral export; the duplicated top-level snapshot aliases remain a compatibility projection for existing readers. The surrounding top-level snapshot still drives board-only affordances such as the project-branded hero, `Status` counters (running, waiting, blocked, last sweep completed, completed today, completed all-time), the dedicated `Unattended Tuning` band, the live `Execution Map`, completed-task list, conversation-thread summaries, artifact links, per-run metadata, and other UI-only fields.
+
+External clients should treat `core_export` as the stable shared
+contract and use the top-level snapshot rows only when they explicitly
+want the board/editor projection. In practice:
+
+- use `core_export.project_*`, `core_export.headers`, `core_export.counts`, `core_export.objectives`, `core_export.next_rows`, `core_export.open_messages`, `core_export.plan`, and `core_export.tasks[*]` for shared backlog/runtime reads
+- use top-level `tasks`, `board_tasks`, `queue_status`, `threads`, and run/artifact href fields only for board/task-reader affordances that are intentionally outside the neutral export
+
+A minimal external-client read can stay as simple as:
+
+```bash
+blackdog snapshot | jq '.core_export.tasks[] | {id, title, claim_status, latest_result_status}'
+```
 
 The snapshot now also includes project-level `threads` rows plus per-task conversation linkage (`conversation_threads`, `conversation_thread_ids`, and `primary_conversation_*` fields) so Emacs can move directly from a saved operator conversation to its derived task and back again.
 
