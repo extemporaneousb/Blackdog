@@ -1,8 +1,8 @@
 """Core Blackdog runtime contracts.
 
-``blackdog.core.backlog`` is the transitional implementation home for the
-durable backlog runtime while prompt/tune and rendering helpers are still
-being split more finely across the frozen core/proper boundary.
+``blackdog.core.backlog`` owns the durable backlog runtime. Prompt/tune
+helpers now live under ``blackdog.proper`` and remain reachable here only
+through compatibility wrappers while callers migrate.
 """
 
 __all__ = ["backlog", "config", "store"]

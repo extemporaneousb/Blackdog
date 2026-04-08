@@ -46,6 +46,11 @@ The contract rule is:
 - integrations should not hand-edit backlog state files or depend on
   the current Python module layout as a public API
 
+That module-layout warning applies directly to prompt/tune helpers:
+their product ownership is `blackdog proper`, and any compatibility
+imports that still resolve through `blackdog.backlog` remain
+transitional.
+
 ## Fresh repo creation flow
 
 1. Run `blackdog create-project --project-root /path/to/repo --project-name "Repo Name"` from the current Blackdog checkout.

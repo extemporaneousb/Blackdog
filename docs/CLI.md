@@ -40,6 +40,9 @@ The stable executable names now include `blackdog-core`,
 `blackdog-skill`, and `python -m blackdog`. The legacy `blackdog`
 surface remains available as a compatibility wrapper while callers move
 to owner-scoped entrypoints.
+Prompt/tune runtime logic now lives behind `blackdog.proper`; any
+remaining `blackdog.backlog` imports for those helpers are compatibility
+wrappers rather than the ownership boundary.
 
 ### Owner-scoped entrypoints
 

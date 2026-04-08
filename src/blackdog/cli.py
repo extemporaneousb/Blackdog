@@ -19,14 +19,10 @@ from typing import Any
 from .backlog import (
     BacklogError,
     add_task,
-    build_prompt_improvement,
-    build_prompt_profiles,
-    build_tune_analysis,
     build_plan_view,
     build_view_model,
     classify_task_status,
     enrich_result_task_shaping_telemetry,
-    seed_tune_task,
     load_backlog,
     next_runnable_tasks,
     reconcile_runtime_artifacts,
@@ -82,6 +78,12 @@ from .supervisor import (
     render_supervisor_observation_output,
     run_supervisor,
     run_supervisor_sweep,
+)
+from .proper.tuning import (
+    build_prompt_improvement,
+    build_prompt_profiles,
+    build_tune_analysis,
+    seed_tune_task,
 )
 from .threads import (
     append_thread_entry,
