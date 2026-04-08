@@ -12,7 +12,6 @@ from tests import test_blackdog_cli as cli_tests
 FORBIDDEN_CORE_IMPORT_PREFIXES = (
     "blackdog.cli",
     "blackdog.proper",
-    "blackdog.scaffold",
     "blackdog.skill_cli",
     "blackdog.supervisor",
     "blackdog.threads",

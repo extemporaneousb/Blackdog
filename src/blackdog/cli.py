@@ -35,7 +35,7 @@ from .backlog import (
     sync_state_for_backlog,
 )
 from .config import ConfigError, DEFAULT_SKILL_USAGE_HEURISTIC, load_profile
-from .scaffold import (
+from .proper.scaffold import (
     ScaffoldError,
     bootstrap_project,
     create_project,

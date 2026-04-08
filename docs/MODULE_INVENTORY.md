@@ -22,7 +22,7 @@ These tags describe primary ownership, not every dependency. A file may still ne
 | `src/blackdog/supervisor.py` | `proper` | Keep together as supervisor runtime and child protocol logic | It owns launching, draining, recovery, run artifacts, and the delegated-child contract. |
 | `src/blackdog/ui.py` | `proper` | Separate board/snapshot presentation code from core backlog/store code | It renders the static board and snapshot-facing presentation model. |
 | `src/blackdog/ui.css` | `proper` | Keep adjacent to the board renderer | It is a packaged asset for the static board surface, not a runtime primitive. |
-| `src/blackdog/scaffold.py` | `adapter` | Move toward a host-bootstrap/install adapter layer | It scaffolds host repos, generated skills, and branded artifacts on top of the core runtime. |
+| `src/blackdog/proper/scaffold.py` | `proper` | Keep as Blackdog-product bootstrap, refresh, and host-install workflow | It owns shipped project scaffolding and branded artifact generation on top of the core runtime contract. |
 | `src/blackdog/cli.py` | `adapter` | Keep as a thin command router over core/proper modules | It is the main shell transport and currently imports nearly every major subsystem. |
 | `src/blackdog/__main__.py` | `adapter` | Keep as the package entrypoint only | It is only the `python -m blackdog` shim. |
 | `src/blackdog/__init__.py` | `adapter` | Keep minimal package metadata/export surface | It is packaging glue, not an ownership boundary. |
@@ -69,7 +69,7 @@ The Emacs package is an adapter tree as a whole. The main split here is between 
    The file mixes core task/state logic with planning summaries, prompt generation, and tuning heuristics.
 2. Hold `src/blackdog/worktree.py`, `src/blackdog/supervisor.py`, and `src/blackdog/ui.py` as separate proper-layer seams.
    Those are distinct product subsystems and should stop depending on one oversized `backlog.py` module.
-3. Keep `src/blackdog/cli.py`, `src/blackdog/scaffold.py`, and `editors/emacs/**` thin.
+3. Keep `src/blackdog/cli.py`, `src/blackdog/proper/scaffold.py`, and `editors/emacs/**` thin.
    They should depend on extracted core/proper modules instead of owning logic.
 4. Remove compatibility and legacy surfaces last.
    `src/blackdog/skill_cli.py`, `editors/emacs/lisp/blackdog-thread.el`, `editors/emacs/lisp/blackdog-spec.el`, and `editors/emacs/templates/blackdog-spec.md` should stay only until the newer entrypoints cover their remaining use cases.

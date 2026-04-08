@@ -181,7 +181,6 @@ Compatibility matters during extraction:
 - `blackdog.worktree`
 - `blackdog.supervisor`
 - `blackdog.ui`
-- `blackdog.scaffold`
 
 The packaged executable names in `pyproject.toml` are part of that
 same stable public surface even while internal module ownership keeps

@@ -5,7 +5,7 @@ This note audits the current extraction risk for the viewer, editor, and supervi
 ## Scope
 
 - Viewer and snapshot renderer in `src/blackdog/ui.py`
-- Host bootstrap and skill/html scaffold in `src/blackdog/scaffold.py`
+- Host bootstrap and skill/html scaffold in `src/blackdog/proper/scaffold.py`
 - Supervisor launcher and child protocol in `src/blackdog/supervisor.py`
 - Emacs entrypoint in `editors/emacs/lisp/blackdog.el`
 
@@ -35,9 +35,9 @@ Recommended split:
 
 ### 2. Scaffold extraction is medium risk because host bootstrap regenerates viewer and skill surfaces together.
 
-- `src/blackdog/scaffold.py:264` through `src/blackdog/scaffold.py:267` bootstrap the project skill and immediately render the HTML board.
-- `src/blackdog/scaffold.py:314` through `src/blackdog/scaffold.py:320` make `render_project_html()` the shared bridge between scaffold flows and the viewer implementation.
-- `src/blackdog/scaffold.py:520` through `src/blackdog/scaffold.py:609` generate project skill text that describes the static board layout, HTML path, and supervisor model as part of the scaffolded host contract.
+- `src/blackdog/proper/scaffold.py:219` through `src/blackdog/proper/scaffold.py:261` bootstrap the project skill and immediately render the HTML board.
+- `src/blackdog/proper/scaffold.py:315` through `src/blackdog/proper/scaffold.py:320` make `render_project_html()` the shared bridge between scaffold flows and the viewer implementation.
+- `src/blackdog/proper/scaffold.py:466` through `src/blackdog/proper/scaffold.py:714` generate project skill text and refresh the managed scaffold as part of the shipped host contract.
 
 Risk:
 
@@ -99,7 +99,7 @@ Recommended split:
    Move the HTML template, CSS, and markdown-to-HTML presentation helpers behind a viewer adapter while keeping the current snapshot payload intact.
 
 3. Replace direct render imports with hooks.
-   `scaffold.py` and `supervisor.py` should not import the viewer implementation directly once the adapter exists.
+   `proper/scaffold.py` and `supervisor.py` should not import the viewer implementation directly once the adapter exists.
 
 4. Extract supervisor launch transport after the artifact contract is stable.
    The scheduler and task lifecycle can stay in core while prompt generation, protocol helper creation, and process spawning move outward.

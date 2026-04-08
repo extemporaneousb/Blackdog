@@ -25,11 +25,11 @@ sys.path.insert(0, str(SRC))
 
 from blackdog import backlog as backlog_module
 from blackdog import cli as cli_module
-from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
 from blackdog import supervisor as supervisor_module
 from blackdog import ui as ui_module
 from blackdog import worktree as worktree_module
+from blackdog.proper import scaffold as scaffold_module
 from blackdog.backlog import (
     CORE_EXPORT_SCHEMA_VERSION,
     build_core_export,
@@ -647,7 +647,6 @@ class BlackdogCliTests(unittest.TestCase):
             "blackdog.config": "blackdog.core.config",
             "blackdog.backlog": "blackdog.core.backlog",
             "blackdog.store": "blackdog.core.store",
-            "blackdog.scaffold": "blackdog.proper.scaffold",
             "blackdog.supervisor": "blackdog.proper.supervisor",
             "blackdog.threads": "blackdog.proper.threads",
             "blackdog.ui": "blackdog.proper.ui",
@@ -1849,7 +1848,7 @@ class BlackdogCliTests(unittest.TestCase):
             return real_run_command(command, cwd=cwd, env=env)
 
         stdout = io.StringIO()
-        with patch("blackdog.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
+        with patch("blackdog.proper.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
             exit_code = run_cli(
                 "create-project",
                 "--project-root",
@@ -3112,7 +3111,7 @@ class BlackdogCliTests(unittest.TestCase):
             return real_run_command(command, cwd=cwd, env=env)
 
         stdout = io.StringIO()
-        with patch("blackdog.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
+        with patch("blackdog.proper.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
             exit_code = run_cli(
                 "update-repo",
                 str(self.root),

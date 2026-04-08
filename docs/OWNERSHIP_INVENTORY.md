@@ -32,7 +32,7 @@ The main extraction risks are still concentrated in a small set of files:
 | `src/blackdog/backlog.py` | `proper` | Owns Blackdog task semantics, planning, prompt shaping, and status/view assembly. | Split later into `core` parsing/state math, `proper` policy/task shaping, and viewer-facing projection helpers. |
 | `src/blackdog/cli.py` | `clients` | Shell-facing command registry and argument plumbing for the whole product. | Shrink by pushing command business logic deeper into owned modules. |
 | `src/blackdog/config.py` | `core` | Defines profile loading, path resolution, defaults, and low-level repo config rules. | Good early extraction candidate. |
-| `src/blackdog/scaffold.py` | `proper` | Blackdog-specific bootstrap/refresh/update workflow and managed-skill scaffolding. | Split rendering hooks away from project bootstrap if viewers are extracted separately. |
+| `src/blackdog/proper/scaffold.py` | `proper` | Blackdog-specific bootstrap/refresh/update workflow and managed-skill scaffolding. | Keep as product orchestration over the core runtime contract. |
 | `src/blackdog/skill_cli.py` | `clients` | Compatibility CLI for project-local skill scaffold operations. | Keep as a thin client over scaffold/proper behavior. |
 | `src/blackdog/store.py` | `core` | Low-level file locking, JSON persistence, inbox/results/thread/state storage helpers. | Strong `core` anchor; keep free of supervisor/UI policy. |
 | `src/blackdog/supervisor.py` | `proper` | Owns delegated execution policy, child protocol, recovery, and landing semantics. | Extract only after `core` state/persistence seams are stable. |
@@ -86,7 +86,7 @@ The main extraction risks are still concentrated in a small set of files:
 1. Extract `core` first.
    `src/blackdog/config.py`, `src/blackdog/store.py`, and the pure parsing/schema portions of `src/blackdog/backlog.py` are the safest reusable substrate.
 2. Keep `proper` responsible for policy-heavy workflows.
-   `src/blackdog/supervisor.py`, `src/blackdog/worktree.py`, `src/blackdog/scaffold.py`, and the product-policy parts of `src/blackdog/backlog.py` should move together or behind stable `core` interfaces.
+   `src/blackdog/supervisor.py`, `src/blackdog/worktree.py`, `src/blackdog/proper/scaffold.py`, and the product-policy parts of `src/blackdog/backlog.py` should move together or behind stable `core` interfaces.
 3. Separate viewers by read contract, not by implementation language.
    The static HTML board (`src/blackdog/ui.py`, `src/blackdog/ui.css`) and the Emacs read surfaces can evolve independently once they consume a stable snapshot/result/artifact contract.
 4. Slim clients last.

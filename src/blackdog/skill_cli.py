@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .config import ConfigError, load_profile
-from .scaffold import ScaffoldError, bootstrap_project, refresh_project_scaffold
+from .proper.scaffold import ScaffoldError, bootstrap_project, refresh_project_scaffold
 
 
 _SKILL_COMMAND_AUDIT = {
