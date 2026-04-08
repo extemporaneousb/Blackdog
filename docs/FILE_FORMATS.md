@@ -271,6 +271,13 @@ The inbox replay contract is:
 - Replay first validates that message rows carry `sender`, `recipient`, `kind`,
   `body`, and list-valued `tags`, and that resolve rows carry `actor`.
 
+The corresponding code-level state sets are:
+
+- `blackdog.core.store.APPROVAL_STATE_MACHINE_STATES`
+- `blackdog.core.store.CLAIM_STATE_MACHINE_STATES`
+- `blackdog.core.store.INBOX_ACTIONS`
+- `blackdog.core.store.INBOX_STATE_MACHINE_STATES`
+
 ### `task-results/<task-id>/*.json` append-only invariants
 
 - Result rows are immutable once written.
@@ -292,6 +299,28 @@ includes:
   the branch matches a known task branch.
 - `current_branch_is_task_branch`: whether the current branch name resolves to a
   known backlog task id.
+- `workspace_role`: one of `primary`, `task`, or `linked`.
+- `landing_state`: `ready` when the primary worktree is clean for landing, or
+  `blocked` when dirty primary-worktree state would prevent landing.
+
+### `blackdog worktree` lifecycle and landing state machine
+
+Blackdog proper freezes worktree lifecycle states to
+`blackdog.worktree.WORKTREE_LIFECYCLE_STATES`:
+
+- `prepared`: `worktree start` created the branch-backed task workspace.
+- `dirty`: the current worktree has local changes.
+- `ahead`: the task branch contains commits ahead of the target branch.
+- `blocked`: landing is prevented by dirty primary state or another worktree
+  cleanliness violation.
+- `landed`: `worktree land` fast-forwarded the task branch into the target.
+- `cleaned`: `worktree cleanup` removed the task worktree and optionally deleted
+  the branch.
+
+The readonly worktree contract also freezes two derived states:
+
+- `workspace_role = primary|task|linked`
+- `landing_state = ready|blocked`
 
 ## Core coverage gate plan
 
@@ -659,6 +688,68 @@ Current keys:
 - `stopped_by_message_id`
 
 Each `steps` entry may also include `recovery_actions` when the supervisor resolved dirty-primary state before the next launch window.
+
+### `supervisor-runs/*/status.json` run state machine
+
+Blackdog proper freezes supervisor step states to
+`blackdog.supervisor.SUPERVISOR_RUN_STEP_STATUSES`:
+
+- `swept`: the run opened with a cleanup sweep and wave compaction pass.
+- `running`: the supervisor is launching or waiting on child work.
+- `draining`: a stop control has been accepted and the run is waiting only for
+  already-launched work to finish.
+- `idle`: the run exited cleanly because no runnable or running work remained.
+- `stopped`: the run exited after draining in response to a stop control.
+
+The externally reported current run status is normalized to
+`blackdog.supervisor.SUPERVISOR_RUN_RUNTIME_STATUSES`:
+
+- `running`, `draining`, `idle`, `stopped`, `interrupted`, or `historical`
+
+Normalization rules:
+
+- `swept` reads back as `running`
+- legacy `complete` and `finished` snapshots read back as `idle`
+- `interrupted` is derived at read time when no final status was persisted and
+  the recorded supervisor pid is no longer alive
+
+Per-child attempt states are frozen to
+`blackdog.supervisor.SUPERVISOR_ATTEMPT_STATUSES`:
+
+- `prepared`, `running`, `launch-failed`, `interrupted`, `blocked`, `failed`,
+  `released`, `done`, `partial`, or `unknown`
+
+Legacy child `final_task_status = "finished"` now normalizes to `done`.
+Child `final_task_status = "open"` and legacy `claimed` outcomes normalize to
+attempt status `partial`; `released` remains `released`.
+
+Attempt/recovery statuses are:
+
+- `prepared`
+- `running`
+- `launch-failed`
+- `interrupted`
+- `blocked`
+- `failed`
+- `released`
+- `done`
+- `unknown`
+
+`child_finish.final_task_status = "finished"` is normalized to attempt status
+`done` for recovery/report views so the same terminal outcome does not split
+across two labels.
+
+Recovery case values remain:
+
+- `blocked_by_dirty_primary`
+- `blocked_land`
+- `partial_run`
+- `landed_but_unfinished`
+
+The shipped code freezes these literals in `blackdog.proper.supervisor` through
+`SUPERVISOR_RUN_STEP_STATUSES`, `SUPERVISOR_RUN_FINAL_STATUSES`,
+`SUPERVISOR_RUN_RUNTIME_STATUSES`, `SUPERVISOR_ATTEMPT_STATUSES`, and
+`SUPERVISOR_RECOVERY_CASES`.
 
 ## Delegated child telemetry and startup metrics
 

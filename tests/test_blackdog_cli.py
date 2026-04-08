@@ -26,7 +26,9 @@ sys.path.insert(0, str(SRC))
 from blackdog import backlog as backlog_module
 from blackdog import scaffold as scaffold_module
 from blackdog import store as store_module
+from blackdog import supervisor as supervisor_module
 from blackdog import ui as ui_module
+from blackdog import worktree as worktree_module
 from blackdog.backlog import (
     CORE_EXPORT_SCHEMA_VERSION,
     build_core_export,
@@ -39,6 +41,10 @@ from blackdog.cli import _COMMAND_AUDIT, main as blackdog_main
 from blackdog.config import default_host_skill_name, load_profile, render_default_profile
 from blackdog.skill_cli import main as blackdog_skill_main
 from blackdog.store import (
+    APPROVAL_STATE_MACHINE_STATES,
+    CLAIM_STATE_MACHINE_STATES,
+    INBOX_ACTIONS,
+    INBOX_STATE_MACHINE_STATES,
     append_jsonl,
     atomic_write_text,
     load_events,
@@ -52,7 +58,16 @@ from blackdog.store import (
     save_state,
     send_message,
 )
-from blackdog.supervisor import _build_child_prompt, _resolved_launch_command, _write_run_status
+from blackdog.supervisor import (
+    SUPERVISOR_ATTEMPT_STATUSES,
+    SUPERVISOR_RUN_RUNTIME_STATUSES,
+    SUPERVISOR_RUN_STEP_STATUSES,
+    _build_child_prompt,
+    _normalize_supervisor_attempt_status,
+    _normalize_supervisor_runtime_status,
+    _resolved_launch_command,
+    _write_run_status,
+)
 from blackdog.threads import load_thread
 from blackdog.ui import (
     UIError,
@@ -82,7 +97,15 @@ from blackdog.ui import (
     build_ui_snapshot,
     render_static_html,
 )
-from blackdog.worktree import WorktreeSpec, default_task_branch, task_id_for_branch, worktree_contract
+from blackdog.worktree import (
+    WORKTREE_LANDING_STATES,
+    WORKTREE_LIFECYCLE_STATES,
+    WORKTREE_ROLES,
+    WorktreeSpec,
+    default_task_branch,
+    task_id_for_branch,
+    worktree_contract,
+)
 
 
 def cli_env() -> dict[str, str]:
@@ -1416,6 +1439,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("### `approval_tasks` semantic state machine", file_formats)
         self.assertIn("### `task_claims` semantic state machine", file_formats)
         self.assertIn("### `inbox.jsonl` replay state machine", file_formats)
+        self.assertIn("### `blackdog worktree` lifecycle and landing state machine", file_formats)
+        self.assertIn("### `supervisor-runs/*/status.json` run state machine", file_formats)
         self.assertIn("## Core coverage gate plan", file_formats)
         self.assertIn("make test-core", file_formats)
         self.assertIn("make coverage-core", file_formats)
@@ -1424,6 +1449,59 @@ class BlackdogCliTests(unittest.TestCase):
             "require 100.0 percent aggregate coverage across the shipped\n  surface and 100.0 percent coverage for each shipped module",
             file_formats,
         )
+
+    def test_core_audit_state_machine_vocab_is_frozen_in_code(self) -> None:
+        self.assertEqual(
+            APPROVAL_STATE_MACHINE_STATES,
+            frozenset({"absent", "pending", "approved", "denied", "deferred", "done"}),
+        )
+        self.assertEqual(
+            store_module.APPROVAL_STATUSES,
+            frozenset({"pending", "approved", "denied", "deferred", "done"}),
+        )
+        self.assertEqual(
+            store_module.APPROVAL_SATISFIED_STATUSES,
+            frozenset({"approved", "done"}),
+        )
+        self.assertEqual(CLAIM_STATE_MACHINE_STATES, frozenset({"absent", "claimed", "released", "done"}))
+        self.assertEqual(store_module.CLAIM_STATUSES, frozenset({"claimed", "released", "done"}))
+        self.assertEqual(INBOX_ACTIONS, frozenset({"message", "resolve"}))
+        self.assertEqual(INBOX_STATE_MACHINE_STATES, frozenset({"open", "resolved"}))
+        self.assertEqual(worktree_module.WORKSPACE_MODE_GIT_WORKTREE, "git-worktree")
+        self.assertEqual(worktree_module.WORKTREE_MODEL_BRANCH_BACKED, "branch-backed")
+        self.assertEqual(WORKTREE_ROLES, frozenset({"primary", "task", "linked"}))
+        self.assertEqual(WORKTREE_LANDING_STATES, frozenset({"ready", "blocked"}))
+        self.assertEqual(
+            WORKTREE_LIFECYCLE_STATES,
+            frozenset({"prepared", "dirty", "ahead", "blocked", "landed", "cleaned"}),
+        )
+        self.assertEqual(
+            SUPERVISOR_RUN_STEP_STATUSES,
+            frozenset({"swept", "running", "draining", "stopped", "idle"}),
+        )
+        self.assertEqual(
+            supervisor_module.SUPERVISOR_RUN_FINAL_STATUSES,
+            frozenset({"idle", "stopped", "interrupted"}),
+        )
+        self.assertEqual(
+            SUPERVISOR_RUN_RUNTIME_STATUSES,
+            frozenset({"running", "draining", "idle", "stopped", "interrupted", "historical"}),
+        )
+        self.assertEqual(
+            SUPERVISOR_ATTEMPT_STATUSES,
+            frozenset({"prepared", "running", "launch-failed", "interrupted", "blocked", "failed", "released", "done", "partial", "unknown"}),
+        )
+        self.assertEqual(
+            supervisor_module.SUPERVISOR_RECOVERY_CASES,
+            frozenset({"blocked_by_dirty_primary", "blocked_land", "partial_run", "landed_but_unfinished"}),
+        )
+
+    def test_core_audit_supervisor_state_normalizers_handle_legacy_aliases(self) -> None:
+        self.assertEqual(_normalize_supervisor_runtime_status("swept"), "running")
+        self.assertEqual(_normalize_supervisor_runtime_status("complete"), "idle")
+        self.assertEqual(_normalize_supervisor_runtime_status("finished"), "idle")
+        self.assertEqual(_normalize_supervisor_attempt_status("finished"), "done")
+        self.assertEqual(_normalize_supervisor_attempt_status("partial"), "partial")
 
     def test_core_audit_backlog_task_shaping_normalizes_and_rejects_invalid_values(self) -> None:
         shaped = backlog_module._coerce_task_shaping(
@@ -1673,6 +1751,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(contract["current_task_id"], task.id)
         self.assertTrue(contract["current_branch_is_task_branch"])
         self.assertEqual(contract["current_branch"], branch)
+        self.assertEqual(contract["workspace_role"], "primary")
+        self.assertEqual(contract["landing_state"], "blocked" if contract["primary_dirty"] else "ready")
 
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"
@@ -3426,6 +3506,8 @@ class BlackdogCliTests(unittest.TestCase):
         )
         self.assertEqual(preflight["worktree_model"], "branch-backed")
         self.assertTrue(preflight["current_is_primary"])
+        self.assertEqual(preflight["workspace_role"], "primary")
+        self.assertEqual(preflight["landing_state"], "blocked" if preflight["primary_dirty"] else "ready")
         self.assertFalse(preflight["worktrees_dir_inside_repo"])
         self.assertEqual(preflight["workspace_mode"], "git-worktree")
         self.assertEqual(preflight["target_branch"], "main")
@@ -3442,7 +3524,12 @@ class BlackdogCliTests(unittest.TestCase):
             cwd=self.root,
         ).stdout
         self.assertIn("[blackdog-worktree] workspace mode: git-worktree", preflight_text)
+        self.assertIn("[blackdog-worktree] workspace role: primary", preflight_text)
         self.assertIn("[blackdog-worktree] target branch: main", preflight_text)
+        self.assertIn(
+            f"[blackdog-worktree] landing state: {'blocked' if preflight['primary_dirty'] else 'ready'}",
+            preflight_text,
+        )
         self.assertIn(f"[blackdog-worktree] project root: {self.root.resolve()}", preflight_text)
         self.assertIn(f"[blackdog-worktree] current worktree: {self.root.resolve()}", preflight_text)
         self.assertIn("[blackdog-worktree] .VE rule:", preflight_text)

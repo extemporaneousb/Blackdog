@@ -12,6 +12,10 @@ import textwrap
 
 from .config import Profile, ProjectPaths, slugify
 from .store import (
+    APPROVAL_STATUS_DONE,
+    APPROVAL_STATUS_PENDING,
+    CLAIM_STATUS_CLAIMED,
+    CLAIM_STATUS_DONE,
     approval_is_satisfied,
     atomic_write_text,
     claim_is_active,
@@ -572,10 +576,10 @@ def classify_task_status(task: TaskInfo, snapshot: BacklogSnapshot, state: dict[
         entry = state.get("task_claims", {}).get(task.id) or {}
         detail = str(entry.get("completed_by") or "?")
         completed_at = str(entry.get("completed_at") or "?")
-        return "done", f"{detail} @ {completed_at}"
+        return CLAIM_STATUS_DONE, f"{detail} @ {completed_at}"
     owner = active_claim_owner(task.id, state)
     if owner:
-        return "claimed", f"{owner} claimed the task"
+        return CLAIM_STATUS_CLAIMED, f"{owner} claimed the task"
     blocker = blocking_reason(task, snapshot, state, allow_high_risk=allow_high_risk)
     if blocker == "approval required":
         return "approval", blocker
@@ -619,7 +623,7 @@ def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> 
         entry = approvals.get(task.id) or {}
         if not isinstance(entry, dict):
             entry = {}
-        entry.setdefault("status", "pending")
+        entry.setdefault("status", APPROVAL_STATUS_PENDING)
         entry.setdefault("first_seen", seen_date)
         entry["last_seen"] = seen_date
         entry["title"] = task.title
@@ -627,7 +631,7 @@ def sync_state_for_backlog(state: dict[str, Any], snapshot: BacklogSnapshot) -> 
         entry["paths"] = task.payload["paths"]
         entry["approval_reason"] = task.payload["approval_reason"]
         if task_done(task.id, state):
-            entry["status"] = "done"
+            entry["status"] = APPROVAL_STATUS_DONE
         approvals[task.id] = normalize_approval_entry(task.id, entry, state_file=Path("<memory>"))
     return state
 
@@ -1354,7 +1358,7 @@ def _task_runtime_rows(
         current = rows.setdefault(str(task_id), _task_runtime_row(str(task_id)))
         status = str(entry.get("status") or "")
         claimed_at = _parse_runtime_iso(entry.get("claimed_at"))
-        if status == "claimed" and claimed_at is not None:
+        if status == CLAIM_STATUS_CLAIMED and claimed_at is not None:
             current["active_task_seconds"] = max(0, int((datetime.now().astimezone() - claimed_at).total_seconds()))
 
     for task in snapshot.tasks.values():
@@ -2624,7 +2628,7 @@ def remove_task(profile: Profile, *, task_id: str) -> dict[str, Any]:
         claim_entry = state.get("task_claims", {}).get(task_id) or {}
         if claim_is_active(claim_entry):
             raise BacklogError(f"Task {task_id} is currently claimed by {claim_entry.get('claimed_by')}")
-        if str(claim_entry.get("status") or "") == "done":
+        if str(claim_entry.get("status") or "") == CLAIM_STATUS_DONE:
             raise BacklogError(f"Task {task_id} is already completed and cannot be removed")
         task_results = [row for row in load_task_results(profile.paths) if str(row.get("task_id") or "") == task_id]
         if task_results:

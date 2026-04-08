@@ -17,9 +17,41 @@ class StoreError(RuntimeError):
     pass
 
 
-APPROVAL_STATUSES = frozenset({"pending", "approved", "denied", "deferred", "done"})
-APPROVAL_SATISFIED_STATUSES = frozenset({"approved", "done"})
-CLAIM_STATUSES = frozenset({"claimed", "released", "done"})
+APPROVAL_STATE_ABSENT = "absent"
+APPROVAL_STATUS_PENDING = "pending"
+APPROVAL_STATUS_APPROVED = "approved"
+APPROVAL_STATUS_DENIED = "denied"
+APPROVAL_STATUS_DEFERRED = "deferred"
+APPROVAL_STATUS_DONE = "done"
+APPROVAL_STATUSES = frozenset(
+    {
+        APPROVAL_STATUS_PENDING,
+        APPROVAL_STATUS_APPROVED,
+        APPROVAL_STATUS_DENIED,
+        APPROVAL_STATUS_DEFERRED,
+        APPROVAL_STATUS_DONE,
+    }
+)
+APPROVAL_STATE_MACHINE_STATES = frozenset({APPROVAL_STATE_ABSENT, *APPROVAL_STATUSES})
+APPROVAL_SATISFIED_STATUSES = frozenset({APPROVAL_STATUS_APPROVED, APPROVAL_STATUS_DONE})
+
+CLAIM_STATE_ABSENT = "absent"
+CLAIM_STATUS_CLAIMED = "claimed"
+CLAIM_STATUS_RELEASED = "released"
+CLAIM_STATUS_DONE = "done"
+CLAIM_STATUSES = frozenset({CLAIM_STATUS_CLAIMED, CLAIM_STATUS_RELEASED, CLAIM_STATUS_DONE})
+CLAIM_STATE_MACHINE_STATES = frozenset({CLAIM_STATE_ABSENT, *CLAIM_STATUSES})
+CLAIM_ACTIVE_STATUSES = frozenset({CLAIM_STATUS_CLAIMED})
+CLAIM_TERMINAL_STATUSES = frozenset({CLAIM_STATUS_DONE})
+
+INBOX_ACTION_MESSAGE = "message"
+INBOX_ACTION_RESOLVE = "resolve"
+INBOX_ACTIONS = frozenset({INBOX_ACTION_MESSAGE, INBOX_ACTION_RESOLVE})
+INBOX_STATUS_OPEN = "open"
+INBOX_STATUS_RESOLVED = "resolved"
+INBOX_STATE_MACHINE_STATES = frozenset({INBOX_STATUS_OPEN, INBOX_STATUS_RESOLVED})
+INBOX_MESSAGE_REQUIRED_FIELDS = ("sender", "recipient", "kind")
+INBOX_RESOLVE_REQUIRED_FIELDS = ("actor",)
 
 
 def _tracked_installs_file(paths: ProjectPaths) -> Path:
@@ -104,14 +136,14 @@ def approval_is_satisfied(entry: dict[str, Any] | None) -> bool:
 def claim_is_done(entry: dict[str, Any] | None) -> bool:
     if not isinstance(entry, dict):
         return False
-    return str(entry.get("status") or "").strip() == "done"
+    return str(entry.get("status") or "").strip() in CLAIM_TERMINAL_STATUSES
 
 
 def normalize_approval_entry(task_id: str, entry: dict[str, Any], *, state_file: Path) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise StoreError(f"approval_tasks[{task_id}] must be an object in {state_file}")
     normalized = dict(entry)
-    status = str(normalized.get("status") or "pending").strip()
+    status = str(normalized.get("status") or APPROVAL_STATUS_PENDING).strip()
     if status not in APPROVAL_STATUSES:
         raise StoreError(
             f"approval_tasks[{task_id}].status must be one of {sorted(APPROVAL_STATUSES)} in {state_file}"
@@ -175,7 +207,7 @@ def normalize_claim_entry(task_id: str, entry: dict[str, Any], *, state_file: Pa
             normalized.pop(field, None)
     normalized["paths"] = _normalize_string_list(normalized.get("paths"), field=f"task_claims[{task_id}].paths", source=state_file)
     normalized.pop("claim_expires_at", None)
-    if status != "claimed":
+    if status != CLAIM_STATUS_CLAIMED:
         normalized.pop("claimed_pid", None)
         normalized.pop("claimed_process_missing_scans", None)
         normalized.pop("claimed_process_last_seen_at", None)
@@ -236,8 +268,10 @@ def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[st
         raise StoreError(f"Inbox row must be an object in {inbox_file}")
     normalized = dict(payload)
     action = _normalized_optional_string(normalized.get("action"))
-    if action not in {"message", "resolve"}:
-        raise StoreError(f"action must be 'message' or 'resolve' in {inbox_file}")
+    if action not in INBOX_ACTIONS:
+        raise StoreError(
+            f"action must be one of {sorted(INBOX_ACTIONS)} in {inbox_file}"
+        )
     message_id = _normalized_optional_string(normalized.get("message_id"))
     if message_id is None:
         raise StoreError(f"message_id is required in {inbox_file}")
@@ -247,8 +281,8 @@ def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[st
     normalized["action"] = action
     normalized["message_id"] = message_id
     normalized["at"] = at
-    if action == "message":
-        for field in ("sender", "recipient", "kind"):
+    if action == INBOX_ACTION_MESSAGE:
+        for field in INBOX_MESSAGE_REQUIRED_FIELDS:
             value = _normalized_optional_string(normalized.get(field))
             if value is None:
                 raise StoreError(f"{field} is required for message rows in {inbox_file}")
@@ -258,10 +292,11 @@ def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[st
         normalized["body"] = str(normalized.get("body") or "")
         normalized["tags"] = _normalize_string_list(normalized.get("tags"), field="tags", source=inbox_file)
         return normalized
-    actor = _normalized_optional_string(normalized.get("actor"))
-    if actor is None:
-        raise StoreError(f"actor is required for resolve rows in {inbox_file}")
-    normalized["actor"] = actor
+    for field in INBOX_RESOLVE_REQUIRED_FIELDS:
+        value = _normalized_optional_string(normalized.get(field))
+        if value is None:
+            raise StoreError(f"{field} is required for resolve rows in {inbox_file}")
+        normalized[field] = value
     normalized["note"] = str(normalized.get("note") or "")
     return normalized
 
@@ -431,7 +466,7 @@ def locked_state(state_file: Path) -> Iterator[dict[str, Any]]:
 
 
 def claim_is_active(entry: dict[str, Any]) -> bool:
-    return isinstance(entry, dict) and str(entry.get("status") or "").strip() == "claimed"
+    return isinstance(entry, dict) and str(entry.get("status") or "").strip() in CLAIM_ACTIVE_STATUSES
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -528,7 +563,7 @@ def send_message(
 ) -> dict[str, Any]:
     message = normalize_inbox_row(
         {
-            "action": "message",
+            "action": INBOX_ACTION_MESSAGE,
             "message_id": uuid.uuid4().hex,
             "at": now_iso(),
             "sender": sender,
@@ -561,7 +596,7 @@ def resolve_message(
 ) -> dict[str, Any]:
     row = normalize_inbox_row(
         {
-            "action": "resolve",
+            "action": INBOX_ACTION_RESOLVE,
             "message_id": message_id,
             "at": now_iso(),
             "actor": actor,
@@ -590,19 +625,19 @@ def load_inbox(
     messages: dict[str, dict[str, Any]] = {}
     for row in rows:
         action = str(row.get("action") or "")
-        if action == "message":
+        if action == INBOX_ACTION_MESSAGE:
             messages[str(row["message_id"])] = {
                 **row,
-                "status": "open",
+                "status": INBOX_STATUS_OPEN,
                 "resolved_at": None,
                 "resolved_by": None,
                 "resolution_note": None,
             }
-        elif action == "resolve":
+        elif action == INBOX_ACTION_RESOLVE:
             message = messages.get(str(row["message_id"]))
             if message is None:
                 continue
-            message["status"] = "resolved"
+            message["status"] = INBOX_STATUS_RESOLVED
             message["resolved_at"] = row.get("at")
             message["resolved_by"] = row.get("actor")
             message["resolution_note"] = row.get("note")
@@ -708,7 +743,7 @@ def claim_task_entry(
     claimed_at = now_iso()
     entry.update(
         {
-            "status": "claimed",
+            "status": CLAIM_STATUS_CLAIMED,
             "title": title,
             "claimed_by": agent,
             "claimed_at": claimed_at,

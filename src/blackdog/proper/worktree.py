@@ -46,6 +46,33 @@ WTAM_WORKTREE_VE_NOTE = (
     ".VE is unversioned and bound to this worktree path; bootstrap one per worktree and do not reuse another "
     "worktree's .VE."
 )
+WORKSPACE_MODE_GIT_WORKTREE = "git-worktree"
+WORKSPACE_MODES = frozenset({WORKSPACE_MODE_GIT_WORKTREE})
+WORKTREE_MODEL_BRANCH_BACKED = "branch-backed"
+WORKTREE_MODELS = frozenset({WORKTREE_MODEL_BRANCH_BACKED})
+WORKTREE_LIFECYCLE_STATE_PREPARED = "prepared"
+WORKTREE_LIFECYCLE_STATE_DIRTY = "dirty"
+WORKTREE_LIFECYCLE_STATE_AHEAD = "ahead"
+WORKTREE_LIFECYCLE_STATE_BLOCKED = "blocked"
+WORKTREE_LIFECYCLE_STATE_LANDED = "landed"
+WORKTREE_LIFECYCLE_STATE_CLEANED = "cleaned"
+WORKTREE_LIFECYCLE_STATES = frozenset(
+    {
+        WORKTREE_LIFECYCLE_STATE_PREPARED,
+        WORKTREE_LIFECYCLE_STATE_DIRTY,
+        WORKTREE_LIFECYCLE_STATE_AHEAD,
+        WORKTREE_LIFECYCLE_STATE_BLOCKED,
+        WORKTREE_LIFECYCLE_STATE_LANDED,
+        WORKTREE_LIFECYCLE_STATE_CLEANED,
+    }
+)
+WORKTREE_ROLE_PRIMARY = "primary"
+WORKTREE_ROLE_TASK = "task"
+WORKTREE_ROLE_LINKED = "linked"
+WORKTREE_ROLES = frozenset({WORKTREE_ROLE_PRIMARY, WORKTREE_ROLE_TASK, WORKTREE_ROLE_LINKED})
+WORKTREE_LANDING_STATE_READY = "ready"
+WORKTREE_LANDING_STATE_BLOCKED = "blocked"
+WORKTREE_LANDING_STATES = frozenset({WORKTREE_LANDING_STATE_READY, WORKTREE_LANDING_STATE_BLOCKED})
 
 
 @dataclass(frozen=True)
@@ -63,6 +90,16 @@ class WorktreeSpec:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def normalize_workspace_mode(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text in WORKSPACE_MODES else WORKSPACE_MODE_GIT_WORKTREE
+
+
+def normalize_worktree_model(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text in WORKTREE_MODELS else WORKTREE_MODEL_BRANCH_BACKED
 
 
 def _run_git(repo_root: Path, *args: str) -> str:
@@ -235,6 +272,20 @@ def _status_dirty(
     return bool(dirty_paths(repo_root, ignore_paths=ignore_paths, ignore_prefixes=ignore_prefixes))
 
 
+def _workspace_role(*, current_is_primary: bool, current_task_id: str | None) -> str:
+    if current_is_primary:
+        return WORKTREE_ROLE_PRIMARY
+    if current_task_id is not None:
+        return WORKTREE_ROLE_TASK
+    return WORKTREE_ROLE_LINKED
+
+
+def _landing_state(*, primary_dirty: bool) -> str:
+    if primary_dirty:
+        return WORKTREE_LANDING_STATE_BLOCKED
+    return WORKTREE_LANDING_STATE_READY
+
+
 def worktree_contract(
     profile: Profile,
     *,
@@ -249,17 +300,21 @@ def worktree_contract(
     ignore_prefixes = _runtime_ignore_prefixes(profile, repo_root=primary_root)
     workspace_blackdog = resolved_workspace / ".VE" / "bin" / "blackdog"
     workspace_has_local_blackdog = workspace_blackdog.is_file() and os.access(workspace_blackdog, os.X_OK)
+    current_is_primary = _is_primary_worktree(resolved_workspace)
+    primary_dirty = _status_dirty(primary_root, ignore_prefixes=ignore_prefixes)
     return {
-        "workspace_mode": workspace_mode or profile.supervisor_workspace_mode,
+        "workspace_mode": normalize_workspace_mode(workspace_mode or profile.supervisor_workspace_mode),
         "current_worktree": str(resolved_workspace),
         "current_branch": current_branch,
         "current_task_id": current_task_id,
         "current_branch_is_task_branch": current_task_id is not None,
-        "current_is_primary": _is_primary_worktree(resolved_workspace),
+        "current_is_primary": current_is_primary,
+        "workspace_role": _workspace_role(current_is_primary=current_is_primary, current_task_id=current_task_id),
         "primary_worktree": str(primary_root),
         "primary_branch": target_branch,
         "target_branch": target_branch,
-        "primary_dirty": _status_dirty(primary_root, ignore_prefixes=ignore_prefixes),
+        "primary_dirty": primary_dirty,
+        "landing_state": _landing_state(primary_dirty=primary_dirty),
         "primary_dirty_paths": dirty_paths(primary_root, ignore_prefixes=ignore_prefixes),
         "workspace_ve": str(resolved_workspace / ".VE"),
         "workspace_blackdog_path": str(workspace_blackdog),
@@ -351,6 +406,7 @@ def worktree_preflight(profile: Profile, *, cwd: Path | None = None) -> dict[str
         "current_worktree": contract["current_worktree"],
         "current_branch": contract["current_branch"],
         "current_is_primary": contract["current_is_primary"],
+        "workspace_role": contract["workspace_role"],
         "primary_worktree": contract["primary_worktree"],
         "primary_branch": contract["primary_branch"],
         "dirty": _status_dirty(current_root),
@@ -358,10 +414,11 @@ def worktree_preflight(profile: Profile, *, cwd: Path | None = None) -> dict[str
             current_root,
             ignore_prefixes=runtime_ignore_prefixes,
         ),
-        "worktree_model": "branch-backed",
+        "worktree_model": normalize_worktree_model(WORKTREE_MODEL_BRANCH_BACKED),
         "workspace_mode": contract["workspace_mode"],
         "target_branch": contract["target_branch"],
         "primary_dirty": contract["primary_dirty"],
+        "landing_state": contract["landing_state"],
         "primary_dirty_paths": contract["primary_dirty_paths"],
         "current_worktree_ve": contract["workspace_ve"],
         "current_worktree_blackdog_path": contract["workspace_blackdog_path"],
@@ -745,10 +802,12 @@ def render_preflight_text(payload: dict[str, Any]) -> str:
         f"[blackdog-worktree] project root: {payload['project_root']}",
         f"[blackdog-worktree] cwd: {payload['cwd']}",
         f"[blackdog-worktree] current worktree: {payload['current_worktree']}",
+        f"[blackdog-worktree] workspace role: {payload['workspace_role']}",
         f"[blackdog-worktree] primary worktree: {primary}",
         f"[blackdog-worktree] workspace mode: {payload['workspace_mode']}",
         f"[blackdog-worktree] model: {payload['worktree_model']}",
         f"[blackdog-worktree] target branch: {payload['target_branch']}",
+        f"[blackdog-worktree] landing state: {payload['landing_state']}",
         f"[blackdog-worktree] primary clean for landing: {primary_clean}",
         f"[blackdog-worktree] implementation dirty: {implementation_dirty}",
         f"[blackdog-worktree] worktrees dir: {payload['worktrees_dir']} ({location})",

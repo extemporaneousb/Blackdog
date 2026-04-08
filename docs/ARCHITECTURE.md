@@ -46,8 +46,8 @@ Core owns:
 - canonical backlog parsing and validation
 - canonical artifact contracts for backlog, state, events, inbox, and
   task results
-- deterministic state transitions for claim, release, completion,
-  approval, comments, and structured results
+- deterministic state transitions for approval, task claims, inbox
+  replay, comments, and structured results
 - task selection, dependency checks, plan interpretation, and stable
   read models over the artifact set
 - WTAM safety facts such as workspace-contract inspection,
@@ -78,6 +78,8 @@ Blackdog proper owns:
 - the `blackdog`, `blackdog-skill`, and `python -m blackdog`
   entrypoints
 - workflow orchestration such as `worktree start|land|cleanup`
+- the branch-backed worktree lifecycle plus supervisor run/recovery
+  state machines layered on top of the core runtime
 - supervisor orchestration and delegated child protocol
 - bootstrap, refresh, update, and project-local skill generation
 - prompt/tune/report helpers
@@ -144,8 +146,10 @@ classified explicitly:
 ### Blackdog-product surfaces
 
 - CLI workflow composition
-- branch-backed worktree lifecycle orchestration
-- supervisor run artifacts and recovery behavior
+- branch-backed worktree lifecycle orchestration, including workspace
+  role and landing-readiness state
+- supervisor run artifacts, normalized run-state semantics, and
+  recovery behavior
 - generated skills and bootstrap scaffolding
 - snapshot composition and rendered HTML
 

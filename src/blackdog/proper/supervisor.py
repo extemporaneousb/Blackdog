@@ -30,6 +30,10 @@ from ..backlog import (
 from ..config import DEFAULT_SUPERVISOR_COMMAND, Profile
 from .scaffold import render_project_html
 from ..store import (
+    APPROVAL_STATUS_DONE,
+    CLAIM_STATUS_CLAIMED,
+    CLAIM_STATUS_DONE,
+    CLAIM_STATUS_RELEASED,
     atomic_write_text,
     append_event,
     claim_task_entry,
@@ -49,6 +53,7 @@ from .worktree import (
     DirtyPrimaryWorktreeError,
     WorktreeError,
     WorktreeSpec,
+    WORKSPACE_MODE_GIT_WORKTREE,
     branch_ahead_of_target,
     branch_changed_paths,
     commit_working_tree_paths,
@@ -59,6 +64,7 @@ from .worktree import (
     supervisor_task_branch,
     supervisor_task_worktree_path,
     start_task_worktree,
+    normalize_workspace_mode,
     working_tree_matches_ref,
     worktree_contract,
 )
@@ -79,6 +85,93 @@ DYNAMIC_REASONING_BASE_EFFORT = "high"
 DYNAMIC_REASONING_COMPLEX_EFFORT = "xhigh"
 CHILD_PROMPT_TEMPLATE_VERSION = 3
 CHILD_PROTOCOL_HELPER = "blackdog-child"
+SUPERVISOR_RUN_STATUS_RUNNING = "running"
+SUPERVISOR_RUN_STATUS_DRAINING = "draining"
+SUPERVISOR_RUN_STATUS_IDLE = "idle"
+SUPERVISOR_RUN_STATUS_STOPPED = "stopped"
+SUPERVISOR_RUN_STATUS_INTERRUPTED = "interrupted"
+SUPERVISOR_RUN_STATUS_HISTORICAL = "historical"
+SUPERVISOR_RUN_STEP_STATUS_SWEPT = "swept"
+SUPERVISOR_RUN_STATUS_ALIASES = {
+    SUPERVISOR_RUN_STEP_STATUS_SWEPT: SUPERVISOR_RUN_STATUS_RUNNING,
+    "complete": SUPERVISOR_RUN_STATUS_IDLE,
+    "finished": SUPERVISOR_RUN_STATUS_IDLE,
+}
+SUPERVISOR_RUN_STEP_STATUSES = frozenset(
+    {
+        SUPERVISOR_RUN_STEP_STATUS_SWEPT,
+        SUPERVISOR_RUN_STATUS_RUNNING,
+        SUPERVISOR_RUN_STATUS_DRAINING,
+        SUPERVISOR_RUN_STATUS_STOPPED,
+        SUPERVISOR_RUN_STATUS_IDLE,
+    }
+)
+SUPERVISOR_RUN_FINAL_STATUSES = frozenset(
+    {
+        SUPERVISOR_RUN_STATUS_IDLE,
+        SUPERVISOR_RUN_STATUS_STOPPED,
+        SUPERVISOR_RUN_STATUS_INTERRUPTED,
+    }
+)
+SUPERVISOR_RUN_RUNTIME_STATUSES = frozenset(
+    {
+        SUPERVISOR_RUN_STATUS_RUNNING,
+        SUPERVISOR_RUN_STATUS_DRAINING,
+        SUPERVISOR_RUN_STATUS_IDLE,
+        SUPERVISOR_RUN_STATUS_STOPPED,
+        SUPERVISOR_RUN_STATUS_INTERRUPTED,
+        SUPERVISOR_RUN_STATUS_HISTORICAL,
+    }
+)
+SUPERVISOR_ATTEMPT_STATUS_PREPARED = "prepared"
+SUPERVISOR_ATTEMPT_STATUS_RUNNING = "running"
+SUPERVISOR_ATTEMPT_STATUS_LAUNCH_FAILED = "launch-failed"
+SUPERVISOR_ATTEMPT_STATUS_INTERRUPTED = "interrupted"
+SUPERVISOR_ATTEMPT_STATUS_BLOCKED = "blocked"
+SUPERVISOR_ATTEMPT_STATUS_FAILED = "failed"
+SUPERVISOR_ATTEMPT_STATUS_DONE = "done"
+SUPERVISOR_ATTEMPT_STATUS_UNKNOWN = "unknown"
+SUPERVISOR_FINAL_TASK_STATUS_OPEN = "open"
+SUPERVISOR_FINAL_TASK_STATUS_PARTIAL = "partial"
+SUPERVISOR_FINAL_TASK_STATUS_FINISHED = "finished"
+SUPERVISOR_ATTEMPT_STATUS_ALIASES = {"finished": SUPERVISOR_ATTEMPT_STATUS_DONE}
+SUPERVISOR_ATTEMPT_FINAL_TASK_STATUSES = frozenset(
+    {
+        CLAIM_STATUS_CLAIMED,
+        CLAIM_STATUS_RELEASED,
+        CLAIM_STATUS_DONE,
+        SUPERVISOR_ATTEMPT_STATUS_FAILED,
+        SUPERVISOR_FINAL_TASK_STATUS_PARTIAL,
+        SUPERVISOR_FINAL_TASK_STATUS_OPEN,
+        SUPERVISOR_FINAL_TASK_STATUS_FINISHED,
+    }
+)
+SUPERVISOR_ATTEMPT_STATUSES = frozenset(
+    {
+        SUPERVISOR_ATTEMPT_STATUS_PREPARED,
+        SUPERVISOR_ATTEMPT_STATUS_RUNNING,
+        SUPERVISOR_ATTEMPT_STATUS_LAUNCH_FAILED,
+        SUPERVISOR_ATTEMPT_STATUS_INTERRUPTED,
+        SUPERVISOR_ATTEMPT_STATUS_BLOCKED,
+        SUPERVISOR_ATTEMPT_STATUS_FAILED,
+        CLAIM_STATUS_RELEASED,
+        SUPERVISOR_ATTEMPT_STATUS_DONE,
+        SUPERVISOR_FINAL_TASK_STATUS_PARTIAL,
+        SUPERVISOR_ATTEMPT_STATUS_UNKNOWN,
+    }
+)
+SUPERVISOR_RECOVERY_CASE_BLOCKED_BY_DIRTY_PRIMARY = "blocked_by_dirty_primary"
+SUPERVISOR_RECOVERY_CASE_BLOCKED_LAND = "blocked_land"
+SUPERVISOR_RECOVERY_CASE_PARTIAL_RUN = "partial_run"
+SUPERVISOR_RECOVERY_CASE_LANDED_BUT_UNFINISHED = "landed_but_unfinished"
+SUPERVISOR_RECOVERY_CASES = frozenset(
+    {
+        SUPERVISOR_RECOVERY_CASE_BLOCKED_BY_DIRTY_PRIMARY,
+        SUPERVISOR_RECOVERY_CASE_BLOCKED_LAND,
+        SUPERVISOR_RECOVERY_CASE_PARTIAL_RUN,
+        SUPERVISOR_RECOVERY_CASE_LANDED_BUT_UNFINISHED,
+    }
+)
 
 SUPERVISOR_REPORT_REQUIRED_ARTIFACTS = ("prompt", "stdout", "stderr", "metadata")
 SUPERVISOR_REPORT_ARTIFACT_FILES = {
@@ -87,6 +180,37 @@ SUPERVISOR_REPORT_ARTIFACT_FILES = {
     "stderr": "stderr.log",
     "metadata": "metadata.json",
 }
+
+def _normalize_supervisor_attempt_status(value: Any, *, default: str = SUPERVISOR_ATTEMPT_STATUS_UNKNOWN) -> str:
+    status = str(value or "").strip() or default
+    status = SUPERVISOR_ATTEMPT_STATUS_ALIASES.get(status, status)
+    return status if status in SUPERVISOR_ATTEMPT_STATUSES else default
+
+
+def _normalize_supervisor_attempt_final_task_status(value: Any) -> str | None:
+    status = str(value or "").strip()
+    if not status:
+        return None
+    return status if status in SUPERVISOR_ATTEMPT_FINAL_TASK_STATUSES else None
+
+
+def _attempt_status_from_final_task_status(value: Any, *, default: str = SUPERVISOR_ATTEMPT_STATUS_DONE) -> str:
+    status = _normalize_supervisor_attempt_final_task_status(value)
+    if status is None:
+        return default
+    if status == SUPERVISOR_FINAL_TASK_STATUS_FINISHED:
+        return SUPERVISOR_ATTEMPT_STATUS_DONE
+    if status in {SUPERVISOR_FINAL_TASK_STATUS_PARTIAL, SUPERVISOR_FINAL_TASK_STATUS_OPEN, CLAIM_STATUS_CLAIMED}:
+        return SUPERVISOR_FINAL_TASK_STATUS_PARTIAL
+    return _normalize_supervisor_attempt_status(status, default=default)
+
+
+def _normalize_supervisor_runtime_status(value: Any, *, default: str = SUPERVISOR_RUN_STATUS_RUNNING) -> str:
+    status = str(value or "").strip() or default
+    status = SUPERVISOR_RUN_STATUS_ALIASES.get(status, status)
+    return status if status in SUPERVISOR_RUN_RUNTIME_STATUSES else default
+
+
 _CHILD_PROMPT_TEMPLATE = """
 You are Blackdog child agent `{child_agent}` working on one Blackdog backlog task.
 
@@ -540,7 +664,7 @@ def _build_recovery_child_run(
         if payload.get("child_agent"):
             row["child_agent"] = payload.get("child_agent")
         if payload.get("workspace_mode"):
-            row["workspace_mode"] = payload.get("workspace_mode")
+            row["workspace_mode"] = normalize_workspace_mode(payload.get("workspace_mode"))
         if payload.get("workspace"):
             row["workspace"] = str(payload.get("workspace"))
         if payload.get("worktree_path"):
@@ -552,25 +676,29 @@ def _build_recovery_child_run(
         if payload.get("primary_worktree"):
             row["primary_worktree"] = str(payload.get("primary_worktree"))
         if event_type == "worktree_start":
-            row["run_status"] = "prepared"
+            row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_PREPARED
         elif event_type == "child_launch":
-            row["run_status"] = "running"
+            row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_RUNNING
             row["pid"] = payload.get("pid")
             row["child_agent"] = payload.get("child_agent") or row.get("child_agent")
         elif event_type == "child_launch_failed":
-            row["run_status"] = "launch-failed"
+            row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_LAUNCH_FAILED
         elif event_type == "child_finish":
+            final_task_status = _normalize_supervisor_attempt_final_task_status(payload.get("final_task_status"))
             if payload.get("missing_process"):
-                row["run_status"] = "interrupted"
+                row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_INTERRUPTED
             elif payload.get("land_error"):
-                row["run_status"] = "blocked"
+                row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_BLOCKED
             elif payload.get("exit_code") not in {0, None}:
-                row["run_status"] = "failed"
+                row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_FAILED
             else:
-                row["run_status"] = str(payload.get("final_task_status") or "finished")
+                row["run_status"] = _attempt_status_from_final_task_status(
+                    final_task_status or SUPERVISOR_FINAL_TASK_STATUS_FINISHED,
+                    default=SUPERVISOR_ATTEMPT_STATUS_DONE,
+                )
             row["exit_code"] = payload.get("exit_code")
             row["missing_process"] = bool(payload.get("missing_process"))
-            row["final_task_status"] = payload.get("final_task_status")
+            row["final_task_status"] = final_task_status
             row["branch_ahead"] = bool(payload.get("branch_ahead"))
             row["landed"] = bool(payload.get("landed"))
             row["land_error"] = payload.get("land_error")
@@ -578,11 +706,9 @@ def _build_recovery_child_run(
             row["task_branch"] = str(payload.get("branch") or row.get("task_branch") or "")
             row["target_branch"] = str(payload.get("target_branch") or row.get("target_branch") or "")
 
-    if row["run_status"] == "running":
+    if row["run_status"] == SUPERVISOR_ATTEMPT_STATUS_RUNNING:
         if not _pid_alive(row.get("pid")):
-            row["run_status"] = "interrupted"
-    if row["run_status"] == "finished":
-        row["run_status"] = "done"
+            row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_INTERRUPTED
     if row["claim_status"] is None:
         task_id = str(row["task_id"])
         claim_entry = state.get("task_claims", {}).get(task_id) or {}
@@ -592,9 +718,9 @@ def _build_recovery_child_run(
         resolved_path = find_worktree_for_branch(profile, str(row["task_branch"]))
         row["workspace"] = resolved_path
     if row["workspace_mode"] is None:
-        row["workspace_mode"] = workspace_mode
+        row["workspace_mode"] = normalize_workspace_mode(workspace_mode)
     if row["run_status"] is None:
-        row["run_status"] = "unknown"
+        row["run_status"] = SUPERVISOR_ATTEMPT_STATUS_UNKNOWN
     if row["task_id"]:
         run_dir = _run_dir_for_id(profile, run_id)
         row["run_dir"] = str(run_dir) if run_dir is not None else None
@@ -604,11 +730,11 @@ def _build_recovery_child_run(
 
 def _recovery_case_recommendations(row: dict[str, Any]) -> dict[str, Any] | None:
     run_status = str(row.get("run_status") or "")
-    if str(row.get("final_task_status") or "") == "done" or str(row.get("claim_status") or "") == "done":
+    if str(row.get("final_task_status") or "") == CLAIM_STATUS_DONE or str(row.get("claim_status") or "") == CLAIM_STATUS_DONE:
         return None
-    if row.get("landed") and str(row.get("final_task_status") or "") not in {"", "done"}:
+    if row.get("landed") and str(row.get("final_task_status") or "") not in {"", CLAIM_STATUS_DONE}:
         return {
-            "case": "landed_but_unfinished",
+            "case": SUPERVISOR_RECOVERY_CASE_LANDED_BUT_UNFINISHED,
             "severity": "high",
             "summary": "Child branch was landed but task state is not complete.",
             "next_actions": [
@@ -617,11 +743,11 @@ def _recovery_case_recommendations(row: dict[str, Any]) -> dict[str, Any] | None
                 "clean up the task worktree",
             ],
         }
-    if run_status == "blocked":
+    if run_status == SUPERVISOR_ATTEMPT_STATUS_BLOCKED:
         error_text = str(row.get("land_error") or "").lower()
         if "dirty primary worktree contract violation" in error_text:
             return {
-                "case": "blocked_by_dirty_primary",
+                "case": SUPERVISOR_RECOVERY_CASE_BLOCKED_BY_DIRTY_PRIMARY,
                 "severity": "high",
                 "summary": "Landing is blocked by primary checkout dirtiness.",
                 "next_actions": [
@@ -631,7 +757,7 @@ def _recovery_case_recommendations(row: dict[str, Any]) -> dict[str, Any] | None
                 ],
             }
         return {
-            "case": "blocked_land",
+            "case": SUPERVISOR_RECOVERY_CASE_BLOCKED_LAND,
             "severity": "high",
             "summary": "Landing failed and blocked child completion.",
             "next_actions": [
@@ -640,9 +766,15 @@ def _recovery_case_recommendations(row: dict[str, Any]) -> dict[str, Any] | None
                 "create a replacement task run",
             ],
         }
-    if run_status in {"interrupted", "failed", "launch-failed", "released"}:
+    if run_status in {
+        SUPERVISOR_ATTEMPT_STATUS_INTERRUPTED,
+        SUPERVISOR_ATTEMPT_STATUS_FAILED,
+        SUPERVISOR_ATTEMPT_STATUS_LAUNCH_FAILED,
+        SUPERVISOR_FINAL_TASK_STATUS_PARTIAL,
+        CLAIM_STATUS_RELEASED,
+    }:
         return {
-            "case": "partial_run",
+            "case": SUPERVISOR_RECOVERY_CASE_PARTIAL_RUN,
             "severity": "high",
             "summary": "Child run ended without a clean completion outcome.",
             "next_actions": [
@@ -666,9 +798,12 @@ def _build_supervisor_recovery_runs(
     runs: list[dict[str, Any]] = []
     for run_id in run_ids:
         status_payload = status_by_run.get(run_id, {})
-        status = str(status_payload.get("final_status") or status_payload.get("status") or "historical")
-        if status == "running" and not _pid_alive(status_payload.get("supervisor_pid")):
-            status = "interrupted"
+        status = _normalize_supervisor_runtime_status(
+            status_payload.get("final_status") or status_payload.get("status"),
+            default=SUPERVISOR_RUN_STATUS_HISTORICAL,
+        )
+        if status == SUPERVISOR_RUN_STATUS_RUNNING and not _pid_alive(status_payload.get("supervisor_pid")):
+            status = SUPERVISOR_RUN_STATUS_INTERRUPTED
         run_dir = status_payload.get("run_dir")
         if run_dir is None:
             run_dir = str(_run_dir_for_id(profile, run_id)) if _run_dir_for_id(profile, run_id) else None
@@ -698,7 +833,7 @@ def _build_supervisor_recovery_runs(
             {
                 "run_id": run_id,
                 "status": status,
-                "workspace_mode": status_payload.get("workspace_mode"),
+                "workspace_mode": normalize_workspace_mode(status_payload.get("workspace_mode")),
                 "draining": bool(status_payload.get("draining")),
                 "run_dir": str(Path(run_dir).resolve()) if run_dir else None,
                 "status_file": status_payload.get("status_file"),
@@ -713,7 +848,7 @@ def build_supervisor_recover_view(profile: Profile, *, actor: str) -> dict[str, 
     workspace_mode = profile.supervisor_workspace_mode
     latest_run = _latest_run_status(profile, actor=actor)
     if latest_run:
-        workspace_mode = str(latest_run.get("workspace_mode") or workspace_mode)
+        workspace_mode = normalize_workspace_mode(latest_run.get("workspace_mode") or workspace_mode)
     events_by_run = _load_run_events(profile, actor=actor)
     status_by_run = _load_supervisor_recovery_status_files(profile, actor=actor)
     runs = _build_supervisor_recovery_runs(
@@ -874,7 +1009,7 @@ def _attempt_payload_from_events(
             if payload.get("workspace"):
                 attempt["workspace"] = str(payload.get("workspace"))
             if payload.get("workspace_mode"):
-                attempt["workspace_mode"] = str(payload.get("workspace_mode"))
+                attempt["workspace_mode"] = normalize_workspace_mode(payload.get("workspace_mode"))
             if payload.get("branch"):
                 attempt["branch"] = str(payload.get("branch"))
             if payload.get("target_branch"):
@@ -887,7 +1022,7 @@ def _attempt_payload_from_events(
             if payload.get("workspace"):
                 attempt["workspace"] = str(payload.get("workspace"))
             if payload.get("workspace_mode"):
-                attempt["workspace_mode"] = str(payload.get("workspace_mode"))
+                attempt["workspace_mode"] = normalize_workspace_mode(payload.get("workspace_mode"))
         elif event_type == "child_launch_failed":
             attempt["launch_error"] = str(
                 payload.get("error") or payload.get("launch_error") or "launch failed"
@@ -904,7 +1039,9 @@ def _attempt_payload_from_events(
             if payload.get("branch_ahead") is not None:
                 attempt["branch_ahead"] = bool(payload.get("branch_ahead"))
             if payload.get("final_task_status") is not None:
-                attempt["final_task_status"] = str(payload.get("final_task_status"))
+                attempt["final_task_status"] = _normalize_supervisor_attempt_final_task_status(
+                    payload.get("final_task_status")
+                ) or str(payload.get("final_task_status"))
             if "landed" in payload:
                 attempt["landed"] = bool(payload.get("landed"))
             if payload.get("land_error") is not None:
@@ -1083,21 +1220,19 @@ def _recovery_needed_section(
 
 def _run_status_for_attempt(attempt: dict[str, Any]) -> str:
     if attempt.get("missing_process"):
-        return "interrupted"
+        return SUPERVISOR_ATTEMPT_STATUS_INTERRUPTED
     if attempt.get("land_error"):
-        return "blocked"
+        return SUPERVISOR_ATTEMPT_STATUS_BLOCKED
     if attempt.get("launch_error"):
-        return "launch-failed"
+        return SUPERVISOR_ATTEMPT_STATUS_LAUNCH_FAILED
     if attempt.get("exit_code") not in {0, None}:
-        return "failed"
-    final_task_status = str(attempt.get("final_task_status") or "")
-    if final_task_status == "finished":
-        return "done"
+        return SUPERVISOR_ATTEMPT_STATUS_FAILED
+    final_task_status = _normalize_supervisor_attempt_final_task_status(attempt.get("final_task_status"))
     if final_task_status:
-        return final_task_status
+        return _attempt_status_from_final_task_status(final_task_status)
     if attempt.get("launched"):
-        return "running"
-    return "unknown"
+        return SUPERVISOR_ATTEMPT_STATUS_RUNNING
+    return SUPERVISOR_ATTEMPT_STATUS_UNKNOWN
 
 
 def _build_report_recovery_needed_cases(
@@ -1242,7 +1377,10 @@ def build_supervisor_observation_view(
                     "run_id": run_id,
                     "actor": str(status.get("actor") or actor),
                     "workspace_mode": status.get("workspace_mode"),
-                    "final_status": str(status.get("final_status") or status.get("status") or "historical"),
+                    "final_status": _normalize_supervisor_runtime_status(
+                        status.get("final_status") or status.get("status"),
+                        default=SUPERVISOR_RUN_STATUS_HISTORICAL,
+                    ),
                     "attempts": attempts,
                     "run_dir": str(run_dir) if run_dir else None,
                     "status_file": str(status.get("status_file") or ""),
@@ -1518,9 +1656,9 @@ def _land_branch_with_retry(profile: Profile, *, branch: str, target_branch: str
 def _mark_task_done(profile: Profile, task_id: str, *, actor: str, note: str) -> None:
     with locked_state(profile.paths.state_file) as state:
         entry = state.setdefault("task_claims", {}).get(task_id) or {}
-        if entry.get("status") == "done":
+        if entry.get("status") == CLAIM_STATUS_DONE:
             return
-        entry["status"] = "done"
+        entry["status"] = CLAIM_STATUS_DONE
         entry["completed_by"] = actor
         entry["completed_at"] = now_iso()
         entry["completion_note"] = note
@@ -1532,7 +1670,7 @@ def _mark_task_done(profile: Profile, task_id: str, *, actor: str, note: str) ->
         state["task_claims"][task_id] = entry
         approvals = state.setdefault("approval_tasks", {})
         if task_id in approvals and isinstance(approvals[task_id], dict):
-            approvals[task_id]["status"] = "done"
+            approvals[task_id]["status"] = APPROVAL_STATUS_DONE
     append_event(profile.paths, event_type="complete", actor=actor, task_id=task_id, payload={"note": note})
 
 
@@ -1875,14 +2013,17 @@ def _latest_run_status(profile: Profile, *, actor: str) -> dict[str, Any] | None
             continue
         steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
         last_step = steps[-1] if steps and isinstance(steps[-1], dict) else None
-        status = str(payload.get("final_status") or (last_step or {}).get("status") or "running")
+        status = _normalize_supervisor_runtime_status(
+            payload.get("final_status") or (last_step or {}).get("status"),
+            default=SUPERVISOR_RUN_STATUS_RUNNING,
+        )
         if not payload.get("final_status") and not _pid_alive(payload.get("supervisor_pid")):
-            status = "interrupted"
+            status = SUPERVISOR_RUN_STATUS_INTERRUPTED
         return {
             "run_id": payload.get("run_id"),
             "actor": payload.get("actor"),
             "status": status,
-            "workspace_mode": payload.get("workspace_mode"),
+            "workspace_mode": normalize_workspace_mode(payload.get("workspace_mode")),
             "poll_interval_seconds": payload.get("poll_interval_seconds"),
             "draining": bool(payload.get("draining")),
             "run_dir": payload.get("run_dir") or str(status_file.parent),
@@ -1907,7 +2048,7 @@ def build_supervisor_status_view(
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
     latest_run = _latest_run_status(profile, actor=actor)
-    workspace_mode = str((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
+    workspace_mode = normalize_workspace_mode((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
     open_messages = load_inbox(profile.paths, recipient=actor, status="open")
     results = load_task_results(profile.paths)
     result_index = _index_supervisor_results(results, actor=actor)
@@ -2050,7 +2191,7 @@ def _record_child_claim_process(profile: Profile, task_id: str, *, child_agent: 
         return
     with locked_state(profile.paths.state_file) as state:
         entry = state.setdefault("task_claims", {}).get(task_id) or {}
-        if entry.get("status") != "claimed" or entry.get("claimed_by") != child_agent:
+        if entry.get("status") != CLAIM_STATUS_CLAIMED or entry.get("claimed_by") != child_agent:
             return
         entry["claimed_pid"] = pid
         entry["claimed_process_missing_scans"] = 0
@@ -2072,7 +2213,7 @@ def _scan_claim_process_liveness(
         for task_id, entry in claims.items():
             if task_id in skip_task_ids:
                 continue
-            if not isinstance(entry, dict) or entry.get("status") != "claimed":
+            if not isinstance(entry, dict) or entry.get("status") != CLAIM_STATUS_CLAIMED:
                 continue
             pid = entry.get("claimed_pid")
             if not isinstance(pid, int) or pid < 1:
@@ -2092,7 +2233,7 @@ def _scan_claim_process_liveness(
                 f"Supervisor released orphaned claim after process {pid} was missing in "
                 f"{CLAIM_LIVENESS_MISSING_SCAN_LIMIT} successive liveness scans."
             )
-            entry["status"] = "released"
+            entry["status"] = CLAIM_STATUS_RELEASED
             entry["released_by"] = actor
             entry["released_at"] = now_iso()
             entry["release_note"] = note
@@ -2120,9 +2261,9 @@ def _scan_claim_process_liveness(
 def _release_if_still_claimed(profile: Profile, task_id: str, *, child_agent: str, note: str) -> None:
     with locked_state(profile.paths.state_file) as state:
         entry = state.setdefault("task_claims", {}).get(task_id) or {}
-        if entry.get("status") != "claimed" or entry.get("claimed_by") != child_agent:
+        if entry.get("status") != CLAIM_STATUS_CLAIMED or entry.get("claimed_by") != child_agent:
             return
-        entry["status"] = "released"
+        entry["status"] = CLAIM_STATUS_RELEASED
         entry["released_by"] = "supervisor"
         entry["released_at"] = now_iso()
         entry["release_note"] = note
@@ -2144,12 +2285,12 @@ def _release_if_still_claimed(profile: Profile, task_id: str, *, child_agent: st
 def _complete_if_still_claimed(profile: Profile, task_id: str, *, child_agent: str, note: str) -> None:
     with locked_state(profile.paths.state_file) as state:
         entry = state.setdefault("task_claims", {}).get(task_id) or {}
-        if entry.get("status") == "done":
+        if entry.get("status") == CLAIM_STATUS_DONE:
             return
         owner = entry.get("claimed_by")
         if owner and owner != child_agent:
             raise SupervisorError(f"Task {task_id} is not owned by {child_agent}; cannot complete after land")
-        entry["status"] = "done"
+        entry["status"] = CLAIM_STATUS_DONE
         entry["completed_by"] = child_agent
         entry["completed_at"] = now_iso()
         entry["completion_note"] = note
@@ -2161,7 +2302,7 @@ def _complete_if_still_claimed(profile: Profile, task_id: str, *, child_agent: s
         state["task_claims"][task_id] = entry
         approvals = state.setdefault("approval_tasks", {})
         if task_id in approvals and isinstance(approvals[task_id], dict):
-            approvals[task_id]["status"] = "done"
+            approvals[task_id]["status"] = APPROVAL_STATUS_DONE
     append_event(profile.paths, event_type="complete", actor=child_agent, task_id=task_id, payload={"note": note})
 
 
@@ -2172,7 +2313,7 @@ def _prepare_workspace(
     workspace_mode: str,
     run_id: str,
 ) -> PreparedWorkspace:
-    if workspace_mode != "git-worktree":
+    if workspace_mode != WORKSPACE_MODE_GIT_WORKTREE:
         raise SupervisorError("Blackdog only supports git-worktree supervisor workspaces")
     profile.paths.worktrees_dir.mkdir(parents=True, exist_ok=True)
     branch = supervisor_task_branch(task, run_id)
@@ -2505,7 +2646,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
     state = load_state(profile.paths.state_file)
     current_status = str((state.get("task_claims", {}).get(child.task.id) or {}).get("status") or "open")
     if not branch_ready:
-        if current_status == "claimed":
+        if current_status == CLAIM_STATUS_CLAIMED:
             child.landed = False
             _release_if_still_claimed(
                 profile,
@@ -2525,7 +2666,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
             "Clean up or land the primary worktree changes in the primary checkout.",
             f"Rerun {child.task.id} after the primary worktree is clean.",
         ]
-        if current_status == "claimed":
+        if current_status == CLAIM_STATUS_CLAIMED:
             _release_if_still_claimed(
                 profile,
                 child.task.id,
@@ -2536,7 +2677,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
     except WorktreeError as exc:
         child.land_error = str(exc)
         child.landed = False
-        if current_status == "claimed":
+        if current_status == CLAIM_STATUS_CLAIMED:
             _release_if_still_claimed(
                 profile,
                 child.task.id,
@@ -2553,7 +2694,7 @@ def _attempt_land_child_worktree(profile: Profile, child: ChildRun, *, actor: st
         task_id=child.task.id,
         payload={"run_id": run_id, "child_agent": child.child_agent, **payload},
     )
-    if current_status != "done":
+    if current_status != CLAIM_STATUS_DONE:
         _complete_if_still_claimed(
             profile,
             child.task.id,
@@ -2573,10 +2714,10 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
     }
     child.result_recorded = bool(after_results - child.result_files_before)
     state = load_state(profile.paths.state_file)
-    child.final_task_status = "done" if task_done(child.task.id, state) else str(
+    child.final_task_status = CLAIM_STATUS_DONE if task_done(child.task.id, state) else str(
         (state.get("task_claims", {}).get(child.task.id) or {}).get("status") or "open"
     )
-    if child.result_recorded and child.final_task_status == "done" and not child.land_error:
+    if child.result_recorded and child.final_task_status == CLAIM_STATUS_DONE and not child.land_error:
         result_metadata = dict(child.telemetry)
         result_metadata.update(
             {
@@ -2638,7 +2779,7 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
             )
     if child.land_error:
         validation.append(f"Land error: {child.land_error}")
-    if child.final_task_status == "done":
+    if child.final_task_status == CLAIM_STATUS_DONE:
         status = "success"
         residual = ["Supervisor had to backfill the task result because the child run completed without writing one."]
         if child.land_error:
@@ -2716,7 +2857,7 @@ def _finalize_child_run(profile: Profile, child: ChildRun, *, actor: str) -> Non
         result_path=result_path,
         run_id=child.run_dir.name,
     )
-    if child.final_task_status != "done":
+    if child.final_task_status != CLAIM_STATUS_DONE:
         _release_if_still_claimed(
             profile,
             child.task.id,
@@ -3066,11 +3207,11 @@ def run_supervisor(
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     selected_count = count or profile.supervisor_max_parallel
-    resolved_workspace_mode = workspace_mode or profile.supervisor_workspace_mode
+    resolved_workspace_mode = normalize_workspace_mode(workspace_mode or profile.supervisor_workspace_mode)
     resolved_poll_interval_seconds = (
         DEFAULT_SUPERVISOR_POLL_INTERVAL_SECONDS if poll_interval_seconds is None else poll_interval_seconds
     )
-    if resolved_workspace_mode != "git-worktree":
+    if resolved_workspace_mode != WORKSPACE_MODE_GIT_WORKTREE:
         raise BacklogError("workspace mode must be 'git-worktree'")
     if resolved_poll_interval_seconds < 0:
         raise BacklogError("poll interval must be at least 0 seconds")
@@ -3120,7 +3261,7 @@ def run_supervisor(
     _append_run_step(
         status_payload,
         status_file,
-        status="swept",
+        status=SUPERVISOR_RUN_STEP_STATUS_SWEPT,
         ready_task_ids=[],
         running_task_ids=[],
         open_message_ids=[],
@@ -3299,7 +3440,7 @@ def run_supervisor(
             _append_run_step(
                 status_payload,
                 status_file,
-                status="draining" if status_payload["draining"] else "running",
+                status=SUPERVISOR_RUN_STATUS_DRAINING if status_payload["draining"] else SUPERVISOR_RUN_STATUS_RUNNING,
                 ready_task_ids=[task.id for task in ready_tasks],
                 running_task_ids=[child.task.id for child in active.values()],
                 open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
@@ -3313,11 +3454,11 @@ def run_supervisor(
         if not active:
             if status_payload["draining"]:
                 status_payload["completed_at"] = now_iso()
-                status_payload["final_status"] = "stopped"
+                status_payload["final_status"] = SUPERVISOR_RUN_STATUS_STOPPED
                 _append_run_step(
                     status_payload,
                     status_file,
-                    status="stopped",
+                    status=SUPERVISOR_RUN_STATUS_STOPPED,
                     ready_task_ids=[],
                     running_task_ids=[],
                     open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
@@ -3334,11 +3475,11 @@ def run_supervisor(
                 break
             if not ready_tasks:
                 status_payload["completed_at"] = now_iso()
-                status_payload["final_status"] = "idle"
+                status_payload["final_status"] = SUPERVISOR_RUN_STATUS_IDLE
                 _append_run_step(
                     status_payload,
                     status_file,
-                    status="idle",
+                    status=SUPERVISOR_RUN_STATUS_IDLE,
                     ready_task_ids=[],
                     running_task_ids=[],
                     open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
@@ -3360,7 +3501,7 @@ def run_supervisor(
         _append_run_step(
             status_payload,
             status_file,
-            status="draining" if status_payload["draining"] else "running",
+            status=SUPERVISOR_RUN_STATUS_DRAINING if status_payload["draining"] else SUPERVISOR_RUN_STATUS_RUNNING,
             ready_task_ids=[],
             running_task_ids=[row.task.id for row in active.values()],
             open_message_ids=[str(message.get("message_id") or "") for message in open_messages],
@@ -3375,7 +3516,7 @@ def run_supervisor(
             "run_id": run_id,
             "workspace_mode": resolved_workspace_mode,
             "task_ids": [child.task.id for child in children],
-            "final_status": status_payload.get("final_status") or "idle",
+            "final_status": status_payload.get("final_status") or SUPERVISOR_RUN_STATUS_IDLE,
             "stopped_by_message_id": status_payload.get("stopped_by_message_id"),
         },
     )
@@ -3396,7 +3537,7 @@ def run_supervisor(
         "workspace_mode": resolved_workspace_mode,
         "poll_interval_seconds": resolved_poll_interval_seconds,
         "draining": bool(status_payload.get("draining")),
-        "final_status": status_payload.get("final_status") or "idle",
+        "final_status": status_payload.get("final_status") or SUPERVISOR_RUN_STATUS_IDLE,
         "run_dir": str(run_dir),
         "status_file": str(status_file),
         "steps": list(status_payload["steps"]),
