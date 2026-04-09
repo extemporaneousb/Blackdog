@@ -661,7 +661,13 @@ def _is_compatibility_shim(node: ast.Module, source: str) -> bool:
     docstring = ast.get_docstring(node) or ""
     if "Compatibility shim" in docstring:
         return True
-    return "sys.modules[__name__] = _module" in source
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Assign):
+            continue
+        for target in child.targets:
+            if _is_sys_modules_name_target(target):
+                return True
+    return False
 
 
 def _internal_imports(
@@ -813,6 +819,20 @@ def _dotted_name(node: ast.AST) -> str:
     if isinstance(node, ast.Call):
         return _dotted_name(node.func)
     return ""
+
+
+def _is_sys_modules_name_target(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Subscript):
+        return False
+    value_name = _dotted_name(node.value)
+    if value_name != "sys.modules":
+        return False
+    slice_node = node.slice
+    if isinstance(slice_node, ast.Name):
+        return slice_node.id == "__name__"
+    if isinstance(slice_node, ast.Constant):
+        return slice_node.value == "__name__"
+    return False
 
 
 def _layer_for_module(module_name: str) -> str:
