@@ -12,7 +12,7 @@ By default, the rendered HTML board is repo-branded:
 
 ## Core charter for file contracts
 
-This document covers both the frozen `blackdog.core` contract and
+This document covers both the frozen `blackdog_core` contract and
 Blackdog-product artifacts layered on top of it.
 
 Executable and module packaging surfaces are intentionally out of scope
@@ -33,7 +33,7 @@ work:
 - `blackdog worktree preflight --format json`
 
 Treat these as Blackdog-product surfaces that must not be used to
-expand `blackdog.core` by default:
+expand `blackdog_core` by default:
 
 - `<control_dir>/threads/`
 - `<control_dir>/supervisor-runs/`
@@ -43,6 +43,20 @@ expand `blackdog.core` by default:
 
 Current file placement is transitional; ownership follows this charter,
 not whichever module or command currently writes a file.
+
+## Vocabulary
+
+Use these terms consistently in code and docs:
+
+- `State`: current mutable authority stored in `backlog-state.json`;
+  today that means approval records and task-claim records only
+- `Record`: one durable append-only artifact such as an event record,
+  inbox record, or task-result payload
+- `Plan`: execution intent stored in the backlog plan block
+- `Snapshot`: a derived read-only projection assembled from backlog,
+  state, and records
+- `Row`: a storage or view row when the physical format is explicitly
+  row-oriented, such as one JSONL line or one rendered table/list row
 
 ## `blackdog.toml`
 
@@ -163,9 +177,10 @@ The emitted schema includes:
 `[tool.blackdog.coverage].shipped_surface` defines the current focused audit
 surface for core semantics. In this repo that surface is now:
 
-- `src/blackdog/core/backlog.py`
-- `src/blackdog/core/config.py`
-- `src/blackdog/core/store.py`
+- `src/blackdog_core/backlog.py`
+- `src/blackdog_core/profile.py`
+- `src/blackdog_core/snapshot.py`
+- `src/blackdog_core/state.py`
 
 Use `make coverage-core` to capture a focused coverage artifact at
 `coverage/core-latest.json` for that surface. `make coverage` remains the broad
@@ -175,14 +190,15 @@ continuation lines and still counts real missing trace lines as uncovered.
 
 Current gaps to close before a true 100 percent core gate is defensible:
 
-- `blackdog.core.backlog.py`: add direct tests for runnable-state classification,
+- `blackdog_core.backlog.py`: add direct tests for runnable-state classification,
   predecessor/approval transitions, and stale-state pruning in addition to
   task-shaping coercion.
-- `blackdog.core.config.py`: add direct tests for profile parsing failures, `@git-common`
+- `blackdog_core.profile.py`: add direct tests for profile parsing failures, `@git-common`
   path resolution, and default doc-routing/validation propagation.
-- `blackdog.core.store.py`: add direct tests for malformed JSON and JSONL rejection,
-  append-only inbox replay, result ordering, and thread/result linkage
-  invariants.
+- `blackdog_core.state.py`: add direct tests for malformed JSON and JSONL rejection,
+  append-only inbox replay, and result ordering invariants.
+- `blackdog_core.snapshot.py`: add direct tests for runtime summary and
+  runtime snapshot builders.
 
 Those focused tests should be the core gate. The existing CLI, supervisor, and
 render tests should remain integration coverage rather than the primary source
@@ -197,9 +213,9 @@ five artifacts:
 | --- | --- | --- | --- |
 | `backlog-state.json` | `approval_tasks` | latest JSON object snapshot | approval state keyed by task id |
 | `backlog-state.json` | `task_claims` | latest JSON object snapshot | claim/completion state keyed by task id |
-| `events.jsonl` | event rows | append-only JSONL replay | factual history, never in-place mutation |
-| `inbox.jsonl` | message + resolve rows | append-only JSONL replay | effective inbox state keyed by `message_id` |
-| `task-results/<task-id>/*.json` | result rows | append-only per-task files | newest-first derived result history |
+| `events.jsonl` | event records | append-only JSONL replay | factual history, never in-place mutation |
+| `inbox.jsonl` | inbox records | append-only JSONL replay | effective inbox state keyed by `message_id` |
+| `task-results/<task-id>/*.json` | result records | append-only per-task files | newest-first derived result history |
 
 The current runtime semantics for those artifacts are:
 
@@ -227,8 +243,8 @@ The current runtime semantics for those artifacts are:
   `recorded_at` descending and rejects files that do not carry the required
   summary fields.
 
-`blackdog.backlog.reconcile_runtime_artifacts()` is the canonical read path over
-those five artifacts. It:
+`blackdog_core.snapshot.load_runtime_artifacts()` is the canonical read
+path over those five artifacts. It:
 
 - runs the same state reconciliation logic every core command already depends
   on;
@@ -288,10 +304,10 @@ The inbox replay contract is:
 
 The corresponding code-level state sets are:
 
-- `blackdog.core.store.APPROVAL_STATE_MACHINE_STATES`
-- `blackdog.core.store.CLAIM_STATE_MACHINE_STATES`
-- `blackdog.core.store.INBOX_ACTIONS`
-- `blackdog.core.store.INBOX_STATE_MACHINE_STATES`
+- `blackdog_core.state.APPROVAL_STATE_MACHINE_STATES`
+- `blackdog_core.state.CLAIM_STATE_MACHINE_STATES`
+- `blackdog_core.state.INBOX_ACTIONS`
+- `blackdog_core.state.INBOX_STATE_MACHINE_STATES`
 
 ### `task-results/<task-id>/*.json` append-only invariants
 
@@ -322,7 +338,7 @@ includes:
 
 ### `blackdog worktree` lifecycle and landing state machine
 
-Blackdog proper freezes worktree lifecycle states to
+`blackdog` freezes worktree lifecycle states to
 `blackdog.worktree.WORKTREE_LIFECYCLE_STATES`:
 
 - `prepared`: `worktree start` created the branch-backed task workspace.
@@ -343,9 +359,10 @@ The readonly worktree contract also freezes two derived states:
 
 The core-only audit surface is frozen to `[tool.blackdog.coverage].shipped_surface`:
 
-- `src/blackdog/core/backlog.py`
-- `src/blackdog/core/config.py`
-- `src/blackdog/core/store.py`
+- `src/blackdog_core/backlog.py`
+- `src/blackdog_core/profile.py`
+- `src/blackdog_core/snapshot.py`
+- `src/blackdog_core/state.py`
 
 The focused audit command is frozen to the current `Makefile` contract:
 
@@ -456,7 +473,7 @@ In practice: `epic` answers "why this cluster exists", `lane` answers "which ord
 
 Project-local managed-skill manifest.
 
-Written by `blackdog bootstrap`, `blackdog refresh`, `blackdog update-repo`, and `blackdog-skill refresh backlog`.
+Written by `blackdog bootstrap`, `blackdog refresh`, and `blackdog update-repo`.
 
 Schema:
 
@@ -470,7 +487,10 @@ Blackdog uses this manifest to tell whether a managed skill file still matches t
 
 Machine-local registry of Blackdog repos tracked from one development checkout.
 
-This file is not part of a host repo's shared contract. It lives under the current checkout's shared control root so one local Blackdog development repo can remember which host repos it manages on that machine.
+This file is not part of a host repo's shared contract. It is owned by
+`blackdog`, not `blackdog_core`. It lives under the current checkout's
+shared control root so one local Blackdog development repo can
+remember which host repos it manages on that machine.
 
 Schema:
 
@@ -501,6 +521,11 @@ Schema:
 ## `<control_dir>/backlog-state.json`
 
 Structured execution state.
+
+This file is intentionally narrow: events, inbox messages, task-result
+payloads, conversation threads, tracked installs, and supervisor runs
+are not part of state. They are separate append-only records or
+product-owned artifacts.
 
 Top-level keys:
 
@@ -717,7 +742,7 @@ Each `steps` entry may also include `recovery_actions` when the supervisor resol
 
 ### `supervisor-runs/*/status.json` run state machine
 
-Blackdog proper freezes supervisor step states to
+`blackdog` freezes supervisor step states to
 `blackdog.supervisor.SUPERVISOR_RUN_STEP_STATUSES`:
 
 - `swept`: the run opened with a cleanup sweep and wave compaction pass.
@@ -772,7 +797,7 @@ Recovery case values remain:
 - `partial_run`
 - `landed_but_unfinished`
 
-The shipped code freezes these literals in `blackdog.proper.supervisor` through
+The shipped code freezes these literals in `blackdog.supervisor` through
 `SUPERVISOR_RUN_STEP_STATUSES`, `SUPERVISOR_RUN_FINAL_STATUSES`,
 `SUPERVISOR_RUN_RUNTIME_STATUSES`, `SUPERVISOR_ATTEMPT_STATUSES`, and
 `SUPERVISOR_RECOVERY_CASES`.
@@ -809,7 +834,7 @@ Use these artifacts and payloads to measure delegated-child ergonomics:
 
 Canonical static-page snapshot payload.
 
-This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias). The payload is Blackdog-product/UI owned even though it now embeds a neutral core export at `core_export`. The shipped board reads its repo/header, plan/lane, and next-runnable contract surfaces through that neutral export; duplicated top-level aliases remain compatibility fields around the board projection.
+This is the same JSON payload embedded into the repo-branded backlog HTML file (and the compatibility `backlog-index.html` alias). The payload is Blackdog-product/UI owned even though it now embeds a neutral core export at `runtime_snapshot`. The shipped board reads its repo/header, plan/lane, and next-runnable contract surfaces through that neutral export; duplicated top-level aliases remain compatibility fields around the board projection.
 
 Representative top-level keys include:
 
@@ -817,7 +842,7 @@ Representative top-level keys include:
 - `project_root`
 - `control_dir`
 - `profile_file`
-- `core_export`
+- `runtime_snapshot`
 - `workspace_contract`
 - `board_tasks`
 - `tasks`
@@ -825,9 +850,9 @@ Representative top-level keys include:
 - `recent_results`
 - `links`
 
-`core_export` is the stable machine contract that `blackdog.core` now owns. It is intentionally distinct from the board/editor projection around it.
+`runtime_snapshot` is the stable machine contract that `blackdog_core` now owns. It is intentionally distinct from the board/editor projection around it.
 
-Current `core_export` keys include:
+Current `runtime_snapshot` keys include:
 
 - `schema_version`
 - `generated_at`
@@ -846,7 +871,7 @@ Current `core_export` keys include:
 - `plan`
 - `tasks`
 
-Current `core_export.tasks[*]` keys include durable backlog/runtime facts only:
+Current `runtime_snapshot.tasks[*]` keys include durable backlog/runtime facts only:
 
 - `id`
 - `title`
@@ -1108,7 +1133,7 @@ Top-level keys:
 - `project_root`
 - `control_dir`
 - `profile_file`
-- `core_export`
+- `runtime_snapshot`
 - `workspace_contract`
 - `headers`
 - `hero_highlights`
@@ -1136,7 +1161,7 @@ Top-level keys:
 `generated_at` is the snapshot creation timestamp.
 `content_updated_at` is the latest event timestamp from the source backlog/events stream (or `generated_at` when no event timestamp is available).
 `last_checked_at` is the latest supervisor heartbeat timestamp when present, falling back to `generated_at`.
-The current static board consumes repo/header, plan/lane, and next-runnable data from `core_export`; the duplicated top-level aliases remain for compatibility and board-local convenience.
+The current static board consumes repo/header, plan/lane, and next-runnable data from `runtime_snapshot`; the duplicated top-level aliases remain for compatibility and board-local convenience.
 
 `queue_status` includes the counters used by the top-right status panel in the current static board:
 - `running`: tasks currently executing (`operator_status_key == "running"`).
@@ -1224,7 +1249,7 @@ Current `graph.tasks[*]` keys include task identity and planning fields plus der
 - `latest_run_land_error`
 - `operator_status`
 
-The UI/task projection intentionally extends `core_export.tasks[*]` with board-only fields such as `activity`, `conversation_*`, `operator_status*`, task/run artifact hrefs, model-response excerpts, and landing metadata. Those extensions are not part of the neutral core export contract.
+The UI/task projection intentionally extends `runtime_snapshot.tasks[*]` with board-only fields such as `activity`, `conversation_*`, `operator_status*`, task/run artifact hrefs, model-response excerpts, and landing metadata. Those extensions are not part of the neutral core export contract.
 - `operator_status_key`
 - `operator_status_detail`
 - `links`

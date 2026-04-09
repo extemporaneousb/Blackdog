@@ -46,12 +46,12 @@ class CoreBacklogAuditTests(CoreAuditTestCase):
             why="Core state should reconcile approval and claim semantics from one pass.",
             evidence="The previous sync logic only seeded approval rows and left stale runtime entries behind.",
             safe_first_slice="Prune orphans and promote completed approval rows during backlog sync.",
-            paths=["src/blackdog/store.py"],
+            paths=["src/blackdog_core/state.py"],
             checks=[],
             docs=["docs/FILE_FORMATS.md"],
             domains=["state"],
             packages=[],
-            affected_paths=["src/blackdog/store.py"],
+            affected_paths=["src/blackdog_core/state.py"],
             task_shaping=None,
             objective="Core hardening",
             requires_approval=True,
@@ -117,7 +117,7 @@ class CoreBacklogAuditTests(CoreAuditTestCase):
             "--safe-first-slice",
             "Record one canonical result and surface the strict validation counts.",
             "--path",
-            "src/blackdog/core/backlog.py",
+            "src/blackdog_core/backlog.py",
             "--requires-approval",
             "--approval-reason",
             "This task changes durable runtime semantics.",
@@ -141,7 +141,7 @@ class CoreBacklogAuditTests(CoreAuditTestCase):
         )
         payload = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "validate", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "validate", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -174,7 +174,7 @@ class CoreBacklogAuditTests(CoreAuditTestCase):
             "--safe-first-slice",
             "Write a valid result file without the matching event and run validate.",
             "--path",
-            "src/blackdog/core/store.py",
+            "src/blackdog_core/state.py",
             "--wave",
             "0",
         )
@@ -205,7 +205,7 @@ class CoreBacklogAuditTests(CoreAuditTestCase):
             encoding="utf-8",
         )
         completed = subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "validate", "--project-root", str(self.root)],
+            [sys.executable, "-m", "blackdog_cli.main", "validate", "--project-root", str(self.root)],
             check=False,
             capture_output=True,
             text=True,

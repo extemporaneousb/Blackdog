@@ -13,7 +13,7 @@ tree:
   `pyproject.toml`, [README.md](../README.md),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and
   [docs/CLI.md](docs/CLI.md)
-- shared machine-facing snapshot readers use `snapshot.core_export`,
+- shared machine-facing snapshot readers use `runtime_snapshot`,
   while top-level snapshot aliases are treated as compatibility
   projections
 - WTAM remains the only kept-change implementation path, with shared
@@ -38,23 +38,22 @@ Use these files as the acceptance record:
 - [docs/MIGRATION.md](docs/MIGRATION.md)
 - [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md)
 - [docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md)
-- [editors/emacs/README.md](../editors/emacs/README.md)
+- [extensions/emacs/README.md](../extensions/emacs/README.md)
 - [tests/test_core_contracts.py](../tests/test_core_contracts.py)
 
 Together these sources should show:
 
-- the owner-scoped executable contract
-- the `core_export` snapshot contract
+- the `blackdog` executable contract plus the
+  `blackdog_core` / `blackdog` / `blackdog_cli` package split
+- the `runtime_snapshot` snapshot contract
 - the WTAM and shared-control-root operating model
 - the host-repo bootstrap and refresh path
 - the final removal of `blackdog.scaffold`
 - the still-intentional compatibility surfaces:
-  - `blackdog`
-  - `blackdog-skill`
   - top-level snapshot aliases
-  - `editors/emacs/lisp/blackdog-thread.el`
-  - `editors/emacs/lisp/blackdog-spec.el`
-  - `editors/emacs/templates/blackdog-spec.md`
+  - `extensions/emacs/lisp/blackdog-thread.el`
+  - `extensions/emacs/lisp/blackdog-spec.el`
+  - `extensions/emacs/templates/blackdog-spec.md`
 
 ## Validation commands
 

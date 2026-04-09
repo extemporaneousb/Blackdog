@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from blackdog.core import config as config_module
+import blackdog_core.profile as config_module
 from tests.core_audit_support import CoreAuditTestCase
 
 
@@ -59,7 +59,7 @@ class CoreConfigAuditTests(CoreAuditTestCase):
         absolute = subprocess.CompletedProcess(["git"], 0, "/tmp/shared-git\n", "")
         failure = subprocess.CompletedProcess(["git"], 1, "", "fatal: no git dir")
 
-        with patch("blackdog.core.config.subprocess.run", return_value=success):
+        with patch("blackdog_core.profile.subprocess.run", return_value=success):
             self.assertEqual(config_module._run_git(self.root, "status"), "relative/.git")
             self.assertEqual(
                 config_module._resolve_path_value(self.root, config_module.GIT_COMMON_TOKEN),
@@ -70,10 +70,10 @@ class CoreConfigAuditTests(CoreAuditTestCase):
                 (self.root / "relative/.git/blackdog").resolve(),
             )
 
-        with patch("blackdog.core.config.subprocess.run", return_value=absolute):
+        with patch("blackdog_core.profile.subprocess.run", return_value=absolute):
             self.assertEqual(config_module._git_common_dir(self.root), Path("/tmp/shared-git").resolve())
 
-        with patch("blackdog.core.config.subprocess.run", return_value=failure):
+        with patch("blackdog_core.profile.subprocess.run", return_value=failure):
             with self.assertRaises(config_module.ConfigError):
                 config_module._run_git(self.root, "status")
 
@@ -84,7 +84,7 @@ class CoreConfigAuditTests(CoreAuditTestCase):
             "worktrees_dir": "../.worktrees",
             "supervisor_runs_dir": "tmp/supervisor-runs",
         }
-        with patch("blackdog.core.config._run_git", return_value=".git"):
+        with patch("blackdog_core.profile._run_git", return_value=".git"):
             paths = config_module._paths_from_raw(self.root, raw_paths, project_name="Demo")
         self.assertEqual(paths.control_dir, (self.root / ".git/blackdog").resolve())
         self.assertEqual(paths.backlog_file, paths.control_dir / "backlog.md")
@@ -145,7 +145,7 @@ class CoreConfigAuditTests(CoreAuditTestCase):
             "max_parallel = 3\n"
         )
 
-        with patch("blackdog.core.config._run_git", return_value=".git"):
+        with patch("blackdog_core.profile._run_git", return_value=".git"):
             profile = config_module.load_profile(self.root)
 
         self.assertEqual(
@@ -175,7 +175,7 @@ class CoreConfigAuditTests(CoreAuditTestCase):
                     "[supervisor]\n"
                     + supervisor_lines
                 )
-                with patch("blackdog.core.config._run_git", return_value=".git"):
+                with patch("blackdog_core.profile._run_git", return_value=".git"):
                     with self.assertRaises(config_module.ConfigError) as exc:
                         config_module.load_profile(self.root)
                 self.assertIn(expected, str(exc.exception))

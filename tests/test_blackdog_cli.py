@@ -23,25 +23,26 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
-from blackdog import backlog as backlog_module
-from blackdog import cli as cli_module
-from blackdog import store as store_module
+import blackdog_core.backlog as backlog_module
+import blackdog_core.snapshot as snapshot_module
+import blackdog_cli.main as cli_module
+import blackdog_core.state as store_module
 from blackdog import supervisor as supervisor_module
-from blackdog import ui as ui_module
+import blackdog.board as ui_module
+import blackdog.installs as installs_module
 from blackdog import worktree as worktree_module
-from blackdog.proper import scaffold as scaffold_module
-from blackdog.backlog import (
-    CORE_EXPORT_SCHEMA_VERSION,
-    build_core_export,
+from blackdog import scaffold as scaffold_module
+from blackdog_core.backlog import (
+    RUNTIME_SNAPSHOT_SCHEMA_VERSION,
     load_backlog,
     render_backlog_plan_block,
     render_task_section,
     sync_state_for_backlog,
 )
-from blackdog.cli import _COMMAND_AUDIT, main as blackdog_main
-from blackdog.config import default_host_skill_name, load_profile, render_default_profile
-from blackdog.skill_cli import main as blackdog_skill_main
-from blackdog.store import (
+from blackdog_core.snapshot import build_runtime_snapshot
+from blackdog_cli.main import COMMAND_SURFACES, main as blackdog_main
+from blackdog_core.profile import default_host_skill_name, load_profile, render_default_profile
+from blackdog_core.state import (
     APPROVAL_STATE_MACHINE_STATES,
     CLAIM_STATE_MACHINE_STATES,
     INBOX_ACTIONS,
@@ -52,13 +53,13 @@ from blackdog.store import (
     load_inbox,
     load_jsonl,
     load_state,
-    load_tracked_installs,
     load_task_results,
     record_task_result,
     resolve_message,
     save_state,
     send_message,
 )
+from blackdog.installs import load_tracked_installs
 from blackdog.supervisor import (
     SUPERVISOR_ATTEMPT_STATUSES,
     SUPERVISOR_RUN_RUNTIME_STATUSES,
@@ -69,10 +70,10 @@ from blackdog.supervisor import (
     _resolved_launch_command,
     _write_run_status,
 )
-from blackdog.threads import load_thread
-from blackdog.ui import (
+from blackdog.conversations import load_thread
+from blackdog.board import (
     UIError,
-    UI_SNAPSHOT_SCHEMA_VERSION,
+    BOARD_SNAPSHOT_SCHEMA_VERSION,
     _activity_message,
     _artifact_href,
     _branch_summary,
@@ -95,7 +96,7 @@ from blackdog.ui import (
     _short_commit,
     _title_label,
     _ui_stylesheet,
-    build_ui_snapshot,
+    build_board_snapshot,
     render_static_html,
 )
 from blackdog.worktree import (
@@ -118,10 +119,6 @@ def cli_env() -> dict[str, str]:
 
 def run_cli(*args: str) -> int:
     return blackdog_main(list(args))
-
-
-def run_skill_cli(*args: str) -> int:
-    return blackdog_skill_main(list(args))
 
 
 def wait_for_file(path: Path, *, timeout: float = 5.0) -> Path:
@@ -276,7 +273,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -351,7 +348,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -449,7 +446,7 @@ def seed_large_runtime_fixture(root: Path, *, task_count: int = 360, lane_count:
             "domains": ["html", "results", "events"],
             "requires_approval": False,
             "approval_reason": "",
-            "safe_first_slice": "Profile one narrow slice against a large synthetic backlog.",
+            "safe_first_slice": "RepoProfile one narrow slice against a large synthetic backlog.",
         }
         why = (
             "Synthetic scale coverage should reflect a backlog large enough to exercise parsing, plan grouping, "
@@ -642,19 +639,16 @@ class BlackdogCliTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_package_skeleton_keeps_legacy_imports_aliasing_new_modules(self) -> None:
-        module_aliases = {
-            "blackdog.config": "blackdog.core.config",
-            "blackdog.backlog": "blackdog.core.backlog",
-            "blackdog.store": "blackdog.core.store",
-            "blackdog.supervisor": "blackdog.proper.supervisor",
-            "blackdog.threads": "blackdog.proper.threads",
-            "blackdog.ui": "blackdog.proper.ui",
-            "blackdog.worktree": "blackdog.proper.worktree",
-        }
+    def test_package_surface_uses_explicit_packages_without_legacy_shims(self) -> None:
+        self.assertIs(importlib.import_module("blackdog_core.profile"), importlib.import_module("blackdog_core.profile"))
+        self.assertIs(importlib.import_module("blackdog_core.snapshot"), importlib.import_module("blackdog_core.snapshot"))
+        self.assertIs(importlib.import_module("blackdog.worktree"), importlib.import_module("blackdog.worktree"))
+        self.assertIs(importlib.import_module("blackdog.supervisor"), importlib.import_module("blackdog.supervisor"))
+        self.assertIs(importlib.import_module("blackdog.conversations"), importlib.import_module("blackdog.conversations"))
 
-        for legacy_name, new_name in module_aliases.items():
-            self.assertIs(importlib.import_module(legacy_name), importlib.import_module(new_name))
+        for removed_name in ("blackdog.config", "blackdog.backlog", "blackdog.store", "blackdog.threads", "blackdog.ui"):
+            with self.assertRaises(ModuleNotFoundError):
+                importlib.import_module(removed_name)
 
     def test_init_add_and_summary(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -687,7 +681,7 @@ class BlackdogCliTests(unittest.TestCase):
             "0",
         )
         summary = subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "summary", "--project-root", str(self.root), "--format", "json"],
+            [sys.executable, "-m", "blackdog_cli.main", "summary", "--project-root", str(self.root), "--format", "json"],
             check=True,
             capture_output=True,
             text=True,
@@ -764,7 +758,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         summary = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "summary", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "summary", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -774,7 +768,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         snapshot = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "snapshot", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "snapshot", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1013,7 +1007,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         observed = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "installs", "observe", "--project-root", str(self.root), "--all", "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "installs", "observe", "--project-root", str(self.root), "--all", "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1055,7 +1049,7 @@ class BlackdogCliTests(unittest.TestCase):
         run_cli("bootstrap", "--project-root", str(host), "--project-name", "Host Update")
         run_cli("installs", "add", "--project-root", str(self.root), str(host))
 
-        with patch("blackdog.cli.update_project_repo") as mock_update:
+        with patch("blackdog_cli.main.update_project_repo") as mock_update:
             mock_update.return_value = {"project_root": str(host), "status": "ok"}
             with redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(run_cli("installs", "update", "--project-root", str(self.root), "--all"), 0)
@@ -1153,7 +1147,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         tune_payload = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "tune", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "tune", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1201,7 +1195,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         summary = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "summary", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "summary", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1216,7 +1210,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         rerun_payload = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "tune", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "tune", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1232,7 +1226,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         no_task_payload = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "tune", "--project-root", str(self.root), "--no-task"],
+                [sys.executable, "-m", "blackdog_cli.main", "tune", "--project-root", str(self.root), "--no-task"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1253,7 +1247,7 @@ class BlackdogCliTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "prompt",
                         "--project-root",
                         str(self.root),
@@ -1303,7 +1297,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "coverage",
                 "--project-root",
                 str(self.root),
@@ -1349,7 +1343,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "coverage",
                 "--project-root",
                 str(self.root),
@@ -1409,7 +1403,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "coverage",
                 "--project-root",
                 str(self.root),
@@ -1454,7 +1448,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "coverage",
                 "--project-root",
                 str(self.root),
@@ -1482,7 +1476,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "coverage",
                 "--project-root",
                 str(self.root),
@@ -1502,16 +1496,16 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["runs"][0]["status"], "failed")
         self.assertEqual(payload["runs"][0]["returncode"], 1)
 
-    def test_command_audit_freezes_current_layer_ownership_split(self) -> None:
-        self.assertEqual(_COMMAND_AUDIT["worktree"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["worktree preflight"]["owner"], "core")
-        self.assertEqual(_COMMAND_AUDIT["worktree start"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["worktree land"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["worktree cleanup"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["inbox"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["inbox send"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["snapshot"]["owner"], "blackdog-proper")
-        self.assertEqual(_COMMAND_AUDIT["render"]["owner"], "blackdog-proper")
+    def test_command_surface_inventory_freezes_current_layer_split(self) -> None:
+        self.assertEqual(COMMAND_SURFACES["worktree"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["worktree preflight"], "blackdog_core")
+        self.assertEqual(COMMAND_SURFACES["worktree start"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["worktree land"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["worktree cleanup"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["inbox"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["inbox send"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["snapshot"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["render"], "blackdog")
 
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"
@@ -1552,7 +1546,7 @@ class BlackdogCliTests(unittest.TestCase):
             original_atomic_write(path, text, before_replace=combined_before_replace)
 
         def writer() -> None:
-            with patch("blackdog.store.atomic_write_text", side_effect=gated_atomic_write):
+            with patch("blackdog_core.state.atomic_write_text", side_effect=gated_atomic_write):
                 append_jsonl(log_file, {"event_id": "evt-2"})
 
         thread = threading.Thread(target=writer)
@@ -1566,7 +1560,7 @@ class BlackdogCliTests(unittest.TestCase):
 
     def test_save_state_and_run_status_use_atomic_writes(self) -> None:
         state_file = self.root / "state.json"
-        with patch("blackdog.store.atomic_write_text") as state_write:
+        with patch("blackdog_core.state.atomic_write_text") as state_write:
             save_state(state_file, {"schema_version": 1, "approval_tasks": {}, "task_claims": {}})
         state_write.assert_called_once()
 
@@ -1587,7 +1581,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(len(result_files), len(task_ids))
 
         started = time.perf_counter()
-        snapshot = build_ui_snapshot(profile)
+        snapshot = build_board_snapshot(profile)
         snapshot_elapsed = time.perf_counter() - started
 
         started = time.perf_counter()
@@ -1614,7 +1608,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertLess(
             snapshot_elapsed,
             6.0,
-            f"build_ui_snapshot took {snapshot_elapsed:.3f}s for backlog={backlog_size}B events={events_size}B results={len(result_files)}",
+            f"build_board_snapshot took {snapshot_elapsed:.3f}s for backlog={backlog_size}B events={events_size}B results={len(result_files)}",
         )
         self.assertLess(
             render_elapsed,
@@ -1679,7 +1673,7 @@ class BlackdogCliTests(unittest.TestCase):
             except BaseException as exc:  # pragma: no cover - surfaced via assertion below
                 errors.append(exc)
 
-        with patch("blackdog.backlog.validate_task_payload", side_effect=gated_validate):
+        with patch("blackdog_core.backlog.validate_task_payload", side_effect=gated_validate):
             first = threading.Thread(target=add_slice, args=("Overlap one",))
             second = threading.Thread(target=add_slice, args=("Overlap two",))
             first.start()
@@ -1729,7 +1723,7 @@ class BlackdogCliTests(unittest.TestCase):
 
                     original_atomic_write(target, text, before_replace=combined_before_replace)
 
-                with patch("blackdog.store.atomic_write_text", side_effect=gated_atomic_write):
+                with patch("blackdog_core.state.atomic_write_text", side_effect=gated_atomic_write):
                     original_append(path, payload)
                 return
             original_append(path, payload)
@@ -1752,7 +1746,7 @@ class BlackdogCliTests(unittest.TestCase):
             except BaseException as exc:  # pragma: no cover - surfaced via assertion below
                 errors.append(exc)
 
-        with patch("blackdog.store.append_jsonl", side_effect=gated_append):
+        with patch("blackdog_core.state.append_jsonl", side_effect=gated_append):
             sender_thread = threading.Thread(target=send_followup)
             resolve_thread = threading.Thread(target=resolve_original)
             sender_thread.start()
@@ -1783,7 +1777,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "bootstrap",
                     "--project-root",
                     str(self.root),
@@ -1811,7 +1805,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "bootstrap",
                     "--project-root",
                     str(self.root),
@@ -1837,7 +1831,7 @@ class BlackdogCliTests(unittest.TestCase):
                 venv_dir = Path(command[3])
                 bin_dir = venv_dir / "bin"
                 bin_dir.mkdir(parents=True, exist_ok=True)
-                for name in ("python", "blackdog", "blackdog-skill"):
+                for name in ("python", "blackdog"):
                     script = bin_dir / name
                     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                     script.chmod(0o755)
@@ -1848,7 +1842,7 @@ class BlackdogCliTests(unittest.TestCase):
             return real_run_command(command, cwd=cwd, env=env)
 
         stdout = io.StringIO()
-        with patch("blackdog.proper.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
+        with patch("blackdog.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
             exit_code = run_cli(
                 "create-project",
                 "--project-root",
@@ -1869,7 +1863,6 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertTrue((target_profile.paths.skill_dir / "SKILL.md").exists())
         self.assertTrue((target_profile.paths.skill_dir / "references" / "task-shaping.md").exists())
         self.assertTrue((target / ".VE/bin/blackdog").exists())
-        self.assertTrue((target / ".VE/bin/blackdog-skill").exists())
         self.assertEqual(len(install_commands), 1)
         self.assertEqual(install_commands[0][-2:], ["-e", str(ROOT.resolve())])
         branch = subprocess.run(
@@ -1889,7 +1882,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "bootstrap",
                     "--project-root",
                     str(self.root),
@@ -1918,7 +1911,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "bootstrap",
                     "--project-root",
                     str(self.root),
@@ -1969,7 +1962,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         summary = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "summary", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "summary", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1985,7 +1978,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         created = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "backlog", "new", "--project-root", str(self.root), "Test Me"],
+                [sys.executable, "-m", "blackdog_cli.main", "backlog", "new", "--project-root", str(self.root), "Test Me"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -2002,7 +1995,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         reset_payload = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "backlog", "reset", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "backlog", "reset", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -2018,7 +2011,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         removed = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "backlog", "remove", "--project-root", str(self.root), "Test Me"],
+                [sys.executable, "-m", "blackdog_cli.main", "backlog", "remove", "--project-root", str(self.root), "Test Me"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -2030,7 +2023,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertFalse(named_dir.exists())
 
         subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "backlog", "new", "--project-root", str(self.root), "scratch"],
+            [sys.executable, "-m", "blackdog_cli.main", "backlog", "new", "--project-root", str(self.root), "scratch"],
             check=True,
             capture_output=True,
             text=True,
@@ -2038,7 +2031,7 @@ class BlackdogCliTests(unittest.TestCase):
             cwd=self.root,
         )
         subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "backlog", "reset", "--project-root", str(self.root), "--purge-named"],
+            [sys.executable, "-m", "blackdog_cli.main", "backlog", "reset", "--project-root", str(self.root), "--purge-named"],
             check=True,
             capture_output=True,
             text=True,
@@ -2103,7 +2096,7 @@ class BlackdogCliTests(unittest.TestCase):
             )
 
         next_payload = subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+            [sys.executable, "-m", "blackdog_cli.main", "next", "--project-root", str(self.root), "--format", "json"],
             check=True,
             capture_output=True,
             text=True,
@@ -2149,7 +2142,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         events = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "events", "--project-root", str(self.root), "--id", first_id],
+                [sys.executable, "-m", "blackdog_cli.main", "events", "--project-root", str(self.root), "--id", first_id],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -2161,7 +2154,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("claim", event_types)
         self.assertIn("complete", event_types)
         self.assertIn("task_result", event_types)
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         task = next(row for row in snapshot["tasks"] if row["id"] == first_id)
         self.assertEqual(task["task_shaping"]["estimated_elapsed_minutes"], 30)
         self.assertEqual(task["latest_result_task_shaping_telemetry"]["estimated_elapsed_minutes"], 25)
@@ -2206,7 +2199,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "remove",
                     "--project-root",
                     str(self.root),
@@ -2285,7 +2278,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Edit one unstarted task through the CLI.",
             "--path",
-            "src/blackdog/cli.py",
+            "src/blackdog_cli/main.py",
             "--epic-title",
             "Task control",
             "--lane-title",
@@ -2299,7 +2292,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "task",
                     "edit",
                     "--project-root",
@@ -2376,7 +2369,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Prepare a branch-backed worktree for one task.",
             "--path",
-            "src/blackdog/cli.py",
+            "src/blackdog_cli/main.py",
             "--epic-title",
             "Task control",
             "--lane-title",
@@ -2390,7 +2383,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "task",
                     "run",
                     "--project-root",
@@ -2423,7 +2416,7 @@ class BlackdogCliTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "task",
                         "run",
                         "--project-root",
@@ -2524,7 +2517,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "sweep",
                     "--project-root",
@@ -2678,7 +2671,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "result",
                 "record",
                 "--project-root",
@@ -2890,7 +2883,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "claim",
                     "--project-root",
                     str(self.root),
@@ -2922,7 +2915,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(claim_events[0]["payload"], {"claimed_pid": 4242})
 
     def test_inbox_and_skill_generation(self) -> None:
-        run_skill_cli("new", "backlog", "--project-root", str(self.root), "--project-name", "Inbox Demo")
+        run_cli("bootstrap", "--project-root", str(self.root), "--project-name", "Inbox Demo")
         run_cli(
             "inbox",
             "send",
@@ -2939,7 +2932,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         messages = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "inbox", "list", "--project-root", str(self.root), "--recipient", "supervisor"],
+                [sys.executable, "-m", "blackdog_cli.main", "inbox", "list", "--project-root", str(self.root), "--recipient", "supervisor"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -2966,7 +2959,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "inbox",
                     "list",
                     "--project-root",
@@ -2987,7 +2980,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertTrue((load_profile(self.root).paths.skill_dir / "SKILL.md").exists())
 
     def test_skill_refresh_regenerates_existing_project_skill(self) -> None:
-        run_skill_cli("new", "backlog", "--project-root", str(self.root), "--project-name", "Inbox Demo")
+        run_cli("bootstrap", "--project-root", str(self.root), "--project-name", "Inbox Demo")
         profile_text = (self.root / "blackdog.toml").read_text(encoding="utf-8").replace(
             '"PYTHONPATH=src python3 -m unittest discover -s tests -p \'test_*.py\'"',
             '"make test"',
@@ -2995,7 +2988,7 @@ class BlackdogCliTests(unittest.TestCase):
         (self.root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
         ve_bin = self.root / ".VE" / "bin"
         ve_bin.mkdir(parents=True)
-        for name in ("blackdog", "blackdog-skill"):
+        for name in ("blackdog",):
             script = ve_bin / name
             script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             script.chmod(0o755)
@@ -3006,9 +2999,8 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.skill_cli",
+                    "blackdog_cli",
                     "refresh",
-                    "backlog",
                     "--project-root",
                     str(self.root),
                 ],
@@ -3025,7 +3017,6 @@ class BlackdogCliTests(unittest.TestCase):
         refreshed_text = skill_file.read_text(encoding="utf-8")
         self.assertIn("Use the project-local Blackdog backlog contract", refreshed_text)
         self.assertIn("./.VE/bin/blackdog", refreshed_text)
-        self.assertIn("./.VE/bin/blackdog-skill", refreshed_text)
         self.assertIn("Host skill token:", refreshed_text)
         self.assertIn("Repo-Specific Planning Guidance", refreshed_text)
         self.assertIn("Control root:", refreshed_text)
@@ -3044,7 +3035,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("`AGENTS.md`", refreshed_text)
         self.assertIn("doc_routing_defaults", refreshed_text)
         self.assertIn("Blackdog uses branch-backed task worktrees for kept implementation changes.", refreshed_text)
-        self.assertIn("refresh backlog", refreshed_text)
+        self.assertNotIn("refresh backlog", refreshed_text)
         self.assertIn("$blackdog-inbox-demo", (skill_file.parent / "agents" / "openai.yaml").read_text(encoding="utf-8"))
         task_shaping_reference = (
             load_profile(self.root).paths.skill_dir / "references" / "task-shaping.md"
@@ -3063,7 +3054,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "refresh",
                     "--project-root",
                     str(self.root),
@@ -3111,7 +3102,7 @@ class BlackdogCliTests(unittest.TestCase):
             return real_run_command(command, cwd=cwd, env=env)
 
         stdout = io.StringIO()
-        with patch("blackdog.proper.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
+        with patch("blackdog.scaffold._run_command", side_effect=fake_run_command), redirect_stdout(stdout):
             exit_code = run_cli(
                 "update-repo",
                 str(self.root),
@@ -3182,7 +3173,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         plan_json = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "plan", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "plan", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3199,7 +3190,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(plan_json["lanes"][0]["task_count"], 1)
 
         plan_text = subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "plan", "--project-root", str(self.root)],
+            [sys.executable, "-m", "blackdog_cli.main", "plan", "--project-root", str(self.root)],
             check=True,
             capture_output=True,
             text=True,
@@ -3244,7 +3235,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         task_id = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "next", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3255,7 +3246,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         preflight = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "worktree", "preflight", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "worktree", "preflight", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3275,7 +3266,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(".VE is unversioned", preflight["workspace_contract"]["ve_expectation"])
 
         preflight_text = subprocess.run(
-            [sys.executable, "-m", "blackdog.cli", "worktree", "preflight", "--project-root", str(self.root)],
+            [sys.executable, "-m", "blackdog_cli.main", "worktree", "preflight", "--project-root", str(self.root)],
             check=True,
             capture_output=True,
             text=True,
@@ -3300,7 +3291,7 @@ class BlackdogCliTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "worktree",
                         "start",
                         "--project-root",
@@ -3338,7 +3329,7 @@ class BlackdogCliTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "worktree",
                         "preflight",
                         "--project-root",
@@ -3360,7 +3351,7 @@ class BlackdogCliTests(unittest.TestCase):
 
             events = json.loads(
                 subprocess.run(
-                    [sys.executable, "-m", "blackdog.cli", "events", "--project-root", str(self.root)],
+                    [sys.executable, "-m", "blackdog_cli.main", "events", "--project-root", str(self.root)],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -3374,7 +3365,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "worktree",
                     "cleanup",
                     "--project-root",
@@ -3424,7 +3415,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         task_id = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "next", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3440,7 +3431,7 @@ class BlackdogCliTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "worktree",
                         "start",
                         "--project-root",
@@ -3476,7 +3467,7 @@ class BlackdogCliTests(unittest.TestCase):
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "worktree",
                         "land",
                         "--project-root",
@@ -3516,7 +3507,7 @@ class BlackdogCliTests(unittest.TestCase):
 
             events = json.loads(
                 subprocess.run(
-                    [sys.executable, "-m", "blackdog.cli", "events", "--project-root", str(self.root)],
+                    [sys.executable, "-m", "blackdog_cli.main", "events", "--project-root", str(self.root)],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -3549,7 +3540,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "--safe-first-slice",
                 "Render one graph node in a readonly UI.",
                 "--path",
-                "src/blackdog/ui.py",
+                "src/blackdog/board.py",
                 "--epic-title",
                 "UI",
                 "--lane-title",
@@ -3560,7 +3551,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         snapshot = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "snapshot", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "snapshot", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -3570,7 +3561,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         task_ids = {task["title"]: task["id"] for task in snapshot["graph"]["tasks"]}
-        self.assertEqual(snapshot["schema_version"], UI_SNAPSHOT_SCHEMA_VERSION)
+        self.assertEqual(snapshot["schema_version"], BOARD_SNAPSHOT_SCHEMA_VERSION)
         self.assertEqual(Path(snapshot["project_root"]).resolve(), self.root.resolve())
         self.assertEqual(Path(snapshot["control_dir"]).resolve(), self.runtime_paths().control_dir.resolve())
         self.assertEqual(snapshot["headers"]["Target branch"], "main")
@@ -3595,7 +3586,7 @@ class BlackdogCliTests(unittest.TestCase):
             datetime.fromisoformat(snapshot["last_checked_at"]),
         )
 
-    def test_snapshot_embeds_neutral_core_export_contract(self) -> None:
+    def test_snapshot_embeds_neutral_runtime_snapshot_contract(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         run_cli(
             "add",
@@ -3616,7 +3607,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Expose one task through a neutral export and keep board projections separate.",
             "--path",
-            "src/blackdog/core/backlog.py",
+            "src/blackdog_core/backlog.py",
             "--epic-title",
             "Core export",
             "--lane-title",
@@ -3630,15 +3621,15 @@ class BlackdogCliTests(unittest.TestCase):
         profile = load_profile(self.root)
         backlog_snapshot = load_backlog(profile.paths, profile)
         state = sync_state_for_backlog(load_state(profile.paths.state_file), backlog_snapshot)
-        direct_core_export = build_core_export(profile, backlog_snapshot, state)
-        ui_snapshot = build_ui_snapshot(profile)
+        direct_runtime_snapshot = build_runtime_snapshot(profile, backlog_snapshot, state)
+        ui_snapshot = build_board_snapshot(profile)
 
-        self.assertEqual(ui_snapshot["core_export"], direct_core_export)
-        self.assertEqual(ui_snapshot["core_export"]["schema_version"], CORE_EXPORT_SCHEMA_VERSION)
-        self.assertEqual(ui_snapshot["core_export"]["project_name"], ui_snapshot["project_name"])
-        self.assertEqual(ui_snapshot["core_export"]["plan"], ui_snapshot["plan"])
+        self.assertEqual(ui_snapshot["runtime_snapshot"], direct_runtime_snapshot)
+        self.assertEqual(ui_snapshot["runtime_snapshot"]["schema_version"], RUNTIME_SNAPSHOT_SCHEMA_VERSION)
+        self.assertEqual(ui_snapshot["runtime_snapshot"]["project_name"], ui_snapshot["project_name"])
+        self.assertEqual(ui_snapshot["runtime_snapshot"]["plan"], ui_snapshot["plan"])
 
-        core_task = next(row for row in ui_snapshot["core_export"]["tasks"] if row["id"] == task_id)
+        core_task = next(row for row in ui_snapshot["runtime_snapshot"]["tasks"] if row["id"] == task_id)
         ui_task = next(row for row in ui_snapshot["tasks"] if row["id"] == task_id)
 
         self.assertEqual(core_task["claim_status"], "claimed")
@@ -3669,11 +3660,11 @@ class BlackdogCliTests(unittest.TestCase):
                 "--why",
                 "Need consistent lane metadata between the board snapshot and the neutral export.",
                 "--evidence",
-                "The board should not expose lane indices that disagree with core_export.plan ordering.",
+                "The board should not expose lane indices that disagree with runtime_snapshot.plan ordering.",
                 "--safe-first-slice",
                 "Feed lane order through the neutral plan export and keep board enrichments on top.",
                 "--path",
-                "src/blackdog/proper/ui.py",
+                "src/blackdog/board.py",
                 "--epic-title",
                 "Board export",
                 "--lane-title",
@@ -3682,9 +3673,9 @@ class BlackdogCliTests(unittest.TestCase):
                 "0",
             )
 
-        ui_snapshot = build_ui_snapshot(load_profile(self.root))
+        ui_snapshot = build_board_snapshot(load_profile(self.root))
         self.assertEqual(
-            [lane["title"] for lane in ui_snapshot["core_export"]["plan"]["lanes"]],
+            [lane["title"] for lane in ui_snapshot["runtime_snapshot"]["plan"]["lanes"]],
             ["Alpha lane", "Zeta lane"],
         )
         tasks_by_title = {row["title"]: row for row in ui_snapshot["tasks"]}
@@ -3693,7 +3684,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(tasks_by_title["Lane zeta task"]["lane_plan_index"], 1)
         self.assertEqual(tasks_by_title["Lane zeta task"]["lane_position"], 1)
 
-    def test_render_static_html_reads_contract_owned_fields_from_core_export(self) -> None:
+    def test_render_static_html_reads_contract_owned_fields_from_runtime_snapshot(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         run_cli(
             "add",
@@ -3706,11 +3697,11 @@ class BlackdogCliTests(unittest.TestCase):
             "--why",
             "Need the static board to consume neutral export data for contract-owned fields.",
             "--evidence",
-            "The page runtime should read plan, headers, and next rows from core_export.",
+            "The page runtime should read plan, headers, and next rows from runtime_snapshot.",
             "--safe-first-slice",
-            "Switch one render path to core_export with compatibility fallbacks.",
+            "Switch one render path to runtime_snapshot with compatibility fallbacks.",
             "--path",
-            "src/blackdog/proper/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "Board export",
             "--lane-title",
@@ -3720,15 +3711,15 @@ class BlackdogCliTests(unittest.TestCase):
         )
 
         profile = load_profile(self.root)
-        snapshot = build_ui_snapshot(profile)
+        snapshot = build_board_snapshot(profile)
         rendered_html = render_static_html(snapshot, profile.paths.html_file)
 
-        self.assertIn("const coreExport = snapshot.core_export || {};", rendered_html)
-        self.assertIn("Array.isArray(coreExport.plan?.lanes)", rendered_html)
-        self.assertIn("Array.isArray(coreExport.next_rows)", rendered_html)
-        self.assertIn("const headers = coreExport.headers || snapshot.headers || {};", rendered_html)
-        self.assertIn("const repoRoot = coreExport.project_root || snapshot.project_root || headers[\"Repo root\"] || \"\";", rendered_html)
-        self.assertEqual(html_snapshot(profile.paths.html_file)["core_export"], snapshot["core_export"])
+        self.assertIn("const runtimeSnapshot = snapshot.runtime_snapshot || {};", rendered_html)
+        self.assertIn("Array.isArray(runtimeSnapshot.plan?.lanes)", rendered_html)
+        self.assertIn("Array.isArray(runtimeSnapshot.next_rows)", rendered_html)
+        self.assertIn("const headers = runtimeSnapshot.headers || snapshot.headers || {};", rendered_html)
+        self.assertIn("const repoRoot = runtimeSnapshot.project_root || snapshot.project_root || headers[\"Repo root\"] || \"\";", rendered_html)
+        self.assertEqual(html_snapshot(profile.paths.html_file)["runtime_snapshot"], snapshot["runtime_snapshot"])
 
     def test_snapshot_includes_freshness_timestamps(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -3741,7 +3732,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why", "Need a deterministic snapshot to validate freshness timestamps.",
             "--evidence", "The board should show both content-updated and last-checked timestamps.",
             "--safe-first-slice", "Expose fresh timestamp fields in snapshot output.",
-            "--path", "src/blackdog/ui.py",
+            "--path", "src/blackdog/board.py",
             "--epic-title", "Docs",
             "--lane-title", "Freshness lane",
             "--wave", "0",
@@ -3769,7 +3760,7 @@ class BlackdogCliTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         self.assertEqual(snapshot["supervisor_last_checked_at"], "2099-03-19T10:14:21-07:00")
         latest_event = load_events(paths)[-1]
         self.assertEqual(snapshot["content_updated_at"], latest_event["at"])
@@ -3795,7 +3786,7 @@ class BlackdogCliTests(unittest.TestCase):
         paths = self.runtime_paths()
         host_one = self.root / "host-one"
         host_two = self.root / "host-two"
-        store_module.save_tracked_installs(
+        installs_module.save_tracked_installs(
             paths,
             {
                 "schema_version": 1,
@@ -3840,7 +3831,7 @@ class BlackdogCliTests(unittest.TestCase):
             },
         )
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         tuning = snapshot["unattended_tuning"]
         self.assertEqual(tuning["tracked_repo_count"], 2)
         self.assertEqual(tuning["observed_repo_count"], 1)
@@ -3867,11 +3858,11 @@ class BlackdogCliTests(unittest.TestCase):
         paths = self.runtime_paths()
 
         self.assertFalse(_pid_alive("bad-pid"))
-        with patch("blackdog.ui.os.kill", side_effect=ProcessLookupError()):
+        with patch("blackdog.board.os.kill", side_effect=ProcessLookupError()):
             self.assertFalse(_pid_alive(123))
-        with patch("blackdog.ui.os.kill", side_effect=PermissionError()):
+        with patch("blackdog.board.os.kill", side_effect=PermissionError()):
             self.assertTrue(_pid_alive(123))
-        with patch("blackdog.ui.os.kill", side_effect=OSError()):
+        with patch("blackdog.board.os.kill", side_effect=OSError()):
             self.assertFalse(_pid_alive(123))
 
         self.assertIsNone(_artifact_href(paths, None))
@@ -3968,7 +3959,7 @@ class BlackdogCliTests(unittest.TestCase):
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         paths = self.runtime_paths()
 
-        with patch("blackdog.ui.resources.files") as files:
+        with patch("blackdog.board.resources.files") as files:
             files.return_value.joinpath.return_value.read_text.side_effect = FileNotFoundError("missing ui.css")
             with self.assertRaises(UIError):
                 _ui_stylesheet()
@@ -3981,9 +3972,9 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(_branch_summary({"target_branch": "main"}, []), "main")
         self.assertIsNone(_latest_activity([]))
 
-        with patch("blackdog.ui._run_git_capture", return_value="git@example.com:owner/repo.git"):
+        with patch("blackdog.board._run_git_capture", return_value="git@example.com:owner/repo.git"):
             self.assertIsNone(_github_repo_url(self.root))
-        with patch("blackdog.ui._run_git_capture", return_value="git@github.com:owner/repo.git"):
+        with patch("blackdog.board._run_git_capture", return_value="git@github.com:owner/repo.git"):
             self.assertEqual(_github_repo_url(self.root), "https://github.com/owner/repo")
 
         invalid_dir = paths.supervisor_runs_dir / "20260319-110000-invalid-raw"
@@ -4086,7 +4077,7 @@ class BlackdogCliTests(unittest.TestCase):
             },
         ]
 
-        with patch("blackdog.ui._pid_alive", return_value=False):
+        with patch("blackdog.board._pid_alive", return_value=False):
             run_artifacts = _build_task_run_artifacts(paths, events)
 
         self.assertEqual(run_artifacts["TASK-LAUNCH-FAIL"]["run_status"], "launch-failed")
@@ -4128,7 +4119,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Model one objective row with active and waiting work.",
             "--path",
-            "src/blackdog/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "Objective board",
             "--lane-title",
@@ -4153,7 +4144,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Keep the second objective task in the same lane for deterministic ordering.",
             "--path",
-            "src/blackdog/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "Objective board",
             "--lane-title",
@@ -4178,7 +4169,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Complete one task in a second objective.",
             "--path",
-            "src/blackdog/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "Objective board",
             "--lane-title",
@@ -4196,7 +4187,7 @@ class BlackdogCliTests(unittest.TestCase):
         run_cli("claim", "--project-root", str(self.root), "--agent", "agent/b", "--id", completed_task)
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/b", "--id", completed_task, "--note", "done")
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         task_rows = {row["id"]: row for row in snapshot["tasks"]}
 
         self.assertNotIn("objective_rows", snapshot)
@@ -4240,7 +4231,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why", "A task can block its lane successor.",
             "--evidence", "Needed to expose waiting status in the queue counters.",
             "--safe-first-slice", "Keep task ordering stable inside one lane.",
-            "--path", "src/blackdog/ui.py",
+            "--path", "src/blackdog/board.py",
             "--epic-title", "Queue panel",
             "--lane-id", "queue-lane",
             "--lane-title", "Dependency lane",
@@ -4254,7 +4245,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why", "The queue panel should show waiting.",
             "--evidence", "Blocking through lane predecessors drives waiting status.",
             "--safe-first-slice", "Keep the dependent task behind the dependency.",
-            "--path", "src/blackdog/ui.py",
+            "--path", "src/blackdog/board.py",
             "--epic-title", "Queue panel",
             "--lane-id", "queue-lane",
             "--lane-title", "Dependency lane",
@@ -4268,7 +4259,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why", "The queue panel should show running status from active child runs.",
             "--evidence", "Live runs should be tracked independently from claimed tasks.",
             "--safe-first-slice", "Expose an actively running operator status for a slice.",
-            "--path", "src/blackdog/ui.py",
+            "--path", "src/blackdog/board.py",
             "--epic-title", "Queue panel",
             "--lane-title", "Running lane",
             "--wave", "0",
@@ -4281,7 +4272,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why", "The queue panel should show blocked status.",
             "--evidence", "Stalled runs surface as blocked in the operator panel.",
             "--safe-first-slice", "Expose blocked status through child artifacts.",
-            "--path", "src/blackdog/ui.py",
+            "--path", "src/blackdog/board.py",
             "--epic-title", "Queue panel",
             "--lane-title", "Blocked lane",
             "--wave", "0",
@@ -4294,7 +4285,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--why", "The queue panel should show completed today counts.",
             "--evidence", "Completed tasks contribute to history and completion counters.",
             "--safe-first-slice", "Collect all-time and daily completion metrics.",
-            "--path", "src/blackdog/ui.py",
+            "--path", "src/blackdog/board.py",
             "--epic-title", "Queue panel",
             "--lane-title", "Complete lane",
             "--wave", "0",
@@ -4354,7 +4345,7 @@ class BlackdogCliTests(unittest.TestCase):
             },
         )
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         status = snapshot["queue_status"]
 
         self.assertEqual(status["running"], 1)
@@ -4404,7 +4395,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "--safe-first-slice",
                 "Add snapshot fields for active tasks and filtered inbox messages.",
                 "--path",
-                "src/blackdog/ui.py",
+                "src/blackdog/board.py",
                 "--epic-title",
                 "UI",
                 "--lane-title",
@@ -4530,7 +4521,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         snapshot = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "snapshot", "--project-root", str(self.root)],
+                [sys.executable, "-m", "blackdog_cli.main", "snapshot", "--project-root", str(self.root)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -4694,7 +4685,7 @@ class BlackdogCliTests(unittest.TestCase):
             )
         task_id = json.loads(stdout.getvalue())["task"]["id"]
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         self.assertEqual(snapshot["links"]["threads"], "threads")
         self.assertEqual(len(snapshot["threads"]), 1)
         self.assertEqual(snapshot["threads"][0]["id"], thread_id)
@@ -4785,7 +4776,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "--safe-first-slice",
                 "Batch git metadata resolution across task refs.",
                 "--path",
-                "src/blackdog/ui.py",
+                "src/blackdog/board.py",
                 "--epic-title",
                 "Snapshot performance",
                 "--lane-title",
@@ -4861,8 +4852,8 @@ class BlackdogCliTests(unittest.TestCase):
                 },
             )
 
-        with patch("blackdog.ui._run_git_capture", wraps=ui_module._run_git_capture) as git_capture:
-            snapshot = build_ui_snapshot(load_profile(self.root))
+        with patch("blackdog.board._run_git_capture", wraps=ui_module._run_git_capture) as git_capture:
+            snapshot = build_board_snapshot(load_profile(self.root))
 
         self.assertLessEqual(git_capture.call_count, 4)
         task_rows = {row["id"]: row for row in snapshot["tasks"]}
@@ -4899,7 +4890,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Render the completed-task reader from existing supervisor artifacts.",
             "--path",
-            "src/blackdog/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "Reader detail",
             "--lane-title",
@@ -4971,7 +4962,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         run_cli("complete", "--project-root", str(self.root), "--agent", "supervisor/child-01", "--id", task_id, "--note", "done")
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
 
         self.assertEqual(task["model_response"], model_response)
@@ -5035,7 +5026,7 @@ class BlackdogCliTests(unittest.TestCase):
         run_cli("claim", "--project-root", str(self.root), "--agent", "agent/noop", "--id", task_id)
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/noop", "--id", task_id, "--note", "done")
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
         self.assertEqual(task["operator_status"], "Complete")
         self.assertEqual(task["operator_status_key"], "complete")
@@ -5068,7 +5059,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Correlate direct worktree landing metadata back to the completed task card.",
             "--path",
-            "src/blackdog/cli.py",
+            "src/blackdog_cli/main.py",
             "--epic-title",
             "UI",
             "--lane-title",
@@ -5155,7 +5146,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/direct", "--id", task_id, "--note", "done")
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
 
         self.assertTrue(task["latest_run_landed"])
@@ -5190,7 +5181,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Prefer current task status over stale run status in the UI snapshot.",
             "--path",
-            "src/blackdog/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "UI",
             "--lane-title",
@@ -5228,7 +5219,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/a", "--id", task_id, "--note", "done")
 
-        snapshot = build_ui_snapshot(load_profile(self.root))
+        snapshot = build_board_snapshot(load_profile(self.root))
         task = next(row for row in snapshot["tasks"] if row["id"] == task_id)
         chip_keys = [row["key"] for row in task["dialog_status_chips"]]
 
@@ -5702,7 +5693,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "report",
                     "--project-root",
@@ -5747,7 +5738,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "report",
                     "--project-root",
@@ -5777,7 +5768,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "report",
                 "--project-root",
@@ -5810,7 +5801,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "recover",
                     "--project-root",
@@ -5853,7 +5844,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "recover",
                 "--project-root",
@@ -5891,7 +5882,7 @@ class BlackdogCliTests(unittest.TestCase):
                 "--safe-first-slice",
                 "Print a readonly supervisor status summary.",
                 "--path",
-                "src/blackdog/cli.py",
+                "src/blackdog_cli/main.py",
                 "--epic-title",
                 "Supervisor interface",
                 "--lane-title",
@@ -5905,7 +5896,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "inbox",
                     "send",
                     "--project-root",
@@ -5932,7 +5923,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "inbox",
                 "send",
                 "--project-root",
@@ -6017,7 +6008,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "result",
                 "record",
                 "--project-root",
@@ -6043,7 +6034,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "result",
                 "record",
                 "--project-root",
@@ -6071,7 +6062,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "status",
                     "--project-root",
@@ -6114,7 +6105,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "status",
                 "--project-root",
@@ -6210,7 +6201,7 @@ class BlackdogCliTests(unittest.TestCase):
         )
         run_cli("complete", "--project-root", str(self.root), "--agent", "agent/a", "--id", completed_task_id, "--note", "done")
 
-        before_snapshot = build_ui_snapshot(load_profile(self.root))
+        before_snapshot = build_board_snapshot(load_profile(self.root))
         self.assertEqual([row["id"] for row in before_snapshot["board_tasks"]], [completed_task_id, waiting_task_id])
 
         payload = json.loads(
@@ -6218,7 +6209,7 @@ class BlackdogCliTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -6241,7 +6232,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(len(plan_snapshot.plan["lanes"]), 1)
         self.assertEqual(plan_snapshot.plan["lanes"][0]["task_ids"], [waiting_task_id])
         self.assertEqual(plan_snapshot.plan["lanes"][0]["wave"], 0)
-        after_snapshot = build_ui_snapshot(load_profile(self.root))
+        after_snapshot = build_board_snapshot(load_profile(self.root))
         self.assertEqual([row["id"] for row in after_snapshot["board_tasks"]], [waiting_task_id])
         self.assertEqual(after_snapshot["board_tasks"][0]["wave"], 0)
 
@@ -6253,7 +6244,7 @@ class BlackdogCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -6309,7 +6300,7 @@ class BlackdogCliTests(unittest.TestCase):
             "--safe-first-slice",
             "Append one task and regenerate backlog-index.html.",
             "--path",
-            "src/blackdog/ui.py",
+            "src/blackdog/board.py",
             "--epic-title",
             "UI",
             "--lane-title",
@@ -6498,7 +6489,7 @@ class BlackdogCliTests(unittest.TestCase):
 
         self.assertIn(str(blackdog_script.resolve()), prompt)
         self.assertIn(".VE is unversioned and bound to this worktree path", prompt)
-        self.assertNotIn("PYTHONPATH=src python3 -m blackdog.cli", prompt)
+        self.assertNotIn("PYTHONPATH=src python3 -m blackdog_cli", prompt)
 
     def test_build_child_prompt_does_not_reuse_primary_worktree_ve_for_branch_backed_runs(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -6698,7 +6689,7 @@ if __name__ == "__main__":
 
         task_id = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "next", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -6710,7 +6701,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -6795,7 +6786,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "inbox",
                     "list",
                     "--project-root",
@@ -6917,7 +6908,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -6941,7 +6932,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -6964,7 +6955,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "report",
                     "--project-root",
@@ -7049,7 +7040,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -7104,7 +7095,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -7198,7 +7189,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -7221,7 +7212,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "release",
             "--project-root",
             str(project_root),
@@ -7273,7 +7264,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -7361,7 +7352,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -7395,7 +7386,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -7485,7 +7476,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -7557,7 +7548,7 @@ if __name__ == "__main__":
         )
         task_id = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "next", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -7570,7 +7561,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -7622,7 +7613,7 @@ if __name__ == "__main__":
         self.assertEqual(len(blocked_results), 1)
         self.assertFalse(blocked_results[0]["needs_user_input"])
         self.assertEqual(blocked_results[0]["followup_candidates"], [])
-        task = next(row for row in build_ui_snapshot(load_profile(self.root))["tasks"] if row["id"] == task_id)
+        task = next(row for row in build_board_snapshot(load_profile(self.root))["tasks"] if row["id"] == task_id)
         self.assertEqual(task["operator_status"], "Failed to land")
         self.assertEqual(task["operator_status_key"], "blocked")
         self.assertEqual(task["latest_run_status"], "blocked")
@@ -7635,7 +7626,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "status",
                     "--project-root",
@@ -7664,7 +7655,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "report",
                     "--project-root",
@@ -7726,7 +7717,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -7775,7 +7766,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -7853,7 +7844,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -7902,7 +7893,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -7988,7 +7979,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -8060,7 +8051,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -8169,7 +8160,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -8201,7 +8192,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -8258,7 +8249,7 @@ if __name__ == "__main__":
         self.assertEqual(rendered_snapshot["open_messages"], [])
         ready_rows = json.loads(
             subprocess.run(
-                [sys.executable, "-m", "blackdog.cli", "next", "--project-root", str(self.root), "--format", "json"],
+                [sys.executable, "-m", "blackdog_cli.main", "next", "--project-root", str(self.root), "--format", "json"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -8342,7 +8333,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -8374,7 +8365,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -8538,7 +8529,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -8570,7 +8561,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -8700,7 +8691,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -8732,7 +8723,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -8856,7 +8847,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -8888,7 +8879,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -8959,7 +8950,7 @@ def record_result(
     command = [
         sys.executable,
         "-m",
-        "blackdog.cli",
+        "blackdog_cli.main",
         "result",
         "record",
         "--project-root",
@@ -9163,7 +9154,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -9274,7 +9265,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -9343,7 +9334,7 @@ if __name__ == "__main__":
                     [
                         sys.executable,
                         "-m",
-                        "blackdog.cli",
+                        "blackdog_cli.main",
                         "supervise",
                         "run",
                         "--project-root",
@@ -9434,7 +9425,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -9493,7 +9484,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -9595,7 +9586,7 @@ def main() -> int:
         [
             sys.executable,
             "-m",
-            "blackdog.cli",
+            "blackdog_cli.main",
             "result",
             "record",
             "--project-root",
@@ -9677,7 +9668,7 @@ if __name__ == "__main__":
                 [
                     sys.executable,
                     "-m",
-                    "blackdog.cli",
+                    "blackdog_cli.main",
                     "supervise",
                     "run",
                     "--project-root",
@@ -9747,7 +9738,7 @@ def record_result(
     command = [
         sys.executable,
         "-m",
-        "blackdog.cli",
+        "blackdog_cli.main",
         "result",
         "record",
         "--project-root",
@@ -10054,7 +10045,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",
@@ -10146,7 +10137,7 @@ if __name__ == "__main__":
             [
                 sys.executable,
                 "-m",
-                "blackdog.cli",
+                "blackdog_cli.main",
                 "supervise",
                 "run",
                 "--project-root",

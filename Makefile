@@ -14,10 +14,10 @@ test-core:
 	$(CORE_AUDIT_COMMAND)
 
 test-emacs:
-	emacs -Q --batch -L editors/emacs/lisp -L editors/emacs/test -l editors/emacs/test/blackdog-test.el -f ert-run-tests-batch-and-exit
+	emacs -Q --batch -L extensions/emacs/lisp -L extensions/emacs/test -l extensions/emacs/test/blackdog-test.el -f ert-run-tests-batch-and-exit
 
 coverage:
-	PYTHONPATH=src python3 -m blackdog.cli coverage --project-root .
+	PYTHONPATH=src python3 -m blackdog_cli coverage --project-root .
 
 coverage-core:
-	PYTHONPATH=src python3 -m blackdog.cli coverage --project-root . --command "$(CORE_AUDIT_COMMAND)" --output $(CORE_COVERAGE_OUTPUT)
+	PYTHONPATH=src python3 -m blackdog_cli coverage --project-root . --command "$(CORE_AUDIT_COMMAND)" --output $(CORE_COVERAGE_OUTPUT)

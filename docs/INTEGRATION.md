@@ -29,14 +29,13 @@ This document describes the current integration path for adopting Blackdog in an
 Blackdog uses three layers when another repo or tool integrates with
 it:
 
-- `core`: the durable repo-local profile plus the canonical backlog,
-  state, events, inbox, results, threads, and snapshot artifacts
-- `blackdog proper`: the shipped `blackdog`/`blackdog-skill` CLI
-  workflows, bootstrap/refresh/update flows, prompt/tune/report
-  helpers, project-local skill scaffold, static HTML board, and
-  supervisor run protocol
+- `blackdog_core`: the durable repo-local profile plus the canonical
+  backlog, state, events, inbox, results, and snapshot artifacts
+- `blackdog`: the shipped workflow/bootstrap/render/supervisor layer
 - `extensions`: optional editor integrations, repo-local wrapper
   skills, monitoring tools, or other host-specific adapters
+- `blackdog_cli`: the thin command adapter behind the `blackdog`
+  executable
 
 The contract rule is:
 
@@ -47,9 +46,9 @@ The contract rule is:
   the current Python module layout as a public API
 
 That module-layout warning applies directly to prompt/tune helpers:
-their product ownership is `blackdog proper`, and any compatibility
-imports that still resolve through `blackdog.backlog` remain
-transitional.
+their product ownership is `blackdog`, and integrations should import
+`blackdog_core` or `blackdog` explicitly rather than depending on
+removed legacy shim modules.
 
 ## Fresh repo creation flow
 
@@ -71,7 +70,6 @@ transitional.
 1. Install Blackdog into a local Python environment available to the host repo.
    Today that can be an editable checkout or a Git install such as `python -m pip install -e /path/to/blackdog` or `python -m pip install git+<github-url>`.
 2. Run `blackdog bootstrap --project-root /path/to/repo --project-name "Repo Name"`.
-   If needed, `blackdog-skill new backlog` remains as a compatibility wrapper around the same bootstrap flow.
 3. Verify the generated bootstrap artifacts are present:
    - `blackdog.toml`
    - `AGENTS.md` (generated when absent)
@@ -85,7 +83,6 @@ transitional.
 5. Commit `blackdog.toml` and the project-local skill scaffold if they are part of the repo's working contract.
    Do not plan around checking in mutable runtime files; Blackdog now defaults to a shared local control root outside the built artifact.
 6. If you later change `blackdog.toml` or update the installed Blackdog package, regenerate the tailored host artifacts with `blackdog refresh --project-root /path/to/repo`.
-   `blackdog-skill refresh backlog` remains as a compatibility wrapper around the managed skill refresh flow.
    If any managed skill file was locally modified, refresh keeps that file in place and writes a `*.blackdog-new` sidecar beside it instead of overwriting it.
 7. In each fresh git worktree, create that worktree's own `.VE/` (or equivalent repo-local environment) before running repo-local commands. Do not copy `.VE/` directories between worktrees; virtualenvs embed absolute paths.
 8. Treat implementation edits in the primary worktree as a contract violation. Start with `blackdog worktree preflight`; if it reports `primary worktree: yes`, do not edit in that checkout and create or enter a task worktree with `blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
@@ -108,7 +105,10 @@ If one Blackdog development checkout manages several local host repos on the sam
 - `blackdog installs update --all`
 - `blackdog installs observe --all`
 
-That tracked-install registry is machine-local state under the development checkout's control root. It is the right place to remember "these are the local repos I manage from this Blackdog checkout" because those paths are operator-specific, not host-repo contract.
+That tracked-install registry is machine-local product state under the
+development checkout's control root. It is the right place to remember
+"these are the local repos I manage from this Blackdog checkout"
+because those paths are operator-specific, not host-repo contract.
 
 `installs update` pushes the current Blackdog source into each tracked repo through the existing `update-repo` path. `installs observe` reads each tracked repo's backlog summary and tune recommendation, and now also reports host-integration findings for wrapper-skill naming, prompt metadata, WTAM guidance, and task-shaping/history drift so the development checkout can compare host-repo friction points and mine Blackdog improvement candidates across local repos.
 
@@ -129,7 +129,7 @@ If the repo was already open before bootstrap, reopen the repo or refresh the ru
 
 Blackdog does not currently call an external skill-authoring workflow at bootstrap time.
 It generates and refreshes the project-local skill deterministically from `blackdog.toml` so it stays aligned with the repo contract.
-That generated skill is part of Blackdog proper's shipped product surface; repo-specific follow-on skills should treat it as a wrapper over the CLI and stable artifact contracts, not as a replacement source of runtime truth.
+That generated skill is part of Blackdog's shipped product surface; repo-specific follow-on skills should treat it as a wrapper over the CLI and stable artifact contracts, not as a replacement source of runtime truth.
 
 ## Recommended repo-specific configuration review
 

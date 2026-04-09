@@ -10,10 +10,10 @@ acceptance checklist.
 
 ## Highlights
 
-- Split the public executables by ownership: `blackdog-core`,
-  `blackdog-proper`, and `blackdog-devtool` now sit beside the
-  compatibility `blackdog` umbrella CLI.
-- Froze `snapshot.core_export` as the shared machine contract for
+- Froze the package split as `blackdog-core` / `blackdog_core`,
+  `blackdog` / `blackdog`, and `blackdog-cli` / `blackdog_cli` while
+  keeping the executable name `blackdog`.
+- Froze `runtime_snapshot` as the shared machine contract for
   clients while preserving top-level snapshot aliases as compatibility
   projections for board-heavy readers.
 - Locked the repo-local WTAM story around shared control-root state,
@@ -21,13 +21,13 @@ acceptance checklist.
 - Adapted the Emacs extension contract to the remodeled snapshot
   surface and Codex-first operator flow.
 - Removed the obsolete `blackdog.scaffold` shim from the public tree.
+- Removed the obsolete `blackdog_cli.skill` compatibility CLI.
 
 ## What changed for operators
 
-Operators can now route directly to the ownership-scoped executables
-instead of treating `blackdog` as the only stable shell entrypoint.
-`blackdog` still works, but it is now documented as the compatibility
-umbrella over the mixed surface.
+Operators still use `blackdog` as the shell entrypoint. The difference
+is architectural: `blackdog_cli` is now explicitly only the adapter,
+while `blackdog_core` and `blackdog` own the actual behavior.
 
 Host repos should prefer:
 
@@ -35,13 +35,10 @@ Host repos should prefer:
 - `blackdog bootstrap` for existing repos
 - `blackdog refresh` after package or profile changes
 
-`blackdog-skill` still exists, but only as a compatibility wrapper
-around the same bootstrap and refresh workflows.
-
 ## What changed for integrations
 
 External clients should now read machine-facing backlog/runtime data
-from `blackdog snapshot` at `core_export` instead of treating
+from `blackdog snapshot` at `runtime_snapshot` instead of treating
 board-shaped top-level fields as the long-term API.
 
 Integrations should also treat the documented CLI and artifact
@@ -53,13 +50,11 @@ integration surface.
 This release line intentionally keeps a small set of transitional
 surfaces while downstream callers finish moving:
 
-- `blackdog` remains the mixed compatibility CLI
-- `blackdog-skill` remains a compatibility wrapper
-- top-level snapshot aliases remain around `core_export`
-- `editors/emacs/lisp/blackdog-thread.el` remains for legacy
+- top-level snapshot aliases remain around `runtime_snapshot`
+- `extensions/emacs/lisp/blackdog-thread.el` remains for legacy
   Blackdog-owned prompt/task threads
-- `editors/emacs/lisp/blackdog-spec.el` and
-  `editors/emacs/templates/blackdog-spec.md` remain for the legacy
+- `extensions/emacs/lisp/blackdog-spec.el` and
+  `extensions/emacs/templates/blackdog-spec.md` remain for the legacy
   spec-first Emacs drafting flow
 
 Those remaining surfaces are documented explicitly so future removals

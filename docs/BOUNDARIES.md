@@ -1,12 +1,14 @@
 # Core Boundaries
 
 This document freezes the ownership boundary Blackdog should use for the
-current remodel. It defines three layers:
+current remodel. It defines four package surfaces:
 
-- `core`: stable backlog/runtime primitives that should remain dependency-light
-  and reusable outside the Blackdog product surface
-- `blackdog proper`: the Blackdog product contract that composes core
-  primitives into the shipped CLI and repo workflow
+- `blackdog_core`: stable backlog/runtime primitives that should remain
+  dependency-light and reusable outside the Blackdog product surface
+- `blackdog`: the Blackdog product contract that composes
+  `blackdog_core` primitives into the shipped repo workflow
+- `blackdog_cli`: the thin CLI adapter package behind the `blackdog`
+  executable
 - `extensions`: optional adapters and operator-specific surfaces that depend on
   the Blackdog product contract but are not part of the minimal Blackdog
   runtime
@@ -27,9 +29,9 @@ answer to:
 
 ## Layer Definitions
 
-### `core`
+### `blackdog_core`
 
-`core` owns the durable, local-first backlog/runtime contract.
+`blackdog_core` owns the durable, local-first backlog/runtime contract.
 
 Allowed responsibilities:
 
@@ -40,12 +42,11 @@ Allowed responsibilities:
 - deterministic state transitions for claims, release, completion, comments,
   approvals, and structured results
 - task selection, dependency checks, and plan interpretation
-- stable WTAM primitives for worktree contract inspection and branch-backed task
-  workspace lifecycle
-- pure or near-pure snapshot/read-model builders over the canonical artifact
-  set
+- stable WTAM primitives for worktree contract inspection
+- pure or near-pure snapshot/read-model builders over the canonical
+  artifact set
 
-Must stay out of `core`:
+Must stay out of `blackdog_core`:
 
 - editor-specific workflows
 - prompt-authoring ergonomics beyond minimal contract text
@@ -61,22 +62,23 @@ Design rules:
 - optimize for reuse by multiple Blackdog frontends or adapters
 - treat CLI-independent library behavior as the source of truth
 
-### `blackdog proper`
+### `blackdog`
 
-`blackdog proper` owns the shipped Blackdog product experience built on top of
-`core`.
+`blackdog` owns the shipped Blackdog product experience built on top of
+`blackdog_core`.
 
 Allowed responsibilities:
 
-- the `blackdog` and `blackdog-skill` CLIs
 - repo bootstrap and refresh flows
 - project-local skill generation
 - prompt/tune/report helpers that express the Blackdog operating contract
 - the static HTML board renderer and view composition
 - supervisor orchestration, delegated child protocol, and launch contract
+- Blackdog-owned conversation threads
+- tracked-install registry management
 - Blackdog-specific packaging and default policy choices
 
-Must stay out of `blackdog proper`:
+Must stay out of `blackdog`:
 
 - editor-specific UI logic
 - host-repo custom automation that is not part of the shared Blackdog product
@@ -84,10 +86,28 @@ Must stay out of `blackdog proper`:
 
 Design rules:
 
-- compose `core`; do not hide or replace it
+- compose `blackdog_core`; do not hide or replace it
 - keep product defaults explicit in docs and profile config
 - treat generated skills, HTML, and supervisor artifacts as product surfaces,
-  not `core` primitives
+  not `blackdog_core` primitives
+
+### `blackdog_cli`
+
+`blackdog_cli` owns the executable adapter and nothing else.
+
+Allowed responsibilities:
+
+- parser construction
+- CLI help text
+- argument normalization
+- dispatch into `blackdog_core` and `blackdog`
+
+Must stay out of `blackdog_cli`:
+
+- runtime contract ownership
+- product policy
+- persistent file formats
+- state transitions beyond argument validation
 
 ### `extensions`
 
@@ -105,7 +125,8 @@ Allowed responsibilities:
 
 Rules for extensions:
 
-- they may depend on `blackdog proper`
+- they may depend on `blackdog`
+- they may shell out to `blackdog`
 - they must not redefine durable runtime state formats
 - they should prefer documented CLI and snapshot contracts over private imports
 - they should be removable without breaking the minimal Blackdog runtime
@@ -115,13 +136,16 @@ Rules for extensions:
 The current package layout is still mixed, but the ownership target is already
 clear:
 
-- `core` target surface: profile/path resolution, backlog parsing, state/event
-  persistence, task/result/inbox contracts, worktree contract inspection, and
-  stable snapshot data
-- `blackdog proper` target surface: CLI commands, bootstrap/refresh, project
-  skill generation, HTML rendering, tune/prompt/report output, and supervisor
-  orchestration
-- `extensions` target surface: `docs/EMACS.md` and the `editors/emacs/`
+- `blackdog_core` target surface: profile/path resolution, backlog
+  parsing, state/event persistence, task/result/inbox contracts,
+  worktree contract inspection, and stable snapshot data
+- `blackdog` target surface: CLI commands, bootstrap/refresh, project
+  skill generation, HTML rendering, tune/prompt/report output,
+  conversation threads, tracked-install registry handling, and
+  supervisor orchestration
+- `blackdog_cli` target surface: parser wiring for the `blackdog`
+  executable
+- `extensions` target surface: `docs/EMACS.md` and the `extensions/emacs/`
   package, plus future editor or host-specific adapters
 
 When a module currently mixes these concerns, extraction should move the code
@@ -131,14 +155,15 @@ to the correct layer instead of expanding the mixed surface.
 
 The remodel should apply these rules:
 
-1. Move reusable file-contract and state-transition logic toward `core`.
+1. Move reusable file-contract and state-transition logic toward `blackdog_core`.
 2. Keep Blackdog-specific CLI, scaffold, supervisor, and HTML policy in
-   `blackdog proper`.
-3. Do not promote editor integrations or future adapters into `core` just
+   `blackdog`.
+3. Keep only argument parsing and command dispatch in `blackdog_cli`.
+4. Do not promote editor integrations or future adapters into `blackdog_core` just
    because they are useful for dogfooding.
-4. If a feature needs Blackdog defaults, generated skills, or operator-facing
-   launch behavior, it belongs in `blackdog proper`, not `core`.
-5. If a feature can be removed without breaking canonical backlog/runtime
+5. If a feature needs Blackdog defaults, generated skills, or operator-facing
+   launch behavior, it belongs in `blackdog`, not `blackdog_core`.
+6. If a feature can be removed without breaking canonical backlog/runtime
    artifacts or WTAM semantics, it is a candidate for `extensions`.
 
 ## Phase Boundaries
@@ -151,13 +176,13 @@ placement as an argument for what belongs in `core`.
 Exit criteria:
 
 - this charter is committed
-- README and architecture docs use the same three-layer language
+- README and architecture docs use the same package language
 - new backlog work can classify itself against these boundaries
 
 ### Phase 1: Core Extraction
 
-Consolidate the dependency-light backlog/runtime primitives into an explicit
-`core` surface.
+Consolidate the dependency-light backlog/runtime primitives into an
+explicit `blackdog_core` surface.
 
 Target outcomes:
 
@@ -166,13 +191,13 @@ Target outcomes:
 - WTAM primitives and snapshot builders have a stable library home
 - product-facing modules depend on `core` instead of re-owning those rules
 
-### Phase 2: Blackdog Proper Consolidation
+### Phase 2: Blackdog Product Consolidation
 
 Keep Blackdog's shipped product surface coherent on top of `core`.
 
 Target outcomes:
 
-- CLI/scaffold/supervisor/render flows are documented as `blackdog proper`
+- CLI/scaffold/supervisor/render flows are documented as `blackdog`
 - Blackdog-specific policy and default behavior are easier to change without
   destabilizing `core`
 - product docs describe Blackdog as a composition over `core`, not as the core
@@ -201,5 +226,6 @@ Before adding or moving code, ask:
 3. Is it optional operator or host integration that could sit outside the
    minimal runtime?
 
-Route the work to `core`, `blackdog proper`, or `extensions` based on that
-answer, and update docs when the boundary would otherwise be ambiguous.
+Route the work to `blackdog_core`, `blackdog`, `blackdog_cli`, or
+`extensions` based on that answer, and update docs when the boundary
+would otherwise be ambiguous.

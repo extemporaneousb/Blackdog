@@ -10,7 +10,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 ## CLI Entry Points
 
 - Blackdog CLI: `./.VE/bin/blackdog`
-- Skill refresh CLI: `./.VE/bin/blackdog-skill`
+- Skill/scaffold refresh: `./.VE/bin/blackdog refresh`
 
 ## Core Paths
 
@@ -110,7 +110,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 - Commit `blackdog.toml` and this project-local skill if the repo wants a shared Blackdog operating contract.
 - Do not check in mutable runtime files from `@git-common/blackdog`.
-- Regenerate this skill after profile changes with `./.VE/bin/blackdog refresh` or `./.VE/bin/blackdog-skill refresh backlog --project-root .`.
+- Regenerate this skill after profile changes with `./.VE/bin/blackdog refresh --project-root .`.
 
 ## Repo Defaults
 

@@ -14,6 +14,7 @@ from tests.core_audit_support import CoreAuditTestCase
 
 
 backlog = cli_tests.backlog_module
+snapshot_api = cli_tests.snapshot_module
 
 
 class CoreBacklogFlowTests(CoreAuditTestCase):
@@ -157,7 +158,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
             "priority": "P1",
             "risk": "medium",
             "effort": "M",
-            "paths": "src/blackdog/core/backlog.py",
+            "paths": "src/blackdog_core/backlog.py",
             "checks": "make test-core",
             "docs": "docs/FILE_FORMATS.md",
             "domains": "state",
@@ -167,7 +168,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
             "task_shaping": {"estimated_elapsed_minutes": "15"},
         }
         backlog.validate_task_payload(valid_task, profile)
-        self.assertEqual(valid_task["paths"], ["src/blackdog/core/backlog.py"])
+        self.assertEqual(valid_task["paths"], ["src/blackdog_core/backlog.py"])
         self.assertEqual(valid_task["checks"], ["make test-core"])
         self.assertEqual(valid_task["docs"], ["docs/FILE_FORMATS.md"])
         self.assertEqual(valid_task["domains"], ["state"])
@@ -271,12 +272,12 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
 
     def test_core_audit_backlog_status_views_and_exports_cover_planned_runtime_states(self) -> None:
         profile = self._init_profile()
-        self._add_task(profile, title="Ready task", paths=["src/blackdog/core/backlog.py"], lane_id="lane-ready", lane_title="Ready", wave=0)
-        self._add_task(profile, title="Claimed task", paths=["src/blackdog/core/config.py"], lane_id="lane-claimed", lane_title="Claimed", wave=0)
+        self._add_task(profile, title="Ready task", paths=["src/blackdog_core/backlog.py"], lane_id="lane-ready", lane_title="Ready", wave=0)
+        self._add_task(profile, title="Claimed task", paths=["src/blackdog_core/profile.py"], lane_id="lane-claimed", lane_title="Claimed", wave=0)
         self._add_task(
             profile,
             title="Approval task",
-            paths=["src/blackdog/core/store.py"],
+            paths=["src/blackdog_core/state.py"],
             lane_id="lane-approval",
             lane_title="Approval",
             wave=0,
@@ -286,18 +287,18 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self._add_task(
             profile,
             title="High risk task",
-            paths=["src/blackdog/core/backlog.py", "docs/FILE_FORMATS.md"],
+            paths=["src/blackdog_core/backlog.py", "docs/FILE_FORMATS.md"],
             lane_id="lane-high",
             lane_title="High",
             wave=0,
             risk="high",
             effort="L",
         )
-        self._add_task(profile, title="Lower wave blocker", paths=["src/blackdog/core/store.py"], lane_id="lane-blocker", lane_title="Blocker", wave=0)
-        self._add_task(profile, title="Lower wave waiting", paths=["src/blackdog/core/config.py"], lane_id="lane-later", lane_title="Later", wave=1)
-        self._add_task(profile, title="Predecessor first", paths=["src/blackdog/core/backlog.py"], lane_id="lane-seq", lane_title="Sequence", wave=0)
-        self._add_task(profile, title="Predecessor second", paths=["src/blackdog/core/backlog.py"], lane_id="lane-seq", lane_title="Sequence", wave=0)
-        self._add_task(profile, title="Done task", paths=["src/blackdog/core/store.py"], lane_id="lane-done", lane_title="Done", wave=0)
+        self._add_task(profile, title="Lower wave blocker", paths=["src/blackdog_core/state.py"], lane_id="lane-blocker", lane_title="Blocker", wave=0)
+        self._add_task(profile, title="Lower wave waiting", paths=["src/blackdog_core/profile.py"], lane_id="lane-later", lane_title="Later", wave=1)
+        self._add_task(profile, title="Predecessor first", paths=["src/blackdog_core/backlog.py"], lane_id="lane-seq", lane_title="Sequence", wave=0)
+        self._add_task(profile, title="Predecessor second", paths=["src/blackdog_core/backlog.py"], lane_id="lane-seq", lane_title="Sequence", wave=0)
+        self._add_task(profile, title="Done task", paths=["src/blackdog_core/state.py"], lane_id="lane-done", lane_title="Done", wave=0)
 
         snapshot = backlog.load_backlog(profile.paths, profile)
         task_ids = {task.title: task.id for task in snapshot.tasks.values()}
@@ -423,7 +424,15 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
             {"event_id": "evt-2", "type": "complete", "at": "2026-04-08T11:30:00-07:00", "actor": "codex", "task_id": done_task.id, "payload": {}},
         ]
 
-        view = backlog.build_view_model(profile, snapshot, state, events=events, messages=messages, results=results, allow_high_risk=False)
+        view = snapshot_api.build_runtime_summary(
+            profile,
+            snapshot,
+            state,
+            events=events,
+            messages=messages,
+            results=results,
+            allow_high_risk=False,
+        )
         self.assertEqual(view["counts"]["ready"], 3)
         self.assertEqual(view["counts"]["claimed"], 1)
         self.assertEqual(view["counts"]["done"], 1)
@@ -438,12 +447,19 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         filtered_messages = backlog.summary_open_messages(snapshot, state, messages)
         self.assertEqual([row["message_id"] for row in filtered_messages], ["keep"])
 
-        plan_view = backlog.build_plan_view(profile, snapshot, state, allow_high_risk=False)
+        plan_view = snapshot_api.build_plan_snapshot(profile, snapshot, state, allow_high_risk=False)
         self.assertEqual(plan_view["counts"]["tasks"], len(snapshot.tasks))
         self.assertGreaterEqual(plan_view["counts"]["lanes"], 1)
         self.assertIn("Wave 0", backlog.render_plan_text(plan_view))
 
-        export = backlog.build_core_export(profile, snapshot, state, messages=messages, results=results, allow_high_risk=False)
+        export = snapshot_api.build_runtime_snapshot(
+            profile,
+            snapshot,
+            state,
+            messages=messages,
+            results=results,
+            allow_high_risk=False,
+        )
         exported_ready = next(row for row in export["tasks"] if row["id"] == ready_task.id)
         exported_done = next(row for row in export["tasks"] if row["id"] == done_task.id)
         self.assertEqual(exported_ready["objective_title"], "Harden core backlog flows")
@@ -452,7 +468,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self.assertIn("Ready task", backlog.render_summary_text(view))
 
     def test_core_audit_backlog_unplanned_queue_and_unlisted_objectives_are_modeled_directly(self) -> None:
-        task_a = backlog.TaskInfo(
+        task_a = backlog.BacklogTask(
             payload={
                 "id": "DEMO-a",
                 "title": "Highest priority",
@@ -479,7 +495,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
             lane_position=None,
             predecessor_ids=(),
         )
-        task_b = backlog.TaskInfo(
+        task_b = backlog.BacklogTask(
             payload={
                 "id": "DEMO-b",
                 "title": "Lower priority",
@@ -518,7 +534,15 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self.assertEqual([task.id for task in ready], ["DEMO-a", "DEMO-b"])
 
         profile = self._init_profile()
-        view = backlog.build_view_model(profile, snapshot, state, events=[], messages=[], results=[], allow_high_risk=False)
+        view = snapshot_api.build_runtime_summary(
+            profile,
+            snapshot,
+            state,
+            events=[],
+            messages=[],
+            results=[],
+            allow_high_risk=False,
+        )
         self.assertEqual(view["objective_rows"][0]["id"], "ADHOC")
         self.assertEqual(view["objective_rows"][0]["remaining"], 2)
         self.assertEqual(view["lanes"][0]["title"], "Unplanned")
@@ -528,7 +552,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self._add_task(
             profile,
             title="Strict runtime task",
-            paths=["src/blackdog/core/backlog.py"],
+            paths=["src/blackdog_core/backlog.py"],
             lane_id="lane-runtime",
             lane_title="Runtime",
             wave=0,
@@ -644,8 +668,8 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self.assertIn("inbox_unknown_task", direct_report["issue_count_by_kind"])
         self.assertIn("Strict validation failed", backlog._strict_validation_error(direct_report))
 
-        runtime = backlog.reconcile_runtime_artifacts(profile, event_limit=1, strict_validate=False)
-        self.assertEqual(runtime.snapshot.tasks[task.id].title, "Strict runtime task")
+        runtime = snapshot_api.load_runtime_artifacts(profile, event_limit=1, strict_validate=False)
+        self.assertEqual(runtime.backlog.tasks[task.id].title, "Strict runtime task")
         self.assertIsNone(runtime.strict_validation)
 
         cli_tests.send_message(
@@ -657,14 +681,14 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
             task_id="DEMO-missing",
         )
         with self.assertRaises(backlog.BacklogError):
-            backlog.reconcile_runtime_artifacts(profile, strict_validate=True)
+            snapshot_api.load_runtime_artifacts(profile, strict_validate=True)
 
     def test_core_audit_backlog_runtime_calibration_and_prompt_tuning_cover_direct_core_helpers(self) -> None:
         profile = self._init_profile()
         self._add_task(
             profile,
             title="Small completed task",
-            paths=["src/blackdog/core/backlog.py"],
+            paths=["src/blackdog_core/backlog.py"],
             effort="S",
             task_shaping={"estimated_elapsed_minutes": 20, "estimated_active_minutes": 15, "estimated_validation_minutes": 5},
             lane_id="lane-small",
@@ -674,7 +698,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self._add_task(
             profile,
             title="Medium completed task",
-            paths=["src/blackdog/core/store.py", "docs/FILE_FORMATS.md"],
+            paths=["src/blackdog_core/state.py", "docs/FILE_FORMATS.md"],
             effort="M",
             task_shaping={"estimated_elapsed_minutes": 75, "estimated_active_minutes": 45, "estimated_validation_minutes": 10},
             docs=["docs/FILE_FORMATS.md", "docs/CLI.md"],
@@ -687,7 +711,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self._add_task(
             profile,
             title="Active task",
-            paths=["src/blackdog/core/config.py"],
+            paths=["src/blackdog_core/profile.py"],
             effort="L",
             task_shaping={"estimated_elapsed_minutes": 120, "estimated_active_minutes": 80, "estimated_validation_minutes": 20},
             lane_id="lane-active",
@@ -860,8 +884,8 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
 
     def test_core_audit_backlog_plan_mutation_helpers_cover_direct_task_updates_and_sweeps(self) -> None:
         profile = self._init_profile()
-        keep = self._add_task(profile, title="Keep task", paths=["src/blackdog/core/backlog.py"], lane_id="lane-a", lane_title="Lane A", wave=0)
-        done = self._add_task(profile, title="Done then sweep", paths=["src/blackdog/core/store.py"], lane_id="lane-b", lane_title="Lane B", wave=2)
+        keep = self._add_task(profile, title="Keep task", paths=["src/blackdog_core/backlog.py"], lane_id="lane-a", lane_title="Lane A", wave=0)
+        done = self._add_task(profile, title="Done then sweep", paths=["src/blackdog_core/state.py"], lane_id="lane-b", lane_title="Lane B", wave=2)
         remove = self._add_task(profile, title="Remove task", paths=["docs/CLI.md"], lane_id="lane-c", lane_title="Lane C", wave=3)
 
         snapshot = backlog.load_backlog(profile.paths, profile)
@@ -909,7 +933,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
                 {**snapshot.tasks[keep_id].payload, "title": "Updated keep title"},
                 why="Updated why",
                 evidence="Updated evidence",
-                affected_paths=["src/blackdog/core/backlog.py"],
+                affected_paths=["src/blackdog_core/backlog.py"],
             ),
         )
         self.assertIn("Updated keep title", replaced_text)
@@ -1019,7 +1043,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         payload = self._add_task(
             profile,
             title="Approval object reset",
-            paths=["src/blackdog/core/backlog.py"],
+            paths=["src/blackdog_core/backlog.py"],
             requires_approval=True,
             approval_reason="Reset the approval row.",
             lane_id="lane-reset",
@@ -1133,7 +1157,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         shaped = self._add_task(
             profile,
             title="Calibration fallback",
-            paths=["src/blackdog/core/backlog.py"],
+            paths=["src/blackdog_core/backlog.py"],
             effort="S",
             lane_id="lane-shape",
             lane_title="Shape",
@@ -1165,7 +1189,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         elapsed_only = self._add_task(
             profile,
             title="Elapsed-only context",
-            paths=["src/blackdog/core/backlog.py"],
+            paths=["src/blackdog_core/backlog.py"],
             effort="M",
             lane_id="lane-context",
             lane_title="Context",
@@ -1333,9 +1357,9 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
 
     def test_core_audit_backlog_remaining_mutation_error_paths_cover_direct_add_update_remove_edges(self) -> None:
         profile = self._init_profile()
-        task = self._add_task(profile, title="Mutable task", paths=["src/blackdog/core/backlog.py"], lane_id="lane-m", lane_title="Mutable", wave=0)
+        task = self._add_task(profile, title="Mutable task", paths=["src/blackdog_core/backlog.py"], lane_id="lane-m", lane_title="Mutable", wave=0)
         with self.assertRaises(backlog.BacklogError):
-            self._add_task(profile, title="Mutable task", paths=["src/blackdog/core/backlog.py"], lane_id="lane-m", lane_title="Mutable", wave=0)
+            self._add_task(profile, title="Mutable task", paths=["src/blackdog_core/backlog.py"], lane_id="lane-m", lane_title="Mutable", wave=0)
 
         malformed_snapshot = backlog.BacklogSnapshot(
             raw_text="# Demo\n## Lane Plan",
@@ -1402,7 +1426,7 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         with self.assertRaises(backlog.BacklogError):
             backlog.update_task(profile, task_id=task_id, title="blocked by result")
 
-        fresh = self._add_task(profile, title="Another mutable task", paths=["src/blackdog/core/store.py"], lane_id="lane-n", lane_title="Mutable N", wave=1)
+        fresh = self._add_task(profile, title="Another mutable task", paths=["src/blackdog_core/state.py"], lane_id="lane-n", lane_title="Mutable N", wave=1)
         updated = backlog.update_task(
             profile,
             task_id=fresh["id"],

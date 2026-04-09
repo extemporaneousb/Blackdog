@@ -18,14 +18,13 @@ Use it together with:
 
 The remodel freezes these main migration targets:
 
-- prefer `blackdog-core`, `blackdog-proper`, and `blackdog-devtool`
-  when a caller wants one ownership-scoped surface
-- keep `blackdog` only when a caller still needs the mixed
-  compatibility umbrella CLI
-- treat `blackdog-skill` as a compatibility wrapper, not the primary
-  bootstrap or refresh entrypoint
+- use the `blackdog` executable for command-line automation
+- import `blackdog_core` for durable runtime contracts
+- import `blackdog` for product workflows on top of that contract
+- treat `blackdog_cli` as the parser/adapter package behind
+  `blackdog`, not as a business-logic surface
 - read shared machine facts from `blackdog snapshot` at
-  `snapshot.core_export`
+  `runtime_snapshot`
 - treat top-level snapshot fields such as `tasks`, `board_tasks`,
   `queue_status`, run metadata, and artifact hrefs as UI projection
   fields around that machine contract
@@ -36,15 +35,10 @@ The remodel freezes these main migration targets:
 
 For CLI automation and scripts:
 
-- prefer `blackdog-core` for durable backlog/runtime commands
-- prefer `blackdog-proper` for workflow, inbox, snapshot, render,
-  supervisor, and thread flows
-- prefer `blackdog-devtool` for `create-project`, `bootstrap`,
-  `refresh`, `update-repo`, install management, and coverage
-- keep `blackdog` in place only while a caller still depends on a mixed
-  command surface
-- replace direct `blackdog-skill` operator flows with
-  `blackdog bootstrap` and `blackdog refresh`
+- use `blackdog` for all commands
+- map durable runtime commands mentally to `blackdog_core`
+- map workflow/bootstrap/render/supervisor/thread/install commands
+  mentally to `blackdog`
 
 For module-level callers:
 
@@ -62,13 +56,13 @@ envelope with one stable shared contract nested inside it.
 
 Move consumers to:
 
-- `snapshot.core_export` for repo identity, counts, headers, plan rows,
+- `runtime_snapshot` for repo identity, counts, headers, plan rows,
   open inbox rows, next-runnable rows, and durable task state
 - the top-level snapshot only for board/editor projections that still
   need task-reader affordances, artifact hrefs, or run metadata
 
 Do not build new clients against duplicated top-level aliases when the
-same data already exists in `core_export`.
+same data already exists in `runtime_snapshot`.
 
 ## Host repo migration
 
@@ -97,35 +91,23 @@ WTAM remains the implementation contract for host repos too:
 The Emacs package is already aligned to the remodeled contract:
 
 - Codex sessions are the default chat surface
-- shared backlog/runtime reads should come from `snapshot.core_export`
+- shared backlog/runtime reads should come from `runtime_snapshot`
 - task-reader and artifact-heavy views may still use the top-level
   projection fields the board emits
 
 Legacy Emacs paths still remain, but they are no longer the default
 workflow:
 
-- `editors/emacs/lisp/blackdog-thread.el`
-- `editors/emacs/lisp/blackdog-spec.el`
-- `editors/emacs/templates/blackdog-spec.md`
+- `extensions/emacs/lisp/blackdog-thread.el`
+- `extensions/emacs/lisp/blackdog-spec.el`
+- `extensions/emacs/templates/blackdog-spec.md`
 
 Use [docs/EMACS.md](docs/EMACS.md) for the full editor-specific
 workflow details.
 
-## Intentional compatibility surfaces
+## Remaining compatibility surfaces
 
-The final cleanup pass removed obsolete shims but it did not retire
-every compatibility layer at once. These surfaces still intentionally
-remain:
-
-- `blackdog` as the mixed compatibility umbrella CLI
-- `blackdog-skill` as a compatibility wrapper around bootstrap and
-  refresh flows
-- duplicated top-level snapshot aliases around `snapshot.core_export`
-- `editors/emacs/lisp/blackdog-thread.el`
-- `editors/emacs/lisp/blackdog-spec.el`
-- `editors/emacs/templates/blackdog-spec.md`
-
-Those remaining paths are explicit compatibility or removal-target
-surfaces, not hidden leftovers. See
-[docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md) for their current
-status.
+The final cleanup pass removed obsolete CLI/module shims. The main
+remaining compatibility surfaces are duplicated top-level snapshot
+aliases around `runtime_snapshot` plus the legacy Emacs thread/spec
+helpers still listed in [docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md).

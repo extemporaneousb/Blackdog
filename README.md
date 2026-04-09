@@ -9,23 +9,23 @@ global skills, ad hoc scripts, or one editor integration.
 
 Blackdog is being reshaped around a fixed three-layer boundary:
 
-- `blackdog.core`: durable backlog/runtime primitives, canonical file
-  contracts, deterministic state transitions, and WTAM safety facts
-- `blackdog.proper`: the shipped Blackdog product surface built on top
-  of `core`
+- `blackdog-core` / `blackdog_core`: the durable library contract
+- `blackdog` / `blackdog`: the shipped product layer built on top of
+  that contract
+- `blackdog-cli` / `blackdog_cli`: the thin command adapter package
 - `extensions`: optional adapters such as the Emacs workbench
 
-The important split is that `core` is the narrow reusable runtime
-contract. Supervisor behavior, HTML rendering, bootstrap flows, and
-generated skills are product surfaces layered on top of it, not the
-runtime itself.
+The important split is that `blackdog_core` is the reusable runtime
+contract. Supervisor behavior, HTML rendering, bootstrap flows,
+conversation threads, tracked-install registries, and generated skills
+are product surfaces layered on top of it, not the runtime itself.
 
 Use these docs for the detailed contract:
 
 - [docs/BOUNDARIES.md](docs/BOUNDARIES.md): ownership rules and
   extraction phases
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how `core`,
-  `blackdog proper`, and `extensions` compose
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how `blackdog_core`,
+  `blackdog`, `blackdog_cli`, and `extensions` compose
 - [docs/CLI.md](docs/CLI.md): command ownership and command-level
   behavior
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical runtime
@@ -37,63 +37,51 @@ Use these docs for the detailed contract:
 - [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md): final acceptance checklist
   and evidence sources
 
-## Current status
-
-Implemented today:
-
-- `blackdog.core` already owns the repo profile, backlog parsing,
-  deterministic backlog/runtime state, canonical artifact formats, and
-  the WTAM inspection contract the rest of the system uses
-- `blackdog.proper` already ships the CLI, bootstrap/refresh flows,
-  project-local skill generation, branch-backed worktree lifecycle,
-  supervisor runner, snapshot/render pipeline, and static HTML board
-- `extensions` already include the local Emacs workbench as an optional
-  operator surface rather than part of the minimal runtime
-
-Still in progress:
-
-- finishing the extraction so current mixed module placement matches
-  the documented `core` versus `blackdog proper` ownership split
-- hardening delegated supervisor behavior without making it the only
-  way to operate Blackdog on Blackdog
-- improving packaging and host-repo adoption without weakening the
-  repo-local contract
-
 ## What it provides
 
-- `blackdog`: compatibility umbrella CLI over the full mixed public
-  surface
-- `blackdog-core`: core-only executable for durable backlog/runtime
-  commands
-- `blackdog-proper`: product-only executable for workflow,
-  supervisor, inbox, snapshot, and render commands
-- `blackdog-devtool`: setup, refresh, install-management, and coverage
-  executable
-- `blackdog-skill`: legacy compatibility wrapper for project-local
-  skill generation
-- `python -m blackdog`: module entrypoint equivalent to `blackdog`
+- One executable: `blackdog`
+- One command adapter package: `blackdog_cli`
+- One core library surface:
+  `blackdog_core.profile`, `blackdog_core.backlog`,
+  `blackdog_core.state`, and `blackdog_core.snapshot`
+- One product library surface:
+  `blackdog.scaffold`, `blackdog.worktree`, `blackdog.supervisor`,
+  `blackdog.tuning`, `blackdog.conversations`, `blackdog.installs`,
+  and `blackdog.board`
 - `blackdog.toml`: repo-local profile and path entrypoint
 - a shared control-root runtime state layout, which defaults to
   `@git-common/blackdog`
 - `blackdog worktree ...`: WTAM-oriented implementation workflow
 - `.codex/skills/<skill-name>/`: generated project-local skill
   scaffold for host repos
-- optional extension surfaces such as `editors/emacs/`
+- optional extension surfaces such as `extensions/emacs/`
 
 ## External client contract
 
 External adapters should treat `blackdog snapshot` as a product-owned
-envelope and `snapshot.core_export` as the stable shared machine
-contract. Read shared backlog/runtime facts such as project identity,
-counts, objectives, plan rows, open inbox rows, and durable task state
-from `core_export`; treat top-level snapshot fields like `tasks`,
+envelope and `runtime_snapshot` as the stable shared machine contract.
+Read shared backlog/runtime facts such as project identity, counts,
+objectives, plan rows, open inbox rows, and durable task state from
+`runtime_snapshot`; treat top-level snapshot fields like `tasks`,
 `board_tasks`, `queue_status`, run metadata, and artifact hrefs as the
 board/editor projection.
+
+Use these terms consistently when programming against Blackdog:
+
+- `State`: the current mutable authority from `backlog-state.json`;
+  today that is approval and claim state only
+- `Record`: a stored append-only artifact such as an event, inbox
+  entry, or task-result file
+- `Plan`: the backlog execution intent structure made of epics, lanes,
+  waves, and task membership
+- `Snapshot`: a derived read-only projection such as
+  `BacklogSnapshot`, `runtime_snapshot`, or the product-owned board
+  snapshot
 
 Minimal example:
 
 ```bash
-blackdog snapshot | jq '.core_export.tasks[] | {id, title, claim_status, latest_result_status}'
+blackdog snapshot | jq '.runtime_snapshot.tasks[] | {id, title, claim_status, latest_result_status}'
 ```
 
 Legacy `blackdog thread ...` commands manage Blackdog-owned prompt/task
@@ -108,9 +96,9 @@ source .VE/bin/activate
 python -m pip install -e .
 ```
 
-That install exposes `blackdog`, `blackdog-core`,
-`blackdog-proper`, `blackdog-devtool`, and `blackdog-skill` in the
-environment's `bin/` directory.
+That install exposes the `blackdog` executable and the import packages
+`blackdog_core`, `blackdog`, and `blackdog_cli`. The long-term
+distribution split is `blackdog-core`, `blackdog`, and `blackdog-cli`.
 
 ## Fresh host install
 
@@ -155,9 +143,8 @@ open .git/blackdog/backlog-index.html
 Blackdog should use its own runtime as the default coordination
 contract in this repository.
 
-In this repo, invoke Blackdog through `./.VE/bin/blackdog` and
-`./.VE/bin/blackdog-skill` unless the current shell has already
-activated `.VE`.
+In this repo, invoke Blackdog through `./.VE/bin/blackdog` unless the
+current shell has already activated `.VE`.
 
 For direct slices, the repo stays manual-first:
 
@@ -189,12 +176,12 @@ This repo uses a top-level `.VE/` virtual environment for local Blackdog develop
 ## Design goals
 
 - Keep the Blackdog contract repo-local and versioned with the project, but keep mutable runtime state in the shared control root.
-- Keep `blackdog.core` narrow enough that other layers can depend on it without inheriting Blackdog-product policy.
+- Keep `blackdog_core` narrow enough that other layers can depend on it without inheriting Blackdog-product policy.
 - Make skills thin adapters around a real CLI and real file formats.
 - Preserve human-readable backlog markdown while moving execution semantics into structured state and event files.
 - Support AI agents with explicit claims, messages, structured results, and predictable file layouts.
 
 See [docs/INDEX.md](docs/INDEX.md) for the full document map.
 See [docs/CHARTER.md](docs/CHARTER.md) for the product charter and [docs/INTEGRATION.md](docs/INTEGRATION.md) for host-repo setup guidance.
-See [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the frozen split between `core`, `blackdog proper`, and `extensions`.
+See [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the frozen split between `core`, `blackdog`, and `extensions`.
 See [docs/EMACS.md](docs/EMACS.md) for the local Emacs 30+ workbench architecture, dependency tiers, keybindings, installation, workflows, and packaging notes.

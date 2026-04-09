@@ -10,14 +10,11 @@ from tests import test_blackdog_cli as cli_tests
 
 
 FORBIDDEN_CORE_IMPORT_PREFIXES = (
-    "blackdog.cli",
-    "blackdog.proper",
-    "blackdog.skill_cli",
+    "blackdog_cli",
     "blackdog.supervisor",
-    "blackdog.threads",
-    "blackdog.ui",
+    "blackdog.conversations",
+    "blackdog.board",
     "blackdog.worktree",
-    "editors",
     "extensions",
 )
 
@@ -25,7 +22,7 @@ FORBIDDEN_CORE_IMPORT_PREFIXES = (
 class CoreAuditTestCase(unittest.TestCase):
     def core_import_boundary_violations(self) -> list[str]:
         violations: list[str] = []
-        for path in sorted((cli_tests.ROOT / "src" / "blackdog" / "core").rglob("*.py")):
+        for path in sorted((cli_tests.ROOT / "src" / "blackdog_core").rglob("*.py")):
             module = ".".join(path.relative_to(cli_tests.ROOT / "src").with_suffix("").parts)
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
@@ -73,8 +70,8 @@ class CoreAuditTestCase(unittest.TestCase):
         for prefix in FORBIDDEN_CORE_IMPORT_PREFIXES:
             if target == prefix or target.startswith(prefix + "."):
                 return True
-        if target.startswith("blackdog."):
-            return target != "blackdog.core" and not target.startswith("blackdog.core.")
+        if target.startswith("blackdog.") or target.startswith("blackdog_cli."):
+            return True
         return False
 
     def runtime_paths(self):

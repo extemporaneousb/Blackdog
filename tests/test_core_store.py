@@ -18,7 +18,7 @@ class CoreStoreAuditTests(CoreAuditTestCase):
         with self.assertRaises(cli_tests.store_module.StoreError):
             cli_tests.store_module.normalize_state({"approval_tasks": []}, state_file=state_file)
 
-        installs = cli_tests.store_module.normalize_tracked_installs(
+        installs = cli_tests.installs_module.normalize_tracked_installs(
             {
                 "repos": [
                     {"project_root": "/tmp/zeta", "project_name": "Zeta"},
@@ -30,7 +30,7 @@ class CoreStoreAuditTests(CoreAuditTestCase):
         )
         self.assertEqual([row["project_root"] for row in installs["repos"]], ["/tmp/alpha", "/tmp/zeta"])
         with self.assertRaises(cli_tests.store_module.StoreError):
-            cli_tests.store_module.normalize_tracked_installs({"repos": [{}]}, installs_file=installs_file)
+            cli_tests.installs_module.normalize_tracked_installs({"repos": [{}]}, installs_file=installs_file)
 
     def test_core_audit_store_artifact_normalizers_enforce_core_shapes(self) -> None:
         cli_tests.run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")

@@ -8,7 +8,7 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
   unless a dependency is clearly justified.
 - Use the current worktree's top-level `.VE` for Blackdog CLI
   invocations when it exists; prefer `./.VE/bin/blackdog` and
-  `./.VE/bin/blackdog-skill` over a different `blackdog` on `PATH`.
+  not a different `blackdog` on `PATH`.
 - Treat kept implementation edits in the primary worktree as a
   contract violation. Before any repo edit you intend to keep, run
   `./.VE/bin/blackdog worktree preflight`; if it reports `primary
@@ -48,22 +48,22 @@ Blackdog is a repo-versioned backlog system built for AI-driven local developmen
 
 ## Target Package Boundaries
 
-- Keep `blackdog.core` limited to durable backlog/runtime contracts:
+- Keep `blackdog_core` limited to durable backlog/runtime contracts:
   profile/path resolution, canonical backlog/state/event/inbox/result
   formats, deterministic plan/state semantics, and WTAM safety facts
   other layers consume.
-- `blackdog.core` explicitly excludes prompt/tune/report helpers,
+- `blackdog_core` explicitly excludes prompt/tune/report helpers,
   thread or inbox operator workflows, worktree start/land/cleanup
   orchestration, supervisor child-launch policy, bootstrap/refresh
   flows, and rendered HTML/view composition.
 - Put prompt/tune policy, supervisor orchestration, task/thread
   operator flows, WTAM lifecycle orchestration, and
-  bootstrap/refresh/update logic in `blackdog.proper`, not in core.
+  bootstrap/refresh/update logic in `blackdog`, not in core.
 - Put readonly snapshot/view composition and static HTML/CSS
   rendering in `blackdog.viewers`; viewers must not become a write
   path.
 - Keep shell/editor/Codex/skill entrypoints as thin
-  `blackdog.adapters` over core/proper behavior.
+  `blackdog.adapters` over core/product behavior.
 - If a change needs client-specific context to make sense, it does not
   belong in core.
 

@@ -1,67 +1,44 @@
 # CLI Reference
 
-The current CLI covers the backlog runtime, a draining supervisor runner, and a static backlog board renderer.
+The executable name is `blackdog`.
 
-When a repo keeps Blackdog in a repo-local virtual environment, prefer that entrypoint (for example `./.VE/bin/blackdog`) over a different `blackdog` on `PATH`.
+The `blackdog_cli` package is the code behind that executable. It is a thin
+adapter: it parses arguments and dispatches into `blackdog_core` and
+`blackdog`. It is not the ownership boundary for runtime behavior.
 
-## Command ownership audit
+When a repo keeps Blackdog in a repo-local virtual environment, prefer
+that entrypoint (for example `./.VE/bin/blackdog`) over a different
+`blackdog` on `PATH`.
 
-`blackdog` is a client adapter, not the architectural center of the
-system. This audit uses four ownership buckets:
+## Package and command scope
 
-- `core`: durable backlog/runtime/file-state contracts plus WTAM safety inspection primitives
-- `blackdog proper`: workflow orchestration and product policy layered on top of the core runtime
-- `extensions`: optional operator-specific integrations that consume documented product contracts
-- `devtool`: bootstrap, install-management, coverage, and compatibility tooling
+Blackdog uses these package names:
 
-Group commands inherit the owner shown for their listed leaf verbs.
-The `blackdog` and `blackdog-skill` executables remain thin adapter shells even
-when the command they dispatch is owned by another layer.
+- distribution target `blackdog-core`, import package `blackdog_core`
+- distribution target `blackdog`, import package `blackdog`
+- distribution target `blackdog-cli`, import package `blackdog_cli`
 
-Split entrypoints now make that ownership visible directly:
+There is currently one public command surface:
 
-- `blackdog-core`: core-owned leaf commands only
-- `blackdog-proper`: Blackdog-product leaf commands only
-- `blackdog-devtool`: bootstrap/install/coverage tooling only
-- `blackdog`: compatibility umbrella that still exposes the full mixed surface while callers migrate
+- `blackdog`
+- `python -m blackdog_cli`
 
-The packaged executable contract is the `[project.scripts]` table in
-`pyproject.toml`: `blackdog`, `blackdog-core`, `blackdog-proper`,
-`blackdog-devtool`, and `blackdog-skill`, plus the `python -m
-blackdog` module entrypoint. Contract tests should treat that map and
-the owner-filtered parser surface as part of the stable public API.
+The `blackdog` executable exposes commands from multiple ownership
+layers:
+
+| Owning package | Scope |
+| --- | --- |
+| `blackdog_core` | durable backlog/runtime commands and WTAM safety inspection |
+| `blackdog` | workflow orchestration, bootstrap/refresh, conversations, tracked installs, supervisor, snapshot, and render |
+| `blackdog_cli` | parser/help/dispatch only |
+| `extensions` | no built-in CLI commands today |
 
 ### `blackdog`
 
-| Owner | Commands |
+| Owning package | Commands |
 | --- | --- |
-| `devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
-| `core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
-| `blackdog proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render` |
-| `extensions` | no built-in CLI commands today; extension packages should compose through the documented CLI and artifact contract |
-
-No executable `blackdog` command is currently marked as a compatibility shim in the parser. `task run` remains a convenience workflow surface, not a deprecation target in this audit.
-The stable executable names now include `blackdog-core`,
-`blackdog-proper`, and `blackdog-devtool` alongside `blackdog`,
-`blackdog-skill`, and `python -m blackdog`. The legacy `blackdog`
-surface remains available as a compatibility wrapper while callers move
-to owner-scoped entrypoints.
-Prompt/tune runtime logic now lives behind `blackdog.proper`; any
-remaining `blackdog.backlog` imports for those helpers are compatibility
-wrappers rather than the ownership boundary.
-
-### Owner-scoped entrypoints
-
-| Executable | Exposed commands |
-| --- | --- |
-| `blackdog-core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
-| `blackdog-proper` | `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render` |
-| `blackdog-devtool` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `coverage` |
-
-Mixed command groups still appear where a parent container is needed to
-reach an allowed leaf. For example, `blackdog-core worktree preflight`
-remains valid even though the other `worktree` verbs belong to
-Blackdog proper.
+| `blackdog` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render`; `coverage` |
+| `blackdog_core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
 
 ## `blackdog`
 
@@ -154,7 +131,7 @@ blackdog installs observe --all
 
 `blackdog worktree ...` is the implementation-work entrypoint. Ownership splits
 inside this group are intentional: `worktree preflight` is the core WTAM safety
-inspection surface, while `worktree start|land|cleanup` are Blackdog-proper
+inspection surface, while `worktree start|land|cleanup` are `blackdog`
 workflow orchestration on top of that contract. WTAM is the implementation
 model:
 
@@ -224,7 +201,7 @@ product development.
 
 Thread storage, task linkage, and thread-aware result mirroring are a
 Blackdog-product conversation layer. They sit above the minimal
-`blackdog.core` task/result write path rather than expanding it.
+`blackdog_core` task/result write path rather than expanding it.
 They are also distinct from client-native chat/session storage such as
 Codex session transcripts: `thread` is a Blackdog artifact surface, not
 the default chat transport for every extension.
@@ -287,19 +264,19 @@ Claimed tasks no longer have a lease timeout. `blackdog claim` can record the lo
 
 `blackdog supervise report` is the operator metrics surface. It reads historical supervisor events/status/results and summarizes startup friction (launch pressure/failures), retry pressure (task re-run rate), output-shape consistency (expected artifact presence), landing outcomes (landing failures and success), and a `recovery_needed` section that highlights child attempts whose output exists but still needs operator or supervisor follow-up. Per-run rows now include the persisted run launch settings, and attempt rows surface the resolved child launch settings whenever the launch telemetry was recorded. This report is read-only and intended for quick ergonomics diagnostics across the most recent runs.
 
-`blackdog snapshot` prints the canonical JSON contract embedded into the static repo-branded backlog HTML page (by default `<project-slug>-backlog.html`, with a compatibility copy at `backlog-index.html`). That payload is still a Blackdog-product UI snapshot, but it now embeds a neutral machine contract at `core_export` so extensions do not need to depend on board-shaped fields. `core_export` carries the stable backlog/runtime facts shared by clients: repo identity, headers, counts, push/release metadata, open inbox rows, plan view, next-runnable rows, and task rows built from backlog/state/result data. The shipped board now reads its repo/header, plan/lane, and next-runnable surfaces through that neutral export; the duplicated top-level snapshot aliases remain a compatibility projection for existing readers. The surrounding top-level snapshot still drives board-only affordances such as the project-branded hero, `Status` counters (running, waiting, blocked, last sweep completed, completed today, completed all-time), the dedicated `Unattended Tuning` band, the live `Execution Map`, completed-task list, conversation-thread summaries, artifact links, per-run metadata, and other UI-only fields.
+`blackdog snapshot` prints the canonical JSON contract embedded into the static repo-branded backlog HTML page (by default `<project-slug>-backlog.html`, with a compatibility copy at `backlog-index.html`). That payload is still a Blackdog-product UI snapshot, but it now embeds a neutral machine contract at `runtime_snapshot` so extensions do not need to depend on board-shaped fields. `runtime_snapshot` carries the stable backlog/runtime facts shared by clients: repo identity, headers, counts, push/release metadata, open inbox rows, plan view, next-runnable rows, and task rows built from backlog/state/result data. The shipped board now reads its repo/header, plan/lane, and next-runnable surfaces through that neutral export; the duplicated top-level snapshot aliases remain a compatibility projection for existing readers. The surrounding top-level snapshot still drives board-only affordances such as the project-branded hero, `Status` counters (running, waiting, blocked, last sweep completed, completed today, completed all-time), the dedicated `Unattended Tuning` band, the live `Execution Map`, completed-task list, conversation-thread summaries, artifact links, per-run metadata, and other UI-only fields.
 
-External clients should treat `core_export` as the stable shared
+External clients should treat `runtime_snapshot` as the stable shared
 contract and use the top-level snapshot rows only when they explicitly
 want the board/editor projection. In practice:
 
-- use `core_export.project_*`, `core_export.headers`, `core_export.counts`, `core_export.objectives`, `core_export.next_rows`, `core_export.open_messages`, `core_export.plan`, and `core_export.tasks[*]` for shared backlog/runtime reads
+- use `runtime_snapshot.project_*`, `runtime_snapshot.headers`, `runtime_snapshot.counts`, `runtime_snapshot.objectives`, `runtime_snapshot.next_rows`, `runtime_snapshot.open_messages`, `runtime_snapshot.plan`, and `runtime_snapshot.tasks[*]` for shared backlog/runtime reads
 - use top-level `tasks`, `board_tasks`, `queue_status`, `threads`, and run/artifact href fields only for board/task-reader affordances that are intentionally outside the neutral export
 
 A minimal external-client read can stay as simple as:
 
 ```bash
-blackdog snapshot | jq '.core_export.tasks[] | {id, title, claim_status, latest_result_status}'
+blackdog snapshot | jq '.runtime_snapshot.tasks[] | {id, title, claim_status, latest_result_status}'
 ```
 
 The snapshot now also includes project-level `threads` rows plus per-task conversation linkage (`conversation_threads`, `conversation_thread_ids`, and `primary_conversation_*` fields) so Emacs can move directly from a saved operator conversation to its derived task and back again.
@@ -372,21 +349,3 @@ before changing launch settings or child startup contract details.
 - `blackdog inbox send --sender NAME --recipient NAME --body ...`
 - `blackdog inbox list`
 - `blackdog inbox resolve --message-id ID --actor NAME`
-
-## `blackdog-skill`
-
-- `blackdog-skill new backlog --project-root PATH`
-- `blackdog-skill refresh backlog --project-root PATH`
-
-Ownership: `devtool`
-
-Compatibility shims and preferred targets:
-
-| Legacy command | Preferred target |
-| --- | --- |
-| `blackdog-skill new backlog` | `blackdog bootstrap` |
-| `blackdog-skill refresh backlog` | `blackdog refresh` |
-
-`blackdog bootstrap` is now the preferred one-command host-repo entrypoint. `blackdog-skill new backlog` remains as a legacy compatibility wrapper that ensures the project has a Blackdog profile/artifact set and a project-local skill under `.codex/skills/<skill-name>/`.
-
-`blackdog-skill refresh backlog` remains as a legacy compatibility wrapper around the managed skill refresh flow. It regenerates the project-local skill files from the current `blackdog.toml` profile without rebuilding backlog/runtime files, preserves locally modified managed files by writing `*.blackdog-new` sidecars, and is now usually superseded by `blackdog refresh`.

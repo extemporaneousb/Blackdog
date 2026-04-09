@@ -92,7 +92,7 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
                 "title": " Claim ",
                 "claimed_by": " codex ",
                 "claimed_at": " 2026-04-08T10:00:00-07:00 ",
-                "paths": [" src/blackdog/core/store.py "],
+                "paths": [" src/blackdog_core/state.py "],
                 "claimed_pid": "12",
                 "claimed_process_missing_scans": "0",
                 "claimed_process_last_seen_at": " seen ",
@@ -267,12 +267,15 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
         paths = self.init_demo_paths()
 
         installs_file = paths.control_dir / "tracked-installs.json"
-        self.assertEqual(cli_tests.store_module.load_tracked_installs(paths), cli_tests.store_module.default_tracked_installs())
+        self.assertEqual(
+            cli_tests.installs_module.load_tracked_installs(paths),
+            cli_tests.installs_module.default_tracked_installs(),
+        )
         installs_file.write_text("{broken", encoding="utf-8")
         with self.assertRaises(cli_tests.store_module.StoreError):
-            cli_tests.store_module.load_tracked_installs(paths)
+            cli_tests.installs_module.load_tracked_installs(paths)
 
-        saved = cli_tests.store_module.save_tracked_installs(
+        saved = cli_tests.installs_module.save_tracked_installs(
             paths,
             {
                 "repos": [
@@ -285,14 +288,14 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
         self.assertEqual(saved, installs_file)
         persisted = json.loads(installs_file.read_text(encoding="utf-8"))
         self.assertEqual([row["project_root"] for row in persisted["repos"]], ["/tmp/alpha", "/tmp/beta"])
-        loaded_installs = cli_tests.store_module.load_tracked_installs(paths)
+        loaded_installs = cli_tests.installs_module.load_tracked_installs(paths)
         self.assertEqual([row["project_root"] for row in loaded_installs["repos"]], ["/tmp/alpha", "/tmp/beta"])
         with self.assertRaises(cli_tests.store_module.StoreError):
-            cli_tests.store_module.normalize_tracked_installs([], installs_file=installs_file)
+            cli_tests.installs_module.normalize_tracked_installs([], installs_file=installs_file)
         with self.assertRaises(cli_tests.store_module.StoreError):
-            cli_tests.store_module.normalize_tracked_installs({"repos": "oops"}, installs_file=installs_file)
+            cli_tests.installs_module.normalize_tracked_installs({"repos": "oops"}, installs_file=installs_file)
         with self.assertRaises(cli_tests.store_module.StoreError):
-            cli_tests.store_module.normalize_tracked_installs({"repos": [None]}, installs_file=installs_file)
+            cli_tests.installs_module.normalize_tracked_installs({"repos": [None]}, installs_file=installs_file)
 
         missing_state = self.root / "missing-state.json"
         self.assertEqual(cli_tests.store_module.load_state(missing_state), cli_tests.store_module.default_state())

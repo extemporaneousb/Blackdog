@@ -23,7 +23,7 @@ Blackdog is not only a task list. The target product is a coordinating agent int
 
 Layer ownership for the remodel is frozen separately in
 [docs/BOUNDARIES.md](docs/BOUNDARIES.md). Use that document when deciding what
-belongs in `core`, `blackdog proper`, or optional `extensions`.
+belongs in `core`, `blackdog`, or optional `extensions`.
 
 ## Near-term goals
 
@@ -52,7 +52,7 @@ Checkpoint sequence for the current remodel:
      support continued dogfooding.
    - Confirm that observed failures are turned into backlog evidence rather
      than silently papered over.
-3. Blackdog proper checkpoint
+3. Blackdog product checkpoint
    - Confirm that Blackdog-on-Blackdog use still matches the manual-first
      repo contract and that docs, CLI behavior, and runtime artifacts tell
      one coherent story.

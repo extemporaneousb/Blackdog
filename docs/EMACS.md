@@ -80,13 +80,13 @@ Notes:
 2. Prefer `./.VE/bin/blackdog` for that worktree; fall back to `blackdog` on `PATH`.
 3. Call `blackdog snapshot` and cache the parsed JSON per root.
 4. Reuse that cached snapshot across the current operator pass until the operator explicitly refreshes.
-5. Read shared backlog/runtime facts from `snapshot.core_export`.
+5. Read shared backlog/runtime facts from `runtime_snapshot`.
 6. Render dashboard, task reader, and result buffers from the appropriate projection rows.
 7. Resolve artifact hrefs against `snapshot.control_dir`.
 
 Shared contract rule:
 
-- use `snapshot.core_export` for project identity, counts, objectives,
+- use `runtime_snapshot` for project identity, counts, objectives,
   plan data, open inbox rows, and durable task state
 - use top-level `snapshot.tasks`, `board_tasks`, `recent_results`,
   `queue_status`, and run/artifact href fields only when Emacs needs
@@ -144,20 +144,20 @@ Context growth and compaction stay Codex-owned because Emacs is resuming the rea
 
 The current package layout is:
 
-- `editors/emacs/lisp/blackdog-core.el`
-- `editors/emacs/lisp/blackdog-codex.el`
-- `editors/emacs/lisp/blackdog.el`
-- `editors/emacs/lisp/blackdog-dashboard.el`
-- `editors/emacs/lisp/blackdog-task.el`
-- `editors/emacs/lisp/blackdog-results.el`
-- `editors/emacs/lisp/blackdog-runs.el`
-- `editors/emacs/lisp/blackdog-search.el`
-- `editors/emacs/lisp/blackdog-thread.el`
-- `editors/emacs/lisp/blackdog-spec.el`
-- `editors/emacs/lisp/blackdog-telemetry.el`
-- `editors/emacs/lisp/blackdog-magit.el`
-- `editors/emacs/templates/blackdog-spec.md`
-- `editors/emacs/test/blackdog-test.el`
+- `extensions/emacs/lisp/blackdog-core.el`
+- `extensions/emacs/lisp/blackdog-codex.el`
+- `extensions/emacs/lisp/blackdog.el`
+- `extensions/emacs/lisp/blackdog-dashboard.el`
+- `extensions/emacs/lisp/blackdog-task.el`
+- `extensions/emacs/lisp/blackdog-results.el`
+- `extensions/emacs/lisp/blackdog-runs.el`
+- `extensions/emacs/lisp/blackdog-search.el`
+- `extensions/emacs/lisp/blackdog-thread.el`
+- `extensions/emacs/lisp/blackdog-spec.el`
+- `extensions/emacs/lisp/blackdog-telemetry.el`
+- `extensions/emacs/lisp/blackdog-magit.el`
+- `extensions/emacs/templates/blackdog-spec.md`
+- `extensions/emacs/test/blackdog-test.el`
 
 If you package this outside the repo checkout, keep `lisp/` and `templates/` together. The legacy spec workflow resolves `blackdog-spec.md` relative to `blackdog-spec.el` unless you set `blackdog-spec-template-file`.
 
@@ -259,7 +259,7 @@ Objectives
 Board Tasks
   [Ready] BLACK-25d851d1c6  Define the Emacs workbench contract and scaffold the package core
     Lane: Emacs foundation  Wave: 0  Priority: P1
-    Write the architecture/spec document, create the editors/emacs package skeleton...
+    Write the architecture/spec document, create the extensions/emacs package skeleton...
 
 Recent Results
   [success] BLACK-e429db183d  Added a machine-local tracked install registry...
@@ -292,8 +292,8 @@ What Changed
 - Added blackdog-spec.el and the bundled spec template.
 
 Paths
-- editors/emacs/lisp/blackdog-spec.el
-- editors/emacs/templates/blackdog-spec.md
+- extensions/emacs/lisp/blackdog-spec.el
+- extensions/emacs/templates/blackdog-spec.md
 ```
 
 ```text
@@ -318,7 +318,7 @@ Objective: Spec-driven operator workflow
 Capture a spec before creating the task.
 
 ## Code Paths
-- editors/emacs/lisp/blackdog-spec.el
+- extensions/emacs/lisp/blackdog-spec.el
 ```
 
 ```text
@@ -485,7 +485,7 @@ Then load Blackdog from this checkout:
   :defer t)
 
 (use-package blackdog
-  :load-path "/Users/bullard/Work/Blackdog/editors/emacs/lisp"
+  :load-path "/Users/bullard/Work/Blackdog/extensions/emacs/lisp"
   :custom
   (blackdog-default-agent "bullard")
   (blackdog-codex-command "/Applications/Codex.app/Contents/Resources/codex")
@@ -497,7 +497,7 @@ If you prefer a variable:
 ```elisp
 (let ((blackdog-root "/Users/bullard/Work/Blackdog"))
   (use-package blackdog
-    :load-path (list (expand-file-name "editors/emacs/lisp" blackdog-root))
+    :load-path (list (expand-file-name "extensions/emacs/lisp" blackdog-root))
     :custom
     (blackdog-default-agent "bullard")
     (blackdog-codex-command "/Applications/Codex.app/Contents/Resources/codex")
@@ -508,7 +508,7 @@ For a vendored install outside this repo layout, either keep the `templates/` di
 
 ```elisp
 (setq blackdog-spec-template-file
-      "/path/to/blackdog/editors/emacs/templates/blackdog-spec.md")
+      "/path/to/blackdog/extensions/emacs/templates/blackdog-spec.md")
 ```
 
 After loading the package:
@@ -526,9 +526,9 @@ The current release model is a local-use package loaded directly from a checkout
 
 For an internal release bundle, ship:
 
-- `editors/emacs/lisp/*.el`
-- `editors/emacs/templates/blackdog-spec.md`
-- `editors/emacs/README.md`
+- `extensions/emacs/lisp/*.el`
+- `extensions/emacs/templates/blackdog-spec.md`
+- `extensions/emacs/README.md`
 - `docs/EMACS.md`
 
 Recommended release checklist:
@@ -571,15 +571,15 @@ Run the package checks from the repo root:
 
 ```bash
 make test-emacs
-emacs -Q --batch -L editors/emacs/lisp -L editors/emacs/test \
-  -l editors/emacs/test/blackdog-test.el \
+emacs -Q --batch -L extensions/emacs/lisp -L extensions/emacs/test \
+  -l extensions/emacs/test/blackdog-test.el \
   -f ert-run-tests-batch-and-exit
 make test
 ```
 
 Useful manual smoke checks:
 
-- `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../editors/emacs/lisp\") (require 'blackdog))"`
+- `emacs --batch --eval "(progn (package-initialize) (add-to-list 'load-path \".../extensions/emacs/lisp\") (require 'blackdog))"`
 - open `C-c b b`, `C-c b r`, `C-c b u`, and `C-c b v` in this repo
 - open one task and verify `p` renders the prompt browser and `t` renders the thread browser when supervisor artifacts exist
 - open `C-c b n`, launch a Codex turn with `C-c C-c`, then send a follow-up from the session buffer with `a`

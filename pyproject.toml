@@ -5,18 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blackdog"
 version = "0.1.0"
-description = "Repo-scoped backlog CLI for AI-assisted local development"
+description = "Repo-scoped backlog system for AI-assisted local development"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-blackdog = "blackdog.cli:main"
-blackdog-core = "blackdog.cli:main_core"
-blackdog-proper = "blackdog.cli:main_proper"
-blackdog-devtool = "blackdog.cli:main_devtool"
-blackdog-skill = "blackdog.skill_cli:main"
+blackdog = "blackdog_cli.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -26,9 +22,10 @@ blackdog = ["ui.css"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-# Keep one distribution while extracting internal `blackdog.*`
-# subpackages behind the documented core/proper/viewers/adapters split.
-include = ["blackdog", "blackdog.*"]
+# Keep one distribution while the repo ships three explicit Python packages:
+# `blackdog_core` for the durable contract, `blackdog` for the product layer,
+# and `blackdog_cli` for the command adapter.
+include = ["blackdog", "blackdog.*", "blackdog_core", "blackdog_core.*", "blackdog_cli", "blackdog_cli.*"]
 
 [tool.blackdog.coverage]
 artifact_output = "coverage/latest.json"
@@ -38,7 +35,8 @@ artifact_output = "coverage/latest.json"
 # Focus the audit surface on core state and backlog semantics; broad CLI,
 # supervisor, scaffold, and UI coverage stays in the repo-wide test suite.
 shipped_surface = [
-  "src/blackdog/core/backlog.py",
-  "src/blackdog/core/config.py",
-  "src/blackdog/core/store.py",
+  "src/blackdog_core/backlog.py",
+  "src/blackdog_core/profile.py",
+  "src/blackdog_core/snapshot.py",
+  "src/blackdog_core/state.py",
 ]
