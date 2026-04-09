@@ -36,6 +36,7 @@ class CoreContractAuditTests(CoreAuditTestCase):
 
     def test_core_audit_makefile_freezes_core_audit_command(self) -> None:
         makefile = (cli_tests.ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("\nacceptance:\n\t$(MAKE) test\n\t$(MAKE) test-emacs\n", makefile)
         self.assertIn(
             "CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py'",
             makefile,
@@ -142,6 +143,47 @@ class CoreContractAuditTests(CoreAuditTestCase):
         file_formats = (cli_tests.ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
         self.assertIn("Executable and module packaging surfaces are intentionally out of scope", file_formats)
         self.assertIn("[docs/CLI.md](docs/CLI.md)", file_formats)
+
+    def test_core_audit_closeout_docs_publish_migration_release_and_acceptance_story(self) -> None:
+        readme = (cli_tests.ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("[docs/MIGRATION.md](docs/MIGRATION.md)", readme)
+        self.assertIn("[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md)", readme)
+        self.assertIn("[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)", readme)
+        self.assertIn("make acceptance", readme)
+
+        docs_index = (cli_tests.ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("[docs/MIGRATION.md](docs/MIGRATION.md)", docs_index)
+        self.assertIn("[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md)", docs_index)
+        self.assertIn("[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)", docs_index)
+
+        emacs_readme = (cli_tests.ROOT / "editors" / "emacs" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("[docs/MIGRATION.md](../../docs/MIGRATION.md)", emacs_readme)
+        self.assertIn("[docs/RELEASE_NOTES.md](../../docs/RELEASE_NOTES.md)", emacs_readme)
+        self.assertIn("make acceptance", emacs_readme)
+
+        migration = (cli_tests.ROOT / "docs" / "MIGRATION.md").read_text(encoding="utf-8")
+        self.assertIn("`blackdog-core`", migration)
+        self.assertIn("`blackdog-proper`", migration)
+        self.assertIn("`blackdog-devtool`", migration)
+        self.assertIn("`snapshot.core_export`", migration)
+        self.assertIn("`blackdog-skill`", migration)
+        self.assertIn("`blackdog.scaffold`", migration)
+        self.assertIn("editors/emacs/lisp/blackdog-thread.el", migration)
+        self.assertIn("editors/emacs/lisp/blackdog-spec.el", migration)
+
+        release_notes = (cli_tests.ROOT / "docs" / "RELEASE_NOTES.md").read_text(encoding="utf-8")
+        self.assertIn("`blackdog.scaffold`", release_notes)
+        self.assertIn("`core_export`", release_notes)
+        self.assertIn("`blackdog-skill`", release_notes)
+        self.assertIn("editors/emacs/lisp/blackdog-thread.el", release_notes)
+
+        acceptance = (cli_tests.ROOT / "docs" / "ACCEPTANCE.md").read_text(encoding="utf-8")
+        self.assertIn("`pyproject.toml`", acceptance)
+        self.assertIn("[docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md)", acceptance)
+        self.assertIn("[tests/test_core_contracts.py](../tests/test_core_contracts.py)", acceptance)
+        self.assertIn("make acceptance", acceptance)
+        self.assertIn("make test", acceptance)
+        self.assertIn("make test-emacs", acceptance)
 
     def test_core_audit_import_boundaries_stay_within_blackdog_core(self) -> None:
         violations = self.core_import_boundary_violations()

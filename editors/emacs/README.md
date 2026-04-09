@@ -18,6 +18,7 @@ Contract notes:
 - shared backlog/runtime reads should come from `blackdog snapshot` via `snapshot.core_export`
 - top-level `snapshot.tasks`, `board_tasks`, run metadata, and artifact hrefs remain the UI projection for task-reader and artifact-heavy views
 - Codex sessions are the default chat surface; `blackdog-thread.el` stays as a legacy reader/writer for Blackdog-owned prompt/task threads
+- the legacy `blackdog-thread.el` and spec-first drafting flow remain transitional surfaces; see [docs/MIGRATION.md](../../docs/MIGRATION.md) and [docs/RELEASE_NOTES.md](../../docs/RELEASE_NOTES.md) for the repo-wide compatibility plan
 
 Minimal local install:
 
@@ -31,5 +32,7 @@ Minimal local install:
 ```
 
 Run `make test-emacs` from the repo root for batch ERT coverage.
+Run `make acceptance` from the repo root for the closeout validation
+pass that exercises both the Python and Emacs surfaces.
 
 Use [docs/EMACS.md](../../docs/EMACS.md) for the full architecture, dependency tiers, keybindings, workflows, Magit/worktree behavior, and packaging notes.

@@ -30,6 +30,12 @@ Use these docs for the detailed contract:
   behavior
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical runtime
   artifacts and schemas
+- [docs/MIGRATION.md](docs/MIGRATION.md): migration guidance for
+  callers and host repos moving onto the remodeled surface
+- [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md): final remodel release
+  notes and compatibility summary
+- [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md): final acceptance checklist
+  and evidence sources
 
 ## Current status
 
@@ -173,6 +179,10 @@ For delegated slices:
 Mutable runtime state now lives under one shared local control root across worktrees rather than as checked-in repo artifacts. In this repo, the default resolved location is `.git/blackdog/`.
 
 Current dogfood evidence lives under the resolved control root in `supervisor-runs/` and `task-results/`.
+
+Use `make acceptance` for the repo-level closeout validation pass. That
+alias runs `make test` and `make test-emacs` so the Python and Emacs
+surfaces prove the same remodeled contract.
 
 This repo uses a top-level `.VE/` virtual environment for local Blackdog development. Recreate it with `python3 -m venv .VE` and install Blackdog into it with `./.VE/bin/python -m pip install -e .`. Treat `./.VE/bin/blackdog` as the canonical CLI entrypoint in this repo even if another `blackdog` is on `PATH`.
 
