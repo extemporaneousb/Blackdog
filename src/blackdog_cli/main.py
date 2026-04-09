@@ -49,6 +49,12 @@ from blackdog.scaffold import (
     scaffold_project,
     update_project_repo,
 )
+from blackdog.architecture import (
+    ArchitectureError,
+    analyze_repo_architecture,
+    default_architecture_output_path,
+    render_architecture_html,
+)
 from blackdog_core.state import (
     StoreError,
     append_event,
@@ -230,6 +236,7 @@ COMMAND_SURFACES: dict[str, str] = {
     "result": "blackdog_core",
     "result record": "blackdog_core",
     "coverage": "blackdog",
+    "architecture-docs": "blackdog",
     "inbox": "blackdog",
     "inbox send": "blackdog",
     "inbox list": "blackdog",
@@ -1697,6 +1704,38 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     return 0 if status == "passed" else 1
 
 
+def cmd_architecture_docs(args: argparse.Namespace) -> int:
+    profile = load_profile(Path(args.project_root) if args.project_root else None)
+    report = analyze_repo_architecture(profile.paths.project_root)
+    output_value = args.output.strip() if isinstance(args.output, str) else ""
+    output_path = (
+        (profile.paths.project_root / Path(output_value)).resolve()
+        if output_value
+        else default_architecture_output_path(profile.paths.project_root)
+    )
+    if args.format == "json":
+        payload = dict(report)
+        if output_value:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            payload["output"] = str(output_path)
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    render_architecture_html(report, output_path)
+    print(
+        json.dumps(
+            {
+                "project_root": str(profile.paths.project_root),
+                "output": str(output_path),
+                "summary": report["summary"],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def _resolve_prompt_text(raw_parts: list[str]) -> str:
     text = " ".join(raw_parts).strip()
     if text:
@@ -2107,6 +2146,15 @@ def _build_devtool_parsers(subparsers) -> None:
     p_coverage.add_argument("--command", default=None)
     p_coverage.add_argument("--output", default=None)
     p_coverage.set_defaults(func=cmd_coverage)
+
+    p_architecture = subparsers.add_parser(
+        "architecture-docs",
+        help="Analyze the checked-out Blackdog packages and render a self-contained architecture HTML page",
+    )
+    p_architecture.add_argument("--project-root", default=None)
+    p_architecture.add_argument("--format", choices=("html", "json"), default="html")
+    p_architecture.add_argument("--output", default=None)
+    p_architecture.set_defaults(func=cmd_architecture_docs)
 
 
 def _build_core_parsers(subparsers) -> None:
@@ -2575,7 +2623,7 @@ def _run_main(argv: list[str] | None = None, *, description: str) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (BacklogError, ConfigError, ScaffoldError, StoreError, SupervisorError, UIError, WorktreeError) as exc:
+    except (ArchitectureError, BacklogError, ConfigError, ScaffoldError, StoreError, SupervisorError, UIError, WorktreeError) as exc:
         parser.error(str(exc))
     return 2
 

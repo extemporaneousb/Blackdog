@@ -56,6 +56,7 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertIn("`blackdog_cli` package", cli_doc)
         self.assertIn("`blackdog-core`", cli_doc)
         self.assertIn("`runtime_snapshot`", cli_doc)
+        self.assertIn("`blackdog architecture-docs`", cli_doc)
 
         file_formats = (cli_tests.ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
         self.assertIn("`blackdog_core` contract", file_formats)
@@ -73,6 +74,7 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertIn("[docs/MIGRATION.md](docs/MIGRATION.md)", docs_index)
         self.assertIn("[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md)", docs_index)
         self.assertIn("[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)", docs_index)
+        self.assertIn("[docs/architecture-diagrams.html](docs/architecture-diagrams.html)", docs_index)
 
         emacs_readme = (cli_tests.ROOT / "extensions" / "emacs" / "README.md").read_text(encoding="utf-8")
         self.assertIn("[docs/MIGRATION.md](../../docs/MIGRATION.md)", emacs_readme)

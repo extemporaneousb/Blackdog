@@ -7,6 +7,7 @@ Use this index as the entrypoint for the repo-scoped Blackdog system.
 - [docs/CHARTER.md](docs/CHARTER.md): product intent, current-vs-target scope, and success criteria for the multi-agent backlog system
 - [docs/BOUNDARIES.md](docs/BOUNDARIES.md): frozen ownership split between `core`, `blackdog`, and optional `extensions`
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): system boundaries, data flow, and the split between repo-local contract and shared runtime state
+- [docs/architecture-diagrams.html](docs/architecture-diagrams.html): generated HTML/SVG architecture companion rendered from the checked-out code
 - [docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md): file-level ownership tags and extraction targets across core runtime, `blackdog`, adapters, and removal candidates
 - [docs/CLI.md](docs/CLI.md): command reference for the `blackdog` executable and the `blackdog_cli` adapter package
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for `blackdog.toml`, backlog markdown, state, events, inbox, and task-result files

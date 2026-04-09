@@ -1496,6 +1496,62 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["runs"][0]["status"], "failed")
         self.assertEqual(payload["runs"][0]["returncode"], 1)
 
+    def test_architecture_docs_command_renders_html_from_checked_out_sources(self) -> None:
+        output = self.root / "architecture-diagrams.html"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog_cli.main",
+                "architecture-docs",
+                "--project-root",
+                str(ROOT),
+                "--output",
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=ROOT,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(Path(payload["output"]).resolve(), output.resolve())
+        self.assertTrue(output.exists())
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Layered Module Map", html)
+        self.assertIn("Runtime Artifacts And Data Structures", html)
+        self.assertIn("Actor And Worktree Flow", html)
+        self.assertIn("<svg", html)
+        self.assertIn("blackdog_cli.main", html)
+        self.assertIn("BlackdogPaths / RepoProfile", html)
+
+    def test_architecture_docs_command_emits_json_report(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "blackdog_cli.main",
+                "architecture-docs",
+                "--project-root",
+                str(ROOT),
+                "--format",
+                "json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cli_env(),
+            cwd=ROOT,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertGreater(payload["summary"]["module_count"], 0)
+        self.assertIn("blackdog_cli.main", {row["name"] for row in payload["modules"]})
+        self.assertIn("architecture-docs", payload["commands_by_package"]["blackdog"])
+
     def test_command_surface_inventory_freezes_current_layer_split(self) -> None:
         self.assertEqual(COMMAND_SURFACES["worktree"], "blackdog")
         self.assertEqual(COMMAND_SURFACES["worktree preflight"], "blackdog_core")
@@ -1506,6 +1562,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(COMMAND_SURFACES["inbox send"], "blackdog")
         self.assertEqual(COMMAND_SURFACES["snapshot"], "blackdog")
         self.assertEqual(COMMAND_SURFACES["render"], "blackdog")
+        self.assertEqual(COMMAND_SURFACES["architecture-docs"], "blackdog")
 
     def test_atomic_write_text_preserves_last_complete_json_until_replace(self) -> None:
         state_file = self.root / "state.json"

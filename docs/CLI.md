@@ -29,7 +29,7 @@ layers:
 | Owning package | Scope |
 | --- | --- |
 | `blackdog_core` | durable backlog/runtime commands and WTAM safety inspection |
-| `blackdog` | workflow orchestration, bootstrap/refresh, conversations, tracked installs, supervisor, snapshot, and render |
+| `blackdog` | workflow orchestration, bootstrap/refresh, conversations, tracked installs, supervisor, snapshot, render, coverage, and architecture docs |
 | `blackdog_cli` | parser/help/dispatch only |
 | `extensions` | no built-in CLI commands today |
 
@@ -37,7 +37,7 @@ layers:
 
 | Owning package | Commands |
 | --- | --- |
-| `blackdog` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render`; `coverage` |
+| `blackdog` | `create-project`; `bootstrap`; `refresh`; `update-repo`; `installs add|list|remove|update|observe`; `task edit|run`; `prompt`; `thread new|list|show|append|prompt|task`; `tune`; `supervise run|sweep|status|recover|report`; `worktree start|land|cleanup`; `inbox send|list|resolve`; `snapshot`; `render`; `coverage`; `architecture-docs` |
 | `blackdog_core` | `init`; `backlog new|remove|reset`; `validate`; `add`; `remove`; `summary`; `plan`; `next`; `worktree preflight`; `claim`; `release`; `complete`; `decide`; `comment`; `events`; `result record` |
 
 ## `blackdog`
@@ -54,6 +54,7 @@ layers:
 - `blackdog render`
 - `blackdog snapshot`
 - `blackdog coverage [--command CMD] [--output FILE]`
+- `blackdog architecture-docs [--format html|json] [--output FILE]`
 - `blackdog prompt [--complexity low|medium|high] [--format text|json] PROMPT...`
 - `blackdog thread new|list|show|append|prompt|task ...`
 - `blackdog task edit|run ...`
@@ -62,7 +63,7 @@ layers:
 - `blackdog worktree land [--id TASK] [--branch BRANCH] [--into TARGET]`
 - `blackdog worktree cleanup --id TASK|--path PATH`
 
-Use `blackdog create-project` when you want Blackdog to create a brand-new git repo, install itself into that repo's `.VE`, and bootstrap the local contract in one step. Use `blackdog bootstrap` for normal host-repo adoption into an existing repo. Use `blackdog refresh` when the host repo already has Blackdog installed and you want to regenerate the branded board plus managed project-local skill files without overwriting locally modified managed files. Use `blackdog update-repo` from a Blackdog source checkout when you want to reinstall Blackdog into another repo's `.VE` and immediately run that same refresh flow. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
+Use `blackdog create-project` when you want Blackdog to create a brand-new git repo, install itself into that repo's `.VE`, and bootstrap the local contract in one step. Use `blackdog bootstrap` for normal host-repo adoption into an existing repo. Use `blackdog refresh` when the host repo already has Blackdog installed and you want to regenerate the branded board plus managed project-local skill files without overwriting locally modified managed files. Use `blackdog update-repo` from a Blackdog source checkout when you want to reinstall Blackdog into another repo's `.VE` and immediately run that same refresh flow. Use `blackdog architecture-docs` from the Blackdog source checkout when you want a code-derived HTML/SVG architecture companion built from the current `src/blackdog_cli`, `src/blackdog_core`, and `src/blackdog` packages. Use `blackdog init` only when you want the repo-local artifact set without generating the project-local skill scaffold.
 
 `blackdog validate` now runs the canonical core reconcile pass before reporting
 counts. It also performs strict runtime checks over the current inbox/result
@@ -128,6 +129,15 @@ blackdog installs observe --all
 ```
 
 `blackdog installs add` stores repo roots under the shared control root for the current development checkout. `installs update` pushes the current Blackdog source into those tracked repos by calling the same `update-repo` flow per target. `installs observe` reads each tracked repo's backlog and tune state, and now also emits host-integration findings for wrapper-skill naming, prompt metadata, WTAM guidance, and task-shaping/history signals so the dev checkout can mine local host-repo intelligence without baking those machine-local paths into the skill scaffold or the host repos themselves.
+
+`blackdog architecture-docs` analyzes the checked-out Python packages
+with the stdlib `ast` module, emits a structured JSON report when
+`--format json` is requested, and by default renders a self-contained
+HTML page at `docs/architecture-diagrams.html`. The generated page
+includes inline SVG diagrams for the current package/module map, runtime
+artifact surfaces, event-handling flow, and actor/worktree flow so the
+human-facing architecture view stays tied to the code instead of
+drifting into a prose-only sketch.
 
 `blackdog worktree ...` is the implementation-work entrypoint. Ownership splits
 inside this group are intentional: `worktree preflight` is the core WTAM safety

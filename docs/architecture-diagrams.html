@@ -1,0 +1,2850 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blackdog Architecture Diagrams</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f5ef;
+      --panel: #fffdf8;
+      --panel-alt: #f2efe5;
+      --border: #d8d1c1;
+      --text: #1f2933;
+      --muted: #52606d;
+      --accent: #0f766e;
+      --accent-soft: rgba(15, 118, 110, 0.12);
+      --code-bg: #f3f4f6;
+      --table-border: #e5dfd0;
+      --shadow: 0 18px 45px rgba(31, 41, 51, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(15, 118, 110, 0.12), transparent 28rem),
+        linear-gradient(180deg, #fcfbf6 0%, var(--bg) 100%);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    main {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 2.4rem 1.4rem 3.2rem;
+    }
+    header {
+      background: linear-gradient(135deg, #114b5f 0%, #0f766e 56%, #d97706 100%);
+      color: white;
+      border-radius: 28px;
+      padding: 2.1rem 2.2rem;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+    header::after {
+      content: "";
+      position: absolute;
+      inset: auto -10% -35% auto;
+      width: 24rem;
+      height: 24rem;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0));
+      border-radius: 999px;
+    }
+    h1, h2, h3 {
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.4rem;
+    }
+    h1 { font-size: clamp(2rem, 5vw, 3.2rem); }
+    h2 { font-size: 1.65rem; margin-bottom: 0.8rem; }
+    h3 { font-size: 1.05rem; margin-bottom: 0.45rem; }
+    p {
+      margin: 0 0 1rem;
+      color: var(--muted);
+    }
+    .header-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr);
+      gap: 1.4rem;
+      position: relative;
+      z-index: 1;
+    }
+    .lede {
+      font-size: 1.02rem;
+      color: rgba(255, 255, 255, 0.9);
+      max-width: 52rem;
+    }
+    .meta {
+      display: grid;
+      gap: 0.65rem;
+      align-content: start;
+      justify-items: start;
+    }
+    .meta-card {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 18px;
+      padding: 0.9rem 1rem;
+      backdrop-filter: blur(14px);
+    }
+    .meta-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.78;
+    }
+    .meta-value {
+      font-family: "SFMono-Regular", Menlo, monospace;
+      font-size: 0.88rem;
+      word-break: break-word;
+      margin-top: 0.25rem;
+    }
+    .section {
+      margin-top: 1.8rem;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 26px;
+      padding: 1.45rem;
+      box-shadow: var(--shadow);
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+      gap: 0.9rem;
+      margin-top: 1.1rem;
+    }
+    .summary-card {
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, #fffef9, var(--panel-alt));
+      padding: 1rem;
+    }
+    .summary-value {
+      font-size: 1.9rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.2rem;
+    }
+    .summary-label {
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+    .diagram {
+      overflow-x: auto;
+      border-radius: 22px;
+      border: 1px solid var(--table-border);
+      background: #fffdf9;
+      padding: 0.8rem;
+    }
+    .caption {
+      margin-top: 0.8rem;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+    .subgrid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+      gap: 1rem;
+      align-items: start;
+    }
+    .callout {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1rem;
+    }
+    code, pre {
+      font-family: "SFMono-Regular", Menlo, monospace;
+      font-size: 0.88rem;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--code-bg);
+      border-radius: 16px;
+      padding: 0.95rem;
+      color: var(--text);
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.91rem;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 0.7rem 0.55rem;
+      border-bottom: 1px solid var(--table-border);
+    }
+    th {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: 0.35rem;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0.18rem 0.55rem;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-family: "SFMono-Regular", Menlo, monospace;
+    }
+    details {
+      margin-top: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 0.9rem 1rem;
+      background: #fffefb;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .mono {
+      font-family: "SFMono-Regular", Menlo, monospace;
+      word-break: break-word;
+    }
+    @media (max-width: 920px) {
+      .header-grid,
+      .subgrid {
+        grid-template-columns: 1fr;
+      }
+      main {
+        padding-left: 0.9rem;
+        padding-right: 0.9rem;
+      }
+      header {
+        padding: 1.6rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="header-grid">
+        <div>
+          <div class="meta-label">Generated Architecture Companion</div>
+          <h1>Blackdog Architecture Diagrams</h1>
+          <p class="lede">Code-derived diagrams for the current <span class="mono">blackdog_cli</span>, <span class="mono">blackdog_core</span>, and <span class="mono">blackdog</span> packages. This page is generated from the checked-out Python sources with the stdlib <span class="mono">ast</span> module so the module map, data structures, event flow, and WTAM workflow stay tied to code.</p>
+        </div>
+        <div class="meta">
+          <div class="meta-card">
+            <div class="meta-label">Generated At</div>
+            <div class="meta-value">2026-04-09T10:37:44-07:00</div>
+          </div>
+          <div class="meta-card">
+            <div class="meta-label">Project Root</div>
+            <div class="meta-value">/Users/bullard/Work/.worktrees/wt-black-83a38cb084-generate-code-driven-architecture-diagrams-and-compiled-html-docs</div>
+          </div>
+          <div class="meta-card">
+            <div class="meta-label">Refresh Command</div>
+            <div class="meta-value">./.VE/bin/blackdog architecture-docs --project-root . --output docs/architecture-diagrams.html</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="section">
+      <h2>Observed Surface</h2>
+      <p>The analyzer counts Python modules, dataclasses, runtime artifact readers and writers, CLI command ownership, and optional extensions directly from the checked-out source tree.</p>
+      <div class="summary-grid">
+        <div class="summary-card"><div class="summary-value">15</div><div class="summary-label">Python modules</div></div><div class="summary-card"><div class="summary-value">11</div><div class="summary-label">Dataclasses</div></div><div class="summary-card"><div class="summary-value">1</div><div class="summary-label">Compatibility modules</div></div><div class="summary-card"><div class="summary-value">9</div><div class="summary-label">Artifact surfaces</div></div><div class="summary-card"><div class="summary-value">60</div><div class="summary-label">CLI commands</div></div><div class="summary-card"><div class="summary-value">1</div><div class="summary-label">Extensions</div></div>
+      </div>
+      <div class="subgrid" style="margin-top: 1rem;">
+        <div class="callout">
+          <h3>Layer Counts</h3>
+          <div class="chips"><span class="chip">blackdog_cli: 2</span><span class="chip">blackdog_core: 4</span><span class="chip">blackdog: 9</span></div>
+        </div>
+        <div class="callout">
+          <h3>Refresh</h3>
+          <pre>./.VE/bin/blackdog architecture-docs --project-root . --output docs/architecture-diagrams.html
+PYTHONPATH=src python3 -m blackdog_cli architecture-docs --project-root .</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Layered Module Map</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1136 1002" width="1136" height="1002" role="img" aria-label="Blackdog architecture diagram">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<text x="160.0" y="34.0" fill="#1d4ed8" font-size="14" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="middle">blackdog_cli</text><rect x="34.0" y="86.0" width="252.0" height="106.0" rx="18" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.8"/><text x="50.0" y="108.0" fill="#1d4ed8" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_cli&gt;&gt;</text><text x="50.0" y="124.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_cli.main</text><text x="50.0" y="144.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog_cli/main.py</text><text x="50.0" y="160.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">12 internal imports</text><text x="50.0" y="176.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">97 functions / 0 dataclasses</text><text x="534.0" y="34.0" fill="#047857" font-size="14" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="middle">blackdog_core</text><rect x="408.0" y="86.0" width="252.0" height="106.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="424.0" y="108.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="424.0" y="124.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_core.profile</text><text x="424.0" y="144.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog_core/profile.py</text><text x="424.0" y="160.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">0 internal imports</text><text x="424.0" y="176.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">18 functions / 2 dataclasses</text><rect x="408.0" y="216.0" width="252.0" height="106.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="424.0" y="238.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="424.0" y="254.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_core.backlog</text><text x="424.0" y="274.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog_core/backlog.py</text><text x="424.0" y="290.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">2 internal imports</text><text x="424.0" y="306.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">75 functions / 4 dataclasses</text><rect x="408.0" y="346.0" width="252.0" height="106.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="424.0" y="368.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="424.0" y="384.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_core.state</text><text x="424.0" y="404.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog_core/state.py</text><text x="424.0" y="420.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">1 internal imports</text><text x="424.0" y="436.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">33 functions / 0 dataclasses</text><rect x="408.0" y="476.0" width="252.0" height="106.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="424.0" y="498.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="424.0" y="514.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_core.snapshot</text><text x="424.0" y="534.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog_core/snapshot.py</text><text x="424.0" y="550.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">1 internal imports</text><text x="424.0" y="566.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">0 functions / 0 dataclasses</text><text x="908.0" y="34.0" fill="#c2410c" font-size="14" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="middle">blackdog</text><rect x="782.0" y="86.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="108.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="124.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.scaffold</text><text x="798.0" y="144.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/scaffold.py</text><text x="798.0" y="160.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">4 internal imports</text><text x="798.0" y="176.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">29 functions / 0 dataclasses</text><rect x="782.0" y="216.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="238.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="254.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.board</text><text x="798.0" y="274.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/board.py</text><text x="798.0" y="290.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">8 internal imports</text><text x="798.0" y="306.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">56 functions / 0 dataclasses</text><rect x="782.0" y="346.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="368.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="384.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.worktree</text><text x="798.0" y="404.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/worktree.py</text><text x="798.0" y="420.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">3 internal imports</text><text x="798.0" y="436.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">46 functions / 1 dataclasses</text><rect x="782.0" y="476.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="498.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="514.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.supervisor</text><text x="798.0" y="534.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/supervisor.py</text><text x="798.0" y="550.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">7 internal imports</text><text x="798.0" y="566.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">73 functions / 2 dataclasses</text><rect x="782.0" y="606.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="628.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="644.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.conversations</text><text x="798.0" y="664.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/conversations.py</text><text x="798.0" y="680.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">2 internal imports</text><text x="798.0" y="696.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">18 functions / 0 dataclasses</text><rect x="782.0" y="736.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="758.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="774.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.tuning</text><text x="798.0" y="794.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/tuning.py</text><text x="798.0" y="810.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">3 internal imports</text><text x="798.0" y="826.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">6 functions / 0 dataclasses</text><rect x="782.0" y="866.0" width="252.0" height="106.0" rx="18" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/><text x="798.0" y="888.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="798.0" y="904.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog.installs</text><text x="798.0" y="924.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog/installs.py</text><text x="798.0" y="940.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">2 internal imports</text><text x="798.0" y="956.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">5 functions / 0 dataclasses</text><path d="M286.0,139.0 C534.0,139.0 534.0,269.0 782.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C534.0,139.0 534.0,659.0 782.0,659.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C534.0,139.0 534.0,919.0 782.0,919.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C534.0,139.0 534.0,139.0 782.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C534.0,139.0 534.0,529.0 782.0,529.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C534.0,139.0 534.0,789.0 782.0,789.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C534.0,139.0 534.0,399.0 782.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C347.0,139.0 347.0,269.0 408.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C347.0,139.0 347.0,139.0 408.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C347.0,139.0 347.0,529.0 408.0,529.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M286.0,139.0 C347.0,139.0 347.0,399.0 408.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M534.0,269.0 C534.0,269.0 534.0,139.0 534.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M534.0,269.0 C534.0,269.0 534.0,399.0 534.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M534.0,399.0 C534.0,399.0 534.0,139.0 534.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M534.0,529.0 C534.0,529.0 534.0,269.0 534.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,139.0 C908.0,139.0 908.0,269.0 908.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,139.0 C721.0,139.0 721.0,269.0 660.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,139.0 C721.0,139.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,139.0 C721.0,139.0 721.0,399.0 660.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,269.0 C908.0,269.0 908.0,659.0 908.0,659.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,269.0 C908.0,269.0 908.0,919.0 908.0,919.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,269.0 C908.0,269.0 908.0,789.0 908.0,789.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,269.0 C908.0,269.0 908.0,399.0 908.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,269.0 C721.0,269.0 721.0,269.0 660.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,269.0 C721.0,269.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,269.0 C721.0,269.0 721.0,529.0 660.0,529.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,269.0 C721.0,269.0 721.0,399.0 660.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,399.0 C721.0,399.0 721.0,269.0 660.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,399.0 C721.0,399.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,399.0 C721.0,399.0 721.0,399.0 660.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,529.0 C908.0,529.0 908.0,659.0 908.0,659.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,529.0 C908.0,529.0 908.0,139.0 908.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M908.0,529.0 C908.0,529.0 908.0,399.0 908.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,529.0 C721.0,529.0 721.0,269.0 660.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,529.0 C721.0,529.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,529.0 C721.0,529.0 721.0,399.0 660.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,659.0 C721.0,659.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,659.0 C721.0,659.0 721.0,399.0 660.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,789.0 C721.0,789.0 721.0,269.0 660.0,269.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,789.0 C721.0,789.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,919.0 C721.0,919.0 721.0,139.0 660.0,139.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/><path d="M782.0,919.0 C721.0,919.0 721.0,399.0 660.0,399.0" fill="none" stroke="#94a3b8" stroke-opacity="0.78" stroke-width="1.8" marker-end="url(#arrow)"/></svg>
+      </div>
+      <p class="caption">Representative modules are grouped by the current package split. Edges are internal imports discovered in the Python AST.</p>
+    </section>
+
+    <section class="section">
+      <h2>Runtime Artifacts And Data Structures</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1120 540" width="1120" height="540" role="img" aria-label="Blackdog architecture diagram">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<rect x="24.0" y="52.0" width="290.0" height="90.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="40.0" y="74.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="40.0" y="90.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">BlackdogPaths / RepoProfile</text><text x="40.0" y="110.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">src/blackdog_core/profile.py</text><text x="40.0" y="126.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">repo-local contract + resolved paths</text><rect x="24.0" y="204.0" width="290.0" height="106.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="40.0" y="226.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="40.0" y="242.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Read Models / Snapshots</text><text x="40.0" y="262.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">TaskNarrative</text><text x="40.0" y="278.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">BacklogTask</text><text x="40.0" y="294.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">BacklogSnapshot</text><rect x="24.0" y="366.0" width="290.0" height="90.0" rx="18" fill="#ecfdf5" stroke="#047857" stroke-width="1.8"/><text x="40.0" y="388.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog_core&gt;&gt;</text><text x="40.0" y="404.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">State Machines</text><text x="40.0" y="424.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">approval / claim / inbox replay</text><text x="40.0" y="440.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">append-only events + task results</text><rect x="404.0" y="34.0" width="290.0" height="106.0" rx="18" fill="#fff8eb" stroke="#c2410c" stroke-width="1.8"/><text x="420.0" y="56.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;shared inputs&gt;&gt;</text><text x="420.0" y="72.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Repo Contract</text><text x="420.0" y="92.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">blackdog.toml</text><text x="420.0" y="108.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">validation + routing defaults</text><text x="420.0" y="124.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">worktree base + skill paths</text><rect x="404.0" y="196.0" width="290.0" height="122.0" rx="18" fill="#eefbf4" stroke="#047857" stroke-width="1.8"/><text x="420.0" y="218.0" fill="#047857" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;shared runtime&gt;&gt;</text><text x="420.0" y="234.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Runtime Artifacts</text><text x="420.0" y="254.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">backlog.md</text><text x="420.0" y="270.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">backlog-state.json</text><text x="420.0" y="286.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">events.jsonl / inbox.jsonl</text><text x="420.0" y="302.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">task-results/</text><rect x="404.0" y="382.0" width="290.0" height="106.0" rx="18" fill="#fff8eb" stroke="#c2410c" stroke-width="1.8"/><text x="420.0" y="404.0" fill="#c2410c" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;product surfaces&gt;&gt;</text><text x="420.0" y="420.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Blackdog Product Artifacts</text><text x="420.0" y="440.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">threads/</text><text x="420.0" y="456.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;project&gt;-backlog.html</text><text x="420.0" y="472.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">supervisor-runs/</text><rect x="786.0" y="68.0" width="290.0" height="106.0" rx="18" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.8"/><text x="802.0" y="90.0" fill="#1d4ed8" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="802.0" y="106.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Board / Scaffold / Docs</text><text x="802.0" y="126.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">blackdog.board</text><text x="802.0" y="142.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">blackdog.scaffold</text><text x="802.0" y="158.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">blackdog.architecture</text><rect x="786.0" y="250.0" width="290.0" height="106.0" rx="18" fill="#eff6ff" stroke="#1d4ed8" stroke-width="1.8"/><text x="802.0" y="272.0" fill="#1d4ed8" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;blackdog&gt;&gt;</text><text x="802.0" y="288.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">WTAM / Supervisor</text><text x="802.0" y="308.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">DataclassFacts</text><text x="802.0" y="324.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">ModuleFacts</text><text x="802.0" y="340.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">ChildRun</text><rect x="786.0" y="404.0" width="290.0" height="106.0" rx="18" fill="#f5f3ff" stroke="#6d28d9" stroke-width="1.8"/><text x="802.0" y="426.0" fill="#6d28d9" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;extensions&gt;&gt;</text><text x="802.0" y="442.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Optional Extensions</text><text x="802.0" y="462.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">extensions/emacs</text><text x="802.0" y="478.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">consume CLI + artifacts</text><text x="802.0" y="494.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">without owning runtime writes</text><path d="M314.0,97.0 C354.5,97.0 363.5,87.0 404.0,87.0" fill="none" stroke="#047857" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="359.0" y="84.0" fill="#047857" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">load + resolve</text><path d="M314.0,97.0 C354.5,97.0 363.5,257.0 404.0,257.0" fill="none" stroke="#047857" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="359.0" y="169.0" fill="#047857" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">locate paths</text><path d="M314.0,257.0 C354.5,257.0 363.5,257.0 404.0,257.0" fill="none" stroke="#047857" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="359.0" y="249.0" fill="#047857" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">parse + reconcile</text><path d="M314.0,411.0 C354.5,411.0 363.5,257.0 404.0,257.0" fill="none" stroke="#047857" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="359.0" y="326.0" fill="#047857" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">read / write</text><path d="M314.0,411.0 C354.5,411.0 363.5,435.0 404.0,435.0" fill="none" stroke="#047857" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="359.0" y="415.0" fill="#047857" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">threads + run metadata</text><path d="M694.0,257.0 C735.4,257.0 744.6,121.0 786.0,121.0" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="740.0" y="181.0" fill="#1d4ed8" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">snapshot inputs</text><path d="M694.0,435.0 C735.4,435.0 744.6,121.0 786.0,121.0" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="740.0" y="270.0" fill="#1d4ed8" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">rendered views</text><path d="M694.0,257.0 C735.4,257.0 744.6,303.0 786.0,303.0" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="740.0" y="272.0" fill="#1d4ed8" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">task and result evidence</text><path d="M694.0,435.0 C735.4,435.0 744.6,303.0 786.0,303.0" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="740.0" y="361.0" fill="#1d4ed8" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">workflow state</text><path d="M1076.0,121.0 C1206.5,121.0 655.5,457.0 786.0,457.0" fill="none" stroke="#6d28d9" stroke-width="1.8" stroke-opacity="0.82" marker-end="url(#arrow)"/><text x="931.0" y="281.0" fill="#6d28d9" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">documented surface</text></svg>
+      </div>
+      <p class="caption">The center column is the repo/runtime artifact surface observed from code. The table lists dataclasses that define the main path contracts, read models, snapshots, and worktree state carriers.</p>
+      <div style="margin-top: 1rem;">
+        <table><thead><tr><th>Layer</th><th>Module</th><th>Dataclass</th><th>Fields</th></tr></thead><tbody><tr><td>blackdog</td><td class="mono">blackdog.architecture</td><td class="mono">DataclassFacts</td><td><span class="chip">name</span><span class="chip">fields</span></td></tr><tr><td>blackdog</td><td class="mono">blackdog.architecture</td><td class="mono">ModuleFacts</td><td><span class="chip">name</span><span class="chip">path</span><span class="chip">layer</span><span class="chip">is_package</span><span class="chip">compatibility_shim</span><span class="chip">imports</span><span class="chip">classes</span><span class="chip">functions</span><span class="chip">dataclasses</span><span class="chip">artifact_reads</span><span class="chip">artifact_writes</span></td></tr><tr><td>blackdog</td><td class="mono">blackdog.supervisor</td><td class="mono">ChildRun</td><td><span class="chip">task</span><span class="chip">child_agent</span><span class="chip">launch_command</span><span class="chip">workspace</span><span class="chip">workspace_mode</span><span class="chip">run_dir</span><span class="chip">prompt_file</span><span class="chip">stdout_file</span><span class="chip">stderr_file</span><span class="chip">message_id</span><span class="chip">result_files_before</span><span class="chip">process</span><span class="chip">stdout_handle</span><span class="chip">stderr_handle</span><span class="chip">started_at</span><span class="chip">worktree_spec</span><span class="chip">launch_error</span><span class="chip">exit_code</span><span class="chip">missing_process</span><span class="chip">result_recorded</span><span class="chip">final_task_status</span><span class="chip">branch_ahead</span><span class="chip">land_result</span><span class="chip">landed</span><span class="chip">land_error</span><span class="chip">land_needs_user_input</span><span class="chip">land_followup_candidates</span><span class="chip">telemetry</span></td></tr><tr><td>blackdog</td><td class="mono">blackdog.supervisor</td><td class="mono">PreparedWorkspace</td><td><span class="chip">workspace</span><span class="chip">worktree_spec</span></td></tr><tr><td>blackdog</td><td class="mono">blackdog.worktree</td><td class="mono">WorktreeSpec</td><td><span class="chip">task_id</span><span class="chip">task_title</span><span class="chip">task_slug</span><span class="chip">branch</span><span class="chip">base_ref</span><span class="chip">base_commit</span><span class="chip">target_branch</span><span class="chip">worktree_path</span><span class="chip">primary_worktree</span><span class="chip">current_worktree</span></td></tr><tr><td>blackdog_core</td><td class="mono">blackdog_core.backlog</td><td class="mono">TaskNarrative</td><td><span class="chip">why</span><span class="chip">evidence</span><span class="chip">affected_paths</span></td></tr><tr><td>blackdog_core</td><td class="mono">blackdog_core.backlog</td><td class="mono">BacklogTask</td><td><span class="chip">payload</span><span class="chip">narrative</span><span class="chip">epic_title</span><span class="chip">lane_id</span><span class="chip">lane_title</span><span class="chip">wave</span><span class="chip">lane_order</span><span class="chip">lane_position</span><span class="chip">predecessor_ids</span></td></tr><tr><td>blackdog_core</td><td class="mono">blackdog_core.backlog</td><td class="mono">BacklogSnapshot</td><td><span class="chip">raw_text</span><span class="chip">headers</span><span class="chip">sections</span><span class="chip">tasks</span><span class="chip">plan</span></td></tr><tr><td>blackdog_core</td><td class="mono">blackdog_core.backlog</td><td class="mono">RuntimeArtifacts</td><td><span class="chip">backlog</span><span class="chip">state</span><span class="chip">events</span><span class="chip">inbox</span><span class="chip">results</span><span class="chip">reconcile_report</span><span class="chip">strict_validation</span></td></tr><tr><td>blackdog_core</td><td class="mono">blackdog_core.profile</td><td class="mono">BlackdogPaths</td><td><span class="chip">project_root</span><span class="chip">profile_file</span><span class="chip">control_dir</span><span class="chip">backlog_dir</span><span class="chip">backlog_file</span><span class="chip">state_file</span><span class="chip">events_file</span><span class="chip">results_dir</span><span class="chip">threads_dir</span><span class="chip">inbox_file</span><span class="chip">html_file</span><span class="chip">skill_dir</span><span class="chip">worktrees_dir</span><span class="chip">supervisor_runs_dir</span></td></tr><tr><td>blackdog_core</td><td class="mono">blackdog_core.profile</td><td class="mono">RepoProfile</td><td><span class="chip">project_name</span><span class="chip">profile_version</span><span class="chip">id_prefix</span><span class="chip">id_digest_length</span><span class="chip">require_claim_for_completion</span><span class="chip">auto_render_html</span><span class="chip">buckets</span><span class="chip">domains</span><span class="chip">validation_commands</span><span class="chip">doc_routing_defaults</span><span class="chip">supervisor_launch_command</span><span class="chip">supervisor_model</span><span class="chip">supervisor_reasoning_effort</span><span class="chip">supervisor_dynamic_reasoning</span><span class="chip">supervisor_max_parallel</span><span class="chip">supervisor_workspace_mode</span><span class="chip">pm_heuristics</span><span class="chip">paths</span></td></tr></tbody></table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Event Handling Flow</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1180 460" width="1180" height="460" role="img" aria-label="Blackdog architecture diagram">
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<line x1="136.0" y1="118" x2="136.0" y2="410" stroke="#cbd5e1" stroke-dasharray="6 8"/><line x1="358.0" y1="118" x2="358.0" y2="410" stroke="#cbd5e1" stroke-dasharray="6 8"/><line x1="580.0" y1="118" x2="580.0" y2="410" stroke="#cbd5e1" stroke-dasharray="6 8"/><line x1="802.0" y1="118" x2="802.0" y2="410" stroke="#cbd5e1" stroke-dasharray="6 8"/><line x1="1024.0" y1="118" x2="1024.0" y2="410" stroke="#cbd5e1" stroke-dasharray="6 8"/><path d="M136.0,178.0 C247.0,178.0 247.0,178.0 358.0,178.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="247.0" y="168.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">invoke</text><path d="M358.0,206.0 C469.0,206.0 469.0,252.0 580.0,252.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="469.0" y="196.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">dispatch</text><path d="M580.0,280.0 C691.0,280.0 691.0,326.0 802.0,326.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="691.0" y="270.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">append</text><path d="M802.0,354.0 C913.0,354.0 913.0,400.0 1024.0,400.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="913.0" y="344.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">replay</text><rect x="36.0" y="26.0" width="200.0" height="82.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="52.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;lane&gt;&gt;</text><text x="52.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Operator / Agent</text><text x="52.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">shape work, claim, land</text><rect x="258.0" y="26.0" width="200.0" height="82.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="274.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;lane&gt;&gt;</text><text x="274.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_cli</text><text x="274.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">parse args + dispatch</text><rect x="480.0" y="26.0" width="200.0" height="82.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="496.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;lane&gt;&gt;</text><text x="496.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog_core</text><text x="496.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">load, reconcile, mutate</text><rect x="702.0" y="26.0" width="200.0" height="82.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="718.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;lane&gt;&gt;</text><text x="718.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Shared Artifacts</text><text x="718.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">backlog/state/events/inbox/results</text><rect x="924.0" y="26.0" width="200.0" height="82.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="940.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;lane&gt;&gt;</text><text x="940.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">blackdog</text><text x="940.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">render, supervise,</text><text x="940.0" y="100.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">worktree orchestration</text><rect x="54.0" y="154.0" width="164.0" height="48.0" rx="18" fill="#f8fafc" stroke="#64748b" stroke-width="1.8"/><text x="70.0" y="176.0" fill="#64748b" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start"></text><text x="70.0" y="192.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">shape work</text><text x="70.0" y="212.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">manual-first backlog</text><text x="70.0" y="225.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">and WTAM flow</text><rect x="276.0" y="154.0" width="164.0" height="48.0" rx="18" fill="#f8fafc" stroke="#64748b" stroke-width="1.8"/><text x="292.0" y="176.0" fill="#64748b" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start"></text><text x="292.0" y="192.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">command routing</text><text x="292.0" y="212.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">20 blackdog_core / 40</text><text x="292.0" y="225.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">blackdog</text><rect x="498.0" y="228.0" width="164.0" height="48.0" rx="18" fill="#f8fafc" stroke="#64748b" stroke-width="1.8"/><text x="514.0" y="250.0" fill="#64748b" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start"></text><text x="514.0" y="266.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">reconcile + mutate</text><text x="514.0" y="286.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">load_backlog /</text><text x="514.0" y="299.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">load_state /</text><text x="514.0" y="312.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">append_event</text><rect x="720.0" y="302.0" width="164.0" height="48.0" rx="18" fill="#f8fafc" stroke="#64748b" stroke-width="1.8"/><text x="736.0" y="324.0" fill="#64748b" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start"></text><text x="736.0" y="340.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">append-only evidence</text><text x="736.0" y="360.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">events.jsonl +</text><text x="736.0" y="373.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">inbox.jsonl +</text><text x="736.0" y="386.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">task-results/</text><rect x="942.0" y="376.0" width="164.0" height="48.0" rx="18" fill="#f8fafc" stroke="#64748b" stroke-width="1.8"/><text x="958.0" y="398.0" fill="#64748b" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start"></text><text x="958.0" y="414.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">projection</text><text x="958.0" y="434.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">board render /</text><text x="958.0" y="447.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">supervisor / worktree</text><text x="958.0" y="460.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">views</text></svg>
+      </div>
+      <p class="caption">Command ownership comes from <span class="mono">blackdog_cli.main.COMMAND_SURFACES</span>. The flow shows how the CLI dispatches into core state transitions and Blackdog product consumers that render views or orchestrate WTAM work.</p>
+    </section>
+
+    <section class="section">
+      <h2>Actor And Worktree Flow</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1180 420" width="1180" height="420" role="img" aria-label="Blackdog architecture diagram"><path d="M128.0,150.0 C240.0,150.0 240.0,150.0 352.0,150.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="240.0" y="140.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">blackdog add / claim</text><path d="M352.0,206.0 C464.0,206.0 464.0,206.0 576.0,206.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="464.0" y="196.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">worktree start</text><path d="M576.0,262.0 C688.0,262.0 688.0,262.0 800.0,262.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="688.0" y="252.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">result record</text><path d="M576.0,318.0 C464.0,318.0 464.0,318.0 352.0,318.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="464.0" y="308.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">worktree land + complete</text><path d="M1024.0,356.0 C912.0,356.0 912.0,356.0 800.0,356.0" fill="none" stroke="#64748b" stroke-width="1.9" marker-end="url(#arrow)"/><text x="912.0" y="346.0" fill="#334155" font-size="10.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="middle">supervise / inbox</text>
+<defs>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+    <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+  </marker>
+</defs>
+<rect x="34.0" y="26.0" width="188.0" height="78.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="50.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;actor&gt;&gt;</text><text x="50.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Operator</text><text x="50.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">shape / claim /</text><text x="50.0" y="100.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">complete</text><line x1="128.0" y1="116" x2="128.0" y2="382" stroke="#cbd5e1" stroke-dasharray="6 8"/><rect x="258.0" y="26.0" width="188.0" height="78.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="274.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;workspace&gt;&gt;</text><text x="274.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Primary Worktree</text><text x="274.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">main branch + landing</text><text x="274.0" y="100.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">gate</text><line x1="352.0" y1="116" x2="352.0" y2="382" stroke="#cbd5e1" stroke-dasharray="6 8"/><rect x="482.0" y="26.0" width="188.0" height="78.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="498.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;workspace&gt;&gt;</text><text x="498.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Task Worktree</text><text x="498.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">branch-backed</text><text x="498.0" y="100.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">implementation</text><line x1="576.0" y1="116" x2="576.0" y2="382" stroke="#cbd5e1" stroke-dasharray="6 8"/><rect x="706.0" y="26.0" width="188.0" height="78.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="722.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;artifact set&gt;&gt;</text><text x="722.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Shared Control Root</text><text x="722.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">backlog + state +</text><text x="722.0" y="100.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">events + inbox +</text><text x="722.0" y="116.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">results</text><line x1="800.0" y1="116" x2="800.0" y2="382" stroke="#cbd5e1" stroke-dasharray="6 8"/><rect x="930.0" y="26.0" width="188.0" height="78.0" rx="18" fill="#fffdf8" stroke="#475569" stroke-width="1.8"/><text x="946.0" y="48.0" fill="#475569" font-size="11" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">&lt;&lt;actor&gt;&gt;</text><text x="946.0" y="64.0" fill="#0f172a" font-size="15" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700" text-anchor="start">Supervisor / Child</text><text x="946.0" y="84.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">optional delegated</text><text x="946.0" y="100.0" fill="#334155" font-size="11.5" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="500" text-anchor="start">execution</text><line x1="1024.0" y1="116" x2="1024.0" y2="382" stroke="#cbd5e1" stroke-dasharray="6 8"/></svg>
+      </div>
+      <p class="caption">This sequence summarizes the documented manual-first WTAM flow for Blackdog-on-Blackdog work: shape work, claim it, move into a branch-backed task worktree, record results, then land through the primary worktree.</p>
+    </section>
+
+    <section class="section">
+      <h2>Reference Tables</h2>
+      <div class="subgrid">
+        <div>
+          <h3>Modules</h3>
+          <table><thead><tr><th>Layer</th><th>Module</th><th>Imports</th><th>Shapes</th></tr></thead><tbody><tr><td>blackdog</td><td><div class="mono">blackdog.architecture</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/architecture.py</div></td><td><span style="color:#64748b;">none</span></td><td><span class="chip">45 functions</span><span class="chip">2 dataclasses</span><span class="chip">compatibility shim</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.board</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/board.py</div></td><td><span class="chip">conversations</span><span class="chip">installs</span><span class="chip">tuning</span><span class="chip">worktree</span><span class="chip">backlog</span><span class="chip">profile</span><span class="chip">snapshot</span><span class="chip">state</span></td><td><span class="chip">56 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.conversations</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/conversations.py</div></td><td><span class="chip">profile</span><span class="chip">state</span></td><td><span class="chip">18 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.installs</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/installs.py</div></td><td><span class="chip">profile</span><span class="chip">state</span></td><td><span class="chip">5 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.scaffold</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/scaffold.py</div></td><td><span class="chip">board</span><span class="chip">backlog</span><span class="chip">profile</span><span class="chip">state</span></td><td><span class="chip">29 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.supervisor</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/supervisor.py</div></td><td><span class="chip">conversations</span><span class="chip">scaffold</span><span class="chip">supervisor_policy</span><span class="chip">worktree</span><span class="chip">backlog</span><span class="chip">profile</span><span class="chip">state</span></td><td><span class="chip">73 functions</span><span class="chip">2 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.supervisor_policy</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/supervisor_policy.py</div></td><td><span class="chip">worktree</span><span class="chip">backlog</span><span class="chip">profile</span></td><td><span class="chip">8 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.tuning</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/tuning.py</div></td><td><span class="chip">blackdog_core</span><span class="chip">backlog</span><span class="chip">profile</span></td><td><span class="chip">6 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog</td><td><div class="mono">blackdog.worktree</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog/worktree.py</div></td><td><span class="chip">backlog</span><span class="chip">profile</span><span class="chip">state</span></td><td><span class="chip">46 functions</span><span class="chip">1 dataclasses</span></td></tr><tr><td>blackdog_cli</td><td><div class="mono">blackdog_cli.__main__</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog_cli/__main__.py</div></td><td><span class="chip">main</span></td><td><span class="chip">0 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog_cli</td><td><div class="mono">blackdog_cli.main</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog_cli/main.py</div></td><td><span class="chip">architecture</span><span class="chip">board</span><span class="chip">conversations</span><span class="chip">installs</span><span class="chip">scaffold</span><span class="chip">supervisor</span><span class="chip">tuning</span><span class="chip">worktree</span><span class="chip">backlog</span><span class="chip">profile</span><span class="chip">snapshot</span><span class="chip">state</span></td><td><span class="chip">97 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog_core</td><td><div class="mono">blackdog_core.backlog</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog_core/backlog.py</div></td><td><span class="chip">profile</span><span class="chip">state</span></td><td><span class="chip">75 functions</span><span class="chip">4 dataclasses</span></td></tr><tr><td>blackdog_core</td><td><div class="mono">blackdog_core.profile</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog_core/profile.py</div></td><td><span style="color:#64748b;">none</span></td><td><span class="chip">18 functions</span><span class="chip">2 dataclasses</span></td></tr><tr><td>blackdog_core</td><td><div class="mono">blackdog_core.snapshot</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog_core/snapshot.py</div></td><td><span class="chip">backlog</span></td><td><span class="chip">0 functions</span><span class="chip">0 dataclasses</span></td></tr><tr><td>blackdog_core</td><td><div class="mono">blackdog_core.state</div><div class="mono" style="font-size:0.78rem;color:#52606d;">src/blackdog_core/state.py</div></td><td><span class="chip">profile</span></td><td><span class="chip">33 functions</span><span class="chip">0 dataclasses</span></td></tr></tbody></table>
+        </div>
+        <div>
+          <h3>Artifacts</h3>
+          <table><thead><tr><th>Artifact</th><th>Surface</th><th>Readers</th><th>Writers</th></tr></thead><tbody><tr><td class="mono">blackdog.toml</td><td>repo contract</td><td><span class="chip">scaffold</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span><span class="chip">profile</span></td><td><span class="chip">scaffold</span><span class="chip">main</span></td></tr><tr><td class="mono">backlog.md</td><td>runtime contract</td><td><span class="chip">board</span><span class="chip">scaffold</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span></td><td><span class="chip">scaffold</span><span class="chip">backlog</span></td></tr><tr><td class="mono">backlog-state.json</td><td>runtime contract</td><td><span class="chip">board</span><span class="chip">scaffold</span><span class="chip">supervisor</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span></td><td><span class="chip">scaffold</span><span class="chip">supervisor</span><span class="chip">main</span><span class="chip">backlog</span></td></tr><tr><td class="mono">events.jsonl</td><td>runtime contract</td><td><span class="chip">board</span><span class="chip">scaffold</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span><span class="chip">state</span></td><td><span class="chip">scaffold</span><span class="chip">state</span></td></tr><tr><td class="mono">inbox.jsonl</td><td>runtime contract</td><td><span class="chip">board</span><span class="chip">scaffold</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span><span class="chip">state</span></td><td><span class="chip">scaffold</span><span class="chip">state</span></td></tr><tr><td class="mono">task-results/</td><td>runtime contract</td><td><span class="chip">board</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span><span class="chip">state</span></td><td><span class="chip">scaffold</span><span class="chip">worktree</span><span class="chip">profile</span><span class="chip">state</span></td></tr><tr><td class="mono">threads/</td><td>blackdog product</td><td><span class="chip">board</span><span class="chip">conversations</span></td><td><span class="chip">profile</span></td></tr><tr><td class="mono">&lt;project&gt;-backlog.html</td><td>blackdog product</td><td><span class="chip">board</span><span class="chip">scaffold</span><span class="chip">tuning</span><span class="chip">main</span><span class="chip">backlog</span></td><td><span class="chip">scaffold</span></td></tr><tr><td class="mono">supervisor-runs/</td><td>blackdog product</td><td><span class="chip">board</span><span class="chip">supervisor</span></td><td><span class="chip">scaffold</span><span class="chip">supervisor</span><span class="chip">profile</span></td></tr></tbody></table>
+        </div>
+      </div>
+      <div class="subgrid" style="margin-top: 1rem;">
+        <div>
+          <h3>CLI Command Ownership</h3>
+          <table><thead><tr><th>Owning Package</th><th>Commands</th></tr></thead><tbody><tr><td>blackdog</td><td><span class="chip">architecture-docs</span><span class="chip">bootstrap</span><span class="chip">coverage</span><span class="chip">create-project</span><span class="chip">inbox</span><span class="chip">inbox list</span><span class="chip">inbox resolve</span><span class="chip">inbox send</span><span class="chip">installs</span><span class="chip">installs add</span><span class="chip">installs list</span><span class="chip">installs observe</span><span class="chip">installs remove</span><span class="chip">installs update</span><span class="chip">prompt</span><span class="chip">refresh</span><span class="chip">render</span><span class="chip">snapshot</span><span class="chip">supervise</span><span class="chip">supervise recover</span><span class="chip">supervise report</span><span class="chip">supervise run</span><span class="chip">supervise status</span><span class="chip">supervise sweep</span><span class="chip">task</span><span class="chip">task edit</span><span class="chip">task run</span><span class="chip">thread</span><span class="chip">thread append</span><span class="chip">thread list</span><span class="chip">thread new</span><span class="chip">thread prompt</span><span class="chip">thread show</span><span class="chip">thread task</span><span class="chip">tune</span><span class="chip">update-repo</span><span class="chip">worktree</span><span class="chip">worktree cleanup</span><span class="chip">worktree land</span><span class="chip">worktree start</span></td></tr><tr><td>blackdog_core</td><td><span class="chip">add</span><span class="chip">backlog</span><span class="chip">backlog new</span><span class="chip">backlog remove</span><span class="chip">backlog reset</span><span class="chip">claim</span><span class="chip">comment</span><span class="chip">complete</span><span class="chip">decide</span><span class="chip">events</span><span class="chip">init</span><span class="chip">next</span><span class="chip">plan</span><span class="chip">release</span><span class="chip">remove</span><span class="chip">result</span><span class="chip">result record</span><span class="chip">summary</span><span class="chip">validate</span><span class="chip">worktree preflight</span></td></tr></tbody></table>
+        </div>
+        <div>
+          <h3>Compatibility And Extensions</h3>
+          <div class="callout"><h3>Compatibility Modules</h3><table><thead><tr><th>Module</th><th>Likely Target</th></tr></thead><tbody><tr><td class="mono">blackdog.architecture</td><td class="mono"></td></tr></tbody></table></div><div class="callout" style="margin-top:1rem;"><h3>Extensions</h3><table><thead><tr><th>Surface</th><th>Files</th><th>Description</th></tr></thead><tbody><tr><td class="mono">extensions/emacs</td><td>23</td><td>Editor extension surface that consumes documented CLI and artifact contracts.</td></tr></tbody></table></div>
+        </div>
+      </div>
+      <details>
+        <summary>Raw Analyzer JSON</summary>
+        <pre>{
+  &quot;schema_version&quot;: 1,
+  &quot;generated_at&quot;: &quot;2026-04-09T10:37:44-07:00&quot;,
+  &quot;project_root&quot;: &quot;/Users/bullard/Work/.worktrees/wt-black-83a38cb084-generate-code-driven-architecture-diagrams-and-compiled-html-docs&quot;,
+  &quot;summary&quot;: {
+    &quot;module_count&quot;: 15,
+    &quot;dataclass_count&quot;: 11,
+    &quot;compatibility_module_count&quot;: 1,
+    &quot;artifact_surface_count&quot;: 9,
+    &quot;command_count&quot;: 60,
+    &quot;extension_surface_count&quot;: 1,
+    &quot;layer_counts&quot;: {
+      &quot;blackdog_cli&quot;: 2,
+      &quot;blackdog_core&quot;: 4,
+      &quot;blackdog&quot;: 9
+    }
+  },
+  &quot;modules&quot;: [
+    {
+      &quot;name&quot;: &quot;blackdog.architecture&quot;,
+      &quot;path&quot;: &quot;src/blackdog/architecture.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: true,
+      &quot;imports&quot;: [],
+      &quot;classes&quot;: [
+        &quot;ArchitectureError&quot;,
+        &quot;DataclassFacts&quot;,
+        &quot;ModuleFacts&quot;,
+        &quot;_FunctionArtifactVisitor&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;default_architecture_output_path&quot;,
+        &quot;analyze_repo_architecture&quot;,
+        &quot;render_architecture_html&quot;,
+        &quot;_now_iso&quot;,
+        &quot;_module_name&quot;,
+        &quot;_analyze_module&quot;,
+        &quot;_module_shapes&quot;,
+        &quot;_is_compatibility_shim&quot;,
+        &quot;_internal_imports&quot;,
+        &quot;_is_dataclass&quot;,
+        &quot;_class_fields&quot;,
+        &quot;_function_artifacts&quot;,
+        &quot;_artifact_field&quot;,
+        &quot;_attribute_chain&quot;,
+        &quot;_terminal_name&quot;,
+        &quot;_dotted_name&quot;,
+        &quot;_layer_for_module&quot;,
+        &quot;_extract_command_surfaces&quot;,
+        &quot;_commands_by_package&quot;,
+        &quot;_artifact_report&quot;,
+        &quot;_extension_report&quot;,
+        &quot;_representative_modules&quot;,
+        &quot;_summary_cards&quot;,
+        &quot;_layer_chips&quot;,
+        &quot;_render_layer_svg&quot;,
+        &quot;_render_artifact_svg&quot;,
+        &quot;_render_event_svg&quot;,
+        &quot;_render_actor_svg&quot;,
+        &quot;_top_dataclass_names&quot;,
+        &quot;_render_dataclass_table&quot;,
+        &quot;_render_module_table&quot;,
+        &quot;_render_artifact_table&quot;,
+        &quot;_render_command_table&quot;,
+        &quot;_render_side_table&quot;,
+        &quot;_svg_canvas&quot;,
+        &quot;_svg_defs&quot;,
+        &quot;_svg_node&quot;,
+        &quot;_svg_text&quot;,
+        &quot;_node_height&quot;,
+        &quot;_wrap_text&quot;,
+        &quot;_curved_arrow_between&quot;,
+        &quot;_curved_arrow&quot;,
+        &quot;_labeled_arrow&quot;,
+        &quot;_chip_list&quot;,
+        &quot;_short_module&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;DataclassFacts&quot;,
+          &quot;fields&quot;: [
+            &quot;name&quot;,
+            &quot;fields&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;ModuleFacts&quot;,
+          &quot;fields&quot;: [
+            &quot;name&quot;,
+            &quot;path&quot;,
+            &quot;layer&quot;,
+            &quot;is_package&quot;,
+            &quot;compatibility_shim&quot;,
+            &quot;imports&quot;,
+            &quot;classes&quot;,
+            &quot;functions&quot;,
+            &quot;dataclasses&quot;,
+            &quot;artifact_reads&quot;,
+            &quot;artifact_writes&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.board&quot;,
+      &quot;path&quot;: &quot;src/blackdog/board.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.conversations&quot;,
+        &quot;blackdog.installs&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.snapshot&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;UIError&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_ui_stylesheet&quot;,
+        &quot;_parse_iso&quot;,
+        &quot;_duration_seconds&quot;,
+        &quot;_format_duration&quot;,
+        &quot;_pid_alive&quot;,
+        &quot;_artifact_href&quot;,
+        &quot;_run_git_capture&quot;,
+        &quot;_git_commit_metadata_row&quot;,
+        &quot;_git_commit_metadata_batch&quot;,
+        &quot;_git_branch_metadata_batch&quot;,
+        &quot;_github_repo_url&quot;,
+        &quot;_read_artifact_text&quot;,
+        &quot;_safe_markdown_href&quot;,
+        &quot;_render_markdown_inline&quot;,
+        &quot;_render_markdown_html&quot;,
+        &quot;_find_run_dir&quot;,
+        &quot;_best_thread_artifact&quot;,
+        &quot;_child_artifacts&quot;,
+        &quot;_direct_land_artifacts&quot;,
+        &quot;_empty_task_activity&quot;,
+        &quot;_latest_supervisor_check_at&quot;,
+        &quot;_latest_timestamp&quot;,
+        &quot;_build_task_activity&quot;,
+        &quot;_build_task_lifecycle&quot;,
+        &quot;_result_preview&quot;,
+        &quot;_build_result_index&quot;,
+        &quot;_build_task_run_artifacts&quot;,
+        &quot;_build_thread_snapshot_rows&quot;,
+        &quot;_build_unattended_tuning&quot;,
+        &quot;_title_label&quot;,
+        &quot;_text_label&quot;,
+        &quot;_count_label&quot;,
+        &quot;_short_commit&quot;,
+        &quot;_latest_task_with_timestamp&quot;,
+        &quot;_branch_summary&quot;,
+        &quot;_latest_run_summary&quot;,
+        &quot;_latest_event_at&quot;,
+        &quot;_duration_label&quot;,
+        &quot;_build_hero_highlights&quot;,
+        &quot;_actor_role&quot;,
+        &quot;_latest_activity&quot;,
+        &quot;_operator_status&quot;,
+        &quot;_landing_status_chip&quot;,
+        &quot;_dialog_status_chips&quot;,
+        &quot;_card_status_chips&quot;,
+        &quot;_activity_message&quot;,
+        &quot;_build_task_timeline&quot;,
+        &quot;_task_links&quot;,
+        &quot;_lane_task_positions&quot;,
+        &quot;_progress_for_task_rows&quot;,
+        &quot;_last_supervisor_sweep_completed_count&quot;,
+        &quot;_build_queue_status&quot;,
+        &quot;_build_objective_snapshot_rows&quot;,
+        &quot;build_board_snapshot&quot;,
+        &quot;_snapshot_json&quot;,
+        &quot;render_static_html&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;,
+        &quot;threads_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.conversations&quot;,
+      &quot;path&quot;: &quot;src/blackdog/conversations.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;_thread_dir&quot;,
+        &quot;_thread_file&quot;,
+        &quot;_thread_entries_file&quot;,
+        &quot;_new_thread_id&quot;,
+        &quot;_unique_thread_task_ids&quot;,
+        &quot;_normalize_thread_metadata&quot;,
+        &quot;_normalize_thread_entry&quot;,
+        &quot;_thread_preview&quot;,
+        &quot;_thread_summary&quot;,
+        &quot;load_thread&quot;,
+        &quot;list_threads&quot;,
+        &quot;create_thread&quot;,
+        &quot;append_thread_entry&quot;,
+        &quot;link_thread_task&quot;,
+        &quot;thread_ids_for_task&quot;,
+        &quot;_thread_result_body&quot;,
+        &quot;_thread_result_duration_seconds&quot;,
+        &quot;mirror_task_result_to_threads&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;threads_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.installs&quot;,
+      &quot;path&quot;: &quot;src/blackdog/installs.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;tracked_installs_file&quot;,
+        &quot;default_tracked_installs&quot;,
+        &quot;normalize_tracked_installs&quot;,
+        &quot;load_tracked_installs&quot;,
+        &quot;save_tracked_installs&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.scaffold&quot;,
+      &quot;path&quot;: &quot;src/blackdog/scaffold.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;ScaffoldError&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_run_command&quot;,
+        &quot;_default_blackdog_source&quot;,
+        &quot;_ensure_new_project_root&quot;,
+        &quot;_initialize_git_repo&quot;,
+        &quot;_ensure_runtime_dirs&quot;,
+        &quot;_profile_for_paths&quot;,
+        &quot;_ensure_baseline_agents_file&quot;,
+        &quot;scaffold_named_backlog&quot;,
+        &quot;remove_named_backlog&quot;,
+        &quot;reset_default_backlog&quot;,
+        &quot;scaffold_project&quot;,
+        &quot;bootstrap_project&quot;,
+        &quot;create_project&quot;,
+        &quot;refresh_project_skill&quot;,
+        &quot;render_project_html&quot;,
+        &quot;legacy_html_aliases&quot;,
+        &quot;_preferred_cli_command&quot;,
+        &quot;_host_skill_token&quot;,
+        &quot;_display_path&quot;,
+        &quot;_task_shaping_reference_text&quot;,
+        &quot;_blackdog_managed_hash&quot;,
+        &quot;_managed_skill_manifest_path&quot;,
+        &quot;_load_managed_skill_manifest&quot;,
+        &quot;_save_managed_skill_manifest&quot;,
+        &quot;_project_skill_bundle&quot;,
+        &quot;_write_managed_skill_bundle&quot;,
+        &quot;generate_project_skill&quot;,
+        &quot;refresh_project_scaffold&quot;,
+        &quot;update_project_repo&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.supervisor&quot;,
+      &quot;path&quot;: &quot;src/blackdog/supervisor.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.conversations&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor_policy&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;SupervisorError&quot;,
+        &quot;ChildRun&quot;,
+        &quot;PreparedWorkspace&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_normalize_supervisor_attempt_status&quot;,
+        &quot;_normalize_supervisor_attempt_final_task_status&quot;,
+        &quot;_attempt_status_from_final_task_status&quot;,
+        &quot;_normalize_supervisor_runtime_status&quot;,
+        &quot;_preferred_blackdog_command&quot;,
+        &quot;_build_child_protocol_helper&quot;,
+        &quot;_notify_supervisor&quot;,
+        &quot;_emit_render&quot;,
+        &quot;_supervisor_text&quot;,
+        &quot;render_supervisor_output&quot;,
+        &quot;_launch_settings_summary&quot;,
+        &quot;_supervisor_status_text&quot;,
+        &quot;render_supervisor_status_output&quot;,
+        &quot;render_supervisor_sweep_output&quot;,
+        &quot;_run_dir_for_id&quot;,
+        &quot;_load_supervisor_recovery_status_files&quot;,
+        &quot;_load_run_events&quot;,
+        &quot;_build_recovery_child_run&quot;,
+        &quot;_recovery_case_recommendations&quot;,
+        &quot;_build_supervisor_recovery_runs&quot;,
+        &quot;build_supervisor_recover_view&quot;,
+        &quot;render_supervisor_recover_output&quot;,
+        &quot;_artifact_payload_for_attempt&quot;,
+        &quot;_parse_attempt_metadata&quot;,
+        &quot;_attempt_payload_from_events&quot;,
+        &quot;_format_percent&quot;,
+        &quot;_blank_recovery_result_fields&quot;,
+        &quot;_index_supervisor_results&quot;,
+        &quot;_index_supervisor_results_by_task&quot;,
+        &quot;_attach_recovery_result_fields&quot;,
+        &quot;_recovery_needed_section&quot;,
+        &quot;_run_status_for_attempt&quot;,
+        &quot;_build_report_recovery_needed_cases&quot;,
+        &quot;build_supervisor_observation_view&quot;,
+        &quot;_observation_text&quot;,
+        &quot;render_supervisor_observation_output&quot;,
+        &quot;_land_branch_with_retry&quot;,
+        &quot;_mark_task_done&quot;,
+        &quot;_matching_dirty_primary_case&quot;,
+        &quot;_ensure_stash_followup_task&quot;,
+        &quot;_plan_prelaunch_recovery&quot;,
+        &quot;_run_prelaunch_recovery&quot;,
+        &quot;_select_tasks&quot;,
+        &quot;_load_synced_runtime&quot;,
+        &quot;_run_control_action&quot;,
+        &quot;_message_control_action&quot;,
+        &quot;_pid_alive&quot;,
+        &quot;_latest_run_status&quot;,
+        &quot;build_supervisor_status_view&quot;,
+        &quot;_write_run_status&quot;,
+        &quot;_mark_run_checked&quot;,
+        &quot;_claim_for_child&quot;,
+        &quot;_record_child_claim_process&quot;,
+        &quot;_scan_claim_process_liveness&quot;,
+        &quot;_release_if_still_claimed&quot;,
+        &quot;_complete_if_still_claimed&quot;,
+        &quot;_prepare_workspace&quot;,
+        &quot;_land_child_branch&quot;,
+        &quot;build_supervisor_launch_defaults_view&quot;,
+        &quot;_resolved_launch_command&quot;,
+        &quot;_resolved_launch_command_with_strategy&quot;,
+        &quot;_build_launch_command&quot;,
+        &quot;_preflight_launch_command&quot;,
+        &quot;_capture_child_diff_artifacts&quot;,
+        &quot;_attempt_land_child_worktree&quot;,
+        &quot;_finalize_child_run&quot;,
+        &quot;_wait_for_child_process&quot;,
+        &quot;_finish_child&quot;,
+        &quot;_next_run_tasks&quot;,
+        &quot;_launch_child_run&quot;,
+        &quot;_append_run_step&quot;,
+        &quot;run_supervisor&quot;,
+        &quot;run_supervisor_sweep&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;ChildRun&quot;,
+          &quot;fields&quot;: [
+            &quot;task&quot;,
+            &quot;child_agent&quot;,
+            &quot;launch_command&quot;,
+            &quot;workspace&quot;,
+            &quot;workspace_mode&quot;,
+            &quot;run_dir&quot;,
+            &quot;prompt_file&quot;,
+            &quot;stdout_file&quot;,
+            &quot;stderr_file&quot;,
+            &quot;message_id&quot;,
+            &quot;result_files_before&quot;,
+            &quot;process&quot;,
+            &quot;stdout_handle&quot;,
+            &quot;stderr_handle&quot;,
+            &quot;started_at&quot;,
+            &quot;worktree_spec&quot;,
+            &quot;launch_error&quot;,
+            &quot;exit_code&quot;,
+            &quot;missing_process&quot;,
+            &quot;result_recorded&quot;,
+            &quot;final_task_status&quot;,
+            &quot;branch_ahead&quot;,
+            &quot;land_result&quot;,
+            &quot;landed&quot;,
+            &quot;land_error&quot;,
+            &quot;land_needs_user_input&quot;,
+            &quot;land_followup_candidates&quot;,
+            &quot;telemetry&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;PreparedWorkspace&quot;,
+          &quot;fields&quot;: [
+            &quot;workspace&quot;,
+            &quot;worktree_spec&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.supervisor_policy&quot;,
+      &quot;path&quot;: &quot;src/blackdog/supervisor_policy.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;build_child_prompt&quot;,
+        &quot;apply_launch_overrides&quot;,
+        &quot;_dynamic_reasoning_effort_for_task&quot;,
+        &quot;resolved_task_launch_overrides&quot;,
+        &quot;launch_settings_view&quot;,
+        &quot;launch_defaults_view&quot;,
+        &quot;launch_settings_reasoning_label&quot;,
+        &quot;build_child_launch_telemetry&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.tuning&quot;,
+      &quot;path&quot;: &quot;src/blackdog/tuning.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;_unique_ordered&quot;,
+        &quot;build_prompt_profiles&quot;,
+        &quot;build_prompt_improvement&quot;,
+        &quot;build_tune_analysis&quot;,
+        &quot;_tune_task_payload&quot;,
+        &quot;seed_tune_task&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.worktree&quot;,
+      &quot;path&quot;: &quot;src/blackdog/worktree.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;WorktreeError&quot;,
+        &quot;DirtyPrimaryWorktreeError&quot;,
+        &quot;WorktreeSpec&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;normalize_workspace_mode&quot;,
+        &quot;normalize_worktree_model&quot;,
+        &quot;_run_git&quot;,
+        &quot;_run_git_no_check&quot;,
+        &quot;_run_git_stdout&quot;,
+        &quot;_repo_root&quot;,
+        &quot;_is_primary_worktree&quot;,
+        &quot;_is_within&quot;,
+        &quot;_parse_worktree_list&quot;,
+        &quot;find_primary_worktree&quot;,
+        &quot;_persist_landed_diff_artifacts&quot;,
+        &quot;_find_worktree_for_branch&quot;,
+        &quot;find_worktree_for_branch&quot;,
+        &quot;_status_entries&quot;,
+        &quot;_runtime_ignore_prefixes&quot;,
+        &quot;dirty_paths&quot;,
+        &quot;_status_dirty&quot;,
+        &quot;_workspace_role&quot;,
+        &quot;_landing_state&quot;,
+        &quot;worktree_contract&quot;,
+        &quot;_current_branch&quot;,
+        &quot;_task_for_id&quot;,
+        &quot;_task_slug&quot;,
+        &quot;default_task_branch&quot;,
+        &quot;task_id_for_branch&quot;,
+        &quot;default_task_worktree_path&quot;,
+        &quot;supervisor_task_branch&quot;,
+        &quot;supervisor_task_worktree_path&quot;,
+        &quot;_resolve_from_ref&quot;,
+        &quot;worktree_preflight&quot;,
+        &quot;primary_worktree_is_dirty&quot;,
+        &quot;primary_worktree_dirty_paths&quot;,
+        &quot;dirty_primary_worktree_error&quot;,
+        &quot;start_task_worktree&quot;,
+        &quot;land_branch&quot;,
+        &quot;branch_changed_paths&quot;,
+        &quot;working_tree_matches_ref&quot;,
+        &quot;commit_working_tree_paths&quot;,
+        &quot;stash_working_tree&quot;,
+        &quot;rebase_branch_onto_target&quot;,
+        &quot;branch_ahead_of_target&quot;,
+        &quot;cleanup_task_worktree&quot;,
+        &quot;render_preflight_text&quot;,
+        &quot;render_start_text&quot;,
+        &quot;render_land_text&quot;,
+        &quot;render_cleanup_text&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;WorktreeSpec&quot;,
+          &quot;fields&quot;: [
+            &quot;task_id&quot;,
+            &quot;task_title&quot;,
+            &quot;task_slug&quot;,
+            &quot;branch&quot;,
+            &quot;base_ref&quot;,
+            &quot;base_commit&quot;,
+            &quot;target_branch&quot;,
+            &quot;worktree_path&quot;,
+            &quot;primary_worktree&quot;,
+            &quot;current_worktree&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: [
+        &quot;results_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_cli.__main__&quot;,
+      &quot;path&quot;: &quot;src/blackdog_cli/__main__.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_cli&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_cli.main&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_cli.main&quot;,
+      &quot;path&quot;: &quot;src/blackdog_cli/main.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_cli&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.architecture&quot;,
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.conversations&quot;,
+        &quot;blackdog.installs&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.snapshot&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;_load_runtime&quot;,
+        &quot;_emit_render&quot;,
+        &quot;_env_default&quot;,
+        &quot;_env_required&quot;,
+        &quot;_parse_json_object&quot;,
+        &quot;_normalize_repo_roots&quot;,
+        &quot;_tracked_install_index&quot;,
+        &quot;_host_skill_token&quot;,
+        &quot;_safe_read_text&quot;,
+        &quot;_extract_skill_name&quot;,
+        &quot;_build_host_integration_findings&quot;,
+        &quot;_build_tracked_install_row&quot;,
+        &quot;_resolve_tracked_install_targets&quot;,
+        &quot;_observe_tracked_install&quot;,
+        &quot;_render_tracked_installs_list&quot;,
+        &quot;_render_tracked_install_observations&quot;,
+        &quot;_parse_trace_command&quot;,
+        &quot;_load_coverage_profile_settings&quot;,
+        &quot;_build_trace_runner&quot;,
+        &quot;_source_executable_lines&quot;,
+        &quot;_definition_header_continuation_lines&quot;,
+        &quot;_parse_coverage_file&quot;,
+        &quot;_coverage_source&quot;,
+        &quot;_normalized_shipped_surface&quot;,
+        &quot;_filter_coverage_modules&quot;,
+        &quot;_truncate_text&quot;,
+        &quot;_collect_trace_coverage&quot;,
+        &quot;_merge_coverage&quot;,
+        &quot;_run_coverage_command&quot;,
+        &quot;_coverage_summary&quot;,
+        &quot;cmd_init&quot;,
+        &quot;cmd_bootstrap&quot;,
+        &quot;cmd_create_project&quot;,
+        &quot;cmd_refresh&quot;,
+        &quot;cmd_update_repo&quot;,
+        &quot;cmd_installs_add&quot;,
+        &quot;cmd_installs_list&quot;,
+        &quot;cmd_installs_remove&quot;,
+        &quot;cmd_installs_update&quot;,
+        &quot;cmd_installs_observe&quot;,
+        &quot;cmd_backlog_new&quot;,
+        &quot;cmd_backlog_remove&quot;,
+        &quot;cmd_backlog_reset&quot;,
+        &quot;cmd_validate&quot;,
+        &quot;cmd_add&quot;,
+        &quot;cmd_remove&quot;,
+        &quot;cmd_task_edit&quot;,
+        &quot;cmd_task_run&quot;,
+        &quot;_summary_view&quot;,
+        &quot;cmd_summary&quot;,
+        &quot;cmd_plan&quot;,
+        &quot;cmd_supervise_run&quot;,
+        &quot;cmd_supervise_sweep&quot;,
+        &quot;cmd_supervise_status&quot;,
+        &quot;cmd_supervise_recover&quot;,
+        &quot;cmd_supervise_report&quot;,
+        &quot;cmd_next&quot;,
+        &quot;cmd_snapshot&quot;,
+        &quot;cmd_worktree_preflight&quot;,
+        &quot;cmd_worktree_start&quot;,
+        &quot;cmd_worktree_land&quot;,
+        &quot;cmd_worktree_cleanup&quot;,
+        &quot;cmd_claim&quot;,
+        &quot;cmd_release&quot;,
+        &quot;cmd_complete&quot;,
+        &quot;cmd_decide&quot;,
+        &quot;cmd_comment&quot;,
+        &quot;cmd_events&quot;,
+        &quot;cmd_render&quot;,
+        &quot;cmd_result_record&quot;,
+        &quot;cmd_coverage&quot;,
+        &quot;cmd_architecture_docs&quot;,
+        &quot;_resolve_prompt_text&quot;,
+        &quot;_resolve_optional_body_text&quot;,
+        &quot;_thread_prompt_source&quot;,
+        &quot;_thread_latest_user_body&quot;,
+        &quot;_thread_task_defaults&quot;,
+        &quot;_render_thread_list_text&quot;,
+        &quot;_render_thread_text&quot;,
+        &quot;cmd_prompt&quot;,
+        &quot;cmd_thread_new&quot;,
+        &quot;cmd_thread_list&quot;,
+        &quot;cmd_thread_show&quot;,
+        &quot;cmd_thread_append&quot;,
+        &quot;cmd_thread_prompt&quot;,
+        &quot;cmd_thread_task&quot;,
+        &quot;cmd_tune&quot;,
+        &quot;cmd_inbox_send&quot;,
+        &quot;cmd_inbox_list&quot;,
+        &quot;cmd_inbox_resolve&quot;,
+        &quot;_build_devtool_parsers&quot;,
+        &quot;_build_core_parsers&quot;,
+        &quot;_build_blackdog_parsers&quot;,
+        &quot;_build_worktree_parsers&quot;,
+        &quot;build_parser&quot;,
+        &quot;_run_main&quot;,
+        &quot;main&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;profile_file&quot;,
+        &quot;state_file&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.backlog&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/backlog.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;BacklogError&quot;,
+        &quot;TaskNarrative&quot;,
+        &quot;BacklogTask&quot;,
+        &quot;BacklogSnapshot&quot;,
+        &quot;RuntimeArtifacts&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_coerce_optional_int&quot;,
+        &quot;_coerce_task_shaping_touched_paths&quot;,
+        &quot;_coerce_task_shaping&quot;,
+        &quot;_rounded_task_minutes&quot;,
+        &quot;_median_int&quot;,
+        &quot;now_iso&quot;,
+        &quot;run_git&quot;,
+        &quot;current_branch&quot;,
+        &quot;current_commit&quot;,
+        &quot;make_task_id&quot;,
+        &quot;_extract_json_blocks&quot;,
+        &quot;_parse_headers&quot;,
+        &quot;_extract_sections&quot;,
+        &quot;_parse_narratives&quot;,
+        &quot;validate_task_payload&quot;,
+        &quot;validate_plan_payload&quot;,
+        &quot;load_backlog&quot;,
+        &quot;task_done&quot;,
+        &quot;approval_satisfied&quot;,
+        &quot;active_claim_owner&quot;,
+        &quot;blocking_reason&quot;,
+        &quot;classify_task_status&quot;,
+        &quot;reconcile_state_for_backlog&quot;,
+        &quot;sync_state_for_backlog&quot;,
+        &quot;_strict_runtime_validation&quot;,
+        &quot;_strict_validation_error&quot;,
+        &quot;load_runtime_artifacts&quot;,
+        &quot;next_runnable_tasks&quot;,
+        &quot;_section_items&quot;,
+        &quot;_parse_objectives&quot;,
+        &quot;_objective_row_key&quot;,
+        &quot;_latest_result_index&quot;,
+        &quot;build_runtime_summary&quot;,
+        &quot;summary_open_messages&quot;,
+        &quot;build_plan_snapshot&quot;,
+        &quot;build_runtime_snapshot&quot;,
+        &quot;render_plan_text&quot;,
+        &quot;render_summary_text&quot;,
+        &quot;render_backlog_task_block&quot;,
+        &quot;render_backlog_plan_block&quot;,
+        &quot;render_task_section&quot;,
+        &quot;_replace_header&quot;,
+        &quot;_apply_runtime_headers&quot;,
+        &quot;refresh_backlog_headers&quot;,
+        &quot;_parse_runtime_iso&quot;,
+        &quot;_rounded_minutes&quot;,
+        &quot;_task_runtime_row&quot;,
+        &quot;_runtime_int&quot;,
+        &quot;_result_has_actual_task_telemetry&quot;,
+        &quot;_runtime_target_branch&quot;,
+        &quot;_runtime_changed_paths&quot;,
+        &quot;_task_runtime_rows&quot;,
+        &quot;_build_task_shaping_calibration&quot;,
+        &quot;_seed_task_shaping_from_calibration&quot;,
+        &quot;enrich_result_task_shaping_telemetry&quot;,
+        &quot;_task_context_metrics&quot;,
+        &quot;_proper_tuning_module&quot;,
+        &quot;build_prompt_profiles&quot;,
+        &quot;build_prompt_improvement&quot;,
+        &quot;build_tune_analysis&quot;,
+        &quot;_unique_ordered&quot;,
+        &quot;_tune_task_payload&quot;,
+        &quot;seed_tune_task&quot;,
+        &quot;compact_active_plan&quot;,
+        &quot;sweep_completed_tasks&quot;,
+        &quot;_replace_plan_block&quot;,
+        &quot;_ensure_plan_entry&quot;,
+        &quot;_prune_empty_plan_entries&quot;,
+        &quot;_remove_task_section&quot;,
+        &quot;_replace_task_section&quot;,
+        &quot;_plan_entry_for_task&quot;,
+        &quot;add_task&quot;,
+        &quot;update_task&quot;,
+        &quot;remove_task&quot;,
+        &quot;render_initial_backlog&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;TaskNarrative&quot;,
+          &quot;fields&quot;: [
+            &quot;why&quot;,
+            &quot;evidence&quot;,
+            &quot;affected_paths&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;BacklogTask&quot;,
+          &quot;fields&quot;: [
+            &quot;payload&quot;,
+            &quot;narrative&quot;,
+            &quot;epic_title&quot;,
+            &quot;lane_id&quot;,
+            &quot;lane_title&quot;,
+            &quot;wave&quot;,
+            &quot;lane_order&quot;,
+            &quot;lane_position&quot;,
+            &quot;predecessor_ids&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;BacklogSnapshot&quot;,
+          &quot;fields&quot;: [
+            &quot;raw_text&quot;,
+            &quot;headers&quot;,
+            &quot;sections&quot;,
+            &quot;tasks&quot;,
+            &quot;plan&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;RuntimeArtifacts&quot;,
+          &quot;fields&quot;: [
+            &quot;backlog&quot;,
+            &quot;state&quot;,
+            &quot;events&quot;,
+            &quot;inbox&quot;,
+            &quot;results&quot;,
+            &quot;reconcile_report&quot;,
+            &quot;strict_validation&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;state_file&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.profile&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/profile.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [],
+      &quot;classes&quot;: [
+        &quot;ConfigError&quot;,
+        &quot;BlackdogPaths&quot;,
+        &quot;RepoProfile&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;slugify&quot;,
+        &quot;default_host_skill_name&quot;,
+        &quot;default_host_skill_dir&quot;,
+        &quot;default_id_prefix&quot;,
+        &quot;default_html_file_name&quot;,
+        &quot;named_backlog_paths&quot;,
+        &quot;find_project_root&quot;,
+        &quot;_resolve_rel&quot;,
+        &quot;_run_git&quot;,
+        &quot;_git_common_dir&quot;,
+        &quot;_resolve_path_value&quot;,
+        &quot;_default_control_paths&quot;,
+        &quot;_prune_stale_git_worktrees&quot;,
+        &quot;_ensure_control_root_layout&quot;,
+        &quot;_paths_from_raw&quot;,
+        &quot;load_profile&quot;,
+        &quot;render_default_profile&quot;,
+        &quot;write_default_profile&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;BlackdogPaths&quot;,
+          &quot;fields&quot;: [
+            &quot;project_root&quot;,
+            &quot;profile_file&quot;,
+            &quot;control_dir&quot;,
+            &quot;backlog_dir&quot;,
+            &quot;backlog_file&quot;,
+            &quot;state_file&quot;,
+            &quot;events_file&quot;,
+            &quot;results_dir&quot;,
+            &quot;threads_dir&quot;,
+            &quot;inbox_file&quot;,
+            &quot;html_file&quot;,
+            &quot;skill_dir&quot;,
+            &quot;worktrees_dir&quot;,
+            &quot;supervisor_runs_dir&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;RepoProfile&quot;,
+          &quot;fields&quot;: [
+            &quot;project_name&quot;,
+            &quot;profile_version&quot;,
+            &quot;id_prefix&quot;,
+            &quot;id_digest_length&quot;,
+            &quot;require_claim_for_completion&quot;,
+            &quot;auto_render_html&quot;,
+            &quot;buckets&quot;,
+            &quot;domains&quot;,
+            &quot;validation_commands&quot;,
+            &quot;doc_routing_defaults&quot;,
+            &quot;supervisor_launch_command&quot;,
+            &quot;supervisor_model&quot;,
+            &quot;supervisor_reasoning_effort&quot;,
+            &quot;supervisor_dynamic_reasoning&quot;,
+            &quot;supervisor_max_parallel&quot;,
+            &quot;supervisor_workspace_mode&quot;,
+            &quot;pm_heuristics&quot;,
+            &quot;paths&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [
+        &quot;profile_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;results_dir&quot;,
+        &quot;supervisor_runs_dir&quot;,
+        &quot;threads_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.snapshot&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/snapshot.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.backlog&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.state&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/state.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;StoreError&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;now_iso&quot;,
+        &quot;default_state&quot;,
+        &quot;_normalized_optional_string&quot;,
+        &quot;_normalize_string_list&quot;,
+        &quot;_normalize_optional_object&quot;,
+        &quot;_normalize_positive_int&quot;,
+        &quot;_normalize_non_negative_int&quot;,
+        &quot;approval_is_satisfied&quot;,
+        &quot;claim_is_done&quot;,
+        &quot;normalize_approval_entry&quot;,
+        &quot;normalize_claim_entry&quot;,
+        &quot;normalize_event_row&quot;,
+        &quot;normalize_inbox_row&quot;,
+        &quot;normalize_task_result&quot;,
+        &quot;normalize_state&quot;,
+        &quot;load_state&quot;,
+        &quot;_lock_path&quot;,
+        &quot;locked_path&quot;,
+        &quot;atomic_write_text&quot;,
+        &quot;save_state&quot;,
+        &quot;locked_state&quot;,
+        &quot;claim_is_active&quot;,
+        &quot;append_jsonl&quot;,
+        &quot;load_jsonl&quot;,
+        &quot;append_event&quot;,
+        &quot;record_comment&quot;,
+        &quot;load_events&quot;,
+        &quot;send_message&quot;,
+        &quot;resolve_message&quot;,
+        &quot;load_inbox&quot;,
+        &quot;record_task_result&quot;,
+        &quot;load_task_results&quot;,
+        &quot;claim_task_entry&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;events_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;results_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;events_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;results_dir&quot;
+      ]
+    }
+  ],
+  &quot;diagram_modules&quot;: [
+    {
+      &quot;name&quot;: &quot;blackdog_cli.main&quot;,
+      &quot;path&quot;: &quot;src/blackdog_cli/main.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_cli&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.architecture&quot;,
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.conversations&quot;,
+        &quot;blackdog.installs&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.snapshot&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;_load_runtime&quot;,
+        &quot;_emit_render&quot;,
+        &quot;_env_default&quot;,
+        &quot;_env_required&quot;,
+        &quot;_parse_json_object&quot;,
+        &quot;_normalize_repo_roots&quot;,
+        &quot;_tracked_install_index&quot;,
+        &quot;_host_skill_token&quot;,
+        &quot;_safe_read_text&quot;,
+        &quot;_extract_skill_name&quot;,
+        &quot;_build_host_integration_findings&quot;,
+        &quot;_build_tracked_install_row&quot;,
+        &quot;_resolve_tracked_install_targets&quot;,
+        &quot;_observe_tracked_install&quot;,
+        &quot;_render_tracked_installs_list&quot;,
+        &quot;_render_tracked_install_observations&quot;,
+        &quot;_parse_trace_command&quot;,
+        &quot;_load_coverage_profile_settings&quot;,
+        &quot;_build_trace_runner&quot;,
+        &quot;_source_executable_lines&quot;,
+        &quot;_definition_header_continuation_lines&quot;,
+        &quot;_parse_coverage_file&quot;,
+        &quot;_coverage_source&quot;,
+        &quot;_normalized_shipped_surface&quot;,
+        &quot;_filter_coverage_modules&quot;,
+        &quot;_truncate_text&quot;,
+        &quot;_collect_trace_coverage&quot;,
+        &quot;_merge_coverage&quot;,
+        &quot;_run_coverage_command&quot;,
+        &quot;_coverage_summary&quot;,
+        &quot;cmd_init&quot;,
+        &quot;cmd_bootstrap&quot;,
+        &quot;cmd_create_project&quot;,
+        &quot;cmd_refresh&quot;,
+        &quot;cmd_update_repo&quot;,
+        &quot;cmd_installs_add&quot;,
+        &quot;cmd_installs_list&quot;,
+        &quot;cmd_installs_remove&quot;,
+        &quot;cmd_installs_update&quot;,
+        &quot;cmd_installs_observe&quot;,
+        &quot;cmd_backlog_new&quot;,
+        &quot;cmd_backlog_remove&quot;,
+        &quot;cmd_backlog_reset&quot;,
+        &quot;cmd_validate&quot;,
+        &quot;cmd_add&quot;,
+        &quot;cmd_remove&quot;,
+        &quot;cmd_task_edit&quot;,
+        &quot;cmd_task_run&quot;,
+        &quot;_summary_view&quot;,
+        &quot;cmd_summary&quot;,
+        &quot;cmd_plan&quot;,
+        &quot;cmd_supervise_run&quot;,
+        &quot;cmd_supervise_sweep&quot;,
+        &quot;cmd_supervise_status&quot;,
+        &quot;cmd_supervise_recover&quot;,
+        &quot;cmd_supervise_report&quot;,
+        &quot;cmd_next&quot;,
+        &quot;cmd_snapshot&quot;,
+        &quot;cmd_worktree_preflight&quot;,
+        &quot;cmd_worktree_start&quot;,
+        &quot;cmd_worktree_land&quot;,
+        &quot;cmd_worktree_cleanup&quot;,
+        &quot;cmd_claim&quot;,
+        &quot;cmd_release&quot;,
+        &quot;cmd_complete&quot;,
+        &quot;cmd_decide&quot;,
+        &quot;cmd_comment&quot;,
+        &quot;cmd_events&quot;,
+        &quot;cmd_render&quot;,
+        &quot;cmd_result_record&quot;,
+        &quot;cmd_coverage&quot;,
+        &quot;cmd_architecture_docs&quot;,
+        &quot;_resolve_prompt_text&quot;,
+        &quot;_resolve_optional_body_text&quot;,
+        &quot;_thread_prompt_source&quot;,
+        &quot;_thread_latest_user_body&quot;,
+        &quot;_thread_task_defaults&quot;,
+        &quot;_render_thread_list_text&quot;,
+        &quot;_render_thread_text&quot;,
+        &quot;cmd_prompt&quot;,
+        &quot;cmd_thread_new&quot;,
+        &quot;cmd_thread_list&quot;,
+        &quot;cmd_thread_show&quot;,
+        &quot;cmd_thread_append&quot;,
+        &quot;cmd_thread_prompt&quot;,
+        &quot;cmd_thread_task&quot;,
+        &quot;cmd_tune&quot;,
+        &quot;cmd_inbox_send&quot;,
+        &quot;cmd_inbox_list&quot;,
+        &quot;cmd_inbox_resolve&quot;,
+        &quot;_build_devtool_parsers&quot;,
+        &quot;_build_core_parsers&quot;,
+        &quot;_build_blackdog_parsers&quot;,
+        &quot;_build_worktree_parsers&quot;,
+        &quot;build_parser&quot;,
+        &quot;_run_main&quot;,
+        &quot;main&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;profile_file&quot;,
+        &quot;state_file&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.profile&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/profile.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [],
+      &quot;classes&quot;: [
+        &quot;ConfigError&quot;,
+        &quot;BlackdogPaths&quot;,
+        &quot;RepoProfile&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;slugify&quot;,
+        &quot;default_host_skill_name&quot;,
+        &quot;default_host_skill_dir&quot;,
+        &quot;default_id_prefix&quot;,
+        &quot;default_html_file_name&quot;,
+        &quot;named_backlog_paths&quot;,
+        &quot;find_project_root&quot;,
+        &quot;_resolve_rel&quot;,
+        &quot;_run_git&quot;,
+        &quot;_git_common_dir&quot;,
+        &quot;_resolve_path_value&quot;,
+        &quot;_default_control_paths&quot;,
+        &quot;_prune_stale_git_worktrees&quot;,
+        &quot;_ensure_control_root_layout&quot;,
+        &quot;_paths_from_raw&quot;,
+        &quot;load_profile&quot;,
+        &quot;render_default_profile&quot;,
+        &quot;write_default_profile&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;BlackdogPaths&quot;,
+          &quot;fields&quot;: [
+            &quot;project_root&quot;,
+            &quot;profile_file&quot;,
+            &quot;control_dir&quot;,
+            &quot;backlog_dir&quot;,
+            &quot;backlog_file&quot;,
+            &quot;state_file&quot;,
+            &quot;events_file&quot;,
+            &quot;results_dir&quot;,
+            &quot;threads_dir&quot;,
+            &quot;inbox_file&quot;,
+            &quot;html_file&quot;,
+            &quot;skill_dir&quot;,
+            &quot;worktrees_dir&quot;,
+            &quot;supervisor_runs_dir&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;RepoProfile&quot;,
+          &quot;fields&quot;: [
+            &quot;project_name&quot;,
+            &quot;profile_version&quot;,
+            &quot;id_prefix&quot;,
+            &quot;id_digest_length&quot;,
+            &quot;require_claim_for_completion&quot;,
+            &quot;auto_render_html&quot;,
+            &quot;buckets&quot;,
+            &quot;domains&quot;,
+            &quot;validation_commands&quot;,
+            &quot;doc_routing_defaults&quot;,
+            &quot;supervisor_launch_command&quot;,
+            &quot;supervisor_model&quot;,
+            &quot;supervisor_reasoning_effort&quot;,
+            &quot;supervisor_dynamic_reasoning&quot;,
+            &quot;supervisor_max_parallel&quot;,
+            &quot;supervisor_workspace_mode&quot;,
+            &quot;pm_heuristics&quot;,
+            &quot;paths&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [
+        &quot;profile_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;results_dir&quot;,
+        &quot;supervisor_runs_dir&quot;,
+        &quot;threads_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.backlog&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/backlog.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;BacklogError&quot;,
+        &quot;TaskNarrative&quot;,
+        &quot;BacklogTask&quot;,
+        &quot;BacklogSnapshot&quot;,
+        &quot;RuntimeArtifacts&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_coerce_optional_int&quot;,
+        &quot;_coerce_task_shaping_touched_paths&quot;,
+        &quot;_coerce_task_shaping&quot;,
+        &quot;_rounded_task_minutes&quot;,
+        &quot;_median_int&quot;,
+        &quot;now_iso&quot;,
+        &quot;run_git&quot;,
+        &quot;current_branch&quot;,
+        &quot;current_commit&quot;,
+        &quot;make_task_id&quot;,
+        &quot;_extract_json_blocks&quot;,
+        &quot;_parse_headers&quot;,
+        &quot;_extract_sections&quot;,
+        &quot;_parse_narratives&quot;,
+        &quot;validate_task_payload&quot;,
+        &quot;validate_plan_payload&quot;,
+        &quot;load_backlog&quot;,
+        &quot;task_done&quot;,
+        &quot;approval_satisfied&quot;,
+        &quot;active_claim_owner&quot;,
+        &quot;blocking_reason&quot;,
+        &quot;classify_task_status&quot;,
+        &quot;reconcile_state_for_backlog&quot;,
+        &quot;sync_state_for_backlog&quot;,
+        &quot;_strict_runtime_validation&quot;,
+        &quot;_strict_validation_error&quot;,
+        &quot;load_runtime_artifacts&quot;,
+        &quot;next_runnable_tasks&quot;,
+        &quot;_section_items&quot;,
+        &quot;_parse_objectives&quot;,
+        &quot;_objective_row_key&quot;,
+        &quot;_latest_result_index&quot;,
+        &quot;build_runtime_summary&quot;,
+        &quot;summary_open_messages&quot;,
+        &quot;build_plan_snapshot&quot;,
+        &quot;build_runtime_snapshot&quot;,
+        &quot;render_plan_text&quot;,
+        &quot;render_summary_text&quot;,
+        &quot;render_backlog_task_block&quot;,
+        &quot;render_backlog_plan_block&quot;,
+        &quot;render_task_section&quot;,
+        &quot;_replace_header&quot;,
+        &quot;_apply_runtime_headers&quot;,
+        &quot;refresh_backlog_headers&quot;,
+        &quot;_parse_runtime_iso&quot;,
+        &quot;_rounded_minutes&quot;,
+        &quot;_task_runtime_row&quot;,
+        &quot;_runtime_int&quot;,
+        &quot;_result_has_actual_task_telemetry&quot;,
+        &quot;_runtime_target_branch&quot;,
+        &quot;_runtime_changed_paths&quot;,
+        &quot;_task_runtime_rows&quot;,
+        &quot;_build_task_shaping_calibration&quot;,
+        &quot;_seed_task_shaping_from_calibration&quot;,
+        &quot;enrich_result_task_shaping_telemetry&quot;,
+        &quot;_task_context_metrics&quot;,
+        &quot;_proper_tuning_module&quot;,
+        &quot;build_prompt_profiles&quot;,
+        &quot;build_prompt_improvement&quot;,
+        &quot;build_tune_analysis&quot;,
+        &quot;_unique_ordered&quot;,
+        &quot;_tune_task_payload&quot;,
+        &quot;seed_tune_task&quot;,
+        &quot;compact_active_plan&quot;,
+        &quot;sweep_completed_tasks&quot;,
+        &quot;_replace_plan_block&quot;,
+        &quot;_ensure_plan_entry&quot;,
+        &quot;_prune_empty_plan_entries&quot;,
+        &quot;_remove_task_section&quot;,
+        &quot;_replace_task_section&quot;,
+        &quot;_plan_entry_for_task&quot;,
+        &quot;add_task&quot;,
+        &quot;update_task&quot;,
+        &quot;remove_task&quot;,
+        &quot;render_initial_backlog&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;TaskNarrative&quot;,
+          &quot;fields&quot;: [
+            &quot;why&quot;,
+            &quot;evidence&quot;,
+            &quot;affected_paths&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;BacklogTask&quot;,
+          &quot;fields&quot;: [
+            &quot;payload&quot;,
+            &quot;narrative&quot;,
+            &quot;epic_title&quot;,
+            &quot;lane_id&quot;,
+            &quot;lane_title&quot;,
+            &quot;wave&quot;,
+            &quot;lane_order&quot;,
+            &quot;lane_position&quot;,
+            &quot;predecessor_ids&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;BacklogSnapshot&quot;,
+          &quot;fields&quot;: [
+            &quot;raw_text&quot;,
+            &quot;headers&quot;,
+            &quot;sections&quot;,
+            &quot;tasks&quot;,
+            &quot;plan&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;RuntimeArtifacts&quot;,
+          &quot;fields&quot;: [
+            &quot;backlog&quot;,
+            &quot;state&quot;,
+            &quot;events&quot;,
+            &quot;inbox&quot;,
+            &quot;results&quot;,
+            &quot;reconcile_report&quot;,
+            &quot;strict_validation&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;state_file&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.state&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/state.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;StoreError&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;now_iso&quot;,
+        &quot;default_state&quot;,
+        &quot;_normalized_optional_string&quot;,
+        &quot;_normalize_string_list&quot;,
+        &quot;_normalize_optional_object&quot;,
+        &quot;_normalize_positive_int&quot;,
+        &quot;_normalize_non_negative_int&quot;,
+        &quot;approval_is_satisfied&quot;,
+        &quot;claim_is_done&quot;,
+        &quot;normalize_approval_entry&quot;,
+        &quot;normalize_claim_entry&quot;,
+        &quot;normalize_event_row&quot;,
+        &quot;normalize_inbox_row&quot;,
+        &quot;normalize_task_result&quot;,
+        &quot;normalize_state&quot;,
+        &quot;load_state&quot;,
+        &quot;_lock_path&quot;,
+        &quot;locked_path&quot;,
+        &quot;atomic_write_text&quot;,
+        &quot;save_state&quot;,
+        &quot;locked_state&quot;,
+        &quot;claim_is_active&quot;,
+        &quot;append_jsonl&quot;,
+        &quot;load_jsonl&quot;,
+        &quot;append_event&quot;,
+        &quot;record_comment&quot;,
+        &quot;load_events&quot;,
+        &quot;send_message&quot;,
+        &quot;resolve_message&quot;,
+        &quot;load_inbox&quot;,
+        &quot;record_task_result&quot;,
+        &quot;load_task_results&quot;,
+        &quot;claim_task_entry&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;events_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;results_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;events_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;results_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog_core.snapshot&quot;,
+      &quot;path&quot;: &quot;src/blackdog_core/snapshot.py&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.backlog&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.scaffold&quot;,
+      &quot;path&quot;: &quot;src/blackdog/scaffold.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;ScaffoldError&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_run_command&quot;,
+        &quot;_default_blackdog_source&quot;,
+        &quot;_ensure_new_project_root&quot;,
+        &quot;_initialize_git_repo&quot;,
+        &quot;_ensure_runtime_dirs&quot;,
+        &quot;_profile_for_paths&quot;,
+        &quot;_ensure_baseline_agents_file&quot;,
+        &quot;scaffold_named_backlog&quot;,
+        &quot;remove_named_backlog&quot;,
+        &quot;reset_default_backlog&quot;,
+        &quot;scaffold_project&quot;,
+        &quot;bootstrap_project&quot;,
+        &quot;create_project&quot;,
+        &quot;refresh_project_skill&quot;,
+        &quot;render_project_html&quot;,
+        &quot;legacy_html_aliases&quot;,
+        &quot;_preferred_cli_command&quot;,
+        &quot;_host_skill_token&quot;,
+        &quot;_display_path&quot;,
+        &quot;_task_shaping_reference_text&quot;,
+        &quot;_blackdog_managed_hash&quot;,
+        &quot;_managed_skill_manifest_path&quot;,
+        &quot;_load_managed_skill_manifest&quot;,
+        &quot;_save_managed_skill_manifest&quot;,
+        &quot;_project_skill_bundle&quot;,
+        &quot;_write_managed_skill_bundle&quot;,
+        &quot;generate_project_skill&quot;,
+        &quot;refresh_project_scaffold&quot;,
+        &quot;update_project_repo&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.board&quot;,
+      &quot;path&quot;: &quot;src/blackdog/board.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.conversations&quot;,
+        &quot;blackdog.installs&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.snapshot&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;UIError&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_ui_stylesheet&quot;,
+        &quot;_parse_iso&quot;,
+        &quot;_duration_seconds&quot;,
+        &quot;_format_duration&quot;,
+        &quot;_pid_alive&quot;,
+        &quot;_artifact_href&quot;,
+        &quot;_run_git_capture&quot;,
+        &quot;_git_commit_metadata_row&quot;,
+        &quot;_git_commit_metadata_batch&quot;,
+        &quot;_git_branch_metadata_batch&quot;,
+        &quot;_github_repo_url&quot;,
+        &quot;_read_artifact_text&quot;,
+        &quot;_safe_markdown_href&quot;,
+        &quot;_render_markdown_inline&quot;,
+        &quot;_render_markdown_html&quot;,
+        &quot;_find_run_dir&quot;,
+        &quot;_best_thread_artifact&quot;,
+        &quot;_child_artifacts&quot;,
+        &quot;_direct_land_artifacts&quot;,
+        &quot;_empty_task_activity&quot;,
+        &quot;_latest_supervisor_check_at&quot;,
+        &quot;_latest_timestamp&quot;,
+        &quot;_build_task_activity&quot;,
+        &quot;_build_task_lifecycle&quot;,
+        &quot;_result_preview&quot;,
+        &quot;_build_result_index&quot;,
+        &quot;_build_task_run_artifacts&quot;,
+        &quot;_build_thread_snapshot_rows&quot;,
+        &quot;_build_unattended_tuning&quot;,
+        &quot;_title_label&quot;,
+        &quot;_text_label&quot;,
+        &quot;_count_label&quot;,
+        &quot;_short_commit&quot;,
+        &quot;_latest_task_with_timestamp&quot;,
+        &quot;_branch_summary&quot;,
+        &quot;_latest_run_summary&quot;,
+        &quot;_latest_event_at&quot;,
+        &quot;_duration_label&quot;,
+        &quot;_build_hero_highlights&quot;,
+        &quot;_actor_role&quot;,
+        &quot;_latest_activity&quot;,
+        &quot;_operator_status&quot;,
+        &quot;_landing_status_chip&quot;,
+        &quot;_dialog_status_chips&quot;,
+        &quot;_card_status_chips&quot;,
+        &quot;_activity_message&quot;,
+        &quot;_build_task_timeline&quot;,
+        &quot;_task_links&quot;,
+        &quot;_lane_task_positions&quot;,
+        &quot;_progress_for_task_rows&quot;,
+        &quot;_last_supervisor_sweep_completed_count&quot;,
+        &quot;_build_queue_status&quot;,
+        &quot;_build_objective_snapshot_rows&quot;,
+        &quot;build_board_snapshot&quot;,
+        &quot;_snapshot_json&quot;,
+        &quot;render_static_html&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;,
+        &quot;threads_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.worktree&quot;,
+      &quot;path&quot;: &quot;src/blackdog/worktree.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;WorktreeError&quot;,
+        &quot;DirtyPrimaryWorktreeError&quot;,
+        &quot;WorktreeSpec&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;normalize_workspace_mode&quot;,
+        &quot;normalize_worktree_model&quot;,
+        &quot;_run_git&quot;,
+        &quot;_run_git_no_check&quot;,
+        &quot;_run_git_stdout&quot;,
+        &quot;_repo_root&quot;,
+        &quot;_is_primary_worktree&quot;,
+        &quot;_is_within&quot;,
+        &quot;_parse_worktree_list&quot;,
+        &quot;find_primary_worktree&quot;,
+        &quot;_persist_landed_diff_artifacts&quot;,
+        &quot;_find_worktree_for_branch&quot;,
+        &quot;find_worktree_for_branch&quot;,
+        &quot;_status_entries&quot;,
+        &quot;_runtime_ignore_prefixes&quot;,
+        &quot;dirty_paths&quot;,
+        &quot;_status_dirty&quot;,
+        &quot;_workspace_role&quot;,
+        &quot;_landing_state&quot;,
+        &quot;worktree_contract&quot;,
+        &quot;_current_branch&quot;,
+        &quot;_task_for_id&quot;,
+        &quot;_task_slug&quot;,
+        &quot;default_task_branch&quot;,
+        &quot;task_id_for_branch&quot;,
+        &quot;default_task_worktree_path&quot;,
+        &quot;supervisor_task_branch&quot;,
+        &quot;supervisor_task_worktree_path&quot;,
+        &quot;_resolve_from_ref&quot;,
+        &quot;worktree_preflight&quot;,
+        &quot;primary_worktree_is_dirty&quot;,
+        &quot;primary_worktree_dirty_paths&quot;,
+        &quot;dirty_primary_worktree_error&quot;,
+        &quot;start_task_worktree&quot;,
+        &quot;land_branch&quot;,
+        &quot;branch_changed_paths&quot;,
+        &quot;working_tree_matches_ref&quot;,
+        &quot;commit_working_tree_paths&quot;,
+        &quot;stash_working_tree&quot;,
+        &quot;rebase_branch_onto_target&quot;,
+        &quot;branch_ahead_of_target&quot;,
+        &quot;cleanup_task_worktree&quot;,
+        &quot;render_preflight_text&quot;,
+        &quot;render_start_text&quot;,
+        &quot;render_land_text&quot;,
+        &quot;render_cleanup_text&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;WorktreeSpec&quot;,
+          &quot;fields&quot;: [
+            &quot;task_id&quot;,
+            &quot;task_title&quot;,
+            &quot;task_slug&quot;,
+            &quot;branch&quot;,
+            &quot;base_ref&quot;,
+            &quot;base_commit&quot;,
+            &quot;target_branch&quot;,
+            &quot;worktree_path&quot;,
+            &quot;primary_worktree&quot;,
+            &quot;current_worktree&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: [
+        &quot;results_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.supervisor&quot;,
+      &quot;path&quot;: &quot;src/blackdog/supervisor.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog.conversations&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor_policy&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [
+        &quot;SupervisorError&quot;,
+        &quot;ChildRun&quot;,
+        &quot;PreparedWorkspace&quot;
+      ],
+      &quot;functions&quot;: [
+        &quot;_normalize_supervisor_attempt_status&quot;,
+        &quot;_normalize_supervisor_attempt_final_task_status&quot;,
+        &quot;_attempt_status_from_final_task_status&quot;,
+        &quot;_normalize_supervisor_runtime_status&quot;,
+        &quot;_preferred_blackdog_command&quot;,
+        &quot;_build_child_protocol_helper&quot;,
+        &quot;_notify_supervisor&quot;,
+        &quot;_emit_render&quot;,
+        &quot;_supervisor_text&quot;,
+        &quot;render_supervisor_output&quot;,
+        &quot;_launch_settings_summary&quot;,
+        &quot;_supervisor_status_text&quot;,
+        &quot;render_supervisor_status_output&quot;,
+        &quot;render_supervisor_sweep_output&quot;,
+        &quot;_run_dir_for_id&quot;,
+        &quot;_load_supervisor_recovery_status_files&quot;,
+        &quot;_load_run_events&quot;,
+        &quot;_build_recovery_child_run&quot;,
+        &quot;_recovery_case_recommendations&quot;,
+        &quot;_build_supervisor_recovery_runs&quot;,
+        &quot;build_supervisor_recover_view&quot;,
+        &quot;render_supervisor_recover_output&quot;,
+        &quot;_artifact_payload_for_attempt&quot;,
+        &quot;_parse_attempt_metadata&quot;,
+        &quot;_attempt_payload_from_events&quot;,
+        &quot;_format_percent&quot;,
+        &quot;_blank_recovery_result_fields&quot;,
+        &quot;_index_supervisor_results&quot;,
+        &quot;_index_supervisor_results_by_task&quot;,
+        &quot;_attach_recovery_result_fields&quot;,
+        &quot;_recovery_needed_section&quot;,
+        &quot;_run_status_for_attempt&quot;,
+        &quot;_build_report_recovery_needed_cases&quot;,
+        &quot;build_supervisor_observation_view&quot;,
+        &quot;_observation_text&quot;,
+        &quot;render_supervisor_observation_output&quot;,
+        &quot;_land_branch_with_retry&quot;,
+        &quot;_mark_task_done&quot;,
+        &quot;_matching_dirty_primary_case&quot;,
+        &quot;_ensure_stash_followup_task&quot;,
+        &quot;_plan_prelaunch_recovery&quot;,
+        &quot;_run_prelaunch_recovery&quot;,
+        &quot;_select_tasks&quot;,
+        &quot;_load_synced_runtime&quot;,
+        &quot;_run_control_action&quot;,
+        &quot;_message_control_action&quot;,
+        &quot;_pid_alive&quot;,
+        &quot;_latest_run_status&quot;,
+        &quot;build_supervisor_status_view&quot;,
+        &quot;_write_run_status&quot;,
+        &quot;_mark_run_checked&quot;,
+        &quot;_claim_for_child&quot;,
+        &quot;_record_child_claim_process&quot;,
+        &quot;_scan_claim_process_liveness&quot;,
+        &quot;_release_if_still_claimed&quot;,
+        &quot;_complete_if_still_claimed&quot;,
+        &quot;_prepare_workspace&quot;,
+        &quot;_land_child_branch&quot;,
+        &quot;build_supervisor_launch_defaults_view&quot;,
+        &quot;_resolved_launch_command&quot;,
+        &quot;_resolved_launch_command_with_strategy&quot;,
+        &quot;_build_launch_command&quot;,
+        &quot;_preflight_launch_command&quot;,
+        &quot;_capture_child_diff_artifacts&quot;,
+        &quot;_attempt_land_child_worktree&quot;,
+        &quot;_finalize_child_run&quot;,
+        &quot;_wait_for_child_process&quot;,
+        &quot;_finish_child&quot;,
+        &quot;_next_run_tasks&quot;,
+        &quot;_launch_child_run&quot;,
+        &quot;_append_run_step&quot;,
+        &quot;run_supervisor&quot;,
+        &quot;run_supervisor_sweep&quot;
+      ],
+      &quot;dataclasses&quot;: [
+        {
+          &quot;name&quot;: &quot;ChildRun&quot;,
+          &quot;fields&quot;: [
+            &quot;task&quot;,
+            &quot;child_agent&quot;,
+            &quot;launch_command&quot;,
+            &quot;workspace&quot;,
+            &quot;workspace_mode&quot;,
+            &quot;run_dir&quot;,
+            &quot;prompt_file&quot;,
+            &quot;stdout_file&quot;,
+            &quot;stderr_file&quot;,
+            &quot;message_id&quot;,
+            &quot;result_files_before&quot;,
+            &quot;process&quot;,
+            &quot;stdout_handle&quot;,
+            &quot;stderr_handle&quot;,
+            &quot;started_at&quot;,
+            &quot;worktree_spec&quot;,
+            &quot;launch_error&quot;,
+            &quot;exit_code&quot;,
+            &quot;missing_process&quot;,
+            &quot;result_recorded&quot;,
+            &quot;final_task_status&quot;,
+            &quot;branch_ahead&quot;,
+            &quot;land_result&quot;,
+            &quot;landed&quot;,
+            &quot;land_error&quot;,
+            &quot;land_needs_user_input&quot;,
+            &quot;land_followup_candidates&quot;,
+            &quot;telemetry&quot;
+          ]
+        },
+        {
+          &quot;name&quot;: &quot;PreparedWorkspace&quot;,
+          &quot;fields&quot;: [
+            &quot;workspace&quot;,
+            &quot;worktree_spec&quot;
+          ]
+        }
+      ],
+      &quot;artifact_reads&quot;: [
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: [
+        &quot;state_file&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ]
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.conversations&quot;,
+      &quot;path&quot;: &quot;src/blackdog/conversations.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;_thread_dir&quot;,
+        &quot;_thread_file&quot;,
+        &quot;_thread_entries_file&quot;,
+        &quot;_new_thread_id&quot;,
+        &quot;_unique_thread_task_ids&quot;,
+        &quot;_normalize_thread_metadata&quot;,
+        &quot;_normalize_thread_entry&quot;,
+        &quot;_thread_preview&quot;,
+        &quot;_thread_summary&quot;,
+        &quot;load_thread&quot;,
+        &quot;list_threads&quot;,
+        &quot;create_thread&quot;,
+        &quot;append_thread_entry&quot;,
+        &quot;link_thread_task&quot;,
+        &quot;thread_ids_for_task&quot;,
+        &quot;_thread_result_body&quot;,
+        &quot;_thread_result_duration_seconds&quot;,
+        &quot;mirror_task_result_to_threads&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;threads_dir&quot;
+      ],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.tuning&quot;,
+      &quot;path&quot;: &quot;src/blackdog/tuning.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;_unique_ordered&quot;,
+        &quot;build_prompt_profiles&quot;,
+        &quot;build_prompt_improvement&quot;,
+        &quot;build_tune_analysis&quot;,
+        &quot;_tune_task_payload&quot;,
+        &quot;seed_tune_task&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [
+        &quot;backlog_file&quot;,
+        &quot;events_file&quot;,
+        &quot;html_file&quot;,
+        &quot;inbox_file&quot;,
+        &quot;profile_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;state_file&quot;
+      ],
+      &quot;artifact_writes&quot;: []
+    },
+    {
+      &quot;name&quot;: &quot;blackdog.installs&quot;,
+      &quot;path&quot;: &quot;src/blackdog/installs.py&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;is_package&quot;: false,
+      &quot;compatibility_shim&quot;: false,
+      &quot;imports&quot;: [
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;classes&quot;: [],
+      &quot;functions&quot;: [
+        &quot;tracked_installs_file&quot;,
+        &quot;default_tracked_installs&quot;,
+        &quot;normalize_tracked_installs&quot;,
+        &quot;load_tracked_installs&quot;,
+        &quot;save_tracked_installs&quot;
+      ],
+      &quot;dataclasses&quot;: [],
+      &quot;artifact_reads&quot;: [],
+      &quot;artifact_writes&quot;: []
+    }
+  ],
+  &quot;dataclasses&quot;: [
+    {
+      &quot;module&quot;: &quot;blackdog.architecture&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;name&quot;: &quot;DataclassFacts&quot;,
+      &quot;fields&quot;: [
+        &quot;name&quot;,
+        &quot;fields&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog.architecture&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;name&quot;: &quot;ModuleFacts&quot;,
+      &quot;fields&quot;: [
+        &quot;name&quot;,
+        &quot;path&quot;,
+        &quot;layer&quot;,
+        &quot;is_package&quot;,
+        &quot;compatibility_shim&quot;,
+        &quot;imports&quot;,
+        &quot;classes&quot;,
+        &quot;functions&quot;,
+        &quot;dataclasses&quot;,
+        &quot;artifact_reads&quot;,
+        &quot;artifact_writes&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog.supervisor&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;name&quot;: &quot;ChildRun&quot;,
+      &quot;fields&quot;: [
+        &quot;task&quot;,
+        &quot;child_agent&quot;,
+        &quot;launch_command&quot;,
+        &quot;workspace&quot;,
+        &quot;workspace_mode&quot;,
+        &quot;run_dir&quot;,
+        &quot;prompt_file&quot;,
+        &quot;stdout_file&quot;,
+        &quot;stderr_file&quot;,
+        &quot;message_id&quot;,
+        &quot;result_files_before&quot;,
+        &quot;process&quot;,
+        &quot;stdout_handle&quot;,
+        &quot;stderr_handle&quot;,
+        &quot;started_at&quot;,
+        &quot;worktree_spec&quot;,
+        &quot;launch_error&quot;,
+        &quot;exit_code&quot;,
+        &quot;missing_process&quot;,
+        &quot;result_recorded&quot;,
+        &quot;final_task_status&quot;,
+        &quot;branch_ahead&quot;,
+        &quot;land_result&quot;,
+        &quot;landed&quot;,
+        &quot;land_error&quot;,
+        &quot;land_needs_user_input&quot;,
+        &quot;land_followup_candidates&quot;,
+        &quot;telemetry&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog.supervisor&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;name&quot;: &quot;PreparedWorkspace&quot;,
+      &quot;fields&quot;: [
+        &quot;workspace&quot;,
+        &quot;worktree_spec&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog.worktree&quot;,
+      &quot;layer&quot;: &quot;blackdog&quot;,
+      &quot;name&quot;: &quot;WorktreeSpec&quot;,
+      &quot;fields&quot;: [
+        &quot;task_id&quot;,
+        &quot;task_title&quot;,
+        &quot;task_slug&quot;,
+        &quot;branch&quot;,
+        &quot;base_ref&quot;,
+        &quot;base_commit&quot;,
+        &quot;target_branch&quot;,
+        &quot;worktree_path&quot;,
+        &quot;primary_worktree&quot;,
+        &quot;current_worktree&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog_core.backlog&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;name&quot;: &quot;TaskNarrative&quot;,
+      &quot;fields&quot;: [
+        &quot;why&quot;,
+        &quot;evidence&quot;,
+        &quot;affected_paths&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog_core.backlog&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;name&quot;: &quot;BacklogTask&quot;,
+      &quot;fields&quot;: [
+        &quot;payload&quot;,
+        &quot;narrative&quot;,
+        &quot;epic_title&quot;,
+        &quot;lane_id&quot;,
+        &quot;lane_title&quot;,
+        &quot;wave&quot;,
+        &quot;lane_order&quot;,
+        &quot;lane_position&quot;,
+        &quot;predecessor_ids&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog_core.backlog&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;name&quot;: &quot;BacklogSnapshot&quot;,
+      &quot;fields&quot;: [
+        &quot;raw_text&quot;,
+        &quot;headers&quot;,
+        &quot;sections&quot;,
+        &quot;tasks&quot;,
+        &quot;plan&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog_core.backlog&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;name&quot;: &quot;RuntimeArtifacts&quot;,
+      &quot;fields&quot;: [
+        &quot;backlog&quot;,
+        &quot;state&quot;,
+        &quot;events&quot;,
+        &quot;inbox&quot;,
+        &quot;results&quot;,
+        &quot;reconcile_report&quot;,
+        &quot;strict_validation&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog_core.profile&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;name&quot;: &quot;BlackdogPaths&quot;,
+      &quot;fields&quot;: [
+        &quot;project_root&quot;,
+        &quot;profile_file&quot;,
+        &quot;control_dir&quot;,
+        &quot;backlog_dir&quot;,
+        &quot;backlog_file&quot;,
+        &quot;state_file&quot;,
+        &quot;events_file&quot;,
+        &quot;results_dir&quot;,
+        &quot;threads_dir&quot;,
+        &quot;inbox_file&quot;,
+        &quot;html_file&quot;,
+        &quot;skill_dir&quot;,
+        &quot;worktrees_dir&quot;,
+        &quot;supervisor_runs_dir&quot;
+      ]
+    },
+    {
+      &quot;module&quot;: &quot;blackdog_core.profile&quot;,
+      &quot;layer&quot;: &quot;blackdog_core&quot;,
+      &quot;name&quot;: &quot;RepoProfile&quot;,
+      &quot;fields&quot;: [
+        &quot;project_name&quot;,
+        &quot;profile_version&quot;,
+        &quot;id_prefix&quot;,
+        &quot;id_digest_length&quot;,
+        &quot;require_claim_for_completion&quot;,
+        &quot;auto_render_html&quot;,
+        &quot;buckets&quot;,
+        &quot;domains&quot;,
+        &quot;validation_commands&quot;,
+        &quot;doc_routing_defaults&quot;,
+        &quot;supervisor_launch_command&quot;,
+        &quot;supervisor_model&quot;,
+        &quot;supervisor_reasoning_effort&quot;,
+        &quot;supervisor_dynamic_reasoning&quot;,
+        &quot;supervisor_max_parallel&quot;,
+        &quot;supervisor_workspace_mode&quot;,
+        &quot;pm_heuristics&quot;,
+        &quot;paths&quot;
+      ]
+    }
+  ],
+  &quot;artifacts&quot;: [
+    {
+      &quot;field&quot;: &quot;profile_file&quot;,
+      &quot;label&quot;: &quot;blackdog.toml&quot;,
+      &quot;surface&quot;: &quot;repo contract&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.profile&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog_cli.main&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;backlog_file&quot;,
+      &quot;label&quot;: &quot;backlog.md&quot;,
+      &quot;surface&quot;: &quot;runtime contract&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog_core.backlog&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;state_file&quot;,
+      &quot;label&quot;: &quot;backlog-state.json&quot;,
+      &quot;surface&quot;: &quot;runtime contract&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;events_file&quot;,
+      &quot;label&quot;: &quot;events.jsonl&quot;,
+      &quot;surface&quot;: &quot;runtime contract&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog_core.state&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;inbox_file&quot;,
+      &quot;label&quot;: &quot;inbox.jsonl&quot;,
+      &quot;surface&quot;: &quot;runtime contract&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog_core.state&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;results_dir&quot;,
+      &quot;label&quot;: &quot;task-results/&quot;,
+      &quot;surface&quot;: &quot;runtime contract&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;,
+        &quot;blackdog_core.state&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.worktree&quot;,
+        &quot;blackdog_core.profile&quot;,
+        &quot;blackdog_core.state&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;threads_dir&quot;,
+      &quot;label&quot;: &quot;threads/&quot;,
+      &quot;surface&quot;: &quot;blackdog product&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.conversations&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog_core.profile&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;html_file&quot;,
+      &quot;label&quot;: &quot;&lt;project&gt;-backlog.html&quot;,
+      &quot;surface&quot;: &quot;blackdog product&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.tuning&quot;,
+        &quot;blackdog_cli.main&quot;,
+        &quot;blackdog_core.backlog&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;
+      ]
+    },
+    {
+      &quot;field&quot;: &quot;supervisor_runs_dir&quot;,
+      &quot;label&quot;: &quot;supervisor-runs/&quot;,
+      &quot;surface&quot;: &quot;blackdog product&quot;,
+      &quot;readers&quot;: [
+        &quot;blackdog.board&quot;,
+        &quot;blackdog.supervisor&quot;
+      ],
+      &quot;writers&quot;: [
+        &quot;blackdog.scaffold&quot;,
+        &quot;blackdog.supervisor&quot;,
+        &quot;blackdog_core.profile&quot;
+      ]
+    }
+  ],
+  &quot;command_surfaces&quot;: {
+    &quot;create-project&quot;: &quot;blackdog&quot;,
+    &quot;bootstrap&quot;: &quot;blackdog&quot;,
+    &quot;refresh&quot;: &quot;blackdog&quot;,
+    &quot;update-repo&quot;: &quot;blackdog&quot;,
+    &quot;installs&quot;: &quot;blackdog&quot;,
+    &quot;installs add&quot;: &quot;blackdog&quot;,
+    &quot;installs list&quot;: &quot;blackdog&quot;,
+    &quot;installs remove&quot;: &quot;blackdog&quot;,
+    &quot;installs update&quot;: &quot;blackdog&quot;,
+    &quot;installs observe&quot;: &quot;blackdog&quot;,
+    &quot;init&quot;: &quot;blackdog_core&quot;,
+    &quot;backlog&quot;: &quot;blackdog_core&quot;,
+    &quot;backlog new&quot;: &quot;blackdog_core&quot;,
+    &quot;backlog remove&quot;: &quot;blackdog_core&quot;,
+    &quot;backlog reset&quot;: &quot;blackdog_core&quot;,
+    &quot;validate&quot;: &quot;blackdog_core&quot;,
+    &quot;add&quot;: &quot;blackdog_core&quot;,
+    &quot;remove&quot;: &quot;blackdog_core&quot;,
+    &quot;task&quot;: &quot;blackdog&quot;,
+    &quot;task edit&quot;: &quot;blackdog&quot;,
+    &quot;task run&quot;: &quot;blackdog&quot;,
+    &quot;summary&quot;: &quot;blackdog_core&quot;,
+    &quot;plan&quot;: &quot;blackdog_core&quot;,
+    &quot;next&quot;: &quot;blackdog_core&quot;,
+    &quot;snapshot&quot;: &quot;blackdog&quot;,
+    &quot;prompt&quot;: &quot;blackdog&quot;,
+    &quot;thread&quot;: &quot;blackdog&quot;,
+    &quot;thread new&quot;: &quot;blackdog&quot;,
+    &quot;thread list&quot;: &quot;blackdog&quot;,
+    &quot;thread show&quot;: &quot;blackdog&quot;,
+    &quot;thread append&quot;: &quot;blackdog&quot;,
+    &quot;thread prompt&quot;: &quot;blackdog&quot;,
+    &quot;thread task&quot;: &quot;blackdog&quot;,
+    &quot;tune&quot;: &quot;blackdog&quot;,
+    &quot;worktree&quot;: &quot;blackdog&quot;,
+    &quot;worktree preflight&quot;: &quot;blackdog_core&quot;,
+    &quot;worktree start&quot;: &quot;blackdog&quot;,
+    &quot;worktree land&quot;: &quot;blackdog&quot;,
+    &quot;worktree cleanup&quot;: &quot;blackdog&quot;,
+    &quot;supervise&quot;: &quot;blackdog&quot;,
+    &quot;supervise run&quot;: &quot;blackdog&quot;,
+    &quot;supervise sweep&quot;: &quot;blackdog&quot;,
+    &quot;supervise status&quot;: &quot;blackdog&quot;,
+    &quot;supervise recover&quot;: &quot;blackdog&quot;,
+    &quot;supervise report&quot;: &quot;blackdog&quot;,
+    &quot;claim&quot;: &quot;blackdog_core&quot;,
+    &quot;release&quot;: &quot;blackdog_core&quot;,
+    &quot;complete&quot;: &quot;blackdog_core&quot;,
+    &quot;decide&quot;: &quot;blackdog_core&quot;,
+    &quot;comment&quot;: &quot;blackdog_core&quot;,
+    &quot;events&quot;: &quot;blackdog_core&quot;,
+    &quot;render&quot;: &quot;blackdog&quot;,
+    &quot;result&quot;: &quot;blackdog_core&quot;,
+    &quot;result record&quot;: &quot;blackdog_core&quot;,
+    &quot;coverage&quot;: &quot;blackdog&quot;,
+    &quot;architecture-docs&quot;: &quot;blackdog&quot;,
+    &quot;inbox&quot;: &quot;blackdog&quot;,
+    &quot;inbox send&quot;: &quot;blackdog&quot;,
+    &quot;inbox list&quot;: &quot;blackdog&quot;,
+    &quot;inbox resolve&quot;: &quot;blackdog&quot;
+  },
+  &quot;commands_by_package&quot;: {
+    &quot;blackdog&quot;: [
+      &quot;architecture-docs&quot;,
+      &quot;bootstrap&quot;,
+      &quot;coverage&quot;,
+      &quot;create-project&quot;,
+      &quot;inbox&quot;,
+      &quot;inbox list&quot;,
+      &quot;inbox resolve&quot;,
+      &quot;inbox send&quot;,
+      &quot;installs&quot;,
+      &quot;installs add&quot;,
+      &quot;installs list&quot;,
+      &quot;installs observe&quot;,
+      &quot;installs remove&quot;,
+      &quot;installs update&quot;,
+      &quot;prompt&quot;,
+      &quot;refresh&quot;,
+      &quot;render&quot;,
+      &quot;snapshot&quot;,
+      &quot;supervise&quot;,
+      &quot;supervise recover&quot;,
+      &quot;supervise report&quot;,
+      &quot;supervise run&quot;,
+      &quot;supervise status&quot;,
+      &quot;supervise sweep&quot;,
+      &quot;task&quot;,
+      &quot;task edit&quot;,
+      &quot;task run&quot;,
+      &quot;thread&quot;,
+      &quot;thread append&quot;,
+      &quot;thread list&quot;,
+      &quot;thread new&quot;,
+      &quot;thread prompt&quot;,
+      &quot;thread show&quot;,
+      &quot;thread task&quot;,
+      &quot;tune&quot;,
+      &quot;update-repo&quot;,
+      &quot;worktree&quot;,
+      &quot;worktree cleanup&quot;,
+      &quot;worktree land&quot;,
+      &quot;worktree start&quot;
+    ],
+    &quot;blackdog_core&quot;: [
+      &quot;add&quot;,
+      &quot;backlog&quot;,
+      &quot;backlog new&quot;,
+      &quot;backlog remove&quot;,
+      &quot;backlog reset&quot;,
+      &quot;claim&quot;,
+      &quot;comment&quot;,
+      &quot;complete&quot;,
+      &quot;decide&quot;,
+      &quot;events&quot;,
+      &quot;init&quot;,
+      &quot;next&quot;,
+      &quot;plan&quot;,
+      &quot;release&quot;,
+      &quot;remove&quot;,
+      &quot;result&quot;,
+      &quot;result record&quot;,
+      &quot;summary&quot;,
+      &quot;validate&quot;,
+      &quot;worktree preflight&quot;
+    ]
+  },
+  &quot;compatibility_modules&quot;: [
+    {
+      &quot;module&quot;: &quot;blackdog.architecture&quot;,
+      &quot;path&quot;: &quot;src/blackdog/architecture.py&quot;,
+      &quot;target&quot;: &quot;&quot;
+    }
+  ],
+  &quot;extensions&quot;: [
+    {
+      &quot;name&quot;: &quot;extensions/emacs&quot;,
+      &quot;surface&quot;: &quot;extensions&quot;,
+      &quot;files&quot;: 23,
+      &quot;description&quot;: &quot;Editor extension surface that consumes documented CLI and artifact contracts.&quot;
+    }
+  ]
+}</pre>
+      </details>
+    </section>
+  </main>
+</body>
+</html>
