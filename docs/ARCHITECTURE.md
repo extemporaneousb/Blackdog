@@ -20,12 +20,12 @@ reference. Keep those details in:
 - [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the frozen extraction
   charter
 
-For a code-derived visual companion, open
+For a code-derived maintainer companion, open
 [docs/architecture-diagrams.html](docs/architecture-diagrams.html).
 That page is generated from the checked-out Python sources by
 `blackdog architecture-docs` and is intended to make the current module
-map, runtime artifact surface, event flow, and actor/worktree contract
-easier to scan than prose alone.
+guide, runtime artifact surface, canonical backlog workflows, and full
+CLI command tree easier to scan than prose alone.
 
 ## System shape
 

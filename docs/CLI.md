@@ -134,8 +134,9 @@ blackdog installs observe --all
 with the stdlib `ast` module, emits a structured JSON report when
 `--format json` is requested, and by default renders a self-contained
 HTML page at `docs/architecture-diagrams.html`. The generated page
-includes inline SVG diagrams for the current package/module map, runtime
-artifact surfaces, event-handling flow, and actor/worktree flow so the
+includes a maintainer-oriented overview of the current package
+relationships, canonical backlog workflows, runtime artifact ownership,
+module/class summaries, and the full CLI command inventory so the
 human-facing architecture view stays tied to the code instead of
 drifting into a prose-only sketch.
 

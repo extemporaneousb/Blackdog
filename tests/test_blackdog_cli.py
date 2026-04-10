@@ -1520,12 +1520,16 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(Path(payload["output"]).resolve(), output.resolve())
         self.assertTrue(output.exists())
         html = output.read_text(encoding="utf-8")
-        self.assertIn("Layered Module Map", html)
-        self.assertIn("Runtime Artifacts And Data Structures", html)
-        self.assertIn("Actor And Worktree Flow", html)
+        self.assertIn("Blackdog Maintainer Overview", html)
+        self.assertIn("Canonical Workflows", html)
+        self.assertIn("Runtime Artifacts That Matter", html)
+        self.assertIn("Module And Class Guide", html)
+        self.assertIn("CLI Command Inventory", html)
         self.assertIn("<svg", html)
         self.assertIn("blackdog_cli.main", html)
-        self.assertIn("BlackdogPaths / RepoProfile", html)
+        self.assertIn("BlackdogPaths", html)
+        self.assertIn("worktree preflight", html)
+        self.assertIn("Shape And Prioritize Work", html)
 
     def test_architecture_docs_command_emits_json_report(self) -> None:
         result = subprocess.run(
@@ -1549,8 +1553,11 @@ class BlackdogCliTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["schema_version"], 1)
         self.assertGreater(payload["summary"]["module_count"], 0)
+        self.assertGreater(payload["summary"]["class_count"], 0)
         self.assertIn("blackdog_cli.main", {row["name"] for row in payload["modules"]})
         self.assertIn("architecture-docs", payload["commands_by_package"]["blackdog"])
+        self.assertIn("worktree preflight", {row["command"] for row in payload["cli_inventory"]})
+        self.assertIn("blackdog_core.profile", {row["module"] for row in payload["read_order"]})
 
     def test_command_surface_inventory_freezes_current_layer_split(self) -> None:
         self.assertEqual(COMMAND_SURFACES["worktree"], "blackdog")
