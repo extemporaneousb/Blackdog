@@ -94,6 +94,9 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertIn("`TaskAttempt`", target_model)
         self.assertIn("`PromptReceipt`", target_model)
         self.assertIn("runtime kernel", target_model)
+        self.assertIn("## Terms of Art", target_model)
+        self.assertIn("Model Context Protocol", target_model)
+        self.assertIn("durable execution", target_model)
 
         skill = (cli_tests.ROOT / ".codex" / "skills" / "blackdog" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("`docs/TARGET_MODEL.md`", skill)

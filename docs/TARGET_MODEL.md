@@ -73,6 +73,321 @@ Any redesign should preserve these properties:
 - inspectable lineage from request to landed commit
 - resumable, takeover-safe execution after failures or interruptions
 
+## Terms of Art
+
+This section deliberately introduces a shared lexicon. Most of these terms are used across agent systems, workflow engines, or MCP servers, but Blackdog should define them explicitly rather than assuming everyone means the same thing.
+
+| Term | Meaning in this document | Why it matters for Blackdog |
+| --- | --- | --- |
+| runtime kernel | The boring, durable coordination layer that owns canonical state and execution semantics. | This is the better maintainer-facing name for what `blackdog_core` is trying to be. |
+| control plane | The layer that decides what should run, who owns it, what it is waiting on, and how it is steered. | Blackdog needs a clearer control plane for planning, claims, takeovers, and waits. |
+| data plane | The layer that actually executes work: shell commands, edits, tests, tool calls, and land operations. | WTAM, tool calls, and child-agent execution belong here. |
+| repo map | A compact structural summary of the codebase, usually focused on files, symbols, and relationships. | Useful for bootstrap minimization and low-token code orientation. |
+| trajectory | A step-by-step record of an agent run, usually including prompts, actions, and observations. | Blackdog should treat `TaskAttempt` as the durable, task-shaped analogue of a trajectory. |
+| prompt receipt | The normalized prompt packet actually sent to the model, including injected docs, templates, and shaping. | This is the missing artifact for prompt/result lineage. |
+| handoff | A transfer of responsibility from one agent or process to another. | Blackdog needs explicit handoff and takeover semantics rather than conversational inference. |
+| agent runtime | The execution environment that manages agent identity, lifecycle, communication, and monitoring. | Blackdog increasingly needs one for supervisors and background runs. |
+| topic/subscription | Pub-sub addressing where messages are published to topics and delivered according to subscriptions. | Useful language for typed control messages, watchers, and multi-agent routing. |
+| durable execution | A run model in which state is checkpointed so work can pause and resume without losing progress. | This is the clearest external name for the wait/watch/recovery behavior Blackdog wants. |
+| checkpointer | A persistence component that records resumable execution state. | Blackdog needs something morally equivalent for runs and waits. |
+| interrupt | A deliberate pause point that saves state and waits for external input before resuming. | This is a useful term for approval gates, human review, and takeover points. |
+| idempotency | The property that retrying an operation has the same effect as doing it once. | Essential for cleanup, retries, landed-state reconciliation, and resumed waits. |
+| provenance | Where a piece of information or work came from. | Blackdog needs provenance for prompts, tool calls, results, and landed commits. |
+| lineage | The chain linking task, attempt, prompt, workspace, branch, result, and commit. | This is the audit trail Blackdog currently only approximates. |
+| roots | In MCP, the filesystem boundaries a client exposes to a server. | Important if Blackdog becomes an MCP server or client around worktrees. |
+| host / client / server | In MCP, the host owns user/session policy, clients maintain server connections, and servers expose resources, prompts, tools, and tasks. | Blackdog should be precise about which role it is playing in a given deployment. |
+
+## Comparative Landscape
+
+This comparison is based on primary documentation reviewed on April 10, 2026. The point is not to imitate any one system wholesale. The point is to name the patterns that already exist in adjacent tools so Blackdog can adopt the right terms and primitives.
+
+### Repo-native coding agents
+
+#### Aider
+
+[Aider](https://aider.chat/docs/) is a git-native coding assistant optimized for same-repo editing. Its strongest ideas are:
+
+- tight git integration: it commits edits automatically, offers `/undo`, and isolates preexisting dirty changes before it edits
+- a `repo map`, which is a compact symbol-level summary of the repository sent with each request
+- explicit chat modes, including an `architect` mode that separates planning from final editing
+
+The key lesson from Aider is that code orientation and git hygiene are first-class product features, not secondary conveniences. Blackdog should borrow the emphasis on repo maps, commit-linked editing, and protecting dirty local work. Blackdog should not stop there, because Aider is still primarily a single-session coding assistant rather than a durable multi-agent coordination system.
+
+#### OpenHands
+
+[OpenHands](https://docs.openhands.dev/) emphasizes an explicit runtime with an action/observation loop. Its runtime architecture uses a client-server pattern where the backend sends actions into a sandboxed runtime and receives observations back. It also pushes repo-specific guidance into project skills that are loaded progressively to conserve context, and it can extend itself through MCP tool servers.
+
+The useful lesson from OpenHands is that runtime mediation matters. Actions, observations, sandboxes, and on-demand skills are cleaner concepts than one giant prompt. Blackdog should borrow the idea of progressive disclosure for repo guidance and the clearer split between orchestration and execution environments.
+
+#### mini-SWE-agent and the SWE-agent lineage
+
+[mini-SWE-agent](https://mini-swe-agent.com/latest/) and [SWE-agent](https://swe-agent.com/latest/) are especially relevant for terminology. They treat the `trajectory` as the main artifact of a run, provide inspectors for browsing those trajectories, and make human control modes explicit. mini-SWE-agent intentionally keeps a completely linear history and exposes `confirm`, `yolo`, and `human` modes for the same run.
+
+The lesson here is not that Blackdog should copy a bash-only agent. The lesson is that runs need inspectable histories and explicit human-control states. Blackdog should adopt the clarity of `trajectory`, `inspector`, and mode-switching language, then specialize it around task-aware attempts, worktrees, and landing semantics.
+
+### Multi-agent runtimes
+
+#### AutoGen
+
+[AutoGen](https://microsoft.github.io/autogen/) is one of the clearest examples of an explicit multi-agent runtime. It distinguishes agents from the runtime that manages them, creates agents on demand, routes messages by type, and uses topics and subscriptions as a pub-sub layer. Its higher-level `Teams`, `GroupChat`, `Swarm`, and `HandoffMessage` abstractions show different orchestration styles on top of the same lower-level runtime.
+
+The strongest lesson for Blackdog is that a multi-agent system gets easier to reason about once message protocol, lifecycle, identity, and subscription semantics are explicit. Blackdog should borrow:
+
+- runtime-managed agent lifecycle instead of ad hoc conversational ownership
+- typed message protocols
+- handoff as a first-class operation
+- topic/subscription vocabulary for routing and monitoring
+
+What Blackdog should not borrow is the assumption that a shared chat thread is enough to model repo work. Blackdog still needs task, attempt, branch, and commit identity that general chat runtimes do not provide.
+
+### Durable agent workflow systems
+
+#### LangGraph
+
+[LangGraph](https://docs.langchain.com/oss/javascript/langgraph/) contributes the clearest public vocabulary around `durable execution`, `checkpointers`, `thread identifiers`, and `interrupts`. Its model is explicit: save workflow state, resume with the same thread ID, and ensure replay is deterministic and side effects are isolated or idempotent.
+
+This is directly relevant to Blackdog’s wait/watch ambitions. Blackdog should borrow:
+
+- the idea that a run has a durable identity distinct from any single prompt turn
+- explicit pause/resume points
+- a checkpointing mindset
+- the rule that retries and resumption must be idempotent
+
+The important distinction is that LangGraph is a general workflow system. It does not know what a worktree, landing gate, or branch-backed attempt is. Blackdog would still need its own repo-specific semantics layered on top.
+
+#### Temporal
+
+[Temporal](https://docs.temporal.io/) is not an agent framework, but it is one of the clearest references for long-running reliable orchestration. The relevant lesson is durable workflows as infrastructure: state survives crashes, networks fail without losing the logical run, and waiting is a runtime primitive rather than an application afterthought.
+
+Blackdog should take the lesson, not the entire platform shape. In particular:
+
+- waits should be durable, not conversational
+- cleanup and retries should be designed for replay
+- status should be queryable independently of whether a terminal session is still open
+
+### Protocol and integration standards
+
+#### Model Context Protocol (MCP)
+
+[MCP](https://modelcontextprotocol.io/specification/2024-11-05/index) is not a backlog system, a workflow engine, or a supervisor. It is a protocol for letting AI hosts connect to external servers that expose `resources`, `prompts`, `tools`, and now experimental `tasks`. It standardizes host/client/server roles, capability negotiation, roots, and transport rather than repo-specific execution policy.
+
+That distinction matters. MCP can be an excellent integration boundary for Blackdog, but it does not replace Blackdog’s internal runtime model. The right lesson is:
+
+- use MCP to expose or consume capabilities cleanly
+- do not confuse protocol primitives with product semantics
+- map Blackdog concepts onto MCP deliberately instead of leaking raw files and ad hoc commands
+
+## What Similar Systems Suggest
+
+Looking across these tools, a few patterns show up repeatedly.
+
+### 1. Structural code context matters
+
+Aider’s repo map and OpenHands’ on-demand skills both solve the same problem: startup context is expensive. Systems that orient the agent structurally rather than narratively tend to bootstrap faster and waste fewer tokens.
+
+Implication for Blackdog:
+
+- add a lightweight repo map or internal API map as a first-class artifact
+- keep large repo guidance progressively loadable rather than always inlining it
+
+### 2. Execution histories need a canonical artifact
+
+mini-SWE-agent, SWE-agent, and LangGraph all treat execution history as a first-class inspectable thing rather than a side effect of logs. They use terms like trajectory, thread, checkpoint, and interrupt because those give operators something concrete to inspect and resume.
+
+Implication for Blackdog:
+
+- `TaskAttempt` should become the canonical execution-history object
+- attempts should be inspectable independently of chat transcripts
+- prompt receipts, tool calls, waits, and final results should all hang off the attempt
+
+### 3. Multi-agent systems work better with explicit routing
+
+AutoGen’s topics, subscriptions, and handoffs show that complex collaboration becomes easier to control once routing rules are explicit rather than implicit in shared chat history.
+
+Implication for Blackdog:
+
+- typed control messages should replace today’s mostly freeform inbox
+- watchers, supervisors, and takeovers should have explicit routing scope
+- worksets could become the Blackdog equivalent of routing domains
+
+### 4. Durable waiting is its own feature
+
+LangGraph and Temporal both make the same point: if a system needs to pause and resume reliably, waiting must be represented in the runtime model.
+
+Implication for Blackdog:
+
+- `WaitCondition` should be first-class
+- the system should survive terminal exits and process restarts without losing the logical run
+- approval, clean-primary gating, landing readiness, and child completion should all be modeled as durable waits
+
+### 5. Protocols are not products
+
+MCP is valuable because it standardizes exposure and access, not because it defines a repo-development workflow.
+
+Implication for Blackdog:
+
+- MCP can be the integration surface
+- Blackdog still needs its own object model for tasks, attempts, worksets, results, and WTAM
+
+## Research-Informed Adjustments to the Target Model
+
+The comparison above suggests a few concrete refinements to Blackdog’s target language.
+
+- `TaskAttempt` should be described as Blackdog’s task-shaped trajectory artifact.
+- `Run` should be described as a durable execution thread over a workset, not just a supervisor invocation.
+- `Workset` should be treated as both a planning scope and a routing scope.
+- `PromptReceipt` should include the repo-map or code-summary artifacts the agent actually saw.
+- `WaitCondition` should be designed as an interruptible durable wait, not just a poll loop.
+- A future Blackdog inspector should browse attempts, waits, related messages, and results the way trajectory inspectors browse runs in SWE-agent-style systems.
+
+## MCP and Server Direction
+
+MCP is relevant to Blackdog in three different roles.
+
+### Blackdog as an MCP server
+
+If Blackdog exposes itself over MCP, the natural mapping is:
+
+- `resources`: readonly state such as backlog snapshots, task summaries, attempt history, run status, runtime snapshots, and generated architecture or plan views
+- `prompts`: reusable kickoff, handoff, review, recovery, and replanning templates
+- `tools`: state-changing operations such as create task, revise task, claim, release, start attempt, record result, request takeover, or render status
+
+This would let IDEs and chat hosts use Blackdog without importing private Python modules or hand-editing the control-root files.
+
+### Blackdog as an MCP client or host-side integrator
+
+Blackdog should also be able to consume other MCP servers. This is especially useful for:
+
+- syncing or shaping work from GitHub, Jira, Linear, or docs systems
+- attaching external resources to tasks without embedding proprietary APIs into Blackdog itself
+- bringing external evidence into prompt receipts and results
+
+In that model, Blackdog remains the repo-specific runtime kernel while MCP servers provide external context and actions.
+
+### Blackdog as a long-lived server process
+
+Separately from MCP, Blackdog may want its own daemon or service process. That process would own:
+
+- durable waits
+- notifications and subscriptions
+- retry and reconciliation loops
+- long-lived run state
+- cleanup sweeps
+
+If Blackdog grows such a service, MCP should sit in front of it as a standard protocol facade rather than replacing the underlying runtime. Put differently: MCP is a good boundary protocol, but the Blackdog daemon would still be the coordination authority.
+
+## How a Blackdog MCP Server Could Look
+
+If we built a Blackdog MCP server, the first version should stay conservative.
+
+### Recommended readonly resources
+
+- `blackdog://summary`
+- `blackdog://tasks/{task_id}`
+- `blackdog://attempts/{attempt_id}`
+- `blackdog://runs/{run_id}`
+- `blackdog://runtime-snapshot`
+- `blackdog://docs/target-model`
+
+### Recommended prompts
+
+- `task-kickoff`
+- `task-handoff`
+- `task-recovery`
+- `plan-review`
+- `wtam-preflight-explainer`
+
+### Recommended write tools
+
+- `create_task`
+- `revise_task`
+- `claim_task`
+- `release_task`
+- `start_attempt`
+- `record_result`
+- `complete_task`
+- `takeover_attempt`
+- `status_doctor`
+
+The server should not initially expose every possible write path. WTAM-sensitive operations such as `worktree start`, `land`, and `cleanup` should be exposed only once authorization, safety prompts, and reconciliation behavior are strong enough.
+
+## MCP-Specific Terms Blackdog Should Use Carefully
+
+When Blackdog talks about MCP, it should use MCP’s terms precisely.
+
+- `host`: the app that owns the user session and policy boundary
+- `client`: the host-managed connection to one MCP server
+- `server`: the process exposing resources, prompts, tools, or tasks
+- `roots`: the filesystem boundaries the client exposes to the server
+- `tools`: model-callable actions
+- `resources`: retrievable context objects
+- `prompts`: server-defined prompt templates or workflows
+- `tasks`: experimental request augmentations for deferred result retrieval
+
+Blackdog should not call its own backlog tasks “MCP tasks” unless it is specifically talking about task-augmented MCP requests. Those are different concepts.
+
+## What MCP Adds, and What It Does Not
+
+MCP adds:
+
+- a standard way to expose Blackdog to external clients
+- capability negotiation
+- transport choices such as stdio and Streamable HTTP
+- roots for filesystem scoping
+- a standard auth path for remote deployment
+- experimental protocol support for deferred tasks and cancellation
+
+MCP does not add:
+
+- Blackdog’s task semantics
+- worktree policy
+- git landing rules
+- prompt/result lineage
+- plan graph semantics
+- repo-specific reliability guarantees
+
+That is why Blackdog should treat MCP as an integration plane rather than its internal object model.
+
+## Server Deployment Considerations
+
+If Blackdog grows beyond the current shared-file runtime into a service, the relevant architecture questions become clearer in MCP terms.
+
+### Local-first server mode
+
+The smallest useful server mode is still local:
+
+- a stdio or local HTTP process
+- rooted to the current repo and worktree set
+- reading and writing the existing shared control-root artifacts
+- serving readonly resources and a small write-tool surface
+
+This is the safest first step because it preserves the current file contract while adding a cleaner client boundary.
+
+### Remote or team server mode
+
+A more ambitious mode is a shared Blackdog service:
+
+- streamable HTTP transport
+- authenticated clients
+- stronger tenancy and namespace boundaries
+- server-owned waiting, notification, and reconciliation loops
+- background automations that operate even when no terminal is open
+
+In that world, MCP’s [OAuth Client Credentials extension](https://modelcontextprotocol.io/extensions/auth/oauth-client-credentials) becomes relevant for non-interactive services, scheduled runs, CI, or daemon processes. The extension exists specifically for machine-to-machine use when no human is present to perform interactive authorization.
+
+### Human-in-the-loop and consent
+
+MCP’s tools model explicitly recommends keeping a human in the loop for tool invocations that need trust and safety review. That lines up well with Blackdog’s approval and WTAM instincts.
+
+The practical implication is that Blackdog should design write tools with:
+
+- confirmation-friendly schemas
+- explicit preview surfaces
+- audit-friendly result records
+- narrow scopes
+
+That is a better fit than exposing one giant “run arbitrary backlog mutation” tool.
+
 ## First-Class Objects
 
 The current runtime should grow toward this object model.
