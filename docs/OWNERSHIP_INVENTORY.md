@@ -61,6 +61,7 @@ The main extraction risks are still concentrated in a small set of files:
 | `docs/FILE_FORMATS.md` | `blackdog_core` | Canonical contract for persisted runtime artifacts and profile schema. | Treat as the source of truth before moving code. |
 | `docs/INDEX.md` | `blackdog_cli` | Reader entrypoint into the doc set. | Include extraction docs here so operators can find the new package map. |
 | `docs/INTEGRATION.md` | `blackdog_cli` | Host-repo adoption and integration guidance. | Update when bootstrap/update flows move. |
+| `docs/TARGET_MODEL.md` | `blackdog` | Freezes the future runtime-kernel model, object vocabulary, and open design decisions. | Update before broadening task, attempt, planning, or supervisor semantics. |
 
 ## Emacs package
 

@@ -73,6 +73,7 @@ The Emacs package is an adapter tree as a whole. The main split here is between 
 | `docs/INTEGRATION.md` | `adapter` | Keep as host-repo adoption guidance | It describes how outside repos consume Blackdog. |
 | `docs/EMACS.md` | `adapter` | Keep as editor-specific guidance | It documents the optional Emacs surface, including its legacy paths. |
 | `docs/CHARTER.md` | `blackdog` | Keep as product-direction guidance | It describes Blackdog's intended product shape rather than the durable runtime contract. |
+| `docs/TARGET_MODEL.md` | `blackdog` | Keep as target-direction guidance | It freezes the proposed future object model and the decisions required to get there. |
 | `docs/INDEX.md` | `adapter` | Keep as discovery/navigation only | It is the entrypoint into the doc set, not a source of runtime rules. |
 
 ## Recommended Extraction Order

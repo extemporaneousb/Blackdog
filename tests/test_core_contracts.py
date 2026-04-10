@@ -80,6 +80,24 @@ class CoreContractAuditTests(CoreAuditTestCase):
         self.assertIn("[docs/MIGRATION.md](../../docs/MIGRATION.md)", emacs_readme)
         self.assertIn("[docs/RELEASE_NOTES.md](../../docs/RELEASE_NOTES.md)", emacs_readme)
 
+    def test_target_model_doc_is_linked_and_routed(self) -> None:
+        profile = tomllib.loads((cli_tests.ROOT / "blackdog.toml").read_text(encoding="utf-8"))
+        self.assertIn("docs/TARGET_MODEL.md", profile["taxonomy"]["doc_routing_defaults"])
+
+        docs_index = (cli_tests.ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("[docs/TARGET_MODEL.md](docs/TARGET_MODEL.md)", docs_index)
+
+        architecture = (cli_tests.ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        self.assertIn("[docs/TARGET_MODEL.md](docs/TARGET_MODEL.md)", architecture)
+
+        target_model = (cli_tests.ROOT / "docs" / "TARGET_MODEL.md").read_text(encoding="utf-8")
+        self.assertIn("`TaskAttempt`", target_model)
+        self.assertIn("`PromptReceipt`", target_model)
+        self.assertIn("runtime kernel", target_model)
+
+        skill = (cli_tests.ROOT / ".codex" / "skills" / "blackdog" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`docs/TARGET_MODEL.md`", skill)
+
     def test_core_import_boundaries_stay_within_blackdog_core(self) -> None:
         violations = self.core_import_boundary_violations()
         self.assertEqual(

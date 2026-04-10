@@ -17,6 +17,8 @@ reference. Keep those details in:
   behavior
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md) for canonical artifact
   contracts
+- [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md) for the proposed future
+  object model, planning direction, and runtime-kernel design decisions
 - [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the frozen extraction
   charter
 
@@ -26,6 +28,10 @@ That page is generated from the checked-out Python sources by
 `blackdog architecture-docs` and is intended to make the current module
 guide, runtime artifact surface, canonical backlog workflows, and full
 CLI command tree easier to scan than prose alone.
+
+Use [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md) alongside this document
+when the question is not "how is Blackdog divided today?" but "what
+runtime model are we trying to build toward next?"
 
 ## System shape
 

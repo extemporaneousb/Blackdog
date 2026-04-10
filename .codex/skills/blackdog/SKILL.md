@@ -93,6 +93,7 @@ Review these repo docs before editing when they apply:
   - `AGENTS.md`
   - `docs/INDEX.md`
   - `docs/ARCHITECTURE.md`
+  - `docs/TARGET_MODEL.md`
   - `docs/CLI.md`
   - `docs/FILE_FORMATS.md`
 
