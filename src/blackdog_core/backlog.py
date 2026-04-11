@@ -913,6 +913,119 @@ def _latest_result_index(results: list[dict[str, Any]]) -> dict[str, dict[str, A
     return latest_by_task
 
 
+def _task_projection_sort_key(task: BacklogTask) -> tuple[int, int, int, str]:
+    return (
+        int(task.wave) if task.wave is not None else 9999,
+        int(task.lane_order) if task.lane_order is not None else 9999,
+        int(task.lane_position) if task.lane_position is not None else 9999,
+        task.id,
+    )
+
+
+def _workset_projection_identity(profile: RepoProfile, snapshot: BacklogSnapshot) -> tuple[str, str]:
+    workset_title = str(snapshot.headers.get("Project") or profile.project_name).strip() or profile.project_name
+    workset_id = f"workset-{slugify(profile.project_name)}"
+    return workset_id, workset_title
+
+
+def build_workset_snapshot(
+    profile: RepoProfile,
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    *,
+    allow_high_risk: bool = False,
+) -> dict[str, Any]:
+    workset_id, workset_title = _workset_projection_identity(profile, snapshot)
+    tasks_sorted = sorted(snapshot.tasks.values(), key=_task_projection_sort_key)
+    status_counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
+    task_rows: list[dict[str, Any]] = []
+    ordered_task_ids: list[str] = []
+    root_task_ids: list[str] = []
+    edges: list[dict[str, str]] = []
+    objective_ids: list[str] = []
+    seen_objective_ids: set[str] = set()
+    task_ids = set(snapshot.tasks)
+
+    for position, task in enumerate(tasks_sorted):
+        status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
+        status_counts[status] += 1
+        objective_id = str(task.payload.get("objective") or "").strip()
+        if objective_id and objective_id not in seen_objective_ids:
+            seen_objective_ids.add(objective_id)
+            objective_ids.append(objective_id)
+        ordered_task_ids.append(task.id)
+        if not task.predecessor_ids:
+            root_task_ids.append(task.id)
+        for predecessor_id in task.predecessor_ids:
+            if predecessor_id not in task_ids:
+                continue
+            edges.append({"source_task_id": predecessor_id, "target_task_id": task.id})
+        task_rows.append(
+            {
+                "id": task.id,
+                "title": task.title,
+                "status": status,
+                "detail": detail,
+                "bucket": task.payload["bucket"],
+                "priority": task.payload["priority"],
+                "risk": task.payload["risk"],
+                "effort": task.payload["effort"],
+                "objective": str(task.payload.get("objective") or "").strip(),
+                "epic_title": task.epic_title,
+                "lane_id": task.lane_id,
+                "lane_title": task.lane_title,
+                "wave": task.wave,
+                "workset_id": workset_id,
+                "workset_title": workset_title,
+                "workset_position": position,
+                "workset_predecessor_ids": list(task.predecessor_ids),
+                "predecessor_ids": list(task.predecessor_ids),
+                "domains": list(task.payload.get("domains", [])),
+                "safe_first_slice": task.payload["safe_first_slice"],
+                "why": str(task.payload.get("why") or task.narrative.why or ""),
+                "evidence": str(task.payload.get("evidence") or task.narrative.evidence or ""),
+                "paths": list(task.payload.get("paths") or []),
+                "checks": list(task.payload.get("checks") or []),
+                "docs": list(task.payload.get("docs") or []),
+                "task_shaping": task.payload.get("task_shaping"),
+                "requires_approval": bool(task.payload.get("requires_approval")),
+                "approval_reason": str(task.payload.get("approval_reason") or ""),
+            }
+        )
+
+    next_rows = [
+        {"id": task.id, "title": task.title, "lane": task.lane_title, "wave": task.wave, "risk": task.payload["risk"]}
+        for task in next_runnable_tasks(snapshot, state, allow_high_risk=allow_high_risk, limit=8)
+    ]
+    return {
+        "project_name": profile.project_name,
+        "workset": {
+            "id": workset_id,
+            "title": workset_title,
+            "scope": {
+                "kind": "legacy-backlog",
+                "task_ids": ordered_task_ids,
+                "objective_ids": objective_ids,
+            },
+            "source_backlog_file": str(profile.paths.backlog_file),
+            "source_kind": "legacy-backlog",
+            "target_branch": snapshot.headers.get("Target branch"),
+            "target_commit": snapshot.headers.get("Target commit"),
+            "task_count": len(task_rows),
+            "status_counts": status_counts,
+            "task_ids": ordered_task_ids,
+            "root_task_ids": root_task_ids,
+        },
+        "tasks": task_rows,
+        "task_dag": {
+            "ordered_task_ids": ordered_task_ids,
+            "root_task_ids": root_task_ids,
+            "edges": edges,
+        },
+        "next_rows": next_rows,
+    }
+
+
 def build_runtime_summary(
     profile: RepoProfile,
     snapshot: BacklogSnapshot,
@@ -1192,6 +1305,7 @@ def build_runtime_snapshot(
         allow_high_risk=allow_high_risk,
     )
     plan = build_plan_snapshot(profile, snapshot, state, allow_high_risk=allow_high_risk)
+    workset_view = build_workset_snapshot(profile, snapshot, state, allow_high_risk=allow_high_risk)
     objective_titles = {
         str(row.get("id") or ""): str(row.get("title") or "")
         for row in summary.get("objectives", [])
@@ -1199,48 +1313,43 @@ def build_runtime_snapshot(
     }
     latest_results = _latest_result_index(result_rows)
     tasks: list[dict[str, Any]] = []
-    ordered_tasks = sorted(
-        snapshot.tasks.values(),
-        key=lambda task: (
-            task.wave if task.wave is not None else 9999,
-            task.lane_order if task.lane_order is not None else 9999,
-            task.lane_position if task.lane_position is not None else 9999,
-            task.id,
-        ),
-    )
-    for task in ordered_tasks:
-        status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
+    for row in workset_view["tasks"]:
+        task = snapshot.tasks[row["id"]]
         claim_entry = state.get("task_claims", {}).get(task.id) or {}
         approval_entry = state.get("approval_tasks", {}).get(task.id) or {}
         result_info = latest_results.get(task.id, {})
         objective_id = str(task.payload.get("objective") or "").strip()
         tasks.append(
             {
-                "id": task.id,
-                "title": task.title,
-                "status": status,
-                "detail": detail,
-                "bucket": task.payload["bucket"],
-                "priority": task.payload["priority"],
-                "risk": task.payload["risk"],
-                "effort": task.payload["effort"],
+                "id": row["id"],
+                "title": row["title"],
+                "status": row["status"],
+                "detail": row["detail"],
+                "bucket": row["bucket"],
+                "priority": row["priority"],
+                "risk": row["risk"],
+                "effort": row["effort"],
                 "objective": objective_id,
                 "objective_title": objective_titles.get(objective_id) or objective_id or UNASSIGNED_OBJECTIVE_TITLE,
-                "epic_title": task.epic_title,
-                "lane_id": task.lane_id,
-                "lane_title": task.lane_title,
-                "wave": task.wave,
-                "domains": list(task.payload.get("domains", [])),
-                "safe_first_slice": task.payload["safe_first_slice"],
-                "why": str(task.payload.get("why") or task.narrative.why or ""),
-                "evidence": str(task.payload.get("evidence") or task.narrative.evidence or ""),
-                "paths": list(task.payload.get("paths") or []),
-                "checks": list(task.payload.get("checks") or []),
-                "docs": list(task.payload.get("docs") or []),
-                "task_shaping": task.payload.get("task_shaping"),
-                "predecessor_ids": list(task.predecessor_ids),
-                "requires_approval": bool(task.payload.get("requires_approval")),
-                "approval_reason": str(task.payload.get("approval_reason") or ""),
+                "epic_title": row["epic_title"],
+                "lane_id": row["lane_id"],
+                "lane_title": row["lane_title"],
+                "wave": row["wave"],
+                "workset_id": row["workset_id"],
+                "workset_title": row["workset_title"],
+                "workset_position": row["workset_position"],
+                "workset_predecessor_ids": list(row["workset_predecessor_ids"]),
+                "domains": list(row["domains"]),
+                "safe_first_slice": row["safe_first_slice"],
+                "why": row["why"],
+                "evidence": row["evidence"],
+                "paths": list(row["paths"]),
+                "checks": list(row["checks"]),
+                "docs": list(row["docs"]),
+                "task_shaping": row["task_shaping"],
+                "predecessor_ids": list(row["predecessor_ids"]),
+                "requires_approval": bool(row["requires_approval"]),
+                "approval_reason": row["approval_reason"],
                 "approval_status": str(approval_entry.get("status") or "not_required"),
                 "claim_status": str(claim_entry.get("status") or "absent"),
                 "claimed_by": claim_entry.get("claimed_by"),
@@ -1266,6 +1375,8 @@ def build_runtime_snapshot(
         "headers": dict(snapshot.headers),
         "counts": summary["counts"],
         "total": summary["total"],
+        "workset": workset_view["workset"],
+        "task_dag": workset_view["task_dag"],
         "push_objective": summary["push_objective"],
         "release_gates": summary["release_gates"],
         "objectives": summary["objectives"],
