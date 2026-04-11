@@ -392,7 +392,7 @@ Use one task when most of the following are true:
 - worktree spin-up cost is material relative to the expected edit time; or
 - handoff cost is likely to exceed any parallel speedup.
 
-Use one lane for one cohesive deliverable. Do not create separate lane or task pairs for research, implementation, cleanup, and validation when they are parts of the same serial change.
+Use one workset-scoped slice for one cohesive deliverable. If the current backlog still renders that slice through legacy lanes, treat those lanes as compatibility layout metadata rather than the reason to split the work.
 
 ## Split Only for Parallelism or Blocking
 
@@ -580,11 +580,11 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Task Shaping
 
-- Treat a new user request as one candidate deliverable first. Default to one lane and one task unless there is a measured reason to split it.
+- Treat a new user request as one candidate workset-scoped deliverable first. Default to one task unless there is a measured reason to split it.
 - Consolidate serial slices that touch the same files, need the same validation, or must land together. Do not create separate tasks for analysis, implementation, cleanup, and verification of the same change.
 - Split only when it buys real parallelism: disjoint write sets, independent validation, separate blockers, or clearly separable deliverables that can land independently.
 - Before creating or reshaping tasks, estimate total elapsed task time, active edit time, touched paths, validation time, worktree spin-ups, and coordination handoffs. Minimize separate requests first, then add parallelism only when the saved wall-clock time exceeds the extra spin-up and coordination cost.
-- When uncertain, under-split first. It is easier to split a live task later than to merge redundant lanes and half-finished work.
+- When uncertain, under-split first. It is easier to split a live task later than to merge redundant compatibility lanes and half-finished work.
 - Use [references/task-shaping.md](references/task-shaping.md) when adding, tuning, or restructuring work; it contains the measurement fields and consolidation rubric.
 
 ## Static Board
@@ -593,7 +593,7 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 - `blackdog snapshot` and the embedded HTML payload remain Blackdog-product surfaces, but machine-readable repo/header/plan/task facts flow through the neutral `runtime_snapshot`; prefer that export for extensions instead of the surrounding board-only projection fields.
 - The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
 - The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
-- The execution map keeps only live lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
+- The execution map keeps only the current workset's live compatibility lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
 - Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
 
 ## Docs to Review
@@ -608,8 +608,8 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 - The coordinating agent stays in the primary worktree.
 - Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
 - Blackdog uses branch-backed task worktrees for kept implementation changes.
-- `stop` messages are checked while a supervisor run is active. They prevent new launches, but they do not interrupt an already-running child claim.
-- Tasks completed during the active run stay visible in the execution map until the next run starts and performs its opening sweep.
+- `stop` messages are checked while a supervisor execution is active. Current artifacts still use `run_id` as a compatibility alias, but the steering semantics apply to the derived `WorksetExecution`.
+- Tasks completed during the active execution stay visible in the execution map until the next run starts and performs its opening sweep.
 
 ## Repo Contract
 

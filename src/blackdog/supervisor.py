@@ -27,6 +27,8 @@ from blackdog_core.backlog import (
     task_done,
 )
 from blackdog_core.profile import DEFAULT_SUPERVISOR_COMMAND, RepoProfile
+from blackdog_core.runtime_model import load_runtime_model
+from blackdog_core.snapshot import runtime_model_snapshot
 from .scaffold import render_project_html
 from .supervisor_policy import (
     CHILD_PROMPT_TEMPLATE_HASH,
@@ -656,9 +658,24 @@ def _launch_settings_summary(settings: dict[str, Any] | None) -> str | None:
 def _supervisor_status_text(view: dict[str, Any]) -> str:
     lines = [f"Supervisor actor: {view['actor']}"]
     workset = view.get("workset") if isinstance(view.get("workset"), dict) else {}
+    if workset:
+        task_count = int(workset.get("task_count") or 0)
+        total_task_count = int(workset.get("total_task_count") or task_count)
+        visibility = str(workset.get("visibility") or "default")
+        lines.append(
+            f"Workset: {workset.get('title') or workset.get('id') or 'unknown'} | {visibility} | tasks {task_count}/{total_task_count}"
+        )
     if str(workset.get("visibility") or "") == "focused":
         scope = workset.get("scope") if isinstance(workset.get("scope"), dict) else {}
         lines.append(f"Focus: {', '.join(scope.get('task_ids') or [])}")
+    workset_execution = view.get("workset_execution")
+    if isinstance(workset_execution, dict):
+        lines.append(
+            "Workset execution: "
+            f"{workset_execution.get('status') or 'unknown'}"
+            f" | {workset_execution.get('execution_id') or '?'}"
+            f" | mode {workset_execution.get('mode') or 'unknown'}"
+        )
     latest_run = view.get("latest_run")
     if isinstance(latest_run, dict):
         lines.append(
@@ -2307,6 +2324,16 @@ def build_supervisor_status_view(
     visible_task_ids = {str(task_id) for task_id in workset_view["workset"]["task_ids"]}
     latest_run = _latest_run_status(profile, actor=actor)
     workspace_mode = normalize_workspace_mode((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
+    model = load_runtime_model(
+        profile,
+        snapshot=snapshot,
+        state=state,
+        workspace_mode=workspace_mode,
+        execution_mode="supervise-status",
+        allow_high_risk=allow_high_risk,
+        focus_task_ids=tuple(focus_task_ids or ()),
+    )
+    runtime_payload = runtime_model_snapshot(model)
     open_messages = [
         row
         for row in load_inbox(profile.paths, recipient=actor, status="open")
@@ -2431,6 +2458,7 @@ def build_supervisor_status_view(
         "actor": actor,
         "latest_run": latest_run,
         "workset": workset_view["workset"],
+        "workset_execution": runtime_payload["workset_execution"],
         "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
         "launch_defaults": build_supervisor_launch_defaults_view(profile),
         "prelaunch_recovery": _plan_prelaunch_recovery(profile, actor=actor),

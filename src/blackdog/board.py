@@ -1773,17 +1773,32 @@ def build_board_snapshot(
         },
         "grouping_guide": [
             {
+                "name": "workset",
+                "meaning": "The preferred planning and visibility boundary. A workset owns the visible task slice, task DAG, and target branch for the current view.",
+            },
+            {
                 "name": "task",
                 "meaning": "The executable unit. Claims, results, completion, and dependencies are tracked at task level.",
             },
-            {"name": "epic", "meaning": "The thematic why for related tasks. Epics organize reporting, not runnable order."},
+            {
+                "name": "task attempt",
+                "meaning": "One concrete execution of one task by one actor in one workspace. Attempts carry prompt, result, and landing lineage.",
+            },
+            {
+                "name": "workset execution",
+                "meaning": "The coordination object above task attempts. Current product artifacts still expose it through run-shaped compatibility fields such as run_id and supervisor-runs.",
+            },
+            {
+                "name": "epic",
+                "meaning": "A legacy thematic grouping projection for related tasks. Epics remain readable for compatibility and reporting, not as preferred planning truth.",
+            },
             {
                 "name": "lane",
-                "meaning": "A temporary ordered slot in the active execution map. Lanes are not executable state objects; they hold task order top to bottom.",
+                "meaning": "A legacy ordered slot in the active execution map. Lanes are compatibility layout metadata, not executable state objects.",
             },
             {
                 "name": "wave",
-                "meaning": "A temporary concurrency bucket for lanes. Waves are reused and compacted between runs; they are scheduler gates, not historical identities.",
+                "meaning": "A legacy concurrency bucket for lanes. Waves are reused and compacted between executions; they are scheduler gates, not historical identities.",
             },
         ],
     }

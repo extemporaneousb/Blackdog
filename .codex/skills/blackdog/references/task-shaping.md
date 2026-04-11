@@ -31,7 +31,7 @@ Use one task when most of the following are true:
 - worktree spin-up cost is material relative to the expected edit time; or
 - handoff cost is likely to exceed any parallel speedup.
 
-Use one lane for one cohesive deliverable. Do not create separate lane or task pairs for research, implementation, cleanup, and validation when they are parts of the same serial change.
+Use one workset-scoped slice for one cohesive deliverable. If the current backlog still renders that slice through legacy lanes, treat those lanes as compatibility layout metadata rather than the reason to split the work.
 
 ## Split Only for Parallelism or Blocking
 

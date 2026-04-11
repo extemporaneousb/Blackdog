@@ -87,6 +87,7 @@ class CoreContractAuditTests(CoreAuditTestCase):
 
         docs_index = (cli_tests.ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
         self.assertIn("[docs/TARGET_MODEL.md](docs/TARGET_MODEL.md)", docs_index)
+        self.assertIn("[docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md)", docs_index)
 
         architecture = (cli_tests.ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
         self.assertIn("[docs/TARGET_MODEL.md](docs/TARGET_MODEL.md)", architecture)
@@ -102,6 +103,25 @@ class CoreContractAuditTests(CoreAuditTestCase):
 
         skill = (cli_tests.ROOT / ".codex" / "skills" / "blackdog" / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("`docs/TARGET_MODEL.md`", skill)
+
+    def test_docs_and_generated_skill_present_workset_runtime_vocabulary(self) -> None:
+        charter = (cli_tests.ROOT / "docs" / "CHARTER.md").read_text(encoding="utf-8")
+        self.assertIn("worksets", charter)
+        self.assertIn("multi-agent workset execution", charter)
+        self.assertIn("legacy `epic` / `lane` / `wave`", charter)
+
+        integration = (cli_tests.ROOT / "docs" / "INTEGRATION.md").read_text(encoding="utf-8")
+        self.assertIn("workset-shaped deliverable", integration)
+        self.assertIn("compatibility alias", integration)
+
+        file_formats = (cli_tests.ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
+        self.assertIn("`workset execution`", file_formats)
+        self.assertIn("preferred planning model", file_formats)
+        self.assertIn("legacy `plan.lanes` compatibility projection", file_formats)
+
+        skill = (cli_tests.ROOT / ".codex" / "skills" / "blackdog" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("workset-scoped deliverable", skill)
+        self.assertIn("Current artifacts still use `run_id` as a compatibility alias", skill)
 
     def test_core_import_boundaries_stay_within_blackdog_core(self) -> None:
         violations = self.core_import_boundary_violations()

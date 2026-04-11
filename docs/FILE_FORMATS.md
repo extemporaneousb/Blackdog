@@ -465,21 +465,26 @@ Each task block requires:
 
 ## Planning model
 
+- `workset`: the preferred planning and execution container. A workset owns the visible task slice, task DAG, scope, policies, and target branch used for the current read or execution view.
 - `task`: the executable unit. Claims, results, completion, and dependencies are tracked at task level.
-- `epic`: a thematic grouping for related tasks. Epics organize reporting and intent; they do not control runnable order.
-- `lane`: a temporary ordered slot inside the execution map. Lane order is preserved top-to-bottom in the plan and UI, and the current scheduler advances lane tasks in that order.
-- `wave`: a temporary concurrency boundary that opens a group of lanes together. Blackdog only considers the lowest unfinished wave runnable, so wave `1` waits for unfinished work in wave `0`, then compacts active waves back to small integers between runs.
+- `task attempt`: one concrete execution of one task by one actor in one workspace.
+- `workset execution`: the coordination object above task attempts. Current product artifacts still expose this through run-shaped compatibility fields such as `run_id` and `supervisor-runs/`.
+- `epic`: a legacy thematic grouping projection for related tasks. It remains readable for compatibility and reporting, but it is not the preferred planning truth.
+- `lane`: a legacy ordered execution-map slot. It remains readable for compatibility and rendering, but it is not an executable object.
+- `wave`: a legacy concurrency gate over lanes. It remains readable for compatibility and rendering, but it is not the preferred planning truth.
 
 Clarifications:
 
-- lanes and waves are planning/scheduling structures, not executable objects
+- workset plus task DAG is the preferred planning model
+- lanes and waves are compatibility planning/scheduling structures, not executable objects
 - only tasks are claimable, completable, and result-bearing
-- lanes capture execution-map order inside a concurrent work area
-- waves capture which set of lanes is currently open for concurrent progress
+- task attempts and workset executions are execution-history objects; they are not queue-grouping aliases
+- lanes capture execution-map order inside a concurrent work area when the legacy plan projection is present
+- waves capture which set of legacy lanes is currently open for concurrent progress
 - a wave is a scheduler gate, not a dependency node; task-to-task predecessor relationships still drive runnable checks inside an open wave
 - completed tasks stay in the current execution map for the rest of that active supervisor run, then disappear on the next run's opening sweep if they are still done
 
-In practice: `epic` answers "why this cluster exists", `lane` answers "which ordered slot the task is currently in", `wave` answers "which concurrent lane group is currently open", and `task` is the unit an agent actually executes.
+In practice: `workset` answers "which bounded slice is being coordinated", `task` answers "which executable unit is being worked", `task attempt` answers "which concrete execution happened", `workset execution` answers "which coordinated run of attempts is active", and legacy `epic` / `lane` / `wave` rows answer compatibility/reporting questions for current plan and board surfaces.
 
 ## `.codex/skills/<skill-name>/.blackdog-managed.json`
 
@@ -1205,9 +1210,11 @@ Top-level keys:
 `generated_at` is the snapshot creation timestamp.
 `content_updated_at` is the latest event timestamp from the source backlog/events stream (or `generated_at` when no event timestamp is available).
 `last_checked_at` is the latest supervisor heartbeat timestamp when present, falling back to `generated_at`.
-The current static board consumes repo/header, plan/lane, and next-runnable data from `runtime_snapshot`; the duplicated top-level aliases remain for compatibility and board-local convenience.
+The current static board consumes repo/header, the preferred `runtime_snapshot.workset` / task-DAG data, and a legacy plan/lane compatibility projection from `runtime_snapshot`; the duplicated top-level aliases remain for compatibility and board-local convenience.
 
 `focus_task_ids` is a board-facing alias for the visible task ids when a focused snapshot was requested. It stays empty for the default unfocused snapshot. Treat `runtime_snapshot.workset.scope` as the canonical selector and `focus_task_ids` as compatibility/view state, not as durable backlog membership.
+
+`grouping_guide` explains both the preferred runtime vocabulary (`workset`, `task`, `task attempt`, `workset execution`) and the current legacy compatibility terms (`epic`, `lane`, `wave`) so board consumers can distinguish durable coordination concepts from rendered plan aliases.
 
 `queue_status` includes the counters used by the top-right status panel in the current static board:
 - `running`: tasks currently executing (`operator_status_key == "running"`).
@@ -1415,10 +1422,10 @@ Layout projections:
 - `links.threads` points at the saved conversation-thread directory root.
 - The dedicated `Unattended Tuning` band uses `unattended_tuning.recommendation`, aggregate runtime counters, tracked-host focus counts, and per-host summaries from the tracked-install registry.
 - The `Status` panel uses focus-task status counts plus `next_rows` to surface finished, running, next, waiting, and blocked work.
-- The `Execution Map` uses `plan.lanes`, `board_tasks`, and task metadata to keep live lanes and waves visible without search/filter chrome.
+- The `Execution Map` uses `runtime_snapshot.workset`, `board_tasks`, task metadata, and the legacy `plan.lanes` compatibility projection to keep the current visible slice readable without search/filter chrome.
 - `Completed Tasks` renders a flat list of the most recent completed cards by completion time.
 - The browser renders a split `Backlog Control`/`Status` top row, a full-width `Unattended Tuning` row, then a split `Execution Map`/`Completed Tasks` row. Execution-map and completed-task cards stay clickable.
-- Focused task rows derive from lane-assigned work in the snapshot so progress, next-focus selection, and the task reader stay grounded in the current runnable backlog.
+- Focused task rows derive from the current visible workset slice; when lane-assigned compatibility rows exist, the board uses them to preserve the current execution-map layout without treating lanes or waves as durable execution objects.
 - `recent_results` remains a compact recent-result feed in the snapshot for other consumers; the rendered board no longer depends on a dedicated completed-history panel.
 - When supervisor run artifacts exist, the task reader can render a capped stdout-derived model response inline and expose landed-commit metadata, including a GitHub commit URL when the repo origin resolves to GitHub.
 - When `links.inbox` is present, inbox artifacts remain available to the task reader and other snapshot consumers even though the main board no longer renders a dedicated inbox header link.

@@ -7,7 +7,7 @@ Blackdog exists to make repo-scoped backlog processing and multi-agent developme
 Blackdog is not only a task list. The target product is a coordinating agent interface backed by repo-scoped local state, where:
 
 - a user can express high-level project goals
-- Blackdog can map those goals into epics, lanes, waves, and task-level execution slices
+- Blackdog can map those goals into one or more worksets, each with a task DAG, bounded visibility, and task-level execution slices
 - Blackdog can launch or direct multiple child agents in parallel
 - Blackdog can monitor progress, summarize what changed, surface drift, and redirect future work
 - all of that coordination stays local to the repo in durable files instead of hidden global state
@@ -82,12 +82,12 @@ follow-up work against the revised target.
 
 ## Blackdog repo working contract
 
-The Blackdog repo itself should use Blackdog claims, results, inbox messages, and supervisor runs as the default coordination surface.
+The Blackdog repo itself should use Blackdog claims, results, inbox messages, and supervisor executions as the default coordination surface.
 
 - Every meaningful change should either be claimed directly through the CLI or dispatched through `blackdog supervise run`.
 - Every completed slice should leave a structured result in Blackdog's shared local control state.
 - Blocked child runs are not noise; they are product evidence that should become backlog follow-up work.
-- The generated HTML view and supervisor run directories are part of the repo's normal operating surface, not side artifacts to ignore.
+- The generated HTML view and supervisor execution artifacts are part of the repo's normal operating surface, not side artifacts to ignore.
 
 ## Current implementation assessment
 
@@ -95,16 +95,17 @@ Well encoded today:
 
 - repo-local backlog artifacts and file contracts
 - task claims, approvals, inbox messages, structured results, and HTML status output
-- backlog plan structure with epics, lanes, and waves
+- typed runtime-model projections for repository, workspace, workset, task attempt, wait/control state, and execution lineage
+- request-scoped workset focus across summary, next, snapshot, and supervisor status
 - project-local skill generation for host repositories
 
 Partially encoded today:
 
 - multi-agent coordination primitives exist, but only as building blocks
 - the worktree model is now explicit, mutable runtime state is shared from one control root, and delegated child runs land through the same WTAM lifecycle as direct work
-- a supervisor run can drain work, reread backlog/state while active, refresh repo-local status views, and honor simple inbox stop control messages
+- a supervisor execution can drain work, reread backlog/state while active, refresh repo-local status views, and honor simple inbox stop control messages
 - child-agent launch, monitoring, and worktree lifecycle exist, but still require better active-run steering and cleanup ergonomics
-- backlog planning exists in the file format, but management UX is still task-by-task
+- backlog planning still writes legacy `epic` / `lane` / `wave` structures, even though `Workset` is now the preferred runtime vocabulary
 - host-repo installation works, but it is not yet a one-command experience
 
 Not yet encoded in runtime behavior:
@@ -118,11 +119,11 @@ Not yet encoded in runtime behavior:
 Blackdog should eventually support a development run model where a user can:
 
 1. define or revise a project goal at a high level
-2. have Blackdog convert that into a structured backlog with parallel work lanes
-3. start a multi-agent run against that backlog
+2. have Blackdog convert that into a structured backlog with one or more worksets and a task DAG
+3. start a multi-agent workset execution against that backlog
 4. ask for current progress and receive a grounded summary from repo-local state
 5. redirect the run through the coordinating agent without losing execution history
 
 ## Scope boundary for the current release line
 
-Until supervisor and worktree support land, Blackdog should describe itself as a backlog runtime with multi-agent supervision primitives, not as a complete multi-agent orchestration system.
+Until richer steering and workset-native write paths land, Blackdog should describe itself as a backlog runtime with multi-agent supervision primitives, not as a complete multi-agent orchestration system.

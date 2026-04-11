@@ -16,7 +16,7 @@ This document describes the current integration path for adopting Blackdog in an
 - CLI support for task intake, claims, approvals, comments, inbox messaging, task results, and HTML rendering
 - a repo-aware `blackdog prompt` command that rewrites prompts against the host repo contract for low/medium/high complexity
 - an initial supervisor runner that can launch child commands against runnable tasks, with a default preference for the desktop Codex exec runtime
-- a supervisor run that drains active work, refreshes repo-local status views, and honors inbox `stop` messages
+- a supervisor execution surface, currently persisted under run-shaped compatibility artifacts, that drains active work, refreshes repo-local status views, and honors inbox `stop` messages
 - a static backlog index that embeds the current snapshot JSON and links directly to artifact files on disk
 
 ## What does not exist yet
@@ -148,13 +148,13 @@ That generated skill is part of Blackdog's shipped product surface; repo-specifi
 - Confirm the repo can tolerate a shared local Blackdog control root that is not part of the built artifact.
 - Confirm the repo has a stable Python entrypoint for Blackdog.
 - Confirm each task worktree can bootstrap its own repo-local `.VE/` without copying virtualenv directories from another checkout.
-- Create one real epic with at least two parallel lanes.
+- Create one real workset-shaped deliverable with at least two runnable tasks.
 - Require claims and structured task results for the pilot slice.
 - Capture friction points as follow-up tasks in the host repo or in Blackdog's own backlog.
 
 ## Expected operator model today
 
-Today, Blackdog works best as a coordinating contract used by a foreground agent or a supervisor run. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the static HTML index surfaces task state and artifact links without becoming a second source of truth.
+Today, Blackdog works best as a coordinating contract used by a foreground agent or a supervisor execution. The agent reads the repo-local backlog, claims work, records results, and uses inbox messages for coordination, while the static HTML index surfaces task state and artifact links without becoming a second source of truth.
 
 For implementation tasks, the intended operator model is now explicit and hard-gated: start with `blackdog worktree preflight`, and if it reports `primary worktree: yes`, do not edit there. Create a branch-backed task worktree from the primary checkout, make changes there, and land with fast-forward semantics. Analysis-only work can stay in the current checkout.
 
@@ -167,6 +167,6 @@ Delegated child runs use the same lifecycle: the coordinating supervisor stays i
 
 Each worktree should also carry its own repo-local `.VE/` when the host repo uses one. Blackdog will prefer `./.VE/bin/blackdog`, but operators must create that environment per worktree rather than copying it across checkouts.
 
-Version 0 supervisor steering is intentionally narrow. `stop` is a boundary control checked while the run is active; it prevents new launches while already-running child claims continue until the child exits or the supervisor later recovers an orphaned claimed pid after repeated failed liveness scans. The run rereads backlog and state while it is active, so newly added or newly unblocked tasks can become eligible before the run drains to idle. Tasks completed during that run stay visible in the execution map until the next run starts and performs its cleanup sweep.
+Version 0 supervisor steering is intentionally narrow. `stop` is a boundary control checked while the execution is active; it prevents new launches while already-running child claims continue until the child exits or the supervisor later recovers an orphaned claimed pid after repeated failed liveness scans. The current compatibility artifacts still use `run_id` as a compatibility alias, and the execution rereads backlog and state while it is active so newly added or newly unblocked tasks can become eligible before it drains to idle. Tasks completed during that execution stay visible in the execution map until the next run starts and performs its cleanup sweep.
 
-As the supervisor grows beyond the current runner, this guide should expand to cover agent pools, richer steering, launch configuration, and run monitoring.
+As the supervisor grows beyond the current runner, this guide should expand to cover agent pools, richer steering, launch configuration, and workset-execution monitoring.

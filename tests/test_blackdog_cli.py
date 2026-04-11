@@ -3228,7 +3228,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Run `./.VE/bin/blackdog refresh`", refreshed_text)
         self.assertIn("Before any repo edit you intend to keep", refreshed_text)
         self.assertIn("## Task Shaping", refreshed_text)
-        self.assertIn("Default to one lane and one task", refreshed_text)
+        self.assertIn("workset-scoped deliverable", refreshed_text)
         self.assertIn("references/task-shaping.md", refreshed_text)
         self.assertIn("create-project", refreshed_text)
         self.assertIn("update-repo", refreshed_text)
@@ -3236,6 +3236,7 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("`AGENTS.md`", refreshed_text)
         self.assertIn("doc_routing_defaults", refreshed_text)
         self.assertIn("Blackdog uses branch-backed task worktrees for kept implementation changes.", refreshed_text)
+        self.assertIn("Current artifacts still use `run_id` as a compatibility alias", refreshed_text)
         self.assertNotIn("refresh backlog", refreshed_text)
         self.assertIn("$blackdog-inbox-demo", (skill_file.parent / "agents" / "openai.yaml").read_text(encoding="utf-8"))
         task_shaping_reference = (
@@ -3777,6 +3778,9 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(snapshot["graph"]["tasks"][0]["lane_position"], 1)
         self.assertEqual(snapshot["graph"]["tasks"][1]["lane_position"], 2)
         self.assertEqual(snapshot["graph"]["tasks"][0]["lane_task_count"], 2)
+        grouping_names = [row["name"] for row in snapshot["grouping_guide"]]
+        self.assertIn("workset", grouping_names)
+        self.assertIn("workset execution", grouping_names)
         self.assertIn("scheduler gate", snapshot["grouping_guide"][-1]["meaning"])
         datetime.fromisoformat(snapshot["generated_at"])
         datetime.fromisoformat(snapshot["content_updated_at"])
@@ -6339,6 +6343,9 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn(".VE is unversioned", payload["workspace_contract"]["ve_expectation"])
         self.assertEqual(payload["launch_defaults"]["mode"], "exec")
         self.assertIn("strategy", payload["launch_defaults"])
+        self.assertEqual(payload["workset_execution"]["mode"], "supervise-status")
+        self.assertEqual(payload["workset_execution"]["workset_id"], "blackdog")
+        self.assertEqual(payload["workset_execution"]["status"], "waiting")
         self.assertEqual(payload["recovery_needed"]["count"], 0)
         self.assertEqual(payload["recovery_needed"]["cases"], [])
         self.assertEqual(payload["control_action"], {"action": "stop", "message_id": stop_message["message_id"]})
@@ -6376,6 +6383,7 @@ class BlackdogCliTests(unittest.TestCase):
             "Latest run launch: codex | strategy profile | model gpt-5.4-mini | reasoning xhigh",
             text_output,
         )
+        self.assertIn("Workset execution: waiting | blackdog:main | mode supervise-status", text_output)
         self.assertIn("WTAM contract: git-worktree -> main | primary ", text_output)
         self.assertIn(".VE rule: .VE is unversioned", text_output)
         self.assertIn("Launch defaults:", text_output)
