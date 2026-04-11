@@ -51,6 +51,7 @@ def build_runtime_snapshot(
     messages: list[dict[str, Any]] | None = None,
     results: list[dict[str, Any]] | None = None,
     allow_high_risk: bool = False,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     message_rows = messages if messages is not None else load_inbox(profile.paths)
     result_rows = results if results is not None else load_task_results(profile.paths)
@@ -61,6 +62,7 @@ def build_runtime_snapshot(
         messages=message_rows,
         results=result_rows,
         allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
     )
     model = project_runtime_model(
         profile,
@@ -71,6 +73,7 @@ def build_runtime_snapshot(
         results=result_rows,
         allow_high_risk=allow_high_risk,
         execution_mode="snapshot",
+        focus_task_ids=tuple(focus_task_ids or ()),
     )
     base["runtime_model"] = runtime_model_snapshot(model)
     base["task_attempts"] = base["runtime_model"]["task_attempts"]

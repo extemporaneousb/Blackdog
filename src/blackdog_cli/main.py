@@ -253,6 +253,15 @@ def _load_runtime(project_root: Path | None = None):
     return profile, snapshot, state
 
 
+def _add_focus_task_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--focus-task",
+        action="append",
+        default=[],
+        help="Limit the view to a bounded workset slice rooted at one or more task ids",
+    )
+
+
 def _emit_render(profile) -> None:
     if profile.auto_render_html:
         render_project_html(profile)
@@ -1266,7 +1275,7 @@ def cmd_task_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _summary_view(profile, snapshot, state) -> dict[str, Any]:
+def _summary_view(profile, snapshot, state, *, focus_task_ids: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     runtime = load_runtime_artifacts(profile, snapshot=snapshot, event_limit=20)
     messages = runtime.inbox
     view = build_runtime_summary(
@@ -1276,14 +1285,21 @@ def _summary_view(profile, snapshot, state) -> dict[str, Any]:
         events=runtime.events,
         messages=messages,
         results=runtime.results,
+        focus_task_ids=focus_task_ids,
     )
-    view["open_messages"] = summary_open_messages(snapshot, runtime.state, messages)
+    visible_task_ids = {str(task_id) for task_id in ((view.get("workset") or {}).get("task_ids") or [])}
+    view["open_messages"] = summary_open_messages(
+        snapshot,
+        runtime.state,
+        messages,
+        visible_task_ids=visible_task_ids or None,
+    )
     return view
 
 
 def cmd_summary(args: argparse.Namespace) -> int:
     profile, snapshot, state = _load_runtime(Path(args.project_root) if args.project_root else None)
-    view = _summary_view(profile, snapshot, state)
+    view = _summary_view(profile, snapshot, state, focus_task_ids=args.focus_task)
     if args.format == "json":
         print(json.dumps(view, indent=2))
     else:
@@ -1337,6 +1353,7 @@ def cmd_supervise_status(args: argparse.Namespace) -> int:
         profile,
         actor=args.actor,
         allow_high_risk=args.allow_high_risk,
+        focus_task_ids=args.focus_task,
     )
     print(render_supervisor_status_output(payload, as_json=args.format == "json"), end="")
     return 0
@@ -1366,7 +1383,13 @@ def cmd_next(args: argparse.Namespace) -> int:
             "wave": task.wave,
             "risk": task.payload["risk"],
         }
-        for task in next_runnable_tasks(snapshot, state, allow_high_risk=args.allow_high_risk, limit=args.count)
+        for task in next_runnable_tasks(
+            snapshot,
+            state,
+            allow_high_risk=args.allow_high_risk,
+            limit=args.count,
+            focus_task_ids=args.focus_task,
+        )
     ]
     if args.format == "json":
         print(json.dumps(rows, indent=2))
@@ -1378,7 +1401,7 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.project_root) if args.project_root else None)
-    print(json.dumps(build_board_snapshot(profile), indent=2))
+    print(json.dumps(build_board_snapshot(profile, focus_task_ids=args.focus_task), indent=2))
     return 0
 
 
@@ -2241,6 +2264,7 @@ def _build_core_parsers(subparsers) -> None:
     p_summary = subparsers.add_parser("summary", help="Summarize backlog state")
     p_summary.add_argument("--project-root", default=None)
     p_summary.add_argument("--format", choices=("text", "json"), default="text")
+    _add_focus_task_argument(p_summary)
     p_summary.set_defaults(func=cmd_summary)
 
     p_plan = subparsers.add_parser("plan", help="Show epics, lanes, and waves from the backlog plan")
@@ -2254,6 +2278,7 @@ def _build_core_parsers(subparsers) -> None:
     p_next.add_argument("--count", type=int, default=4)
     p_next.add_argument("--allow-high-risk", action="store_true")
     p_next.add_argument("--format", choices=("text", "json"), default="text")
+    _add_focus_task_argument(p_next)
     p_next.set_defaults(func=cmd_next)
 
     p_claim = subparsers.add_parser("claim", help="Claim tasks for an agent")
@@ -2377,6 +2402,7 @@ def _build_blackdog_parsers(subparsers) -> None:
         help="Print the Blackdog snapshot envelope with its stable runtime_snapshot contract",
     )
     p_snapshot.add_argument("--project-root", default=None)
+    _add_focus_task_argument(p_snapshot)
     p_snapshot.set_defaults(func=cmd_snapshot)
 
     p_prompt = subparsers.add_parser("prompt", help="Rewrite a prompt against the local repo contract")
@@ -2507,6 +2533,7 @@ def _build_blackdog_parsers(subparsers) -> None:
     p_supervise_status.add_argument("--actor", default="supervisor")
     p_supervise_status.add_argument("--allow-high-risk", action="store_true")
     p_supervise_status.add_argument("--format", choices=("text", "json"), default="text")
+    _add_focus_task_argument(p_supervise_status)
     p_supervise_status.set_defaults(func=cmd_supervise_status)
     p_supervise_recover = supervise_subparsers.add_parser(
         "recover",

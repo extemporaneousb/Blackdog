@@ -222,6 +222,18 @@ class BacklogSnapshot:
 
 
 @dataclass(frozen=True)
+class _FocusedBacklogSlice:
+    snapshot: BacklogSnapshot
+    requested_task_ids: tuple[str, ...]
+    visible_task_ids: tuple[str, ...]
+    total_task_count: int
+
+    @property
+    def visibility(self) -> str:
+        return "focused" if self.requested_task_ids else "default"
+
+
+@dataclass(frozen=True)
 class RuntimeArtifacts:
     backlog: BacklogSnapshot
     state: dict[str, Any]
@@ -835,8 +847,10 @@ def next_runnable_tasks(
     *,
     allow_high_risk: bool,
     limit: int,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> list[BacklogTask]:
-    unfinished = [task for task in snapshot.tasks.values() if not task_done(task.id, state)]
+    scoped_snapshot = _focused_backlog_slice(snapshot, state, focus_task_ids=focus_task_ids).snapshot
+    unfinished = [task for task in scoped_snapshot.tasks.values() if not task_done(task.id, state)]
     if not unfinished:
         return []
     planned = [task for task in unfinished if task.wave is not None]
@@ -849,7 +863,7 @@ def next_runnable_tasks(
             lane_id = str(task.lane_id)
             if lane_id in seen_lanes:
                 continue
-            if blocking_reason(task, snapshot, state, allow_high_risk=allow_high_risk) is None:
+            if blocking_reason(task, scoped_snapshot, state, allow_high_risk=allow_high_risk) is None:
                 first_by_lane.append(task)
                 seen_lanes.add(lane_id)
         return first_by_lane[:limit]
@@ -864,7 +878,7 @@ def next_runnable_tasks(
                 item.id,
             ),
         )
-        if blocking_reason(task, snapshot, state, allow_high_risk=allow_high_risk) is None
+        if blocking_reason(task, scoped_snapshot, state, allow_high_risk=allow_high_risk) is None
     ]
     return ready[:limit]
 
@@ -928,15 +942,113 @@ def _workset_projection_identity(profile: RepoProfile, snapshot: BacklogSnapshot
     return workset_id, workset_title
 
 
+def _normalize_focus_task_ids(snapshot: BacklogSnapshot, focus_task_ids: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    normalized = tuple(_unique_ordered(str(task_id).strip() for task_id in (focus_task_ids or ()) if str(task_id).strip()))
+    missing = [task_id for task_id in normalized if task_id not in snapshot.tasks]
+    if missing:
+        raise BacklogError(f"Unknown focus task id(s): {', '.join(missing)}")
+    return normalized
+
+
+def _slice_snapshot_to_task_ids(snapshot: BacklogSnapshot, task_ids: tuple[str, ...]) -> BacklogSnapshot:
+    visible_task_ids = set(task_ids)
+    tasks = {task_id: snapshot.tasks[task_id] for task_id in task_ids}
+    lanes: list[dict[str, Any]] = []
+    for lane in snapshot.plan.get("lanes", []):
+        lane_task_ids = [task_id for task_id in (str(item) for item in lane.get("task_ids", [])) if task_id in visible_task_ids]
+        if not lane_task_ids:
+            continue
+        lane_payload = dict(lane)
+        lane_payload["task_ids"] = lane_task_ids
+        lanes.append(lane_payload)
+    epics: list[dict[str, Any]] = []
+    for epic in snapshot.plan.get("epics", []):
+        epic_task_ids = [task_id for task_id in (str(item) for item in epic.get("task_ids", [])) if task_id in visible_task_ids]
+        if not epic_task_ids:
+            continue
+        epic_payload = dict(epic)
+        epic_payload["task_ids"] = epic_task_ids
+        epics.append(epic_payload)
+    return BacklogSnapshot(
+        raw_text=snapshot.raw_text,
+        headers=dict(snapshot.headers),
+        sections={key: list(value) for key, value in snapshot.sections.items()},
+        tasks=tasks,
+        plan={
+            **dict(snapshot.plan),
+            "epics": epics,
+            "lanes": lanes,
+        },
+    )
+
+
+def _focused_backlog_slice(
+    snapshot: BacklogSnapshot,
+    state: dict[str, Any],
+    *,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
+) -> _FocusedBacklogSlice:
+    requested_task_ids = _normalize_focus_task_ids(snapshot, focus_task_ids)
+    ordered_task_ids = tuple(task.id for task in sorted(snapshot.tasks.values(), key=_task_projection_sort_key))
+    if not requested_task_ids:
+        return _FocusedBacklogSlice(
+            snapshot=snapshot,
+            requested_task_ids=(),
+            visible_task_ids=ordered_task_ids,
+            total_task_count=len(snapshot.tasks),
+        )
+
+    visible_task_ids = set(requested_task_ids)
+    changed = True
+    while changed:
+        changed = False
+        for task_id in tuple(visible_task_ids):
+            task = snapshot.tasks[task_id]
+            for predecessor_id in task.predecessor_ids:
+                if predecessor_id in snapshot.tasks and predecessor_id not in visible_task_ids:
+                    visible_task_ids.add(predecessor_id)
+                    changed = True
+        for task_id in tuple(visible_task_ids):
+            task = snapshot.tasks[task_id]
+            if task_done(task_id, state):
+                continue
+            if active_claim_owner(task_id, state):
+                continue
+            if not approval_satisfied(task, state):
+                continue
+            if task.wave is None:
+                continue
+            for lane in snapshot.plan.get("lanes", []):
+                if int(lane.get("wave", 0)) >= task.wave:
+                    continue
+                for earlier_id in (str(item) for item in lane.get("task_ids", [])):
+                    if earlier_id not in snapshot.tasks or task_done(earlier_id, state):
+                        continue
+                    if earlier_id not in visible_task_ids:
+                        visible_task_ids.add(earlier_id)
+                        changed = True
+
+    ordered_visible_task_ids = tuple(task_id for task_id in ordered_task_ids if task_id in visible_task_ids)
+    return _FocusedBacklogSlice(
+        snapshot=_slice_snapshot_to_task_ids(snapshot, ordered_visible_task_ids),
+        requested_task_ids=requested_task_ids,
+        visible_task_ids=ordered_visible_task_ids,
+        total_task_count=len(snapshot.tasks),
+    )
+
+
 def build_workset_snapshot(
     profile: RepoProfile,
     snapshot: BacklogSnapshot,
     state: dict[str, Any],
     *,
     allow_high_risk: bool = False,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    focused = _focused_backlog_slice(snapshot, state, focus_task_ids=focus_task_ids)
+    scoped_snapshot = focused.snapshot
     workset_id, workset_title = _workset_projection_identity(profile, snapshot)
-    tasks_sorted = sorted(snapshot.tasks.values(), key=_task_projection_sort_key)
+    tasks_sorted = sorted(scoped_snapshot.tasks.values(), key=_task_projection_sort_key)
     status_counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
     task_rows: list[dict[str, Any]] = []
     ordered_task_ids: list[str] = []
@@ -944,10 +1056,10 @@ def build_workset_snapshot(
     edges: list[dict[str, str]] = []
     objective_ids: list[str] = []
     seen_objective_ids: set[str] = set()
-    task_ids = set(snapshot.tasks)
+    task_ids = set(scoped_snapshot.tasks)
 
     for position, task in enumerate(tasks_sorted):
-        status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
+        status, detail = classify_task_status(task, scoped_snapshot, state, allow_high_risk=allow_high_risk)
         status_counts[status] += 1
         objective_id = str(task.payload.get("objective") or "").strip()
         if objective_id and objective_id not in seen_objective_ids:
@@ -995,16 +1107,17 @@ def build_workset_snapshot(
 
     next_rows = [
         {"id": task.id, "title": task.title, "lane": task.lane_title, "wave": task.wave, "risk": task.payload["risk"]}
-        for task in next_runnable_tasks(snapshot, state, allow_high_risk=allow_high_risk, limit=8)
+        for task in next_runnable_tasks(scoped_snapshot, state, allow_high_risk=allow_high_risk, limit=8)
     ]
     return {
         "project_name": profile.project_name,
         "workset": {
             "id": workset_id,
             "title": workset_title,
+            "visibility": focused.visibility,
             "scope": {
-                "kind": "legacy-backlog",
-                "task_ids": ordered_task_ids,
+                "kind": "task_ids" if focused.requested_task_ids else "legacy-backlog",
+                "task_ids": list(focused.requested_task_ids),
                 "objective_ids": objective_ids,
             },
             "source_backlog_file": str(profile.paths.backlog_file),
@@ -1012,6 +1125,8 @@ def build_workset_snapshot(
             "target_branch": snapshot.headers.get("Target branch"),
             "target_commit": snapshot.headers.get("Target commit"),
             "task_count": len(task_rows),
+            "total_task_count": focused.total_task_count,
+            "omitted_task_count": max(0, focused.total_task_count - len(task_rows)),
             "status_counts": status_counts,
             "task_ids": ordered_task_ids,
             "root_task_ids": root_task_ids,
@@ -1035,9 +1150,19 @@ def build_runtime_summary(
     messages: list[dict[str, Any]],
     results: list[dict[str, Any]],
     allow_high_risk: bool = False,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    workset_view = build_workset_snapshot(
+        profile,
+        snapshot,
+        state,
+        allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
+    )
+    visible_task_ids = tuple(str(task_id) for task_id in workset_view["workset"]["task_ids"])
+    scoped_snapshot = _slice_snapshot_to_task_ids(snapshot, visible_task_ids) if workset_view["workset"]["visibility"] == "focused" else snapshot
     counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
-    defined_objectives = _parse_objectives(snapshot)
+    defined_objectives = _parse_objectives(scoped_snapshot)
     objective_rows: dict[str, dict[str, Any]] = {
         _objective_row_key(row["id"]): {
             "key": _objective_row_key(row["id"]),
@@ -1056,7 +1181,7 @@ def build_runtime_summary(
     include_unlisted_objectives = not objective_rows
     tasks_by_lane: list[dict[str, Any]] = []
     tasks_sorted = sorted(
-        snapshot.tasks.values(),
+        scoped_snapshot.tasks.values(),
         key=lambda task: (
             task.wave if task.wave is not None else 9999,
             task.lane_order if task.lane_order is not None else 9999,
@@ -1065,7 +1190,7 @@ def build_runtime_summary(
         ),
     )
     for task in tasks_sorted:
-        status, detail = classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
+        status, detail = classify_task_status(task, scoped_snapshot, state, allow_high_risk=allow_high_risk)
         counts[status] += 1
         objective_id = str(task.payload.get("objective") or "").strip()
         objective_key = _objective_row_key(objective_id)
@@ -1140,27 +1265,30 @@ def build_runtime_summary(
         }
         if objective_row["task_ids"]:
             ordered_objective_rows.append(objective_row)
-    next_rows = [
-        {"id": task.id, "title": task.title, "lane": task.lane_title, "wave": task.wave, "risk": task.payload["risk"]}
-        for task in next_runnable_tasks(snapshot, state, allow_high_risk=allow_high_risk, limit=8)
-    ]
     return {
         "project_name": profile.project_name,
-        "headers": snapshot.headers,
+        "headers": scoped_snapshot.headers,
         "counts": counts,
-        "total": len(snapshot.tasks),
-        "next_rows": next_rows,
+        "total": len(scoped_snapshot.tasks),
+        "workset": workset_view["workset"],
+        "next_rows": workset_view["next_rows"],
         "lanes": ordered_lanes,
         "objectives": [
             {"id": row["id"], "title": row["title"], "total": row["total"], "done": row["done"]}
             for row in ordered_objective_rows
         ],
         "objective_rows": ordered_objective_rows,
-        "open_messages": [row for row in messages if row.get("status") == "open"],
-        "recent_events": events[-10:],
-        "recent_results": results[:5],
-        "push_objective": _section_items(snapshot.sections.get("Push Objective", [])),
-        "release_gates": _section_items(snapshot.sections.get("Release Gates", [])),
+        "open_messages": summary_open_messages(scoped_snapshot, state, messages),
+        "recent_events": [
+            row
+            for row in events
+            if not str(row.get("task_id") or "").strip() or str(row.get("task_id") or "") in scoped_snapshot.tasks
+        ][-10:],
+        "recent_results": [
+            row for row in results if str(row.get("task_id") or "").strip() in scoped_snapshot.tasks
+        ][:5],
+        "push_objective": _section_items(scoped_snapshot.sections.get("Push Objective", [])),
+        "release_gates": _section_items(scoped_snapshot.sections.get("Release Gates", [])),
     }
 
 
@@ -1168,6 +1296,8 @@ def summary_open_messages(
     snapshot: BacklogSnapshot,
     state: dict[str, Any],
     messages: list[dict[str, Any]],
+    *,
+    visible_task_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for message in messages:
@@ -1176,6 +1306,8 @@ def summary_open_messages(
         task_id = str(message.get("task_id") or "").strip()
         if task_id:
             if task_id not in snapshot.tasks:
+                continue
+            if visible_task_ids is not None and task_id not in visible_task_ids:
                 continue
             if task_done(task_id, state):
                 continue
@@ -1196,21 +1328,23 @@ def build_plan_snapshot(
     state: dict[str, Any],
     *,
     allow_high_risk: bool = False,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    scoped_snapshot = _focused_backlog_slice(snapshot, state, focus_task_ids=focus_task_ids).snapshot
     task_status: dict[str, tuple[str, str]] = {
-        task.id: classify_task_status(task, snapshot, state, allow_high_risk=allow_high_risk)
-        for task in snapshot.tasks.values()
+        task.id: classify_task_status(task, scoped_snapshot, state, allow_high_risk=allow_high_risk)
+        for task in scoped_snapshot.tasks.values()
     }
     lanes: list[dict[str, Any]] = []
     waves: dict[int, dict[str, Any]] = {}
-    for lane in snapshot.plan.get("lanes", []):
+    for lane in scoped_snapshot.plan.get("lanes", []):
         lane_id = str(lane.get("id") or "")
         lane_title = str(lane.get("title") or "")
         wave = int(lane.get("wave", 0))
         lane_tasks: list[dict[str, Any]] = []
         status_counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
         for task_id in [str(item) for item in lane.get("task_ids", [])]:
-            task = snapshot.tasks[task_id]
+            task = scoped_snapshot.tasks[task_id]
             status, detail = task_status[task_id]
             status_counts[status] += 1
             lane_tasks.append(
@@ -1245,12 +1379,12 @@ def build_plan_snapshot(
         wave_entry["task_ids"].extend(task["id"] for task in lane_tasks)
 
     epics: list[dict[str, Any]] = []
-    for epic in snapshot.plan.get("epics", []):
+    for epic in scoped_snapshot.plan.get("epics", []):
         epic_id = str(epic.get("id") or "")
         epic_title = str(epic.get("title") or "")
         task_ids = [str(item) for item in epic.get("task_ids", [])]
-        lane_ids = sorted({str(snapshot.tasks[task_id].lane_id or "unplanned") for task_id in task_ids})
-        wave_values = sorted({int(snapshot.tasks[task_id].wave or 0) for task_id in task_ids})
+        lane_ids = sorted({str(scoped_snapshot.tasks[task_id].lane_id or "unplanned") for task_id in task_ids})
+        wave_values = sorted({int(scoped_snapshot.tasks[task_id].wave or 0) for task_id in task_ids})
         status_counts = {"ready": 0, "claimed": 0, "done": 0, "approval": 0, "high-risk": 0, "waiting": 0}
         for task_id in task_ids:
             status, _ = task_status[task_id]
@@ -1273,7 +1407,7 @@ def build_plan_snapshot(
     return {
         "project_name": profile.project_name,
         "counts": {
-            "tasks": len(snapshot.tasks),
+            "tasks": len(scoped_snapshot.tasks),
             "epics": len(epics),
             "lanes": len(ordered_lanes),
             "waves": len(ordered_waves),
@@ -1292,6 +1426,7 @@ def build_runtime_snapshot(
     messages: list[dict[str, Any]] | None = None,
     results: list[dict[str, Any]] | None = None,
     allow_high_risk: bool = False,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     message_rows = messages if messages is not None else load_inbox(profile.paths)
     result_rows = results if results is not None else load_task_results(profile.paths)
@@ -1303,9 +1438,17 @@ def build_runtime_snapshot(
         messages=message_rows,
         results=result_rows,
         allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
     )
-    plan = build_plan_snapshot(profile, snapshot, state, allow_high_risk=allow_high_risk)
-    workset_view = build_workset_snapshot(profile, snapshot, state, allow_high_risk=allow_high_risk)
+    plan = build_plan_snapshot(profile, snapshot, state, allow_high_risk=allow_high_risk, focus_task_ids=focus_task_ids)
+    workset_view = build_workset_snapshot(
+        profile,
+        snapshot,
+        state,
+        allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
+    )
+    visible_task_ids = {str(task_id) for task_id in workset_view["workset"]["task_ids"]}
     objective_titles = {
         str(row.get("id") or ""): str(row.get("title") or "")
         for row in summary.get("objectives", [])
@@ -1381,7 +1524,15 @@ def build_runtime_snapshot(
         "release_gates": summary["release_gates"],
         "objectives": summary["objectives"],
         "next_rows": summary["next_rows"],
-        "open_messages": summary["open_messages"],
+        "open_messages": [
+            row
+            for row in message_rows
+            if row.get("status") == "open"
+            and (
+                not str(row.get("task_id") or "").strip()
+                or str(row.get("task_id") or "") in visible_task_ids
+            )
+        ],
         "plan": plan,
         "tasks": tasks,
     }
@@ -1424,12 +1575,21 @@ def render_plan_text(view: dict[str, Any]) -> str:
 
 
 def render_summary_text(view: dict[str, Any]) -> str:
+    workset = view.get("workset") if isinstance(view.get("workset"), dict) else {}
+    total_text = f"{view['total']} total"
+    if str(workset.get("visibility") or "") == "focused":
+        total_text = f"{view['total']} shown of {workset.get('total_task_count', view['total'])} total"
     lines = [
         f"Project: {view['project_name']}",
-        f"Tasks: {view['total']} total | ready {view['counts']['ready']} | claimed {view['counts']['claimed']} | done {view['counts']['done']} | approval {view['counts']['approval']} | waiting {view['counts']['waiting']} | high-risk {view['counts']['high-risk']}",
+        f"Tasks: {total_text} | ready {view['counts']['ready']} | claimed {view['counts']['claimed']} | done {view['counts']['done']} | approval {view['counts']['approval']} | waiting {view['counts']['waiting']} | high-risk {view['counts']['high-risk']}",
         "",
         "Next runnable tasks:",
     ]
+    if str(workset.get("visibility") or "") == "focused":
+        scope = workset.get("scope") if isinstance(workset.get("scope"), dict) else {}
+        requested_task_ids = list(scope.get("task_ids") or [])
+        focus_label = ", ".join(requested_task_ids) if requested_task_ids else "task_ids"
+        lines[2:2] = [f"Focus: {focus_label}", ""]
     if view["next_rows"]:
         for row in view["next_rows"]:
             lines.append(f"- {row['id']} [{row['risk']}] {row['title']}")

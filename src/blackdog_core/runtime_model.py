@@ -16,6 +16,7 @@ import subprocess
 from .backlog import (
     BacklogSnapshot,
     BacklogTask,
+    build_workset_snapshot,
     blocking_reason,
     classify_task_status,
     load_backlog,
@@ -311,6 +312,8 @@ class Workset:
     title: str
     target_branch: str | None
     visibility: str
+    scope: dict[str, Any]
+    total_task_count: int
     task_ids: tuple[str, ...]
     task_edges: tuple[tuple[str, str], ...]
     scope_paths: tuple[str, ...]
@@ -800,17 +803,22 @@ def project_workset(
     task_states: Sequence[TaskState],
     target_branch: str | None = None,
     visibility: str = "default",
+    scope: Mapping[str, Any] | None = None,
+    total_task_count: int | None = None,
 ) -> Workset:
+    visible_task_ids = {task.task_id for task in task_states}
     task_ids = tuple(task.task_id for task in task_states)
     task_edges = tuple(
         (predecessor_id, task.task_id)
         for task in task_states
         for predecessor_id in task.predecessor_ids
+        if predecessor_id in visible_task_ids
     )
     scope_paths = tuple(
         dict.fromkeys(
             path
-            for task in snapshot.tasks.values()
+            for task_id, task in snapshot.tasks.items()
+            if task_id in visible_task_ids
             for path in (
                 *(_string_tuple(task.payload.get("paths"))),
                 *(_string_tuple(task.payload.get("docs"))),
@@ -829,6 +837,8 @@ def project_workset(
         title=title,
         target_branch=target_branch,
         visibility=visibility,
+        scope=_mapping_copy(scope if isinstance(scope, MappingABC) else {}),
+        total_task_count=total_task_count if total_task_count is not None else len(snapshot.tasks),
         task_ids=task_ids,
         task_edges=task_edges,
         scope_paths=scope_paths,
@@ -987,41 +997,65 @@ def project_runtime_model(
     workspace_mode: str = "git-worktree",
     execution_mode: str = "same-thread",
     execution_id: str | None = None,
+    focus_task_ids: Sequence[str] = (),
 ) -> RuntimeModel:
     repository = project_repository(profile, integration_branches=(workspace.target_branch,) if workspace and workspace.target_branch else ())
     workspace = workspace or project_workspace(project_root=profile.paths.project_root, workspace_mode=workspace_mode)
-    projected_events = tuple(project_event(row) for row in (events or load_events(profile.paths)))
-    projected_results = tuple(project_result(row) for row in (results or load_task_results(profile.paths)))
-    projected_control_messages = project_control_messages(inbox or load_inbox(profile.paths))
+    all_events = tuple(project_event(row) for row in (events or load_events(profile.paths)))
+    all_results = tuple(project_result(row) for row in (results or load_task_results(profile.paths)))
+    all_control_messages = project_control_messages(inbox or load_inbox(profile.paths))
     state_attempts = tuple(
         dict(entry)
         for entry in (state.get("task_attempts", {}) or {}).values()
         if isinstance(entry, MappingABC)
     )
-    projected_prompt_receipts = (
+    all_prompt_receipts = (
         tuple(prompt_receipts)
         if prompt_receipts
-        else project_prompt_receipts_from_artifacts(state=state, results=projected_results, workspace=workspace)
+        else project_prompt_receipts_from_artifacts(state=state, results=all_results, workspace=workspace)
     )
-    task_attempts = project_task_attempts(
-        results=projected_results,
-        events=projected_events,
+    all_task_attempts = project_task_attempts(
+        results=all_results,
+        events=all_events,
         workspace=workspace,
         state_attempts=state_attempts,
-        prompt_receipts=projected_prompt_receipts,
+        prompt_receipts=all_prompt_receipts,
     )
-    task_states = project_task_states(
+    all_task_states = project_task_states(
         snapshot,
         state,
-        results=projected_results,
-        task_attempts=task_attempts,
+        results=all_results,
+        task_attempts=all_task_attempts,
         allow_high_risk=allow_high_risk,
     )
+    workset_view = build_workset_snapshot(
+        profile,
+        snapshot,
+        dict(state),
+        allow_high_risk=allow_high_risk,
+        focus_task_ids=list(focus_task_ids),
+    )
+    visible_task_ids = {str(task_id) for task_id in workset_view["workset"]["task_ids"]}
+    projected_results = tuple(result for result in all_results if result.task_id in visible_task_ids)
+    projected_events = tuple(
+        event for event in all_events if event.task_id is None or event.task_id in visible_task_ids
+    )
+    projected_control_messages = tuple(
+        message for message in all_control_messages if message.task_id is None or message.task_id in visible_task_ids
+    )
+    projected_prompt_receipts = tuple(
+        receipt for receipt in all_prompt_receipts if receipt.task_id is None or receipt.task_id in visible_task_ids
+    )
+    task_attempts = tuple(attempt for attempt in all_task_attempts if attempt.task_id in visible_task_ids)
+    task_states = tuple(task_state for task_state in all_task_states if task_state.task_id in visible_task_ids)
     workset = project_workset(
         snapshot=snapshot,
         repository=repository,
         task_states=task_states,
         target_branch=workspace.target_branch,
+        visibility=str(workset_view["workset"].get("visibility") or "default"),
+        scope=workset_view["workset"].get("scope") if isinstance(workset_view["workset"].get("scope"), MappingABC) else {},
+        total_task_count=int(workset_view["workset"].get("total_task_count") or len(snapshot.tasks)),
     )
     wait_conditions = project_wait_conditions(
         workset=workset,
@@ -1067,6 +1101,7 @@ def load_runtime_model(
     workspace_mode: str = "git-worktree",
     execution_mode: str = "same-thread",
     allow_high_risk: bool = False,
+    focus_task_ids: Sequence[str] = (),
 ) -> RuntimeModel:
     resolved_snapshot = snapshot or load_backlog(profile.paths, profile)
     resolved_state = state or load_state(profile.paths.state_file)
@@ -1078,6 +1113,7 @@ def load_runtime_model(
         workspace_mode=workspace_mode,
         execution_mode=execution_mode,
         allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
     )
 
 
@@ -1086,11 +1122,13 @@ def load_current_artifacts(
     *,
     workspace: Workspace | None = None,
     allow_high_risk: bool = False,
+    focus_task_ids: Sequence[str] = (),
 ) -> RuntimeModel:
     return load_runtime_model(
         profile,
         workspace=workspace,
         allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
     )
 
 

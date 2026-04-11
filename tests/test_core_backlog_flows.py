@@ -467,6 +467,58 @@ class CoreBacklogFlowTests(CoreAuditTestCase):
         self.assertEqual(export["counts"]["ready"], 3)
         self.assertIn("Ready task", backlog.render_summary_text(view))
 
+        focused_next = backlog.next_runnable_tasks(
+            snapshot,
+            state,
+            allow_high_risk=False,
+            limit=8,
+            focus_task_ids=[task_ids["Predecessor second"]],
+        )
+        self.assertEqual([task.id for task in focused_next], [task_ids["Predecessor first"]])
+
+        focused_view = snapshot_api.build_runtime_summary(
+            profile,
+            snapshot,
+            state,
+            events=events,
+            messages=messages,
+            results=results,
+            allow_high_risk=False,
+            focus_task_ids=[task_ids["Predecessor second"]],
+        )
+        self.assertEqual(focused_view["workset"]["visibility"], "focused")
+        self.assertEqual(focused_view["workset"]["scope"]["kind"], "task_ids")
+        self.assertEqual(focused_view["workset"]["scope"]["task_ids"], [task_ids["Predecessor second"]])
+        self.assertEqual(
+            focused_view["workset"]["task_ids"],
+            [task_ids["Predecessor first"], task_ids["Predecessor second"]],
+        )
+        self.assertEqual(focused_view["total"], 2)
+        self.assertEqual([row["id"] for row in focused_view["next_rows"]], [task_ids["Predecessor first"]])
+        self.assertIn("Focus:", backlog.render_summary_text(focused_view))
+
+        focused_export = snapshot_api.build_runtime_snapshot(
+            profile,
+            snapshot,
+            state,
+            messages=messages,
+            results=results,
+            allow_high_risk=False,
+            focus_task_ids=[task_ids["Predecessor second"]],
+        )
+        self.assertEqual(
+            focused_export["workset"]["task_ids"],
+            [task_ids["Predecessor first"], task_ids["Predecessor second"]],
+        )
+        self.assertEqual(
+            [row["id"] for row in focused_export["tasks"]],
+            [task_ids["Predecessor first"], task_ids["Predecessor second"]],
+        )
+        self.assertEqual(
+            [row["task_id"] for row in focused_export["runtime_model"]["task_states"]],
+            [task_ids["Predecessor first"], task_ids["Predecessor second"]],
+        )
+
     def test_core_audit_backlog_unplanned_queue_and_unlisted_objectives_are_modeled_directly(self) -> None:
         task_a = backlog.BacklogTask(
             payload={

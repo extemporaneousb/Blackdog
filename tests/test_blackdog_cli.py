@@ -694,6 +694,143 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertTrue(paths.html_file.exists())
         self.assertTrue(paths.html_file.with_name("backlog-index.html").exists())
 
+    def test_focus_task_scopes_summary_next_snapshot_and_supervise_status(self) -> None:
+        run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
+        for title, lane_id, lane_title in (
+            ("Focused lane first", "lane-focus", "Focus lane"),
+            ("Focused lane second", "lane-focus", "Focus lane"),
+            ("Unrelated lane task", "lane-other", "Other lane"),
+        ):
+            run_cli(
+                "add",
+                "--project-root",
+                str(self.root),
+                "--title",
+                title,
+                "--bucket",
+                "core",
+                "--why",
+                "Need a focused workset read surface.",
+                "--evidence",
+                "Callers should be able to hide unrelated backlog work by selecting one bounded slice.",
+                "--safe-first-slice",
+                "Thread one focus selector through summary, next, snapshot, and status.",
+                "--path",
+                "src/blackdog_core/backlog.py",
+                "--lane-id",
+                lane_id,
+                "--lane-title",
+                lane_title,
+                "--wave",
+                "0",
+            )
+
+        task_ids = task_ids_by_title(self.root)
+        first_task_id = task_ids["Focused lane first"]
+        second_task_id = task_ids["Focused lane second"]
+        unrelated_task_id = task_ids["Unrelated lane task"]
+
+        summary_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog_cli.main",
+                    "summary",
+                    "--project-root",
+                    str(self.root),
+                    "--focus-task",
+                    second_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(summary_payload["workset"]["visibility"], "focused")
+        self.assertEqual(summary_payload["workset"]["scope"]["kind"], "task_ids")
+        self.assertEqual(summary_payload["workset"]["scope"]["task_ids"], [second_task_id])
+        self.assertEqual(summary_payload["workset"]["task_ids"], [first_task_id, second_task_id])
+        self.assertEqual(summary_payload["total"], 2)
+        self.assertEqual([row["id"] for row in summary_payload["next_rows"]], [first_task_id])
+        self.assertNotIn(unrelated_task_id, summary_payload["workset"]["task_ids"])
+
+        next_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog_cli.main",
+                    "next",
+                    "--project-root",
+                    str(self.root),
+                    "--focus-task",
+                    second_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual([row["id"] for row in next_payload], [first_task_id])
+
+        snapshot_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog_cli.main",
+                    "snapshot",
+                    "--project-root",
+                    str(self.root),
+                    "--focus-task",
+                    second_task_id,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(snapshot_payload["runtime_snapshot"]["workset"]["task_ids"], [first_task_id, second_task_id])
+        self.assertEqual({row["id"] for row in snapshot_payload["tasks"]}, {first_task_id, second_task_id})
+        self.assertEqual(snapshot_payload["graph"]["edges"], [{"from": first_task_id, "to": second_task_id}])
+        self.assertEqual(set(snapshot_payload["focus_task_ids"]), {first_task_id, second_task_id})
+
+        status_payload = json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "blackdog_cli.main",
+                    "supervise",
+                    "status",
+                    "--project-root",
+                    str(self.root),
+                    "--focus-task",
+                    second_task_id,
+                    "--format",
+                    "json",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=cli_env(),
+                cwd=self.root,
+            ).stdout
+        )
+        self.assertEqual(status_payload["workset"]["scope"]["task_ids"], [second_task_id])
+        self.assertEqual([row["id"] for row in status_payload["ready_tasks"]], [first_task_id])
+
     def test_summary_filters_stale_supervisor_runtime_messages(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
         for title in ("Historical runtime task", "Current operator task"):

@@ -1502,13 +1502,24 @@ def _build_objective_snapshot_rows(
     return objective_rows
 
 
-def build_board_snapshot(profile: RepoProfile) -> dict[str, Any]:
+def build_board_snapshot(
+    profile: RepoProfile,
+    *,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
     events = load_events(profile.paths)
     messages = load_inbox(profile.paths)
     results = load_task_results(profile.paths)
-    runtime_snapshot = build_runtime_snapshot(profile, snapshot, state, messages=messages, results=results)
+    runtime_snapshot = build_runtime_snapshot(
+        profile,
+        snapshot,
+        state,
+        messages=messages,
+        results=results,
+        focus_task_ids=focus_task_ids,
+    )
     task_activity = _build_task_activity(profile.paths, state, events, results)
     task_lifecycle = _build_task_lifecycle(events)
     task_timeline = _build_task_timeline(events)
@@ -1530,10 +1541,16 @@ def build_board_snapshot(profile: RepoProfile) -> dict[str, Any]:
     plan = runtime_snapshot["plan"]
     lane_positions = _lane_task_positions(plan)
     core_task_rows = {str(row["id"]): row for row in runtime_snapshot["tasks"]}
+    visible_task_ids = set(core_task_rows)
+    focused = str((runtime_snapshot.get("workset") or {}).get("visibility") or "") == "focused"
     tasks: list[dict[str, Any]] = []
     graph_edges: list[dict[str, str]] = []
     ordered_tasks = sorted(
-        snapshot.tasks.values(),
+        (
+            task
+            for task in snapshot.tasks.values()
+            if task.id in visible_task_ids
+        ),
         key=lambda task: (
             task.wave if task.wave is not None else 9999,
             task.lane_order if task.lane_order is not None else 9999,
@@ -1647,15 +1664,18 @@ def build_board_snapshot(profile: RepoProfile) -> dict[str, Any]:
         task_row["links"] = _task_links(task_row)
         tasks.append(task_row)
         for predecessor_id in task.predecessor_ids:
-            graph_edges.append({"from": predecessor_id, "to": task.id})
+            if predecessor_id in visible_task_ids:
+                graph_edges.append({"from": predecessor_id, "to": task.id})
 
-    focus_task_ids: set[str] = set()
     focus_tasks = tasks
     recent_results = []
-    for row in results[:10]:
+    for row in results:
+        task_id = str(row.get("task_id") or "")
+        if task_id and task_id not in visible_task_ids:
+            continue
         recent_results.append(
             {
-                "task_id": row.get("task_id"),
+                "task_id": task_id,
                 "status": row.get("status"),
                 "actor": row.get("actor"),
                 "recorded_at": row.get("recorded_at"),
@@ -1664,6 +1684,8 @@ def build_board_snapshot(profile: RepoProfile) -> dict[str, Any]:
                 "preview": _result_preview(row),
             }
         )
+        if len(recent_results) >= 10:
+            break
     open_messages = [row for row in runtime_snapshot["open_messages"][:10]]
     board_tasks = [row for row in tasks if row.get("lane_id")]
     active_tasks = [
@@ -1684,9 +1706,19 @@ def build_board_snapshot(profile: RepoProfile) -> dict[str, Any]:
     generated_at = now_iso()
     supervisor_last_checked_at = _latest_supervisor_check_at(profile)
     last_checked_at = _latest_timestamp(supervisor_last_checked_at, generated_at) or generated_at
-    content_updated_at = _latest_timestamp(*[row.get("at") for row in events]) or generated_at
-    last_activity = _latest_activity(events)
-    recent_events = events[-10:]
+    filtered_events = [
+        row
+        for row in events
+        if not str(row.get("task_id") or "").strip() or str(row.get("task_id") or "") in visible_task_ids
+    ]
+    content_updated_at = _latest_timestamp(*[row.get("at") for row in filtered_events]) or generated_at
+    last_activity = _latest_activity(filtered_events)
+    recent_events = filtered_events[-10:]
+    threads = [
+        row
+        for row in threads
+        if not row["task_ids"] or any(str(task_id) in visible_task_ids for task_id in row["task_ids"])
+    ]
 
     return {
         "schema_version": BOARD_SNAPSHOT_SCHEMA_VERSION,
@@ -1715,7 +1747,7 @@ def build_board_snapshot(profile: RepoProfile) -> dict[str, Any]:
         },
         "push_objective": runtime_snapshot["push_objective"],
         "objectives": runtime_snapshot["objectives"],
-        "focus_task_ids": sorted(focus_task_ids),
+        "focus_task_ids": sorted(visible_task_ids) if focused else [],
         "next_rows": runtime_snapshot["next_rows"],
         "open_messages": open_messages,
         "recent_results": recent_results,

@@ -891,6 +891,25 @@ Current `runtime_snapshot` keys include:
 - `workset_execution`
 - `prompt_receipts`
 
+Current `runtime_snapshot.workset` keys include:
+
+- `id`
+- `title`
+- `visibility`
+- `scope`
+- `source_backlog_file`
+- `source_kind`
+- `target_branch`
+- `target_commit`
+- `task_count`
+- `total_task_count`
+- `omitted_task_count`
+- `status_counts`
+- `task_ids`
+- `root_task_ids`
+
+`runtime_snapshot.workset` is the canonical place to discover request-scoped focus. When a caller requests a focused view, `visibility` becomes `focused`, `scope.kind` becomes `task_ids`, and `scope.task_ids` echoes the requested selector ids. `task_ids` still names the visible slice after Blackdog adds any predecessor or lower-wave blocker closure needed to keep current runnable/blocking semantics coherent. `total_task_count` and `omitted_task_count` distinguish this partial read from the full backlog without implying any durable backlog mutation.
+
 Current `runtime_snapshot.tasks[*]` keys include durable backlog/runtime facts only:
 
 - `id`
@@ -931,6 +950,8 @@ Current `runtime_snapshot.tasks[*]` keys include durable backlog/runtime facts o
 - `latest_result_status`
 - `latest_result_at`
 - `latest_result_actor`
+
+When `runtime_snapshot.workset.visibility == "focused"`, `runtime_snapshot.tasks[*]`, `task_dag`, `next_rows`, and `plan` all describe the same bounded slice. Omitted tasks are not deletions; they are outside the current request-scoped view.
 
 `queue_status` contains board counter fields:
 - `running`
@@ -980,6 +1001,7 @@ Current keys include:
 
 - `actor`
 - `latest_run`
+- `workset`
 - `workspace_contract`
 - `prelaunch_recovery`
 - `control_action`
@@ -1185,6 +1207,8 @@ Top-level keys:
 `last_checked_at` is the latest supervisor heartbeat timestamp when present, falling back to `generated_at`.
 The current static board consumes repo/header, plan/lane, and next-runnable data from `runtime_snapshot`; the duplicated top-level aliases remain for compatibility and board-local convenience.
 
+`focus_task_ids` is a board-facing alias for the visible task ids when a focused snapshot was requested. It stays empty for the default unfocused snapshot. Treat `runtime_snapshot.workset.scope` as the canonical selector and `focus_task_ids` as compatibility/view state, not as durable backlog membership.
+
 `queue_status` includes the counters used by the top-right status panel in the current static board:
 - `running`: tasks currently executing (`operator_status_key == "running"`).
 - `waiting`: tasks ready in the execution queue (`operator_status_key == "waiting"`).
@@ -1380,6 +1404,8 @@ Current `next_rows[*]` keys summarize the `Status` panel's next-in-line projecti
 - `lane`
 - `wave`
 - `risk`
+
+When a focused view is requested, `next_rows[*]` stays scoped to the same visible task slice as `runtime_snapshot.workset.task_ids`, `plan`, and `graph`. Blackdog preserves existing ordering/blocking rules inside that slice rather than post-filtering a global queue.
 
 Layout projections:
 

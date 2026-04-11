@@ -272,6 +272,42 @@ class RuntimeModelTests(unittest.TestCase):
                 {("msg-1", "resolved"), ("msg-2", "open")},
             )
 
+    def test_project_runtime_model_can_focus_a_bounded_workset_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            profile = self._profile(root)
+            snapshot = BacklogSnapshot(
+                raw_text="",
+                headers={"Project": "Target Runtime Model"},
+                sections={},
+                tasks={
+                    "BLACK-1": self._task(task_id="BLACK-1", title="Shared predecessor", requires_approval=False, wave=0),
+                    "BLACK-2": self._task(
+                        task_id="BLACK-2",
+                        title="Focused task",
+                        requires_approval=False,
+                        wave=0,
+                        predecessor_ids=("BLACK-1",),
+                    ),
+                    "BLACK-3": self._task(task_id="BLACK-3", title="Unrelated task", requires_approval=False, wave=0),
+                },
+                plan={"epics": [], "lanes": []},
+            )
+
+            model = runtime_model.project_runtime_model(
+                profile,
+                snapshot,
+                {"approval_tasks": {}, "task_claims": {}},
+                focus_task_ids=("BLACK-2",),
+            )
+
+            self.assertEqual(model.workset.visibility, "focused")
+            self.assertEqual(model.workset.scope["kind"], "task_ids")
+            self.assertEqual(model.workset.scope["task_ids"], ["BLACK-2"])
+            self.assertEqual(model.workset.total_task_count, 3)
+            self.assertEqual(model.workset.task_ids, ("BLACK-1", "BLACK-2"))
+            self.assertEqual([task_state.task_id for task_state in model.task_states], ["BLACK-1", "BLACK-2"])
+
     def test_project_prompt_receipt_keeps_full_packet(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

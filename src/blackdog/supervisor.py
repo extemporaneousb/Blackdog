@@ -18,6 +18,7 @@ from blackdog_core.backlog import (
     BacklogSnapshot,
     BacklogTask,
     add_task,
+    build_workset_snapshot,
     classify_task_status,
     load_backlog,
     next_runnable_tasks,
@@ -654,6 +655,10 @@ def _launch_settings_summary(settings: dict[str, Any] | None) -> str | None:
 
 def _supervisor_status_text(view: dict[str, Any]) -> str:
     lines = [f"Supervisor actor: {view['actor']}"]
+    workset = view.get("workset") if isinstance(view.get("workset"), dict) else {}
+    if str(workset.get("visibility") or "") == "focused":
+        scope = workset.get("scope") if isinstance(workset.get("scope"), dict) else {}
+        lines.append(f"Focus: {', '.join(scope.get('task_ids') or [])}")
     latest_run = view.get("latest_run")
     if isinstance(latest_run, dict):
         lines.append(
@@ -2288,13 +2293,30 @@ def build_supervisor_status_view(
     *,
     actor: str,
     allow_high_risk: bool,
+    focus_task_ids: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     snapshot = load_backlog(profile.paths, profile)
     state = sync_state_for_backlog(load_state(profile.paths.state_file), snapshot)
+    workset_view = build_workset_snapshot(
+        profile,
+        snapshot,
+        state,
+        allow_high_risk=allow_high_risk,
+        focus_task_ids=focus_task_ids,
+    )
+    visible_task_ids = {str(task_id) for task_id in workset_view["workset"]["task_ids"]}
     latest_run = _latest_run_status(profile, actor=actor)
     workspace_mode = normalize_workspace_mode((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
-    open_messages = load_inbox(profile.paths, recipient=actor, status="open")
-    control_rows = load_control_messages(profile.paths, recipient=actor, status="open")
+    open_messages = [
+        row
+        for row in load_inbox(profile.paths, recipient=actor, status="open")
+        if not str(row.get("task_id") or "").strip() or str(row.get("task_id") or "") in visible_task_ids
+    ]
+    control_rows = [
+        row
+        for row in load_control_messages(profile.paths, recipient=actor, status="open")
+        if not str(row.get("task_id") or "").strip() or str(row.get("task_id") or "") in visible_task_ids
+    ]
     results = load_task_results(profile.paths)
     task_attempt_rows = load_task_attempts(state, state_file=profile.paths.state_file)
     wait_condition_rows = load_wait_conditions(state, state_file=profile.paths.state_file)
@@ -2332,7 +2354,7 @@ def build_supervisor_status_view(
             "updated_at": str(entry.get("updated_at") or entry.get("launched_at") or ""),
         }
         for attempt_id, entry in sorted(task_attempt_rows.items(), key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
-        if task_attempt_is_active(entry)
+        if task_attempt_is_active(entry) and str(entry.get("task_id") or "") in visible_task_ids
     ][:SUPERVISOR_STATUS_READY_LIMIT]
     open_wait_conditions = [
         {
@@ -2348,6 +2370,10 @@ def build_supervisor_status_view(
         }
         for wait_id, entry in sorted(wait_condition_rows.items(), key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
         if wait_condition_is_active(entry)
+        and (
+            not str(entry.get("task_id") or "").strip()
+            or str(entry.get("task_id") or "") in visible_task_ids
+        )
     ][:SUPERVISOR_STATUS_CONTROL_LIMIT]
     control_action, control_message = _run_control_action(open_messages)
     ready_tasks = [
@@ -2364,6 +2390,7 @@ def build_supervisor_status_view(
             state,
             allow_high_risk=allow_high_risk,
             limit=SUPERVISOR_STATUS_READY_LIMIT,
+            focus_task_ids=focus_task_ids,
         )
     ]
     recent_results = []
@@ -2373,6 +2400,8 @@ def build_supervisor_status_view(
         if result_actor != actor and not result_actor.startswith(child_actor_prefix):
             continue
         task_id = str(row.get("task_id") or "")
+        if task_id and task_id not in visible_task_ids:
+            continue
         task = snapshot.tasks.get(task_id)
         recent_results.append(
             {
@@ -2389,7 +2418,11 @@ def build_supervisor_status_view(
         if len(recent_results) >= SUPERVISOR_STATUS_RESULT_LIMIT:
             break
     recover_view = build_supervisor_recover_view(profile, actor=actor)
-    recoverable_cases = list(recover_view.get("recoverable_cases") or [])
+    recoverable_cases = [
+        case
+        for case in (recover_view.get("recoverable_cases") or [])
+        if not str(case.get("task_id") or "").strip() or str(case.get("task_id") or "") in visible_task_ids
+    ]
     recovery_task_counts: Counter[str] = Counter(
         str(case.get("task_id") or "") for case in recoverable_cases if str(case.get("task_id") or "")
     )
@@ -2397,6 +2430,7 @@ def build_supervisor_status_view(
     return {
         "actor": actor,
         "latest_run": latest_run,
+        "workset": workset_view["workset"],
         "workspace_contract": worktree_contract(profile, workspace_mode=workspace_mode),
         "launch_defaults": build_supervisor_launch_defaults_view(profile),
         "prelaunch_recovery": _plan_prelaunch_recovery(profile, actor=actor),
