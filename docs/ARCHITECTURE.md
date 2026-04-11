@@ -61,6 +61,8 @@ Core owns:
 - repo-local profile loading and path resolution
 - canonical backlog parsing and validation
 - derived read-only snapshot builders over backlog/state/record inputs
+- typed runtime-model projections over repository, workset, task-attempt,
+  wait-condition, prompt-receipt, and result artifacts
 - canonical artifact contracts for backlog, state, events, inbox, and
   task results
 - deterministic state transitions for approval, task claims, inbox

@@ -3692,6 +3692,13 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(ui_snapshot["runtime_snapshot"]["schema_version"], RUNTIME_SNAPSHOT_SCHEMA_VERSION)
         self.assertEqual(ui_snapshot["runtime_snapshot"]["project_name"], ui_snapshot["project_name"])
         self.assertEqual(ui_snapshot["runtime_snapshot"]["plan"], ui_snapshot["plan"])
+        self.assertIn("workset", ui_snapshot["runtime_snapshot"])
+        self.assertIn("task_dag", ui_snapshot["runtime_snapshot"])
+        self.assertIn("runtime_model", ui_snapshot["runtime_snapshot"])
+        self.assertIn("workset_execution", ui_snapshot["runtime_snapshot"])
+        self.assertIsInstance(ui_snapshot["runtime_snapshot"]["task_attempts"], list)
+        self.assertIsInstance(ui_snapshot["runtime_snapshot"]["wait_conditions"], list)
+        self.assertIsInstance(ui_snapshot["runtime_snapshot"]["control_messages"], list)
 
         core_task = next(row for row in ui_snapshot["runtime_snapshot"]["tasks"] if row["id"] == task_id)
         ui_task = next(row for row in ui_snapshot["tasks"] if row["id"] == task_id)
@@ -3706,6 +3713,9 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(ui_task["operator_status"], "Claimed")
         self.assertIn("links", ui_task)
         self.assertIn("dialog_status_chips", ui_task)
+        self.assertEqual(ui_snapshot["runtime_snapshot"]["workset"]["task_ids"], [task_id])
+        self.assertEqual(ui_snapshot["runtime_snapshot"]["task_dag"]["root_task_ids"], [task_id])
+        self.assertEqual(ui_snapshot["runtime_snapshot"]["runtime_model"]["workset"]["task_ids"], [task_id])
 
     def test_snapshot_lane_positions_follow_neutral_plan_order(self) -> None:
         run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
@@ -6007,6 +6017,42 @@ class BlackdogCliTests(unittest.TestCase):
             env=cli_env(),
             cwd=self.root,
         )
+        paths = self.runtime_paths()
+        with store_module.locked_state(paths.state_file) as state:
+            store_module.upsert_task_attempt(
+                state,
+                "abcd1234:" + task_ids["Status task one"],
+                {
+                    "task_id": task_ids["Status task one"],
+                    "run_id": "abcd1234",
+                    "actor": "supervisor",
+                    "child_agent": "supervisor/child-01",
+                    "status": "running",
+                    "workspace": str(self.root / ".worktrees" / "status-one"),
+                    "workspace_mode": "git-worktree",
+                    "branch": "supervisor/status-one",
+                    "wait_condition_id": "wait-status-one",
+                    "prompt_receipt": {
+                        "task_id": task_ids["Status task one"],
+                        "run_id": "abcd1234",
+                        "prompt_text": "Implement status task one exactly.",
+                    },
+                },
+                state_file=paths.state_file,
+            )
+            store_module.upsert_wait_condition(
+                state,
+                "wait-status-one",
+                {
+                    "kind": "child-process",
+                    "status": "waiting",
+                    "task_id": task_ids["Status task one"],
+                    "attempt_id": "abcd1234:" + task_ids["Status task one"],
+                    "run_id": "abcd1234",
+                    "reason": "waiting for child completion",
+                },
+                state_file=paths.state_file,
+            )
         run_dir = self.runtime_paths().supervisor_runs_dir / "20260313-120000-abcd1234"
         run_dir.mkdir(parents=True)
         status_file = run_dir / "status.json"
@@ -6160,6 +6206,10 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertEqual(payload["recovery_needed"]["cases"], [])
         self.assertEqual(payload["control_action"], {"action": "stop", "message_id": stop_message["message_id"]})
         self.assertEqual([row["message_id"] for row in payload["open_control_messages"]], [stop_message["message_id"]])
+        self.assertEqual(len(payload["active_attempts"]), 1)
+        self.assertEqual(payload["active_attempts"][0]["task_id"], task_ids["Status task one"])
+        self.assertEqual(len(payload["open_wait_conditions"]), 1)
+        self.assertEqual(payload["open_wait_conditions"][0]["wait_id"], "wait-status-one")
         self.assertEqual([row["title"] for row in payload["ready_tasks"]], ["Status task one"])
         self.assertEqual(len(payload["recent_results"]), 1)
         self.assertEqual(payload["recent_results"][0]["task_id"], task_ids["Status task one"])
@@ -6195,6 +6245,8 @@ class BlackdogCliTests(unittest.TestCase):
         self.assertIn("Recovery needed:", text_output)
         self.assertIn("No recovery-needed child outcomes.", text_output)
         self.assertIn(f"Run control: stop via {stop_message['message_id']}", text_output)
+        self.assertIn("Active attempts:", text_output)
+        self.assertIn("Open waits:", text_output)
         self.assertIn("Recent child-run results:", text_output)
 
     def test_supervise_run_sweeps_completed_tasks_and_compacts_waves(self) -> None:

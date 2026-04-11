@@ -213,6 +213,8 @@ five artifacts:
 | --- | --- | --- | --- |
 | `backlog-state.json` | `approval_tasks` | latest JSON object snapshot | approval state keyed by task id |
 | `backlog-state.json` | `task_claims` | latest JSON object snapshot | claim/completion state keyed by task id |
+| `backlog-state.json` | `task_attempts` | latest JSON object snapshot | attempt lineage keyed by `attempt_id` |
+| `backlog-state.json` | `wait_conditions` | latest JSON object snapshot | durable wait state keyed by `wait_id` |
 | `events.jsonl` | event records | append-only JSONL replay | factual history, never in-place mutation |
 | `inbox.jsonl` | inbox records | append-only JSONL replay | effective inbox state keyed by `message_id` |
 | `task-results/<task-id>/*.json` | result records | append-only per-task files | newest-first derived result history |
@@ -229,19 +231,29 @@ The current runtime semantics for those artifacts are:
   "done"`, and `claim_is_active()` only treats `status == "claimed"` as an
   active owner. Reconcile passes refresh stored task metadata from the backlog
   and prune orphaned claim rows for task ids that no longer exist.
+- `task_attempts` is the additive execution-lineage table. It records
+  per-attempt runtime metadata such as `run_id`, workspace binding, prompt
+  receipt, landing outcome, and latest attempt status keyed by `attempt_id`.
+- `wait_conditions` is the additive durable wait table. It records what an
+  attempt is waiting on, the current wait state, and the resume/detail text
+  Blackdog can surface through status or snapshot views.
 - `events.jsonl` is append-only. Readers must derive current state from replay;
   no event row is updated or deleted after it is written. Every row must remain
   a JSON object with `event_id`, `type`, `at`, `actor`, and an object-valued
-  `payload`.
+  `payload`. Event rows may also carry correlation fields such as `task_id`,
+  `attempt_id`, `run_id`, `wait_condition_id`, and `control_message_id`.
 - `inbox.jsonl` is append-only. `load_inbox()` rebuilds message state by
   replaying rows in file order and folding them by `message_id`, after first
   validating row shape (`action`, `message_id`, `at`, and the action-specific
-  required fields).
+  required fields). Message rows may additionally carry typed control metadata
+  such as `control_action`, `control_scope`, `control_target`, `control_state`,
+  and `control_reason`.
 - `task-results/<task-id>/*.json` is append-only evidence. `record_task_result()`
   always writes a new timestamped file and appends a matching `task_result`
   event; `load_task_results()` derives presentation order by sorting rows by
   `recorded_at` descending and rejects files that do not carry the required
-  summary fields.
+  summary fields. Result rows may additionally carry `attempt_id`,
+  `wait_condition_id`, `control_message_id`, and an embedded `prompt_receipt`.
 
 `blackdog_core.snapshot.load_runtime_artifacts()` is the canonical read
 path over those five artifacts. It:
@@ -863,6 +875,8 @@ Current `runtime_snapshot` keys include:
 - `headers`
 - `counts`
 - `total`
+- `workset`
+- `task_dag`
 - `push_objective`
 - `release_gates`
 - `objectives`
@@ -870,6 +884,12 @@ Current `runtime_snapshot` keys include:
 - `open_messages`
 - `plan`
 - `tasks`
+- `runtime_model`
+- `task_attempts`
+- `wait_conditions`
+- `control_messages`
+- `workset_execution`
+- `prompt_receipts`
 
 Current `runtime_snapshot.tasks[*]` keys include durable backlog/runtime facts only:
 
@@ -964,6 +984,8 @@ Current keys include:
 - `prelaunch_recovery`
 - `control_action`
 - `open_control_messages`
+- `active_attempts`
+- `open_wait_conditions`
 - `ready_tasks`
 - `recent_results`
 

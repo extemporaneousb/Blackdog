@@ -23,7 +23,7 @@ This document describes the target model for Blackdog as a whole, not just `blac
 - `blackdog` is the product/orchestration layer. It owns WTAM lifecycle orchestration, workset execution, task shaping, prompt shaping, takeover and recovery behavior, direct execution, and supervisor behavior.
 - viewers and adapters are projections and entrypoints. They render or expose runtime state, but they are not durable truth and they should not become a second control plane.
 
-The rest of this document mostly describes the target product/runtime model, while treating the runtime-kernel boundary as a hard design constraint.
+The rest of this document describes the target product/runtime model while treating the runtime-kernel boundary as a hard design constraint.
 
 ## Product Direction
 
@@ -105,7 +105,7 @@ The current model is still mismatched to the product direction in a few importan
 
 ## What We Should Learn From Adjacent Systems
 
-The detailed comparative research does not belong in this document. What does belong here is the set of lessons Blackdog should carry forward from adjacent tools and runtimes.
+The detailed comparative research does not belong in this document. What does belong here is the short list of lessons Blackdog should carry forward from adjacent tools and runtimes.
 
 - Structural repo orientation matters. A repo map or internal API map is more useful than repeatedly restating the repo in prose.
 - Execution history needs a canonical artifact. Blackdog should treat `TaskAttempt` the way other systems treat a trajectory or durable thread history.
@@ -174,7 +174,7 @@ A task spec should capture:
 - validation requirements or policy hooks
 - task kind
 
-The task spec should be narrow and intuitive for agents. The goal is not to make every task carry the whole project model. The goal is to make each task pre-cleared enough that an agent can start with minimal context and still act correctly.
+The task spec should be narrow and intuitive for agents. It should be pre-cleared enough that an agent can start with minimal context and still act correctly.
 
 ### `TaskState`
 

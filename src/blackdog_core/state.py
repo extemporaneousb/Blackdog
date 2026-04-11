@@ -55,6 +55,147 @@ INBOX_STATE_MACHINE_STATES = frozenset({INBOX_STATUS_OPEN, INBOX_STATUS_RESOLVED
 INBOX_MESSAGE_REQUIRED_FIELDS = ("sender", "recipient", "kind")
 INBOX_RESOLVE_REQUIRED_FIELDS = ("actor",)
 
+CONTROL_ACTION_STOP = "stop"
+CONTROL_ACTION_RESUME = "resume"
+CONTROL_ACTION_PAUSE = "pause"
+CONTROL_ACTION_REPLAN = "replan"
+CONTROL_ACTION_TAKEOVER = "takeover"
+CONTROL_ACTION_STATUS = "status"
+CONTROL_ACTION_NEEDS_INPUT = "needs-input"
+CONTROL_ACTION_NOTE = "note"
+CONTROL_ACTIONS = frozenset(
+    {
+        CONTROL_ACTION_STOP,
+        CONTROL_ACTION_RESUME,
+        CONTROL_ACTION_PAUSE,
+        CONTROL_ACTION_REPLAN,
+        CONTROL_ACTION_TAKEOVER,
+        CONTROL_ACTION_STATUS,
+        CONTROL_ACTION_NEEDS_INPUT,
+        CONTROL_ACTION_NOTE,
+    }
+)
+CONTROL_ACTION_ALIASES = {
+    "status-request": CONTROL_ACTION_STATUS,
+    "status_request": CONTROL_ACTION_STATUS,
+    "inspect": CONTROL_ACTION_STATUS,
+    "request-input": CONTROL_ACTION_NEEDS_INPUT,
+    "request_input": CONTROL_ACTION_NEEDS_INPUT,
+    "needs_input": CONTROL_ACTION_NEEDS_INPUT,
+}
+
+TASK_ATTEMPT_STATE_ABSENT = "absent"
+TASK_ATTEMPT_STATUS_PREPARED = "prepared"
+TASK_ATTEMPT_STATUS_RUNNING = "running"
+TASK_ATTEMPT_STATUS_WAITING = "waiting"
+TASK_ATTEMPT_STATUS_BLOCKED = "blocked"
+TASK_ATTEMPT_STATUS_INTERRUPTED = "interrupted"
+TASK_ATTEMPT_STATUS_FAILED = "failed"
+TASK_ATTEMPT_STATUS_DONE = "done"
+TASK_ATTEMPT_STATUS_UNKNOWN = "unknown"
+TASK_ATTEMPT_STATUSES = frozenset(
+    {
+        TASK_ATTEMPT_STATUS_PREPARED,
+        TASK_ATTEMPT_STATUS_RUNNING,
+        TASK_ATTEMPT_STATUS_WAITING,
+        TASK_ATTEMPT_STATUS_BLOCKED,
+        TASK_ATTEMPT_STATUS_INTERRUPTED,
+        TASK_ATTEMPT_STATUS_FAILED,
+        TASK_ATTEMPT_STATUS_DONE,
+        TASK_ATTEMPT_STATUS_UNKNOWN,
+    }
+)
+TASK_ATTEMPT_ACTIVE_STATUSES = frozenset(
+    {
+        TASK_ATTEMPT_STATUS_PREPARED,
+        TASK_ATTEMPT_STATUS_RUNNING,
+        TASK_ATTEMPT_STATUS_WAITING,
+    }
+)
+TASK_ATTEMPT_TERMINAL_STATUSES = frozenset(
+    {
+        TASK_ATTEMPT_STATUS_BLOCKED,
+        TASK_ATTEMPT_STATUS_INTERRUPTED,
+        TASK_ATTEMPT_STATUS_FAILED,
+        TASK_ATTEMPT_STATUS_DONE,
+    }
+)
+
+WAIT_CONDITION_STATE_ABSENT = "absent"
+WAIT_CONDITION_STATUS_WAITING = "waiting"
+WAIT_CONDITION_STATUS_SATISFIED = "satisfied"
+WAIT_CONDITION_STATUS_BLOCKED = "blocked"
+WAIT_CONDITION_STATUS_CANCELLED = "cancelled"
+WAIT_CONDITION_STATUS_FAILED = "failed"
+WAIT_CONDITION_STATUS_UNKNOWN = "unknown"
+WAIT_CONDITION_KIND_CHILD_PROCESS = "child-process"
+WAIT_CONDITION_KIND_LAND = "land"
+WAIT_CONDITION_KIND_CONTROL = "control"
+WAIT_CONDITION_KIND_RESULT = "result"
+WAIT_CONDITION_KIND_INPUT = "input"
+WAIT_CONDITION_KIND_APPROVAL = "approval"
+WAIT_CONDITION_KIND_RECOVERY = "recovery"
+WAIT_CONDITION_KIND_UNKNOWN = "unknown"
+WAIT_CONDITION_KINDS = frozenset(
+    {
+        WAIT_CONDITION_KIND_CHILD_PROCESS,
+        WAIT_CONDITION_KIND_LAND,
+        WAIT_CONDITION_KIND_CONTROL,
+        WAIT_CONDITION_KIND_RESULT,
+        WAIT_CONDITION_KIND_INPUT,
+        WAIT_CONDITION_KIND_APPROVAL,
+        WAIT_CONDITION_KIND_RECOVERY,
+        WAIT_CONDITION_KIND_UNKNOWN,
+    }
+)
+WAIT_CONDITION_KIND_ALIASES = {
+    "child": WAIT_CONDITION_KIND_CHILD_PROCESS,
+    "child_process": WAIT_CONDITION_KIND_CHILD_PROCESS,
+    "launch": WAIT_CONDITION_KIND_CHILD_PROCESS,
+    "landing": WAIT_CONDITION_KIND_LAND,
+    "landed": WAIT_CONDITION_KIND_LAND,
+    "control-message": WAIT_CONDITION_KIND_CONTROL,
+    "message": WAIT_CONDITION_KIND_CONTROL,
+    "result-record": WAIT_CONDITION_KIND_RESULT,
+    "result_record": WAIT_CONDITION_KIND_RESULT,
+    "input-required": WAIT_CONDITION_KIND_INPUT,
+    "input_required": WAIT_CONDITION_KIND_INPUT,
+    "needs-input": WAIT_CONDITION_KIND_INPUT,
+    "approval-required": WAIT_CONDITION_KIND_APPROVAL,
+    "approval_required": WAIT_CONDITION_KIND_APPROVAL,
+    "recovery-needed": WAIT_CONDITION_KIND_RECOVERY,
+    "recovery_needed": WAIT_CONDITION_KIND_RECOVERY,
+}
+WAIT_CONDITION_STATUSES = frozenset(
+    {
+        WAIT_CONDITION_STATUS_WAITING,
+        WAIT_CONDITION_STATUS_SATISFIED,
+        WAIT_CONDITION_STATUS_BLOCKED,
+        WAIT_CONDITION_STATUS_CANCELLED,
+        WAIT_CONDITION_STATUS_FAILED,
+        WAIT_CONDITION_STATUS_UNKNOWN,
+    }
+)
+WAIT_CONDITION_ACTIVE_STATUSES = frozenset({WAIT_CONDITION_STATUS_WAITING})
+WAIT_CONDITION_TERMINAL_STATUSES = frozenset(
+    {
+        WAIT_CONDITION_STATUS_SATISFIED,
+        WAIT_CONDITION_STATUS_BLOCKED,
+        WAIT_CONDITION_STATUS_CANCELLED,
+        WAIT_CONDITION_STATUS_FAILED,
+    }
+)
+
+
+def normalize_wait_condition_kind(value: Any, *, source: Path) -> str:
+    kind = _normalized_optional_string(value)
+    if kind is None:
+        raise StoreError(f"wait condition kind is required in {source}")
+    kind = WAIT_CONDITION_KIND_ALIASES.get(kind, kind)
+    if kind not in WAIT_CONDITION_KINDS:
+        raise StoreError(f"wait condition kind must be one of {sorted(WAIT_CONDITION_KINDS)} in {source}")
+    return kind
+
 
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -65,6 +206,8 @@ def default_state() -> dict[str, Any]:
         "schema_version": 1,
         "approval_tasks": {},
         "task_claims": {},
+        "task_attempts": {},
+        "wait_conditions": {},
     }
 
 
@@ -115,6 +258,32 @@ def _normalize_non_negative_int(value: Any, *, field: str, source: Path) -> int:
         raise StoreError(f"{field} must be an integer in {source}") from exc
     if normalized < 0:
         raise StoreError(f"{field} must be non-negative in {source}")
+    return normalized
+
+
+def _normalize_optional_bool(value: Any, *, field: str, source: Path) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise StoreError(f"{field} must be a boolean in {source}")
+
+
+def _normalize_choice(
+    value: Any,
+    *,
+    field: str,
+    source: Path,
+    allowed: frozenset[str],
+    default: str | None = None,
+) -> str:
+    normalized = _normalized_optional_string(value)
+    if normalized is None:
+        if default is None:
+            raise StoreError(f"{field} is required in {source}")
+        normalized = default
+    if normalized not in allowed:
+        raise StoreError(f"{field} must be one of {sorted(allowed)} in {source}")
     return normalized
 
 
@@ -182,6 +351,14 @@ def normalize_claim_entry(task_id: str, entry: dict[str, Any], *, state_file: Pa
         "bucket",
         "priority",
         "risk",
+        "attempt_id",
+        "run_id",
+        "workspace",
+        "workspace_mode",
+        "branch",
+        "target_branch",
+        "wait_condition_id",
+        "control_message_id",
         "claimed_by",
         "claimed_at",
         "released_by",
@@ -250,8 +427,50 @@ def normalize_event_row(payload: dict[str, Any], *, events_file: Path) -> dict[s
     normalized["actor"] = actor
     normalized["at"] = at
     normalized["task_id"] = _normalized_optional_string(normalized.get("task_id"))
+    normalized["attempt_id"] = _normalized_optional_string(normalized.get("attempt_id"))
+    normalized["run_id"] = _normalized_optional_string(normalized.get("run_id"))
+    normalized["wait_condition_id"] = _normalized_optional_string(normalized.get("wait_condition_id"))
+    normalized["control_message_id"] = _normalized_optional_string(normalized.get("control_message_id"))
     normalized["payload"] = _normalize_optional_object(normalized.get("payload"), field="payload", source=events_file)
     return normalized
+
+
+def _infer_control_action_from_message(
+    *,
+    control_action: str | None,
+    kind: str,
+    tags: list[str],
+    body: str,
+) -> str | None:
+    if control_action:
+        return control_action
+    normalized_kind = kind.strip().lower()
+    if normalized_kind == CONTROL_ACTION_NOTE:
+        return CONTROL_ACTION_NOTE
+    normalized_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+    if CONTROL_ACTION_STOP in normalized_tags or body.startswith("stop"):
+        return CONTROL_ACTION_STOP
+    for candidate in (
+        CONTROL_ACTION_RESUME,
+        CONTROL_ACTION_PAUSE,
+        CONTROL_ACTION_REPLAN,
+        CONTROL_ACTION_TAKEOVER,
+        CONTROL_ACTION_STATUS,
+        CONTROL_ACTION_NEEDS_INPUT,
+    ):
+        if candidate in normalized_tags or body.startswith(candidate):
+            return candidate
+    return None
+
+
+def normalize_control_action(value: Any, *, inbox_file: Path) -> str:
+    action = _normalized_optional_string(value)
+    if action is None:
+        raise StoreError(f"control_action is required in {inbox_file}")
+    action = CONTROL_ACTION_ALIASES.get(action, action)
+    if action not in CONTROL_ACTIONS:
+        raise StoreError(f"control_action must be one of {sorted(CONTROL_ACTIONS)} in {inbox_file}")
+    return action
 
 
 def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[str, Any]:
@@ -282,6 +501,23 @@ def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[st
         normalized["reply_to"] = _normalized_optional_string(normalized.get("reply_to"))
         normalized["body"] = str(normalized.get("body") or "")
         normalized["tags"] = _normalize_string_list(normalized.get("tags"), field="tags", source=inbox_file)
+        control_action = _normalized_optional_string(normalized.get("control_action"))
+        control_action = _infer_control_action_from_message(
+            control_action=control_action,
+            kind=normalized["kind"],
+            tags=normalized["tags"],
+            body=normalized["body"].strip().lower(),
+        )
+        if control_action is not None:
+            normalized["control_action"] = normalize_control_action(control_action, inbox_file=inbox_file)
+        else:
+            normalized.pop("control_action", None)
+        for field in ("control_scope", "control_target", "control_state", "control_reason"):
+            value = _normalized_optional_string(normalized.get(field))
+            if value is not None:
+                normalized[field] = value
+            else:
+                normalized.pop(field, None)
         return normalized
     for field in INBOX_RESOLVE_REQUIRED_FIELDS:
         value = _normalized_optional_string(normalized.get(field))
@@ -289,6 +525,224 @@ def normalize_inbox_row(payload: dict[str, Any], *, inbox_file: Path) -> dict[st
             raise StoreError(f"{field} is required for resolve rows in {inbox_file}")
         normalized[field] = value
     normalized["note"] = str(normalized.get("note") or "")
+    return normalized
+
+
+def control_message_action(message: dict[str, Any]) -> str | None:
+    if not isinstance(message, dict):
+        return None
+    action = _normalized_optional_string(message.get("control_action"))
+    if action is not None:
+        action = CONTROL_ACTION_ALIASES.get(action, action)
+        return action if action in CONTROL_ACTIONS else None
+    if str(message.get("action") or "").strip() != INBOX_ACTION_MESSAGE:
+        return None
+    kind = str(message.get("kind") or "")
+    tags = list(message.get("tags") or [])
+    body = str(message.get("body") or "").strip().lower()
+    action = _infer_control_action_from_message(
+        control_action=None,
+        kind=kind,
+        tags=tags if isinstance(tags, list) else [],
+        body=body,
+    )
+    return action if action in CONTROL_ACTIONS else None
+
+
+def normalize_prompt_receipt(payload: dict[str, Any] | None, *, source: Path, field: str = "prompt_receipt") -> dict[str, Any]:
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise StoreError(f"{field} must be an object in {source}")
+    normalized = dict(payload)
+    prompt_text = _normalized_optional_string(normalized.get("prompt_text"))
+    if prompt_text is None:
+        prompt_text = _normalized_optional_string(normalized.get("text"))
+    if prompt_text is None:
+        raise StoreError(f"{field}.prompt_text is required in {source}")
+    normalized["prompt_text"] = prompt_text
+    normalized["text"] = prompt_text
+    for key in (
+        "prompt_hash",
+        "template_hash",
+        "template_version",
+        "prompt_file",
+        "attempt_id",
+        "task_id",
+        "run_id",
+        "child_agent",
+        "workspace",
+        "workspace_mode",
+        "protocol_command",
+        "launch_command_strategy",
+        "recorded_at",
+        "launch_time",
+        "branch",
+        "target_branch",
+        "wait_condition_id",
+        "control_message_id",
+    ):
+        value = _normalized_optional_string(normalized.get(key))
+        if value is not None:
+            normalized[key] = value
+        else:
+            normalized.pop(key, None)
+    if "launch_command" in normalized and normalized.get("launch_command") is not None:
+        normalized["launch_command"] = _normalize_string_list(
+            normalized.get("launch_command"),
+            field=f"{field}.launch_command",
+            source=source,
+        )
+    else:
+        normalized.pop("launch_command", None)
+    for key in ("launch_settings", "worktree_spec", "telemetry"):
+        if key in normalized and normalized[key] is not None:
+            normalized[key] = _normalize_optional_object(normalized.get(key), field=f"{field}.{key}", source=source)
+        else:
+            normalized.pop(key, None)
+    return normalized
+
+
+def normalize_task_attempt_entry(attempt_id: str, entry: dict[str, Any], *, state_file: Path) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise StoreError(f"task_attempts[{attempt_id}] must be an object in {state_file}")
+    normalized = dict(entry)
+    normalized["attempt_id"] = attempt_id
+    task_id = _normalized_optional_string(normalized.get("task_id"))
+    if task_id is None:
+        raise StoreError(f"task_attempts[{attempt_id}].task_id is required in {state_file}")
+    normalized["task_id"] = task_id
+    status = _normalized_optional_string(normalized.get("status"))
+    if status is None:
+        status = TASK_ATTEMPT_STATUS_UNKNOWN
+    if status not in TASK_ATTEMPT_STATUSES:
+        raise StoreError(
+            f"task_attempts[{attempt_id}].status must be one of {sorted(TASK_ATTEMPT_STATUSES)} in {state_file}"
+        )
+    normalized["status"] = status
+    for field in (
+        "run_id",
+        "actor",
+        "child_agent",
+        "workspace",
+        "workspace_mode",
+        "branch",
+        "target_branch",
+        "prompt_file",
+        "run_dir",
+        "result_file",
+        "result_status",
+        "final_task_status",
+        "launch_command_strategy",
+        "prompt_hash",
+        "wait_condition_id",
+        "control_message_id",
+        "landed_commit",
+        "launch_error",
+        "land_error",
+    ):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    for field in ("landed", "result_recorded", "branch_ahead"):
+        value = _normalize_optional_bool(
+            normalized.get(field),
+            field=f"task_attempts[{attempt_id}].{field}",
+            source=state_file,
+        )
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    for field in ("attempted_at", "launched_at", "started_at", "updated_at", "completed_at", "resolved_at"):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    if "launch_command" in normalized and normalized.get("launch_command") is not None:
+        normalized["launch_command"] = _normalize_string_list(
+            normalized.get("launch_command"),
+            field=f"task_attempts[{attempt_id}].launch_command",
+            source=state_file,
+        )
+    else:
+        normalized.pop("launch_command", None)
+    if "launch_settings" in normalized and normalized.get("launch_settings") is not None:
+        normalized["launch_settings"] = _normalize_optional_object(
+            normalized.get("launch_settings"),
+            field=f"task_attempts[{attempt_id}].launch_settings",
+            source=state_file,
+        )
+    else:
+        normalized.pop("launch_settings", None)
+    if "metadata" in normalized and normalized.get("metadata") is not None:
+        normalized["metadata"] = _normalize_optional_object(
+            normalized.get("metadata"),
+            field=f"task_attempts[{attempt_id}].metadata",
+            source=state_file,
+        )
+    else:
+        normalized.pop("metadata", None)
+    normalized["prompt_receipt"] = normalize_prompt_receipt(
+        normalized.get("prompt_receipt"),
+        source=state_file,
+        field=f"task_attempts[{attempt_id}].prompt_receipt",
+    )
+    if not normalized["prompt_receipt"]:
+        normalized.pop("prompt_receipt", None)
+    return normalized
+
+
+def normalize_wait_condition_entry(wait_id: str, entry: dict[str, Any], *, state_file: Path) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise StoreError(f"wait_conditions[{wait_id}] must be an object in {state_file}")
+    normalized = dict(entry)
+    normalized["wait_id"] = wait_id
+    normalized["kind"] = normalize_wait_condition_kind(normalized.get("kind"), source=state_file)
+    status = _normalized_optional_string(normalized.get("status"))
+    if status is None:
+        status = WAIT_CONDITION_STATUS_WAITING
+    if status not in WAIT_CONDITION_STATUSES:
+        raise StoreError(
+            f"wait_conditions[{wait_id}].status must be one of {sorted(WAIT_CONDITION_STATUSES)} in {state_file}"
+        )
+    normalized["status"] = status
+    for field in (
+        "task_id",
+        "attempt_id",
+        "run_id",
+        "actor",
+        "child_agent",
+        "workspace",
+        "workspace_mode",
+        "reason",
+        "detail",
+        "resume_hint",
+        "blocked_by",
+        "control_message_id",
+    ):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    for field in ("requested_at", "updated_at", "satisfied_at", "blocked_at", "cancelled_at", "failed_at"):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
+    if "metadata" in normalized and normalized.get("metadata") is not None:
+        normalized["metadata"] = _normalize_optional_object(
+            normalized.get("metadata"),
+            field=f"wait_conditions[{wait_id}].metadata",
+            source=state_file,
+        )
+    else:
+        normalized.pop("metadata", None)
     return normalized
 
 
@@ -302,11 +756,25 @@ def normalize_task_result(payload: dict[str, Any], *, result_file: Path) -> dict
         if value is None:
             raise StoreError(f"{field} is required in {result_file}")
         normalized[field] = value
+    for field in ("attempt_id", "wait_condition_id", "control_message_id"):
+        value = _normalized_optional_string(normalized.get(field))
+        if value is not None:
+            normalized[field] = value
+        else:
+            normalized.pop(field, None)
     for field in ("what_changed", "validation", "residual", "followup_candidates"):
         normalized[field] = _normalize_string_list(normalized.get(field), field=field, source=result_file)
     if not isinstance(normalized.get("needs_user_input"), bool):
         raise StoreError(f"needs_user_input must be a boolean in {result_file}")
     normalized["metadata"] = _normalize_optional_object(normalized.get("metadata"), field="metadata", source=result_file)
+    if normalized.get("prompt_receipt"):
+        normalized["prompt_receipt"] = normalize_prompt_receipt(
+            normalized.get("prompt_receipt"),
+            source=result_file,
+            field="prompt_receipt",
+        )
+    else:
+        normalized.pop("prompt_receipt", None)
     normalized["task_shaping_telemetry"] = _normalize_optional_object(
         normalized.get("task_shaping_telemetry"),
         field="task_shaping_telemetry",
@@ -321,10 +789,16 @@ def normalize_state(payload: dict[str, Any], *, state_file: Path) -> dict[str, A
     payload.setdefault("schema_version", 1)
     payload.setdefault("approval_tasks", {})
     payload.setdefault("task_claims", {})
+    payload.setdefault("task_attempts", {})
+    payload.setdefault("wait_conditions", {})
     if not isinstance(payload["approval_tasks"], dict):
         raise StoreError(f"approval_tasks must be an object in {state_file}")
     if not isinstance(payload["task_claims"], dict):
         raise StoreError(f"task_claims must be an object in {state_file}")
+    if not isinstance(payload["task_attempts"], dict):
+        raise StoreError(f"task_attempts must be an object in {state_file}")
+    if not isinstance(payload["wait_conditions"], dict):
+        raise StoreError(f"wait_conditions must be an object in {state_file}")
     payload["approval_tasks"] = {
         str(task_id): normalize_approval_entry(str(task_id), entry, state_file=state_file)
         for task_id, entry in payload["approval_tasks"].items()
@@ -332,6 +806,14 @@ def normalize_state(payload: dict[str, Any], *, state_file: Path) -> dict[str, A
     payload["task_claims"] = {
         str(task_id): normalize_claim_entry(str(task_id), entry, state_file=state_file)
         for task_id, entry in payload["task_claims"].items()
+    }
+    payload["task_attempts"] = {
+        str(attempt_id): normalize_task_attempt_entry(str(attempt_id), entry, state_file=state_file)
+        for attempt_id, entry in payload["task_attempts"].items()
+    }
+    payload["wait_conditions"] = {
+        str(wait_id): normalize_wait_condition_entry(str(wait_id), entry, state_file=state_file)
+        for wait_id, entry in payload["wait_conditions"].items()
     }
     return payload
 
@@ -344,6 +826,104 @@ def load_state(state_file: Path) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise StoreError(f"Invalid JSON in {state_file}: {exc}") from exc
     return normalize_state(payload, state_file=state_file)
+
+
+def load_task_attempts(state: dict[str, Any], *, state_file: Path) -> dict[str, dict[str, Any]]:
+    attempts = state.get("task_attempts", {})
+    if not isinstance(attempts, dict):
+        raise StoreError(f"task_attempts must be an object in {state_file}")
+    return {
+        str(attempt_id): normalize_task_attempt_entry(str(attempt_id), entry, state_file=state_file)
+        for attempt_id, entry in attempts.items()
+        if isinstance(entry, dict)
+    }
+
+
+def load_wait_conditions(state: dict[str, Any], *, state_file: Path) -> dict[str, dict[str, Any]]:
+    wait_conditions = state.get("wait_conditions", {})
+    if not isinstance(wait_conditions, dict):
+        raise StoreError(f"wait_conditions must be an object in {state_file}")
+    return {
+        str(wait_id): normalize_wait_condition_entry(str(wait_id), entry, state_file=state_file)
+        for wait_id, entry in wait_conditions.items()
+        if isinstance(entry, dict)
+    }
+
+
+def task_attempt_is_active(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("status") or "").strip() in TASK_ATTEMPT_ACTIVE_STATUSES
+
+
+def wait_condition_is_active(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("status") or "").strip() in WAIT_CONDITION_ACTIVE_STATUSES
+
+
+def upsert_task_attempt(
+    state: dict[str, Any],
+    attempt_id: str,
+    entry: dict[str, Any],
+    *,
+    state_file: Path,
+) -> dict[str, Any]:
+    attempts = state.setdefault("task_attempts", {})
+    if not isinstance(attempts, dict):
+        raise StoreError(f"task_attempts must be an object in {state_file}")
+    normalized = normalize_task_attempt_entry(attempt_id, entry, state_file=state_file)
+    attempts[attempt_id] = normalized
+    state["task_attempts"] = attempts
+    return normalized
+
+
+def upsert_wait_condition(
+    state: dict[str, Any],
+    wait_id: str,
+    entry: dict[str, Any],
+    *,
+    state_file: Path,
+) -> dict[str, Any]:
+    wait_conditions = state.setdefault("wait_conditions", {})
+    if not isinstance(wait_conditions, dict):
+        raise StoreError(f"wait_conditions must be an object in {state_file}")
+    normalized = normalize_wait_condition_entry(wait_id, entry, state_file=state_file)
+    wait_conditions[wait_id] = normalized
+    state["wait_conditions"] = wait_conditions
+    return normalized
+
+
+def close_wait_condition(
+    state: dict[str, Any],
+    wait_id: str,
+    *,
+    state_file: Path,
+    status: str = WAIT_CONDITION_STATUS_SATISFIED,
+    reason: str | None = None,
+    detail: str | None = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    wait_conditions = state.setdefault("wait_conditions", {})
+    if not isinstance(wait_conditions, dict):
+        raise StoreError(f"wait_conditions must be an object in {state_file}")
+    entry = dict(wait_conditions.get(wait_id) or {})
+    entry["status"] = status
+    if reason is not None:
+        entry["reason"] = reason
+    if detail is not None:
+        entry["detail"] = detail
+    timestamp = updated_at or now_iso()
+    entry["updated_at"] = timestamp
+    if status == WAIT_CONDITION_STATUS_SATISFIED:
+        entry.setdefault("satisfied_at", timestamp)
+    elif status == WAIT_CONDITION_STATUS_BLOCKED:
+        entry.setdefault("blocked_at", timestamp)
+    elif status == WAIT_CONDITION_STATUS_CANCELLED:
+        entry.setdefault("cancelled_at", timestamp)
+    elif status == WAIT_CONDITION_STATUS_FAILED:
+        entry.setdefault("failed_at", timestamp)
+    return upsert_wait_condition(state, wait_id, entry, state_file=state_file)
 
 
 def _lock_path(path: Path) -> Path:
@@ -439,6 +1019,10 @@ def append_event(
     event_type: str,
     actor: str,
     task_id: str | None = None,
+    attempt_id: str | None = None,
+    run_id: str | None = None,
+    wait_condition_id: str | None = None,
+    control_message_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     event = normalize_event_row(
@@ -448,6 +1032,10 @@ def append_event(
             "at": now_iso(),
             "actor": actor,
             "task_id": task_id,
+            "attempt_id": attempt_id,
+            "run_id": run_id,
+            "wait_condition_id": wait_condition_id,
+            "control_message_id": control_message_id,
             "payload": payload or {},
         },
         events_file=paths.events_file,
@@ -477,11 +1065,17 @@ def load_events(
     paths: BlackdogPaths,
     *,
     task_id: str | None = None,
+    attempt_id: str | None = None,
+    run_id: str | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     rows = [normalize_event_row(row, events_file=paths.events_file) for row in load_jsonl(paths.events_file)]
     if task_id:
         rows = [row for row in rows if row.get("task_id") == task_id]
+    if attempt_id:
+        rows = [row for row in rows if row.get("attempt_id") == attempt_id]
+    if run_id:
+        rows = [row for row in rows if row.get("run_id") == run_id]
     rows.sort(key=lambda row: str(row.get("at") or ""))
     if limit is not None:
         rows = rows[-limit:]
@@ -498,7 +1092,13 @@ def send_message(
     task_id: str | None = None,
     reply_to: str | None = None,
     tags: list[str] | None = None,
+    control_action: str | None = None,
+    control_scope: str | None = None,
+    control_target: str | None = None,
+    control_state: str | None = None,
+    control_reason: str | None = None,
 ) -> dict[str, Any]:
+    resolved_control_action = normalize_control_action(control_action, inbox_file=paths.inbox_file) if control_action else None
     message = normalize_inbox_row(
         {
             "action": INBOX_ACTION_MESSAGE,
@@ -511,6 +1111,11 @@ def send_message(
             "reply_to": reply_to,
             "tags": tags or [],
             "body": body,
+            "control_action": resolved_control_action,
+            "control_scope": control_scope,
+            "control_target": control_target,
+            "control_state": control_state,
+            "control_reason": control_reason,
         },
         inbox_file=paths.inbox_file,
     )
@@ -520,9 +1125,49 @@ def send_message(
         event_type="message",
         actor=sender,
         task_id=task_id,
-        payload={"message_id": message["message_id"], "recipient": recipient, "kind": kind},
+        control_message_id=message["message_id"],
+        payload={
+            "message_id": message["message_id"],
+            "recipient": recipient,
+            "kind": kind,
+            "control_action": message.get("control_action"),
+            "control_scope": message.get("control_scope"),
+            "control_target": message.get("control_target"),
+        },
     )
     return message
+
+
+def send_control_message(
+    paths: BlackdogPaths,
+    *,
+    sender: str,
+    recipient: str,
+    action: str,
+    body: str,
+    task_id: str | None = None,
+    reply_to: str | None = None,
+    tags: list[str] | None = None,
+    scope: str | None = None,
+    target: str | None = None,
+    state: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    return send_message(
+        paths,
+        sender=sender,
+        recipient=recipient,
+        body=body,
+        kind="control",
+        task_id=task_id,
+        reply_to=reply_to,
+        tags=tags or ["control", action],
+        control_action=action,
+        control_scope=scope,
+        control_target=target,
+        control_state=state,
+        control_reason=reason,
+    )
 
 
 def resolve_message(
@@ -590,6 +1235,22 @@ def load_inbox(
     return output
 
 
+def load_control_messages(
+    paths: BlackdogPaths,
+    *,
+    recipient: str | None = None,
+    status: str | None = None,
+    task_id: str | None = None,
+    control_action: str | None = None,
+) -> list[dict[str, Any]]:
+    rows = load_inbox(paths, recipient=recipient, status=status, task_id=task_id)
+    output = [row for row in rows if row.get("control_action")]
+    if control_action is not None:
+        normalized_action = normalize_control_action(control_action, inbox_file=paths.inbox_file)
+        output = [row for row in output if row.get("control_action") == normalized_action]
+    return output
+
+
 def record_task_result(
     paths: BlackdogPaths,
     *,
@@ -602,6 +1263,10 @@ def record_task_result(
     needs_user_input: bool,
     followup_candidates: list[str],
     run_id: str | None = None,
+    attempt_id: str | None = None,
+    prompt_receipt: dict[str, Any] | None = None,
+    wait_condition_id: str | None = None,
+    control_message_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     task_shaping_telemetry: dict[str, Any] | None = None,
 ) -> Path:
@@ -629,6 +1294,10 @@ def record_task_result(
             "followup_candidates": followup_candidates,
             "metadata": metadata or {},
             "task_shaping_telemetry": task_shaping_telemetry or {},
+            "attempt_id": attempt_id,
+            "prompt_receipt": prompt_receipt,
+            "wait_condition_id": wait_condition_id,
+            "control_message_id": control_message_id,
         },
         result_file=result_path,
     )
@@ -638,11 +1307,16 @@ def record_task_result(
         event_type="task_result",
         actor=actor,
         task_id=task_id,
+        attempt_id=attempt_id,
+        run_id=safe_run,
+        wait_condition_id=wait_condition_id,
+        control_message_id=control_message_id,
         payload={
             "status": status,
             "run_id": safe_run,
             "result_file": str(result_path),
             "needs_user_input": needs_user_input,
+            "attempt_id": attempt_id,
         },
     )
     return result_path

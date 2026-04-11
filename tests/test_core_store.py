@@ -15,6 +15,8 @@ class CoreStoreAuditTests(CoreAuditTestCase):
         self.assertEqual(normalized_state["schema_version"], 1)
         self.assertEqual(normalized_state["approval_tasks"], {})
         self.assertEqual(normalized_state["task_claims"], {})
+        self.assertEqual(normalized_state["task_attempts"], {})
+        self.assertEqual(normalized_state["wait_conditions"], {})
         with self.assertRaises(cli_tests.store_module.StoreError):
             cli_tests.store_module.normalize_state({"approval_tasks": []}, state_file=state_file)
 

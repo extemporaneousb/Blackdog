@@ -23,6 +23,7 @@ class CoreContractAuditTests(CoreAuditTestCase):
             [
                 "src/blackdog_core/backlog.py",
                 "src/blackdog_core/profile.py",
+                "src/blackdog_core/runtime_model.py",
                 "src/blackdog_core/snapshot.py",
                 "src/blackdog_core/state.py",
             ],

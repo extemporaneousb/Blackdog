@@ -318,6 +318,8 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
         )
         self.assertEqual(normalized_state["approval_tasks"]["BLACK-1"]["status"], "pending")
         self.assertEqual(normalized_state["task_claims"]["BLACK-1"]["status"], "done")
+        self.assertEqual(normalized_state["task_attempts"], {})
+        self.assertEqual(normalized_state["wait_conditions"], {})
 
         rows_file = self.root / "rows.jsonl"
         self.assertEqual(cli_tests.store_module.load_jsonl(rows_file), [])
@@ -393,7 +395,50 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
             reply_to="msg-0",
             tags=["core", "git-worktree"],
         )
+        control_message = cli_tests.store_module.send_control_message(
+            paths,
+            sender="supervisor",
+            recipient="child",
+            action="pause",
+            body="pause until the operator reviews the change",
+            task_id="BLACK-1",
+            scope="task",
+            target="BLACK-1",
+            reason="review",
+        )
         resolution = cli_tests.store_module.resolve_message(paths, message_id=message["message_id"], actor="child", note="done")
+        with cli_tests.store_module.locked_state(paths.state_file) as state:
+            cli_tests.store_module.upsert_task_attempt(
+                state,
+                "store-demo:BLACK-1",
+                {
+                    "task_id": "BLACK-1",
+                    "run_id": "store-demo",
+                    "actor": "codex",
+                    "status": "running",
+                    "workspace": str(self.root),
+                    "workspace_mode": "git-worktree",
+                    "prompt_receipt": {
+                        "task_id": "BLACK-1",
+                        "run_id": "store-demo",
+                        "prompt_text": "Do the task exactly.",
+                    },
+                },
+                state_file=paths.state_file,
+            )
+            cli_tests.store_module.upsert_wait_condition(
+                state,
+                "wait-store-demo",
+                {
+                    "kind": "child-process",
+                    "status": "waiting",
+                    "task_id": "BLACK-1",
+                    "attempt_id": "store-demo:BLACK-1",
+                    "run_id": "store-demo",
+                    "reason": "waiting for child completion",
+                },
+                state_file=paths.state_file,
+            )
         result_path = cli_tests.store_module.record_task_result(
             paths,
             task_id="BLACK-1",
@@ -405,6 +450,10 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
             needs_user_input=False,
             followup_candidates=[],
             run_id="store-demo",
+            attempt_id="store-demo:BLACK-1",
+            prompt_receipt={"task_id": "BLACK-1", "run_id": "store-demo", "prompt_text": "Do the task exactly."},
+            wait_condition_id="wait-store-demo",
+            control_message_id=control_message["message_id"],
             metadata={"attempt": 1},
             task_shaping_telemetry={"elapsed_minutes": 5},
         )
@@ -413,15 +462,38 @@ class CoreStoreHelperAuditTests(CoreAuditTestCase):
         self.assertEqual(comment["payload"]["body"], "Looks good")
         self.assertEqual(resolution["message_id"], message["message_id"])
         self.assertTrue(result_path.exists())
-        self.assertEqual(len(cli_tests.store_module.load_events(paths, task_id="BLACK-1")), 4)
+        self.assertEqual(len(cli_tests.store_module.load_events(paths, task_id="BLACK-1")), 5)
         self.assertEqual(len(cli_tests.store_module.load_events(paths, task_id="BLACK-1", limit=2)), 2)
         inbox_rows = cli_tests.store_module.load_inbox(paths, recipient="child", status="resolved", task_id="BLACK-1")
         self.assertEqual(len(inbox_rows), 1)
         self.assertEqual(inbox_rows[0]["reply_to"], "msg-0")
         self.assertEqual(inbox_rows[0]["resolution_note"], "done")
+        control_rows = cli_tests.store_module.load_control_messages(paths, recipient="child", status="open")
+        self.assertEqual(len(control_rows), 1)
+        self.assertEqual(control_rows[0]["control_action"], "pause")
         result_rows = cli_tests.store_module.load_task_results(paths, task_id="BLACK-1")
         self.assertEqual(len(result_rows), 1)
         self.assertEqual(result_rows[0]["result_file"], str(result_path))
+        self.assertEqual(result_rows[0]["attempt_id"], "store-demo:BLACK-1")
+        self.assertEqual(result_rows[0]["wait_condition_id"], "wait-store-demo")
+        self.assertEqual(result_rows[0]["control_message_id"], control_message["message_id"])
+        self.assertEqual(result_rows[0]["prompt_receipt"]["prompt_text"], "Do the task exactly.")
+        normalized_state = cli_tests.store_module.load_state(paths.state_file)
+        self.assertIn("store-demo:BLACK-1", normalized_state["task_attempts"])
+        self.assertIn("wait-store-demo", normalized_state["wait_conditions"])
+        self.assertTrue(cli_tests.store_module.task_attempt_is_active(normalized_state["task_attempts"]["store-demo:BLACK-1"]))
+        self.assertTrue(cli_tests.store_module.wait_condition_is_active(normalized_state["wait_conditions"]["wait-store-demo"]))
+        with cli_tests.store_module.locked_state(paths.state_file) as state:
+            cli_tests.store_module.close_wait_condition(
+                state,
+                "wait-store-demo",
+                state_file=paths.state_file,
+                status=cli_tests.store_module.WAIT_CONDITION_STATUS_SATISFIED,
+                reason="done",
+                detail="child finished",
+            )
+        normalized_state = cli_tests.store_module.load_state(paths.state_file)
+        self.assertEqual(normalized_state["wait_conditions"]["wait-store-demo"]["status"], "satisfied")
 
         bad_result = paths.results_dir / "BLACK-bad" / "broken.json"
         bad_result.parent.mkdir(parents=True, exist_ok=True)

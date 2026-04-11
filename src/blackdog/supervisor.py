@@ -45,19 +45,42 @@ from blackdog_core.state import (
     CLAIM_STATUS_CLAIMED,
     CLAIM_STATUS_DONE,
     CLAIM_STATUS_RELEASED,
+    TASK_ATTEMPT_STATUS_BLOCKED,
+    TASK_ATTEMPT_STATUS_DONE,
+    TASK_ATTEMPT_STATUS_FAILED,
+    TASK_ATTEMPT_STATUS_INTERRUPTED,
+    TASK_ATTEMPT_STATUS_PREPARED,
+    TASK_ATTEMPT_STATUS_RUNNING,
+    TASK_ATTEMPT_STATUS_UNKNOWN,
+    TASK_ATTEMPT_STATUS_WAITING,
+    WAIT_CONDITION_KIND_CHILD_PROCESS,
+    WAIT_CONDITION_STATUS_BLOCKED,
+    WAIT_CONDITION_STATUS_FAILED,
+    WAIT_CONDITION_STATUS_SATISFIED,
+    WAIT_CONDITION_STATUS_WAITING,
+    WAIT_CONDITION_TERMINAL_STATUSES,
     atomic_write_text,
     append_event,
     claim_task_entry,
+    close_wait_condition,
+    control_message_action,
     load_inbox,
+    load_control_messages,
     load_events,
     load_state,
+    load_task_attempts,
     load_task_results,
+    load_wait_conditions,
     locked_state,
     now_iso,
     record_task_result,
     resolve_message,
     save_state,
     send_message,
+    task_attempt_is_active,
+    upsert_task_attempt,
+    upsert_wait_condition,
+    wait_condition_is_active,
 )
 from .conversations import mirror_task_result_to_threads
 from .worktree import (
@@ -292,11 +315,14 @@ class ChildRun:
     stdout_file: Path
     stderr_file: Path
     message_id: str | None
+    attempt_id: str
     result_files_before: set[str]
     process: subprocess.Popen[str] | None
     stdout_handle: TextIO | None
     stderr_handle: TextIO | None
     started_at: float
+    prompt_receipt: dict[str, Any] = field(default_factory=dict)
+    wait_condition_id: str | None = None
     worktree_spec: WorktreeSpec | None = None
     launch_error: str | None = None
     exit_code: int | None = None
@@ -367,6 +393,221 @@ def _notify_supervisor(
 def _emit_render(profile: RepoProfile) -> None:
     if profile.auto_render_html:
         render_project_html(profile)
+
+
+def _attempt_id_for_task(run_id: str, task_id: str) -> str:
+    return f"{run_id}:{task_id}"
+
+
+def _build_prompt_receipt(
+    *,
+    task: BacklogTask,
+    child_agent: str,
+    run_id: str,
+    workspace: Path,
+    workspace_mode: str,
+    protocol_command: Path,
+    worktree_spec: WorktreeSpec | None,
+    prompt: str,
+    launch_command: tuple[str, ...],
+    launch_command_strategy: str,
+    launch_telemetry: dict[str, Any],
+    launched_at: str,
+    prompt_file: Path,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "prompt_text": prompt,
+        "text": prompt,
+        "prompt_hash": launch_telemetry.get("prompt_hash"),
+        "template_hash": CHILD_PROMPT_TEMPLATE_HASH,
+        "template_version": CHILD_PROMPT_TEMPLATE_VERSION,
+        "task_id": task.id,
+        "child_agent": child_agent,
+        "run_id": run_id,
+        "workspace": str(workspace),
+        "workspace_mode": workspace_mode,
+        "protocol_command": str(protocol_command),
+        "launch_command_strategy": launch_command_strategy,
+        "launch_command": list(launch_command),
+        "prompt_file": str(prompt_file),
+        "recorded_at": launched_at,
+    }
+    if worktree_spec is not None:
+        receipt["branch"] = worktree_spec.branch
+        receipt["target_branch"] = worktree_spec.target_branch
+        receipt["worktree_spec"] = worktree_spec.to_dict()
+    if launch_telemetry:
+        receipt["telemetry"] = dict(launch_telemetry)
+        launch_settings = launch_telemetry.get("launch_settings")
+        if isinstance(launch_settings, dict):
+            receipt["launch_settings"] = dict(launch_settings)
+    return receipt
+
+
+def _wait_condition_status_for_child(child: ChildRun) -> str:
+    if child.launch_error or child.missing_process or child.exit_code not in {0, None}:
+        return WAIT_CONDITION_STATUS_FAILED
+    if child.land_error:
+        return WAIT_CONDITION_STATUS_BLOCKED if child.land_needs_user_input else WAIT_CONDITION_STATUS_FAILED
+    if child.final_task_status == CLAIM_STATUS_DONE or child.result_recorded:
+        return WAIT_CONDITION_STATUS_SATISFIED
+    return WAIT_CONDITION_STATUS_WAITING
+
+
+def _task_attempt_status_for_child(child: ChildRun) -> str:
+    if child.launch_error:
+        return TASK_ATTEMPT_STATUS_FAILED
+    if child.missing_process:
+        return TASK_ATTEMPT_STATUS_INTERRUPTED
+    if child.land_error:
+        return TASK_ATTEMPT_STATUS_BLOCKED if child.land_needs_user_input else TASK_ATTEMPT_STATUS_FAILED
+    if child.exit_code not in {0, None}:
+        return TASK_ATTEMPT_STATUS_FAILED
+    if child.final_task_status == CLAIM_STATUS_DONE:
+        return TASK_ATTEMPT_STATUS_DONE
+    if child.result_recorded:
+        return TASK_ATTEMPT_STATUS_DONE
+    if child.exit_code == 0:
+        return TASK_ATTEMPT_STATUS_RUNNING
+    return TASK_ATTEMPT_STATUS_UNKNOWN
+
+
+def _persist_child_attempt(
+    profile: RepoProfile,
+    child: ChildRun,
+    *,
+    actor: str,
+    run_id: str,
+    launched_at: str,
+    wait_reason: str,
+    wait_detail: str,
+    prompt_receipt: dict[str, Any] | None = None,
+    state_status: str | None = None,
+) -> None:
+    attempt_status = state_status or TASK_ATTEMPT_STATUS_RUNNING
+    wait_status = WAIT_CONDITION_STATUS_WAITING
+    if state_status in {
+        TASK_ATTEMPT_STATUS_BLOCKED,
+        TASK_ATTEMPT_STATUS_FAILED,
+        TASK_ATTEMPT_STATUS_INTERRUPTED,
+        TASK_ATTEMPT_STATUS_DONE,
+    }:
+        wait_status = _wait_condition_status_for_child(child)
+    if child.wait_condition_id is None:
+        child.wait_condition_id = child.attempt_id
+    attempt_entry = {
+        "task_id": child.task.id,
+        "run_id": run_id,
+        "actor": actor,
+        "child_agent": child.child_agent,
+        "status": attempt_status,
+        "workspace": str(child.workspace),
+        "workspace_mode": child.workspace_mode,
+        "branch": child.worktree_spec.branch if child.worktree_spec is not None else None,
+        "target_branch": child.worktree_spec.target_branch if child.worktree_spec is not None else None,
+        "prompt_file": str(child.prompt_file),
+        "run_dir": str(child.run_dir),
+        "launch_command": list(child.launch_command),
+        "launch_command_strategy": str(child.telemetry.get("launch_command_strategy") or ""),
+        "launch_settings": dict(child.telemetry.get("launch_settings") or {}),
+        "prompt_hash": str(child.telemetry.get("prompt_hash") or ""),
+        "attempted_at": launched_at,
+        "launched_at": launched_at,
+        "updated_at": launched_at,
+        "prompt_receipt": prompt_receipt or child.prompt_receipt or {},
+        "wait_condition_id": child.wait_condition_id,
+        "result_recorded": child.result_recorded,
+        "final_task_status": child.final_task_status,
+        "landed": child.landed,
+        "land_error": child.land_error,
+        "landed_commit": (child.land_result or {}).get("landed_commit"),
+        "branch_ahead": child.branch_ahead,
+        "exit_code": child.exit_code,
+        "launch_error": child.launch_error,
+    }
+    wait_entry = {
+        "kind": WAIT_CONDITION_KIND_CHILD_PROCESS,
+        "status": wait_status,
+        "task_id": child.task.id,
+        "attempt_id": child.attempt_id,
+        "run_id": run_id,
+        "actor": actor,
+        "child_agent": child.child_agent,
+        "workspace": str(child.workspace),
+        "workspace_mode": child.workspace_mode,
+        "reason": wait_reason,
+        "detail": wait_detail,
+        "requested_at": launched_at,
+        "updated_at": launched_at,
+        "metadata": {
+            "launch_command_strategy": str(child.telemetry.get("launch_command_strategy") or ""),
+            "prompt_hash": str(child.telemetry.get("prompt_hash") or ""),
+        },
+    }
+    with locked_state(profile.paths.state_file) as state:
+        upsert_task_attempt(state, child.attempt_id, attempt_entry, state_file=profile.paths.state_file)
+        upsert_wait_condition(state, child.wait_condition_id, wait_entry, state_file=profile.paths.state_file)
+
+
+def _close_child_wait_condition(
+    profile: RepoProfile,
+    child: ChildRun,
+    *,
+    actor: str,
+    run_id: str,
+    state_status: str,
+    reason: str,
+    detail: str,
+    at: str | None = None,
+) -> None:
+    if child.wait_condition_id is None:
+        return
+    timestamp = at or now_iso()
+    with locked_state(profile.paths.state_file) as state:
+        upsert_task_attempt(
+            state,
+            child.attempt_id,
+            {
+                "task_id": child.task.id,
+                "run_id": run_id,
+                "actor": actor,
+                "child_agent": child.child_agent,
+                "status": state_status,
+                "workspace": str(child.workspace),
+                "workspace_mode": child.workspace_mode,
+                "branch": child.worktree_spec.branch if child.worktree_spec is not None else None,
+                "target_branch": child.worktree_spec.target_branch if child.worktree_spec is not None else None,
+                "prompt_file": str(child.prompt_file),
+                "run_dir": str(child.run_dir),
+                "launch_command": list(child.launch_command),
+                "launch_command_strategy": str(child.telemetry.get("launch_command_strategy") or ""),
+                "launch_settings": dict(child.telemetry.get("launch_settings") or {}),
+                "prompt_hash": str(child.telemetry.get("prompt_hash") or ""),
+                "attempted_at": timestamp,
+                "launched_at": timestamp,
+                "updated_at": timestamp,
+                "prompt_receipt": child.prompt_receipt,
+                "wait_condition_id": child.wait_condition_id,
+                "result_recorded": child.result_recorded,
+                "final_task_status": child.final_task_status,
+                "landed": child.landed,
+                "land_error": child.land_error,
+                "landed_commit": (child.land_result or {}).get("landed_commit"),
+                "branch_ahead": child.branch_ahead,
+                "exit_code": child.exit_code,
+                "launch_error": child.launch_error,
+            },
+            state_file=profile.paths.state_file,
+        )
+        close_wait_condition(
+            state,
+            child.wait_condition_id,
+            state_file=profile.paths.state_file,
+            status=_wait_condition_status_for_child(child),
+            reason=reason,
+            detail=detail,
+            updated_at=timestamp,
+        )
 
 
 def _supervisor_text(view: dict[str, Any]) -> str:
@@ -489,6 +730,22 @@ def _supervisor_status_text(view: dict[str, Any]) -> str:
             )
     else:
         lines.append("- No open control messages.")
+
+    lines.extend(["", "Active attempts:"])
+    if view.get("active_attempts"):
+        for attempt in view["active_attempts"]:
+            lines.append(
+                f"- {attempt['attempt_id']} [{attempt['status']}] {attempt['task_id']} {attempt.get('child_agent') or attempt.get('actor') or ''}".rstrip()
+            )
+    else:
+        lines.append("- No active attempts.")
+
+    lines.extend(["", "Open waits:"])
+    if view.get("open_wait_conditions"):
+        for wait in view["open_wait_conditions"]:
+            lines.append(f"- {wait['wait_id']} [{wait['kind']}] {wait['reason']}")
+    else:
+        lines.append("- No open waits.")
 
     lines.extend(["", "Ready tasks:"])
     if view["ready_tasks"]:
@@ -1961,11 +2218,7 @@ def _run_control_action(messages: list[dict[str, Any]]) -> tuple[str | None, dic
 
 
 def _message_control_action(message: dict[str, Any]) -> str | None:
-    tags = {str(tag).strip().lower() for tag in message.get("tags") or []}
-    body = str(message.get("body") or "").strip().lower()
-    if "stop" in tags or body.startswith("stop"):
-        return "stop"
-    return None
+    return control_message_action(message)
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -2041,14 +2294,15 @@ def build_supervisor_status_view(
     latest_run = _latest_run_status(profile, actor=actor)
     workspace_mode = normalize_workspace_mode((latest_run or {}).get("workspace_mode") or profile.supervisor_workspace_mode)
     open_messages = load_inbox(profile.paths, recipient=actor, status="open")
+    control_rows = load_control_messages(profile.paths, recipient=actor, status="open")
     results = load_task_results(profile.paths)
+    task_attempt_rows = load_task_attempts(state, state_file=profile.paths.state_file)
+    wait_condition_rows = load_wait_conditions(state, state_file=profile.paths.state_file)
     result_index = _index_supervisor_results(results, actor=actor)
     task_result_index = _index_supervisor_results_by_task(results, actor=actor)
     control_messages = []
-    for message in open_messages:
+    for message in control_rows:
         action = _message_control_action(message)
-        if action is None:
-            continue
         control_messages.append(
             {
                 "message_id": str(message.get("message_id") or ""),
@@ -2064,6 +2318,37 @@ def build_supervisor_status_view(
         )
         if len(control_messages) >= SUPERVISOR_STATUS_CONTROL_LIMIT:
             break
+    active_attempts = [
+        {
+            "attempt_id": attempt_id,
+            "task_id": str(entry.get("task_id") or ""),
+            "run_id": str(entry.get("run_id") or ""),
+            "status": str(entry.get("status") or ""),
+            "actor": str(entry.get("actor") or ""),
+            "child_agent": str(entry.get("child_agent") or ""),
+            "workspace": str(entry.get("workspace") or ""),
+            "branch": str(entry.get("branch") or ""),
+            "wait_condition_id": str(entry.get("wait_condition_id") or ""),
+            "updated_at": str(entry.get("updated_at") or entry.get("launched_at") or ""),
+        }
+        for attempt_id, entry in sorted(task_attempt_rows.items(), key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+        if task_attempt_is_active(entry)
+    ][:SUPERVISOR_STATUS_READY_LIMIT]
+    open_wait_conditions = [
+        {
+            "wait_id": wait_id,
+            "task_id": str(entry.get("task_id") or ""),
+            "attempt_id": str(entry.get("attempt_id") or ""),
+            "run_id": str(entry.get("run_id") or ""),
+            "kind": str(entry.get("kind") or ""),
+            "status": str(entry.get("status") or ""),
+            "reason": str(entry.get("reason") or entry.get("detail") or ""),
+            "detail": str(entry.get("detail") or ""),
+            "updated_at": str(entry.get("updated_at") or entry.get("requested_at") or ""),
+        }
+        for wait_id, entry in sorted(wait_condition_rows.items(), key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+        if wait_condition_is_active(entry)
+    ][:SUPERVISOR_STATUS_CONTROL_LIMIT]
     control_action, control_message = _run_control_action(open_messages)
     ready_tasks = [
         {
@@ -2130,6 +2415,8 @@ def build_supervisor_status_view(
             else None
         ),
         "open_control_messages": control_messages,
+        "active_attempts": active_attempts,
+        "open_wait_conditions": open_wait_conditions,
         "ready_tasks": ready_tasks,
         "recent_results": recent_results,
     }
@@ -2473,6 +2760,10 @@ def _attempt_land_child_worktree(profile: RepoProfile, child: ChildRun, *, actor
         event_type="worktree_land",
         actor=actor,
         task_id=child.task.id,
+        attempt_id=child.attempt_id,
+        run_id=run_id,
+        wait_condition_id=child.wait_condition_id,
+        control_message_id=child.message_id,
         payload={"run_id": run_id, "child_agent": child.child_agent, **payload},
     )
     if current_status != CLAIM_STATUS_DONE:
@@ -2540,6 +2831,15 @@ def _finalize_child_run(profile: RepoProfile, child: ChildRun, *, actor: str) ->
                 actor=actor,
                 note=f"Child run finished with final task status: {child.final_task_status}",
             )
+        _close_child_wait_condition(
+            profile,
+            child,
+            actor=actor,
+            run_id=child.run_dir.name,
+            state_status=TASK_ATTEMPT_STATUS_DONE,
+            reason="child run completed",
+            detail=f"{child.child_agent} completed {child.task.id}.",
+        )
         return
 
     validation = [f"Child launch command: {' '.join(child.launch_command)}"]
@@ -2614,6 +2914,10 @@ def _finalize_child_run(profile: RepoProfile, child: ChildRun, *, actor: str) ->
         needs_user_input=child.land_needs_user_input,
         followup_candidates=list(child.land_followup_candidates),
         run_id=child.run_dir.name,
+        attempt_id=child.attempt_id,
+        prompt_receipt=child.prompt_receipt,
+        wait_condition_id=child.wait_condition_id,
+        control_message_id=child.message_id,
         metadata=result_metadata,
     )
     mirror_task_result_to_threads(
@@ -2654,6 +2958,15 @@ def _finalize_child_run(profile: RepoProfile, child: ChildRun, *, actor: str) ->
             actor=actor,
             note=f"Child run finished with final task status: {child.final_task_status}",
         )
+    _close_child_wait_condition(
+        profile,
+        child,
+        actor=actor,
+        run_id=child.run_dir.name,
+        state_status=_task_attempt_status_for_child(child),
+        reason="child run finished",
+        detail=f"{child.child_agent} finished {child.task.id} with status {status}.",
+    )
 
 
 def _wait_for_child_process(child: ChildRun, completion_queue: queue.Queue[tuple[str, int | None]]) -> None:
@@ -2680,6 +2993,10 @@ def _finish_child(
         event_type="child_finish",
         actor=actor,
         task_id=child.task.id,
+        attempt_id=child.attempt_id,
+        run_id=run_id,
+        wait_condition_id=child.wait_condition_id,
+        control_message_id=child.message_id,
         payload={
             "run_id": run_id,
             "child_agent": child.child_agent,
@@ -2744,6 +3061,7 @@ def _launch_child_run(
     prompt_file = child_run_dir / "prompt.txt"
     stdout_file = child_run_dir / "stdout.log"
     stderr_file = child_run_dir / "stderr.log"
+    attempt_id = _attempt_id_for_task(run_id, task.id)
     workspace_path = supervisor_task_worktree_path(profile, task, run_id)
     result_files_before = {
         str(row["result_file"])
@@ -2751,6 +3069,7 @@ def _launch_child_run(
         if row.get("result_file")
     }
     started_at = time.monotonic()
+    launched_at = now_iso()
     try:
         prepared = _prepare_workspace(profile, task, workspace_mode=workspace_mode, run_id=run_id)
     except SupervisorError as exc:
@@ -2765,6 +3084,7 @@ def _launch_child_run(
             stdout_file=stdout_file,
             stderr_file=stderr_file,
             message_id=None,
+            attempt_id=attempt_id,
             result_files_before=result_files_before,
             process=None,
             stdout_handle=None,
@@ -2778,12 +3098,25 @@ def _launch_child_run(
                 prompt="",
             ),
         )
+        _persist_child_attempt(
+            profile,
+            child,
+            actor=actor,
+            run_id=run_id,
+            launched_at=launched_at,
+            wait_reason="workspace preparation failed",
+            wait_detail=str(exc),
+            state_status=TASK_ATTEMPT_STATUS_FAILED,
+        )
         _finalize_child_run(profile, child, actor=actor)
         append_event(
             profile.paths,
             event_type="child_launch_failed",
             actor=actor,
             task_id=task.id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            wait_condition_id=child.wait_condition_id,
             payload={
                 "run_id": run_id,
                 "child_agent": child_agent,
@@ -2838,8 +3171,9 @@ def _launch_child_run(
             "prompt_file": str(prompt_file),
             "stdout_file": str(stdout_file),
             "stderr_file": str(stderr_file),
-            "launched_at": now_iso(),
+            "launched_at": launched_at,
             "metadata_file": str(metadata_file),
+            "attempt_id": attempt_id,
         }
     )
     prompt_file.write_text(prompt + "\n", encoding="utf-8")
@@ -2868,6 +3202,7 @@ def _launch_child_run(
         stdout_file=stdout_file,
         stderr_file=stderr_file,
         message_id=str(message["message_id"]),
+        attempt_id=attempt_id,
         result_files_before=result_files_before,
         process=None,
         stdout_handle=stdout_handle,
@@ -2875,6 +3210,32 @@ def _launch_child_run(
         started_at=started_at,
         worktree_spec=prepared.worktree_spec,
         telemetry=launch_telemetry,
+    )
+    child.prompt_receipt = _build_prompt_receipt(
+        task=task,
+        child_agent=child_agent,
+        run_id=run_id,
+        workspace=workspace,
+        workspace_mode=workspace_mode,
+        protocol_command=protocol_command,
+        worktree_spec=prepared.worktree_spec,
+        prompt=prompt,
+        launch_command=launch_command,
+        launch_command_strategy=launch_command_strategy,
+        launch_telemetry=launch_telemetry,
+        launched_at=launched_at,
+        prompt_file=prompt_file,
+    )
+    _persist_child_attempt(
+        profile,
+        child,
+        actor=actor,
+        run_id=run_id,
+        launched_at=launched_at,
+        wait_reason="waiting for child process",
+        wait_detail=f"Supervisor launched {child_agent} for {task.id}.",
+        prompt_receipt=child.prompt_receipt,
+        state_status=TASK_ATTEMPT_STATUS_PREPARED,
     )
     command = _build_launch_command(launch_command, prompt)
     env = os.environ.copy()
@@ -2910,12 +3271,26 @@ def _launch_child_run(
     except OSError as exc:
         child.launch_error = str(exc)
         child.exit_code = None
+        _persist_child_attempt(
+            profile,
+            child,
+            actor=actor,
+            run_id=run_id,
+            launched_at=launched_at,
+            wait_reason="launch failed",
+            wait_detail=str(exc),
+            state_status=TASK_ATTEMPT_STATUS_FAILED,
+        )
         _finalize_child_run(profile, child, actor=actor)
         append_event(
             profile.paths,
             event_type="child_launch_failed",
             actor=actor,
             task_id=task.id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            wait_condition_id=child.wait_condition_id,
+            control_message_id=child.message_id,
             payload={
                 "run_id": run_id,
                 "child_agent": child_agent,
@@ -2930,6 +3305,10 @@ def _launch_child_run(
         event_type="child_launch",
         actor=actor,
         task_id=task.id,
+        attempt_id=attempt_id,
+        run_id=run_id,
+        wait_condition_id=child.wait_condition_id,
+        control_message_id=child.message_id,
         payload={
             "run_id": run_id,
             "child_agent": child_agent,
@@ -2937,6 +3316,17 @@ def _launch_child_run(
             "workspace_mode": workspace_mode,
             "pid": child.process.pid,
         },
+    )
+    _persist_child_attempt(
+        profile,
+        child,
+        actor=actor,
+        run_id=run_id,
+        launched_at=launched_at,
+        wait_reason="child process running",
+        wait_detail=f"PID {child.process.pid} is executing the task prompt.",
+        prompt_receipt=child.prompt_receipt,
+        state_status=TASK_ATTEMPT_STATUS_RUNNING,
     )
     _record_child_claim_process(profile, task.id, child_agent=child_agent, pid=child.process.pid)
     _emit_render(profile)
