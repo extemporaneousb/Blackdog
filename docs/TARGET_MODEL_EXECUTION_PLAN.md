@@ -34,15 +34,14 @@ Use this prompt to continue the rewrite:
 >
 > The base layer must be locked before breadth returns. Prioritize:
 > 1. a rock-solid workset/task model
-> 2. explicit claim semantics
+> 2. explicit workset/task claim semantics
 > 3. the kept-change WTAM lifecycle:
 >    `worktree preflight -> worktree start -> execute -> worktree land -> worktree cleanup`
 > 4. durable accumulation of completed/landed work and attempt history
 > 5. a clear execution model for direct work and any later delegated work
 >
-> Treat WTAM as the normative kept-change workflow. If analysis-only work is
-> supported, it must be a separate command family and not a mode switch hidden
-> inside the kept-change path.
+> Treat WTAM as the normative kept-change workflow. Do not preserve a
+> non-worktree execution mode in Blackdog.
 >
 > Prefer full removal of legacy product code over half-preserved compatibility.
 > Keep `blackdog_cli` thin. Keep semantic/storage logic in typed core objects.
@@ -50,8 +49,8 @@ Use this prompt to continue the rewrite:
 > Tests must use fresh isolated git repos. Favor low reasoning settings for
 > bulk task-execution tests when that keeps the base layer cheap to validate.
 >
-> The main unresolved design questions to close next are:
-> - how tasks exist inside worksets
-> - what is claimed: tasks, worksets, or both
-> - which execution models are first-class
-> - what completion/landed history is durable and operator-visible
+> Locked decisions:
+> - tasks exist inside a workset-owned DAG
+> - claims attach to both worksets and tasks
+> - the first-class execution models are `direct_wtam` and `workset_manager`
+> - completed and landed history stays durable and operator-visible

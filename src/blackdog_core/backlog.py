@@ -14,6 +14,8 @@ from .state import (
     ATTEMPT_STATUS_FAILED,
     ATTEMPT_STATUS_IN_PROGRESS,
     ATTEMPT_STATUS_SUCCESS,
+    EXECUTION_MODELS,
+    EXECUTION_MODEL_DIRECT_WTAM,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_DONE,
     TASK_STATUS_IN_PROGRESS,
@@ -21,9 +23,11 @@ from .state import (
     PromptReceiptRecord,
     RuntimeStore,
     StoreError,
+    TaskClaimRecord,
     TaskAttemptRecord,
     TaskRuntimeRecord,
     ValidationRecord,
+    WorksetClaimRecord,
     append_event,
     atomic_write_text,
     coerce_task_runtime_records,
@@ -34,6 +38,8 @@ from .state import (
     now_iso,
     parse_iso,
     save_runtime_state,
+    task_claim_index,
+    workset_claim,
 )
 
 
@@ -358,6 +364,7 @@ def start_task(
     workset_id: str,
     task_id: str,
     actor: str,
+    execution_model: str = EXECUTION_MODEL_DIRECT_WTAM,
     workspace_identity: str | None = None,
     workspace_mode: str | None = None,
     worktree_role: str | None = None,
@@ -376,17 +383,30 @@ def start_task(
     planning_state = load_planning_state(profile.paths, planning_store)
     workset, _ = _require_workset_and_task(planning_state, workset_id=workset_id, task_id=task_id)
     runtime_state = load_runtime_state(profile.paths, runtime_store)
+    if execution_model not in EXECUTION_MODELS:
+        raise BacklogError(f"execution_model must be one of {', '.join(sorted(EXECUTION_MODELS))}")
     runtime_index = {
         task_state.task_id: task_state
         for runtime_workset in runtime_state.worksets
         if runtime_workset.workset_id == workset_id
         for task_state in runtime_workset.task_states
     }
+    runtime_task_claims = task_claim_index(runtime_state, workset_id)
     current = runtime_index.get(task_id, TaskRuntimeRecord(task_id=task_id, status=TASK_STATUS_PLANNED))
     if current.status == TASK_STATUS_DONE:
         raise BacklogError(f"Task {task_id!r} is already done")
     if current.status == TASK_STATUS_IN_PROGRESS:
         raise BacklogError(f"Task {task_id!r} is already in progress")
+    current_task_claim = runtime_task_claims.get(task_id)
+    if current_task_claim is not None:
+        raise BacklogError(f"Task {task_id!r} is already claimed by {current_task_claim.actor}")
+    current_workset_claim = workset_claim(runtime_state, workset_id)
+    if current_workset_claim is not None and current_workset_claim.actor != actor:
+        raise BacklogError(f"Workset {workset_id!r} is already claimed by {current_workset_claim.actor}")
+    if current_workset_claim is not None and current_workset_claim.execution_model != execution_model:
+        raise BacklogError(
+            f"Workset {workset_id!r} is already claimed for execution_model {current_workset_claim.execution_model!r}"
+        )
     dependencies_ready, blocked_by = task_dependencies_ready(workset, task_id=task_id, runtime_index=runtime_index)
     if not dependencies_ready:
         raise BacklogError(f"Task {task_id!r} is blocked by {', '.join(blocked_by)}")
@@ -414,16 +434,30 @@ def start_task(
         target_branch=target_branch or str(workset.branch_intent.get("target_branch") or "").strip() or None,
         integration_branch=integration_branch or str(workset.branch_intent.get("integration_branch") or "").strip() or None,
         start_commit=start_commit,
+        execution_model=execution_model,
         model=model,
         reasoning_effort=reasoning_effort,
         prompt_receipt=prompt_receipt,
+        note=note,
+    )
+    next_workset_claim = current_workset_claim or WorksetClaimRecord(
+        actor=actor,
+        execution_model=execution_model,
+        claimed_at=started_at,
+        note=note,
+    )
+    next_task_claim = TaskClaimRecord(
+        task_id=task_id,
+        actor=actor,
+        execution_model=execution_model,
+        claimed_at=started_at,
+        attempt_id=attempt.attempt_id,
         note=note,
     )
     task_runtime = TaskRuntimeRecord(
         task_id=task_id,
         status=TASK_STATUS_IN_PROGRESS,
         updated_at=started_at,
-        owner=actor,
         note=note,
     )
     next_runtime_state = merge_workset_runtime(
@@ -431,9 +465,36 @@ def start_task(
         workset_id=workset_id,
         task_ids={item.task_id for item in workset.tasks},
         incoming_records=(task_runtime,),
+        incoming_workset_claim=next_workset_claim,
+        incoming_task_claims=(next_task_claim,),
         incoming_attempts=(attempt,),
     )
     save_runtime_state(profile.paths, next_runtime_state, runtime_store)
+    if current_workset_claim is None:
+        append_event(
+            profile.paths.events_file,
+            event_type="workset.claim",
+            actor=actor,
+            payload={
+                "workset_id": workset_id,
+                "execution_model": execution_model,
+                "claimed_at": started_at,
+                "note": note,
+            },
+        )
+    append_event(
+        profile.paths.events_file,
+        event_type="task.claim",
+        actor=actor,
+        payload={
+            "workset_id": workset_id,
+            "task_id": task_id,
+            "attempt_id": attempt.attempt_id,
+            "execution_model": execution_model,
+            "claimed_at": started_at,
+            "note": note,
+        },
+    )
     append_event(
         profile.paths.events_file,
         event_type="task.start",
@@ -450,6 +511,7 @@ def start_task(
             "target_branch": attempt.target_branch,
             "integration_branch": attempt.integration_branch,
             "start_commit": attempt.start_commit,
+            "execution_model": attempt.execution_model,
             "model": attempt.model,
             "reasoning_effort": attempt.reasoning_effort,
             "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt is not None else None,
@@ -488,6 +550,8 @@ def finish_task(
         raise BacklogError(f"Unknown attempt {attempt_id!r} in workset {workset_id!r}")
     if existing_attempt.task_id != task_id:
         raise BacklogError(f"Attempt {attempt_id!r} does not belong to task {task_id!r}")
+    if existing_attempt.actor != actor:
+        raise BacklogError(f"Attempt {attempt_id!r} is owned by {existing_attempt.actor}, not {actor}")
     if existing_attempt.status != ATTEMPT_STATUS_IN_PROGRESS or existing_attempt.ended_at is not None:
         raise BacklogError(f"Attempt {attempt_id!r} is not active")
 
@@ -514,6 +578,7 @@ def finish_task(
         target_branch=existing_attempt.target_branch,
         integration_branch=existing_attempt.integration_branch,
         start_commit=existing_attempt.start_commit,
+        execution_model=existing_attempt.execution_model,
         model=existing_attempt.model,
         reasoning_effort=existing_attempt.reasoning_effort,
         prompt_receipt=existing_attempt.prompt_receipt,
@@ -531,17 +596,49 @@ def finish_task(
         task_id=task_id,
         status=task_runtime_status,
         updated_at=ended_at,
-        owner=None,
         note=summary or note,
     )
+    current_task_claims = task_claim_index(runtime_state, workset_id)
+    remaining_task_claims = tuple(
+        claim
+        for claim_task_id, claim in current_task_claims.items()
+        if claim_task_id != task_id
+    )
+    current_workset_claim = workset_claim(runtime_state, workset_id)
+    release_workset_claim = current_workset_claim is not None and not remaining_task_claims
     next_runtime_state = merge_workset_runtime(
         runtime_state,
         workset_id=workset_id,
         task_ids={item.task_id for item in workset.tasks},
         incoming_records=(task_runtime,),
+        incoming_workset_claim=None if release_workset_claim else current_workset_claim,
+        released_task_claim_ids=(task_id,),
         incoming_attempts=(finished_attempt,),
     )
     save_runtime_state(profile.paths, next_runtime_state, runtime_store)
+    append_event(
+        profile.paths.events_file,
+        event_type="task.release",
+        actor=actor,
+        payload={
+            "workset_id": workset_id,
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "released_at": ended_at,
+            "status": status,
+        },
+    )
+    if release_workset_claim:
+        append_event(
+            profile.paths.events_file,
+            event_type="workset.release",
+            actor=actor,
+            payload={
+                "workset_id": workset_id,
+                "released_at": ended_at,
+                "status": status,
+            },
+        )
     append_event(
         profile.paths.events_file,
         event_type="task.finish",
@@ -556,6 +653,7 @@ def finish_task(
             "worktree_path": finished_attempt.worktree_path,
             "branch": finished_attempt.branch,
             "start_commit": finished_attempt.start_commit,
+            "execution_model": finished_attempt.execution_model,
             "prompt_hash": (
                 finished_attempt.prompt_receipt.prompt_hash
                 if finished_attempt.prompt_receipt is not None

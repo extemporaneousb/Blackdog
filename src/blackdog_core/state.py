@@ -15,8 +15,18 @@ import uuid
 from .profile import BlackdogPaths
 
 
-RUNTIME_SCHEMA_VERSION = 1
-RUNTIME_STORE_VERSION = "blackdog.runtime/vnext1"
+RUNTIME_SCHEMA_VERSION = 2
+RUNTIME_STORE_VERSION = "blackdog.runtime/vnext2"
+_UNSET = object()
+
+EXECUTION_MODEL_DIRECT_WTAM = "direct_wtam"
+EXECUTION_MODEL_WORKSET_MANAGER = "workset_manager"
+EXECUTION_MODELS = frozenset(
+    {
+        EXECUTION_MODEL_DIRECT_WTAM,
+        EXECUTION_MODEL_WORKSET_MANAGER,
+    }
+)
 
 TASK_STATUS_PLANNED = "planned"
 TASK_STATUS_IN_PROGRESS = "in_progress"
@@ -66,7 +76,24 @@ class TaskRuntimeRecord:
     task_id: str
     status: str
     updated_at: str | None = None
-    owner: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorksetClaimRecord:
+    actor: str
+    execution_model: str
+    claimed_at: str
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskClaimRecord:
+    task_id: str
+    actor: str
+    execution_model: str
+    claimed_at: str
+    attempt_id: str | None = None
     note: str | None = None
 
 
@@ -101,6 +128,7 @@ class TaskAttemptRecord:
     target_branch: str | None = None
     integration_branch: str | None = None
     start_commit: str | None = None
+    execution_model: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
     prompt_receipt: PromptReceiptRecord | None = None
@@ -117,6 +145,8 @@ class TaskAttemptRecord:
 @dataclass(frozen=True, slots=True)
 class WorksetRuntime:
     workset_id: str
+    workset_claim: WorksetClaimRecord | None
+    task_claims: tuple[TaskClaimRecord, ...]
     task_states: tuple[TaskRuntimeRecord, ...]
     attempts: tuple[TaskAttemptRecord, ...]
 
@@ -218,6 +248,15 @@ def _normalize_string_list(value: Any, *, field: str, source: Path) -> tuple[str
     return tuple(items)
 
 
+def _normalize_execution_model(value: Any, *, field: str, source: Path) -> str:
+    execution_model = _optional_text(value)
+    if execution_model is None:
+        raise StoreError(f"{field} is required in {source}")
+    if execution_model not in EXECUTION_MODELS:
+        raise StoreError(f"{field} must be one of {sorted(EXECUTION_MODELS)} in {source}")
+    return execution_model
+
+
 def _validation_from_payload(payload: Mapping[str, Any], *, source: Path) -> ValidationRecord:
     name = _optional_text(payload.get("name"))
     if name is None:
@@ -270,7 +309,55 @@ def _task_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         task_id=task_id,
         status=status,
         updated_at=_optional_text(payload.get("updated_at")),
-        owner=_optional_text(payload.get("owner")),
+        note=_optional_text(payload.get("note")),
+    )
+
+
+def _workset_claim_from_payload(payload: Any, *, field: str, source: Path) -> WorksetClaimRecord | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"{field} must be an object in {source}")
+    actor = _optional_text(payload.get("actor"))
+    if actor is None:
+        raise StoreError(f"{field}.actor is required in {source}")
+    claimed_at = _optional_text(payload.get("claimed_at"))
+    if claimed_at is None:
+        raise StoreError(f"{field}.claimed_at is required in {source}")
+    return WorksetClaimRecord(
+        actor=actor,
+        execution_model=_normalize_execution_model(
+            payload.get("execution_model"),
+            field=f"{field}.execution_model",
+            source=source,
+        ),
+        claimed_at=claimed_at,
+        note=_optional_text(payload.get("note")),
+    )
+
+
+def _task_claim_from_payload(payload: Any, *, field: str, source: Path) -> TaskClaimRecord:
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"{field} must be an object in {source}")
+    task_id = _optional_text(payload.get("task_id"))
+    if task_id is None:
+        raise StoreError(f"{field}.task_id is required in {source}")
+    actor = _optional_text(payload.get("actor"))
+    if actor is None:
+        raise StoreError(f"{field}.actor is required in {source}")
+    claimed_at = _optional_text(payload.get("claimed_at"))
+    if claimed_at is None:
+        raise StoreError(f"{field}.claimed_at is required in {source}")
+    return TaskClaimRecord(
+        task_id=task_id,
+        actor=actor,
+        execution_model=_normalize_execution_model(
+            payload.get("execution_model"),
+            field=f"{field}.execution_model",
+            source=source,
+        ),
+        claimed_at=claimed_at,
+        attempt_id=_optional_text(payload.get("attempt_id")),
         note=_optional_text(payload.get("note")),
     )
 
@@ -307,6 +394,11 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         target_branch=_optional_text(payload.get("target_branch")),
         integration_branch=_optional_text(payload.get("integration_branch")),
         start_commit=_optional_text(payload.get("start_commit")),
+        execution_model=(
+            _normalize_execution_model(payload.get("execution_model"), field="attempt.execution_model", source=source)
+            if payload.get("execution_model") is not None
+            else None
+        ),
         model=_optional_text(payload.get("model")),
         reasoning_effort=_optional_text(payload.get("reasoning_effort")),
         prompt_receipt=_prompt_receipt_from_payload(payload.get("prompt_receipt"), field="attempt.prompt_receipt", source=source),
@@ -338,6 +430,13 @@ def _workset_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -
         task_states = tuple(_task_runtime_from_payload(item, source=source) for item in raw_states if isinstance(item, Mapping))
         if len(task_states) != len(raw_states):
             raise StoreError(f"runtime workset task_states must contain only objects in {source}")
+    raw_task_claims = payload.get("task_claims")
+    if raw_task_claims is None:
+        task_claims: tuple[TaskClaimRecord, ...] = ()
+    else:
+        if not isinstance(raw_task_claims, list):
+            raise StoreError(f"runtime workset task_claims must be a list in {source}")
+        task_claims = tuple(_task_claim_from_payload(item, field="task_claim", source=source) for item in raw_task_claims)
     raw_attempts = payload.get("attempts")
     if raw_attempts is None:
         attempts: tuple[TaskAttemptRecord, ...] = ()
@@ -352,12 +451,23 @@ def _workset_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -
         if state.task_id in seen_task_ids:
             raise StoreError(f"duplicate runtime task state {state.task_id!r} in {source}")
         seen_task_ids.add(state.task_id)
+    seen_claim_task_ids: set[str] = set()
+    for claim in task_claims:
+        if claim.task_id in seen_claim_task_ids:
+            raise StoreError(f"duplicate runtime task claim {claim.task_id!r} in {source}")
+        seen_claim_task_ids.add(claim.task_id)
     seen_attempt_ids: set[str] = set()
     for attempt in attempts:
         if attempt.attempt_id in seen_attempt_ids:
             raise StoreError(f"duplicate runtime attempt {attempt.attempt_id!r} in {source}")
         seen_attempt_ids.add(attempt.attempt_id)
-    return WorksetRuntime(workset_id=workset_id, task_states=task_states, attempts=attempts)
+    return WorksetRuntime(
+        workset_id=workset_id,
+        workset_claim=_workset_claim_from_payload(payload.get("workset_claim"), field="workset_claim", source=source),
+        task_claims=task_claims,
+        task_states=task_states,
+        attempts=attempts,
+    )
 
 
 def default_runtime_state() -> RuntimeState:
@@ -375,12 +485,32 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
         "worksets": [
             {
                 "id": workset.workset_id,
+                "workset_claim": (
+                    {
+                        "actor": workset.workset_claim.actor,
+                        "execution_model": workset.workset_claim.execution_model,
+                        "claimed_at": workset.workset_claim.claimed_at,
+                        "note": workset.workset_claim.note,
+                    }
+                    if workset.workset_claim is not None
+                    else None
+                ),
+                "task_claims": [
+                    {
+                        "task_id": task_claim.task_id,
+                        "actor": task_claim.actor,
+                        "execution_model": task_claim.execution_model,
+                        "claimed_at": task_claim.claimed_at,
+                        "attempt_id": task_claim.attempt_id,
+                        "note": task_claim.note,
+                    }
+                    for task_claim in workset.task_claims
+                ],
                 "task_states": [
                     {
                         "task_id": task_state.task_id,
                         "status": task_state.status,
                         "updated_at": task_state.updated_at,
-                        "owner": task_state.owner,
                         "note": task_state.note,
                     }
                     for task_state in workset.task_states
@@ -402,6 +532,7 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                         "target_branch": attempt.target_branch,
                         "integration_branch": attempt.integration_branch,
                         "start_commit": attempt.start_commit,
+                        "execution_model": attempt.execution_model,
                         "model": attempt.model,
                         "reasoning_effort": attempt.reasoning_effort,
                         "prompt_receipt": (
@@ -482,6 +613,20 @@ def workset_runtime(state: RuntimeState, workset_id: str) -> WorksetRuntime | No
     return None
 
 
+def workset_claim(state: RuntimeState, workset_id: str) -> WorksetClaimRecord | None:
+    runtime = workset_runtime(state, workset_id)
+    if runtime is None:
+        return None
+    return runtime.workset_claim
+
+
+def task_claim_index(state: RuntimeState, workset_id: str) -> dict[str, TaskClaimRecord]:
+    runtime = workset_runtime(state, workset_id)
+    if runtime is None:
+        return {}
+    return {task_claim.task_id: task_claim for task_claim in runtime.task_claims}
+
+
 def task_state_index(state: RuntimeState, workset_id: str) -> dict[str, TaskRuntimeRecord]:
     runtime = workset_runtime(state, workset_id)
     if runtime is None:
@@ -554,9 +699,16 @@ def merge_workset_runtime(
     workset_id: str,
     task_ids: set[str],
     incoming_records: tuple[TaskRuntimeRecord, ...] | None,
+    incoming_workset_claim: WorksetClaimRecord | None | object = _UNSET,
+    incoming_task_claims: tuple[TaskClaimRecord, ...] | None = None,
+    released_task_claim_ids: tuple[str, ...] = (),
     incoming_attempts: tuple[TaskAttemptRecord, ...] | None = None,
 ) -> RuntimeState:
     current_runtime = workset_runtime(state, workset_id)
+    preserved_workset_claim = current_runtime.workset_claim if current_runtime is not None else None
+    if incoming_workset_claim is not _UNSET:
+        preserved_workset_claim = incoming_workset_claim
+
     preserved_records = dict(task_state_index(state, workset_id))
     if incoming_records is not None:
         for record in incoming_records:
@@ -565,6 +717,23 @@ def merge_workset_runtime(
         preserved_records[task_id]
         for task_id in sorted(task_ids)
         if task_id in preserved_records
+    )
+
+    preserved_task_claims = {
+        task_claim.task_id: task_claim
+        for task_claim in (current_runtime.task_claims if current_runtime is not None else ())
+        if task_claim.task_id in task_ids
+    }
+    for task_id in released_task_claim_ids:
+        preserved_task_claims.pop(task_id, None)
+    if incoming_task_claims is not None:
+        for task_claim in incoming_task_claims:
+            if task_claim.task_id in task_ids:
+                preserved_task_claims[task_claim.task_id] = task_claim
+    filtered_task_claims = tuple(
+        preserved_task_claims[task_id]
+        for task_id in sorted(task_ids)
+        if task_id in preserved_task_claims
     )
 
     preserved_attempts = [
@@ -582,6 +751,8 @@ def merge_workset_runtime(
                 preserved_attempts.append(attempt)
     updated_workset = WorksetRuntime(
         workset_id=workset_id,
+        workset_claim=preserved_workset_claim,
+        task_claims=filtered_task_claims,
         task_states=filtered_records,
         attempts=tuple(preserved_attempts),
     )
@@ -634,6 +805,9 @@ __all__ = [
     "ATTEMPT_STATUS_FAILED",
     "ATTEMPT_STATUS_IN_PROGRESS",
     "ATTEMPT_STATUS_SUCCESS",
+    "EXECUTION_MODELS",
+    "EXECUTION_MODEL_DIRECT_WTAM",
+    "EXECUTION_MODEL_WORKSET_MANAGER",
     "RUNTIME_SCHEMA_VERSION",
     "RUNTIME_STORE_VERSION",
     "TASK_STATUSES",
@@ -649,9 +823,11 @@ __all__ = [
     "RuntimeState",
     "RuntimeStore",
     "StoreError",
+    "TaskClaimRecord",
     "TaskAttemptRecord",
     "TaskRuntimeRecord",
     "ValidationRecord",
+    "WorksetClaimRecord",
     "WorksetRuntime",
     "append_event",
     "atomic_write_text",
@@ -664,7 +840,9 @@ __all__ = [
     "now_iso",
     "parse_iso",
     "save_runtime_state",
+    "task_claim_index",
     "task_attempts_for_workset",
     "task_state_index",
+    "workset_claim",
     "workset_runtime",
 ]

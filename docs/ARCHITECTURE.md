@@ -32,8 +32,8 @@ The vNext durable contract under the control root is:
 - `events.jsonl`
 
 `planning.json` owns the durable workset/task DAG.
-`runtime.json` owns mutable task execution state, including prompt receipts and
-worktree/git lineage for attempts.
+`runtime.json` owns mutable task execution state, including workset claims,
+task claims, prompt receipts, and worktree/git lineage for attempts.
 `events.jsonl` records append-only mutations for audit and inspection.
 
 `backlog.md` is not a storage dependency anymore.
@@ -57,6 +57,12 @@ Tasks remain the executable unit inside a workset, but they are no longer
 grouped durably by `epic`, `lane`, or `wave`. Those concepts were structurally
 wrong for the AI-first target model and were removed instead of preserved as
 aliases.
+
+Claims attach to both worksets and tasks. The base model supports two
+first-class execution modes:
+
+- `direct_wtam` for one kept-change task running through the WTAM lifecycle
+- `workset_manager` for supervisor-led work over one claimed workset
 
 ## Storage Boundary
 
@@ -86,9 +92,9 @@ These commands exercise one end-to-end vertical slice:
 1. create or update planning and runtime state
 2. inspect the WTAM contract before kept changes
 3. start one branch-backed task worktree with a prompt receipt and real git
-   execution identity
+   execution identity while claiming both the workset and the task
 4. land the task branch and record structured result, validation, and commit
-   lineage
+   lineage while releasing those claims
 5. clean up the landed task worktree
 6. read summary/status
 7. identify the next runnable tasks
@@ -96,8 +102,10 @@ These commands exercise one end-to-end vertical slice:
 
 ## Deferred Or Removed Product Code
 
-This sweep does not preserve the old backlog, board, supervisor, inbox, or
-compatibility-plan surfaces as normative behavior. Much of the old
+This sweep does not preserve the old backlog, board, inbox, or
+compatibility-plan surfaces as normative behavior. Supervisor/workset-manager
+mode is still a first-class product target, but any rebuilt supervisor surface
+must target the new claim/runtime contract directly. Much of the old
 `blackdog` package remains only as historical code until later cleanup.
 
 That is intentional. The goal of this pass is to leave the repo with a correct

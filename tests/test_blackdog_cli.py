@@ -156,6 +156,16 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(start_payload["branch"].startswith("agent/"))
         self.assertEqual(start_payload["base_commit"], self.git_output("rev-parse", "HEAD"))
 
+        exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
+        self.assertEqual(exit_code, 0, stderr)
+        snapshot = json.loads(stdout)
+        self.assertEqual(snapshot["runtime_model"]["counts"]["claimed_worksets"], 1)
+        self.assertEqual(snapshot["runtime_model"]["counts"]["claimed_tasks"], 1)
+        self.assertEqual(snapshot["runtime_model"]["recent_attempts"][0]["execution_model"], "direct_wtam")
+        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["claim"]["actor"], "codex")
+        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["claim"]["execution_model"], "direct_wtam")
+        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["task_claims"][0]["task_id"], "DM-1")
+
         note_path = worktree_path / "notes.txt"
         note_path.write_text("WTAM kept change\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(worktree_path), "add", "notes.txt"], check=True, capture_output=True, text=True)
@@ -200,8 +210,13 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         snapshot = json.loads(stdout)
         self.assertEqual(snapshot["runtime_model"]["counts"]["attempts"], 1)
+        self.assertEqual(snapshot["runtime_model"]["counts"]["claimed_worksets"], 0)
+        self.assertEqual(snapshot["runtime_model"]["counts"]["claimed_tasks"], 0)
         self.assertEqual(snapshot["runtime_model"]["recent_attempts"][0]["attempt_id"], attempt_id)
         self.assertEqual(snapshot["runtime_model"]["recent_attempts"][0]["prompt_receipt"]["prompt_hash"], prompt_hash)
+        self.assertEqual(snapshot["runtime_model"]["recent_attempts"][0]["execution_model"], "direct_wtam")
+        self.assertIsNone(snapshot["runtime_model"]["worksets"][0]["claim"])
+        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["task_claims"], [])
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["worktree_role"], "task")
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["landed_commit"], land_payload["landed_commit"])
 

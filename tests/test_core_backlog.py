@@ -161,7 +161,6 @@ class CorePlanningTests(CoreAuditTestCase):
                     {
                         "task_id": "RUN-1",
                         "status": "in_progress",
-                        "owner": "codex",
                         "note": "editing",
                     }
                 ],
@@ -171,7 +170,8 @@ class CorePlanningTests(CoreAuditTestCase):
 
         self.assertEqual(runtime_state.worksets[0].workset_id, "runtime")
         self.assertEqual(runtime_state.worksets[0].task_states[0].status, "in_progress")
-        self.assertEqual(runtime_state.worksets[0].task_states[0].owner, "codex")
+        self.assertIsNone(runtime_state.worksets[0].workset_claim)
+        self.assertEqual(runtime_state.worksets[0].task_claims, ())
         self.assertEqual(runtime_state.worksets[0].attempts, ())
 
     def test_start_and_finish_task_record_attempt_stats(self) -> None:
@@ -213,7 +213,14 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(attempt.worktree_role, "linked")
         self.assertEqual(attempt.worktree_path, "/tmp/direct-worktree")
         self.assertEqual(attempt.start_commit, "0123456789abcdef")
+        self.assertEqual(attempt.execution_model, "direct_wtam")
         self.assertEqual(attempt.prompt_receipt.prompt_hash, create_prompt_receipt("Implement the direct slice and record runtime stats.").prompt_hash)
+
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "codex")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.execution_model, "direct_wtam")
+        self.assertEqual(runtime_state.worksets[0].task_claims[0].task_id, "DIR-1")
+        self.assertEqual(runtime_state.worksets[0].task_claims[0].attempt_id, attempt.attempt_id)
 
         finished = finish_task(
             self.profile,
@@ -235,7 +242,10 @@ class CorePlanningTests(CoreAuditTestCase):
 
         runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
         self.assertEqual(runtime_state.worksets[0].task_states[0].status, "done")
+        self.assertIsNone(runtime_state.worksets[0].workset_claim)
+        self.assertEqual(runtime_state.worksets[0].task_claims, ())
         self.assertEqual(runtime_state.worksets[0].attempts[0].attempt_id, attempt.attempt_id)
         self.assertEqual(runtime_state.worksets[0].attempts[0].commit, "abc123")
         self.assertEqual(runtime_state.worksets[0].attempts[0].landed_commit, "def456")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].execution_model, "direct_wtam")
         self.assertEqual(runtime_state.worksets[0].attempts[0].prompt_receipt.source, "unit-test")

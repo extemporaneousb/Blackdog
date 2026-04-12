@@ -22,6 +22,9 @@ These decisions are no longer provisional:
 - `planning.json` is the canonical planning store
 - `runtime.json` is the canonical mutable runtime store
 - `events.jsonl` remains append-only audit history
+- claims attach to both worksets and tasks
+- the first-class execution models are `direct_wtam` and `workset_manager`
+- non-worktree execution is not part of the product model
 - `blackdog_cli` stays thin and only dispatches into core/product code
 
 ## Audience Model
@@ -53,6 +56,17 @@ A workset owns:
 - canonical exported workspace identity
 - branch intent
 
+### `WorksetClaimRecord`
+
+The active claim over one workset.
+
+It carries:
+
+- actor
+- execution model
+- claimed timestamp
+- optional note
+
 ### `TaskSpec`
 
 The durable specification of one executable unit inside a workset.
@@ -81,6 +95,19 @@ The current vNext runtime intentionally stays small:
 Those statuses are enough to rebuild `summary`, `next`, and `snapshot` without
 dragging the old compatibility runtime forward.
 
+### `TaskClaimRecord`
+
+The active claim over one task inside one workset.
+
+It carries:
+
+- task id
+- actor
+- execution model
+- claimed timestamp
+- optional attempt id
+- optional note
+
 ### `TaskAttemptRecord`
 
 One concrete execution of one task inside one workset.
@@ -92,6 +119,7 @@ It carries:
 - workspace identity
 - worktree role and worktree path
 - branch intent plus observed branch and start commit
+- execution model
 - result summary, validations, changed paths, and commit linkage
 
 The attempt record is where Blackdog stops being only a planner and becomes a

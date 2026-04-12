@@ -54,11 +54,11 @@ Blackdog is in an explicitly authorized breaking-change period.
   - execute inside the task worktree
   - `./.VE/bin/blackdog worktree land`
   - `./.VE/bin/blackdog worktree cleanup`
-- If analysis-only work is supported, keep it as a separate command family instead of a mode switch hidden inside kept-change execution.
+- Do not preserve a non-worktree execution mode in Blackdog.
 - Prioritize locking the base layer:
   - workset/task shape
-  - claim semantics
-  - execution model
+  - claims attach to both worksets and tasks
+  - first-class execution models: `direct_wtam` and `workset_manager`
   - durable completed/landed history
 - Tests should use fresh isolated git repos. Prefer cheap/low-reasoning execution for bulk task-flow tests.
 
@@ -119,7 +119,7 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 ## Supervisor Model
 
-- Supervisor/multi-agent surfaces are deferred unless they read and write the new typed workset/runtime model directly.
+- Supervisor/multi-agent work is a first-class `workset_manager` execution model, but any rebuilt surface must read and write the new typed workset/runtime model directly.
 - Blackdog uses branch-backed task worktrees for kept implementation changes.
 
 ## Repo Contract

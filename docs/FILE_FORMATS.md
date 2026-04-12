@@ -67,21 +67,38 @@ Top-level fields:
 
 Current version markers:
 
-- `schema_version = 1`
-- `store_version = "blackdog.runtime/vnext1"`
+- `schema_version = 2`
+- `store_version = "blackdog.runtime/vnext2"`
 
 Each runtime workset row contains:
 
 - `id`
+- optional `workset_claim`
+- `task_claims`
 - `task_states`
 - `attempts`
+
+`workset_claim`, when present, is one JSON object with:
+
+- `actor`
+- `execution_model`
+- `claimed_at`
+- optional `note`
+
+Each `task_claims` row contains:
+
+- `task_id`
+- `actor`
+- `execution_model`
+- `claimed_at`
+- optional `attempt_id`
+- optional `note`
 
 Each task-state row contains:
 
 - `task_id`
 - `status`
 - optional `updated_at`
-- optional `owner`
 - optional `note`
 
 Each attempt row contains:
@@ -101,6 +118,7 @@ Each attempt row contains:
 - optional `target_branch`
 - optional `integration_branch`
 - optional `start_commit`
+- optional `execution_model`
 - optional `model`
 - optional `reasoning_effort`
 - optional `prompt_receipt`
@@ -142,6 +160,7 @@ Allowed validation statuses:
 
 Current shipped execution-context values:
 
+- `execution_model = "direct_wtam" | "workset_manager"`
 - `workspace_mode = "git-worktree"`
 - `worktree_role = "primary" | "task" | "linked"`
 
@@ -160,6 +179,10 @@ Each row is one JSON object with:
 Current shipped write path:
 
 - `workset.put`
+- `workset.claim`
+- `workset.release`
+- `task.claim`
+- `task.release`
 - `task.start`
 - `task.finish`
 - `worktree.start`

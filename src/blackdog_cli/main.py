@@ -155,9 +155,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_cleanup.add_argument("--branch")
     p_worktree_cleanup.add_argument("--json", action="store_true")
 
-    p_analysis = subparsers.add_parser("analysis", help="Separate analysis-only workflow (deferred in vNext)")
-    p_analysis.add_argument("--project-root", default=".")
-
     return parser
 
 
@@ -280,9 +277,6 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(render_cleanup_text(payload), end="")
             return 0
-
-        if args.command == "analysis":
-            raise BacklogError("analysis workflow is intentionally separate and has not been rebuilt in vNext yet")
 
         raise BacklogError(f"Unsupported command: {args.command}")
     except (BacklogError, ConfigError, StoreError, WorktreeError, OSError, ValueError) as exc:

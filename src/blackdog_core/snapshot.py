@@ -53,6 +53,7 @@ def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
                 "id": workset.workset_id,
                 "title": workset.title,
                 "counts": dict(workset.counts),
+                "claim": _jsonable(workset.claim),
                 "target_branch": workset.branch_intent.get("target_branch"),
                 "integration_branch": workset.branch_intent.get("integration_branch"),
                 "workspace": dict(workset.workspace),
@@ -66,6 +67,7 @@ def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
                         "worktree_role": attempt.worktree_role,
                         "branch": attempt.branch,
                         "start_commit": attempt.start_commit,
+                        "execution_model": attempt.execution_model,
                         "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                         "summary": attempt.summary,
                         "elapsed_seconds": attempt.elapsed_seconds,
@@ -84,6 +86,7 @@ def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
                 "worktree_role": attempt.worktree_role,
                 "branch": attempt.branch,
                 "start_commit": attempt.start_commit,
+                "execution_model": attempt.execution_model,
                 "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                 "summary": attempt.summary,
                 "elapsed_seconds": attempt.elapsed_seconds,
@@ -105,6 +108,7 @@ def render_summary_text(model: RuntimeModel) -> str:
         f"Worksets: {model.counts['worksets']}",
         f"Tasks: {model.counts['tasks']}",
         f"Ready: {model.counts['ready']} | In progress: {model.counts['in_progress']} | Blocked: {model.counts['blocked']} | Done: {model.counts['done']}",
+        f"Claimed worksets: {model.counts['claimed_worksets']} | Claimed tasks: {model.counts['claimed_tasks']}",
         f"Attempts: {model.counts['attempts']} | Active attempts: {model.counts['active_attempts']}",
     ]
     if not model.worksets:
@@ -117,16 +121,23 @@ def render_summary_text(model: RuntimeModel) -> str:
         target_branch = workset.branch_intent.get("target_branch") or "unset"
         integration_branch = workset.branch_intent.get("integration_branch") or "unset"
         workspace_identity = workset.workspace.get("identity") or "unset"
-        lines.append(
-            f"  target_branch={target_branch} integration_branch={integration_branch} workspace={workspace_identity}"
+        claim_detail = (
+            f" claim={workset.claim.actor}/{workset.claim.execution_model}"
+            if workset.claim is not None
+            else ""
         )
         lines.append(
-            f"  ready={workset.counts['ready']} in_progress={workset.counts['in_progress']} blocked={workset.counts['blocked']} done={workset.counts['done']} attempts={workset.counts['attempts']}"
+            f"  target_branch={target_branch} integration_branch={integration_branch} workspace={workspace_identity}{claim_detail}"
+        )
+        lines.append(
+            f"  ready={workset.counts['ready']} in_progress={workset.counts['in_progress']} blocked={workset.counts['blocked']} done={workset.counts['done']} claimed_tasks={workset.counts['claimed_tasks']} attempts={workset.counts['attempts']}"
         )
         for task in workset.tasks:
             detail = ""
             if task.latest_attempt_status:
                 detail = f" latest_attempt={task.latest_attempt_status}"
+            if task.claim_actor:
+                detail = f"{detail} claim={task.claim_actor}/{task.claim_execution_model}"
             lines.append(f"  [{task.readiness.upper()}] {_task_label(task)}{detail}")
         if workset.attempts:
             lines.append("  Recent attempts:")
@@ -135,6 +146,7 @@ def render_summary_text(model: RuntimeModel) -> str:
                 elapsed = f" elapsed={attempt.elapsed_seconds}s" if attempt.elapsed_seconds is not None else ""
                 branch = f" branch={attempt.branch}" if attempt.branch else ""
                 worktree = f" worktree={attempt.worktree_role}" if attempt.worktree_role else ""
+                execution_model = f" exec={attempt.execution_model}" if attempt.execution_model else ""
                 prompt_hash = (
                     f" prompt={attempt.prompt_receipt.prompt_hash[:10]}"
                     if attempt.prompt_receipt is not None
@@ -143,7 +155,7 @@ def render_summary_text(model: RuntimeModel) -> str:
                 lines.append(
                     (
                         f"    - {attempt.attempt_id} task={attempt.task_id} status={attempt.status} "
-                        f"actor={attempt.actor}{branch}{worktree}{prompt_hash}{elapsed} {detail}"
+                        f"actor={attempt.actor}{branch}{worktree}{execution_model}{prompt_hash}{elapsed} {detail}"
                     ).rstrip()
                 )
     return "\n".join(lines)

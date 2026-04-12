@@ -30,6 +30,16 @@ Agents should use Blackdog to:
 - record prompts, results, and runtime evidence
 - expose status and history back to humans
 
+## Locked V1 Decisions
+
+These decisions are no longer open:
+
+- claims attach to both worksets and tasks
+- the first-class execution models are `direct_wtam` and `workset_manager`
+- completed and landed work stays in durable history instead of being collapsed
+  into only current status
+- non-worktree execution is not part of Blackdog's product model
+
 ## The Missing Product Artifact
 
 The repo already has:
@@ -114,6 +124,7 @@ Human:
 
 Blackdog must support:
 
+- workset claims and task claims
 - task execution state
 - canonical exported workspace identity
 - actual worktree path and role
@@ -122,6 +133,9 @@ Blackdog must support:
 - prompt receipt capture at execution start
 - enough attempt identity that later stats, summaries, and prompt review make sense
 
+`blackdog worktree start` is both the operator-facing claim action and the
+execution start action for `direct_wtam`.
+
 For v1, the kept-change path should be one operator workflow:
 
 - `blackdog worktree preflight`
@@ -129,9 +143,6 @@ For v1, the kept-change path should be one operator workflow:
 - do the work inside that task worktree
 - `blackdog worktree land`
 - `blackdog worktree cleanup`
-
-Analysis-only work can exist later, but it should be a different command family
-instead of a mode switch hidden inside the kept-change flow.
 
 ### Story 4: Record Results And Stats
 
@@ -205,6 +216,7 @@ V1 should include these product capabilities:
 - typed workset/task planning
 - ready-task selection
 - mutable task runtime state
+- explicit workset/task claims
 - worktree-backed WTAM preflight/start/land/cleanup
 - prompt receipt capture
 - result/stat recording
@@ -223,6 +235,7 @@ This is the decision frame for the rest of the repo.
 - `runtime.json`
 - `events.jsonl`
 - workset/task typed model
+- workset/task claim model
 - `worktree preflight`
 - `worktree start`
 - `worktree land`
@@ -243,18 +256,18 @@ This is the decision frame for the rest of the repo.
   keep the capability, but ground it in stored prompt receipts and attempt
   history instead of ad hoc chat memory
 - supervisor/status:
-  keep only if it reads and writes the new typed runtime state directly
+  keep only if it reads and writes the new typed runtime state directly and
+  uses `workset_manager` claim/execution semantics
 
 ### Combine
 
-- claim + execution start may become one operator-facing execution action
+- claim + execution start are one operator-facing action in `direct_wtam`
 - result record + land may become one finish/report action
 - summary + next may remain separate commands but should read from one status
   model
 
 ### Defer
 
-- analysis-only workflow as its own command family
 - static HTML board
 - threads/conversation management
 - tracked installs and multi-repo observation
@@ -286,6 +299,7 @@ Minimum per-attempt stats:
 - worktree role / worktree path
 - branch / target branch / integration branch
 - start_commit
+- execution_model
 - prompt_hash
 - changed_paths
 - validations and statuses
@@ -302,7 +316,8 @@ The exact names can change, but the product should expose capabilities in this
 shape:
 
 - one planning write surface for workset/task updates
-- one WTAM lifecycle surface for kept changes
+- one WTAM lifecycle surface for `direct_wtam`
+- one supervisor/workset-manager surface for multi-agent workset execution
 - one human summary surface
 - one machine snapshot surface
 - one ready-task selection surface

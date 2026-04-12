@@ -45,6 +45,7 @@ class RuntimeModelTests(CoreAuditTestCase):
 
         self.assertEqual(model.repository.project_name, "Blackdog")
         self.assertEqual(model.counts["worksets"], 1)
+        self.assertEqual(model.counts["claimed_worksets"], 0)
         self.assertEqual(model.counts["tasks"], 2)
         self.assertEqual(model.counts["attempts"], 0)
         self.assertEqual(model.counts["ready"], 1)
@@ -117,10 +118,15 @@ class RuntimeModelTests(CoreAuditTestCase):
 
         self.assertEqual(model.counts["attempts"], 1)
         self.assertEqual(model.counts["active_attempts"], 0)
+        self.assertEqual(model.counts["claimed_worksets"], 0)
+        self.assertEqual(model.counts["claimed_tasks"], 0)
         self.assertEqual(model.recent_attempts[0].task_id, "DIR-1")
         self.assertEqual(model.recent_attempts[0].status, "success")
         self.assertEqual(model.recent_attempts[0].worktree_role, "linked")
         self.assertEqual(model.recent_attempts[0].start_commit, "feedface1234")
+        self.assertEqual(model.recent_attempts[0].execution_model, "direct_wtam")
         self.assertEqual(model.recent_attempts[0].prompt_receipt.source, "unit-test")
         self.assertEqual(model.worksets[0].tasks[0].latest_attempt_status, "success")
+        self.assertIsNone(model.worksets[0].claim)
+        self.assertEqual(model.worksets[0].task_claims, ())
         self.assertEqual(model.worksets[0].attempts[0].elapsed_seconds, 15)

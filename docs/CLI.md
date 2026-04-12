@@ -75,12 +75,13 @@ Important flags:
 - optional `--note`
 
 `worktree start` creates a linked worktree outside the repo, starts the typed
-attempt, and records:
+attempt, claims both the workset and task for `direct_wtam`, and records:
 
 - worktree path
 - task branch
 - base ref / base commit
 - target branch
+- execution model
 - prompt receipt hash
 
 ### `blackdog worktree land`
@@ -110,7 +111,8 @@ Important flags:
 - optional `--note`
 
 `worktree land` derives `changed_paths`, `commit`, and `landed_commit` from the
-branch being landed. It is the kept-change finish/report action for v1.
+branch being landed. It is the kept-change finish/report action for v1 and
+releases the active task/workset claims when the WTAM slice is complete.
 
 ### `blackdog worktree cleanup`
 
@@ -165,8 +167,9 @@ The old backlog-centric commands are not part of the vNext shipped surface.
 That includes the markdown planning, board, supervisor, inbox, and compatibility
 plan commands.
 
-The analysis-only workflow is intentionally separate and has not been rebuilt
-yet. V1 ships one kept-change workflow: `blackdog worktree ...`.
+Any later supervisor/workset-manager surface must target the same workset/task
+claim model and runtime snapshot foundation instead of reviving legacy backlog
+flows.
 
 If they are rebuilt later, they must target the new workset/runtime foundation
 instead of reviving `backlog.md`.
