@@ -48,6 +48,46 @@ blackdog worktree preflight --project-root /path/to/repo
 blackdog worktree preflight --project-root /path/to/repo --json
 ```
 
+### `blackdog worktree preview`
+
+Preview the WTAM start plan before Blackdog claims or mutates runtime state.
+
+```bash
+blackdog worktree preview \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1 \
+  --actor codex \
+  --prompt "Implement the kernel rewrite slice in this worktree."
+```
+
+Important flags:
+
+- `--workset`
+- `--task`
+- `--actor`
+- exactly one of `--prompt` or `--prompt-file`
+- optional `--branch`
+- optional `--from`
+- optional `--path`
+- optional `--model`
+- optional `--reasoning-effort`
+- optional `--note`
+- optional `--show-prompt`
+- optional `--expand-contract`
+
+`worktree preview` is read-only. It shows:
+
+- the planned branch, worktree path, base ref, and target branch
+- prompt receipt hash and prompt source
+- task paths, docs, checks, and validation defaults
+- repo contract inputs such as the repo-local Blackdog skill and routed docs
+- the worktree-local `.VE` / `blackdog` bootstrap plan
+
+Use `--show-prompt` when you want the exact prompt receipt text.
+Use `--expand-contract` when you want the preview to inline the contract
+documents Blackdog expects an agent to use.
+
 ### `blackdog worktree start`
 
 Create a branch-backed task worktree and start the WTAM attempt for one task.
@@ -78,10 +118,12 @@ Important flags:
 attempt, claims both the workset and task for `direct_wtam`, and records:
 
 - worktree path
+- worktree-local `.VE` and `blackdog` launcher path
 - task branch
 - base ref / base commit
 - target branch
 - execution model
+- prompt source
 - prompt receipt hash
 
 ### `blackdog worktree land`

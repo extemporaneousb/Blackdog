@@ -26,7 +26,13 @@ development.
   - `blackdog summary`
   - `blackdog next`
   - `blackdog snapshot`
-  - `blackdog worktree preflight|start|land|cleanup`
+  - `blackdog worktree preflight|preview|start|land|cleanup`
+- Use `blackdog worktree preview` before `start` when you need to inspect the
+  prompt receipt, repo contract inputs, branch/worktree plan, or worktree-local
+  CLI bootstrap plan.
+- `blackdog worktree start` is responsible for provisioning a worktree-local
+  `.VE` and `blackdog` launcher when the task worktree does not already have
+  one.
 - Do not use or preserve deleted backlog/board/bootstrap/inbox/render/tune
   workflows unless they are explicitly rebuilt on top of the vNext core model.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents must review

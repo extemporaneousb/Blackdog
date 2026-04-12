@@ -35,6 +35,7 @@ Blackdog is in an explicitly authorized breaking-change period.
   tuning surfaces unless they are explicitly rebuilt on the vNext core model.
 - Treat the WTAM kept-change workflow as the normative product path:
   - `./.VE/bin/blackdog worktree preflight`
+  - `./.VE/bin/blackdog worktree preview --workset WORKSET --task TASK --actor AGENT --prompt "..."`
   - `./.VE/bin/blackdog worktree start`
   - execute inside the task worktree
   - `./.VE/bin/blackdog worktree land`
@@ -49,10 +50,11 @@ Blackdog is in an explicitly authorized breaking-change period.
 1. Run `./.VE/bin/blackdog summary`.
 2. Inspect runnable work with `./.VE/bin/blackdog next`.
 3. Check the WTAM gate with `./.VE/bin/blackdog worktree preflight`.
-4. Start a kept-change task with `./.VE/bin/blackdog worktree start --workset WORKSET --task TASK --actor AGENT --prompt "..."`.
-5. Make kept changes only inside that task worktree.
-6. Land successful kept changes with `./.VE/bin/blackdog worktree land --workset WORKSET --task TASK --actor AGENT`.
-7. Clean up with `./.VE/bin/blackdog worktree cleanup --workset WORKSET --task TASK`.
+4. Preview the exact WTAM plan with `./.VE/bin/blackdog worktree preview --workset WORKSET --task TASK --actor AGENT --prompt "..."`.
+5. Start a kept-change task with `./.VE/bin/blackdog worktree start --workset WORKSET --task TASK --actor AGENT --prompt "..."`.
+6. Make kept changes only inside that task worktree.
+7. Land successful kept changes with `./.VE/bin/blackdog worktree land --workset WORKSET --task TASK --actor AGENT`.
+8. Clean up with `./.VE/bin/blackdog worktree cleanup --workset WORKSET --task TASK`.
 
 ## Docs To Review
 

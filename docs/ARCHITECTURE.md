@@ -80,6 +80,7 @@ The minimum coherent product surface rebuilt on top of the new core is:
 
 - `blackdog workset put`
 - `blackdog worktree preflight`
+- `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree land`
 - `blackdog worktree cleanup`
@@ -91,14 +92,17 @@ These commands exercise one end-to-end vertical slice:
 
 1. create or update planning and runtime state
 2. inspect the WTAM contract before kept changes
-3. start one branch-backed task worktree with a prompt receipt and real git
-   execution identity while claiming both the workset and the task
-4. land the task branch and record structured result, validation, and commit
+3. preview one branch-backed task execution plan, including prompt receipt
+   metadata, repo contract inputs, and the worktree-local CLI bootstrap plan
+4. start one branch-backed task worktree with a prompt receipt, a provisioned
+   worktree-local `.VE`, and real git execution identity while claiming both
+   the workset and the task
+5. land the task branch and record structured result, validation, and commit
    lineage while releasing those claims
-5. clean up the landed task worktree
-6. read summary/status
-7. identify the next runnable tasks
-8. emit a machine-readable runtime snapshot
+6. clean up the landed task worktree
+7. read summary/status
+8. identify the next runnable tasks
+9. emit a machine-readable runtime snapshot
 
 ## Deferred Or Removed Product Code
 

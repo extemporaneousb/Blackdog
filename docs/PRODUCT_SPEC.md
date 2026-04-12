@@ -125,12 +125,15 @@ Human:
 Blackdog must support:
 
 - workset claims and task claims
+- one preview surface that shows the WTAM start plan before mutation
 - task execution state
 - canonical exported workspace identity
 - actual worktree path and role
 - branch and start-commit identity from the executing checkout
 - target branch / integration branch intent
 - prompt receipt capture at execution start
+- repo contract inputs visible before execution start
+- worktree-local CLI setup so the task worktree can run Blackdog directly
 - enough attempt identity that later stats, summaries, and prompt review make sense
 
 `blackdog worktree start` is both the operator-facing claim action and the
@@ -139,6 +142,7 @@ execution start action for `direct_wtam`.
 For v1, the kept-change path should be one operator workflow:
 
 - `blackdog worktree preflight`
+- `blackdog worktree preview`
 - `blackdog worktree start`
 - do the work inside that task worktree
 - `blackdog worktree land`
@@ -217,8 +221,9 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
-- worktree-backed WTAM preflight/start/land/cleanup
+- worktree-backed WTAM preflight/preview/start/land/cleanup
 - prompt receipt capture
+- prompt/contract preview before execution start
 - result/stat recording
 - human summary/status
 - machine snapshot export

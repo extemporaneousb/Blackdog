@@ -189,6 +189,21 @@ Current shipped write path:
 - `worktree.land`
 - `worktree.cleanup`
 
+Current `worktree.start` payloads record:
+
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `branch`
+- `target_branch`
+- `base_ref`
+- `base_commit`
+- `worktree_path`
+- `prompt_hash`
+- optional `prompt_source`
+- `workspace_blackdog_path`
+- `bootstrap_mode`
+
 ## Semantic Boundary
 
 `blackdog_core.backlog` works on typed `Workset` and `TaskSpec` objects plus a

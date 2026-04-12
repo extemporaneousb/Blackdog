@@ -13,7 +13,9 @@ from blackdog.wtam import (
     render_cleanup_text,
     render_land_text,
     render_preflight_text,
+    render_preview_text,
     render_start_text,
+    preview_task_worktree,
     start_task_worktree,
     worktree_preflight,
 )
@@ -46,20 +48,22 @@ def _load_json_payload(*, raw_json: str | None, file_path: str | None) -> dict[s
     return payload
 
 
-def _load_text_input(*, label: str, raw_text: str | None, file_path: str | None) -> str:
+def _load_text_input(*, label: str, raw_text: str | None, file_path: str | None) -> tuple[str, str]:
     if raw_text is None and file_path is None:
         raise BacklogError(f"{label} requires --prompt or --prompt-file")
     if raw_text is not None and file_path is not None:
         raise BacklogError(f"{label} accepts only one prompt source")
     if raw_text is not None:
         text = raw_text
+        source = "inline:--prompt"
     else:
         candidate = Path(file_path or "")
         text = sys.stdin.read() if file_path == "-" else candidate.read_text(encoding="utf-8")
+        source = "stdin" if file_path == "-" else str(candidate.resolve())
     normalized = str(text).strip()
     if not normalized:
         raise BacklogError(f"{label} text is required")
-    return normalized
+    return normalized, source
 
 
 def _load_model(project_root: str | None):
@@ -118,6 +122,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_preflight = worktree_subparsers.add_parser("preflight", help="Show the current WTAM worktree contract")
     p_worktree_preflight.add_argument("--project-root", default=".")
     p_worktree_preflight.add_argument("--json", action="store_true")
+
+    p_worktree_preview = worktree_subparsers.add_parser("preview", help="Preview the WTAM start plan and prompt receipt")
+    p_worktree_preview.add_argument("--project-root", default=".")
+    p_worktree_preview.add_argument("--workset", required=True)
+    p_worktree_preview.add_argument("--task", required=True)
+    p_worktree_preview.add_argument("--actor", required=True)
+    preview_prompt_group = p_worktree_preview.add_mutually_exclusive_group(required=True)
+    preview_prompt_group.add_argument("--prompt")
+    preview_prompt_group.add_argument("--prompt-file")
+    p_worktree_preview.add_argument("--branch")
+    p_worktree_preview.add_argument("--from", dest="from_ref")
+    p_worktree_preview.add_argument("--path")
+    p_worktree_preview.add_argument("--model")
+    p_worktree_preview.add_argument("--reasoning-effort")
+    p_worktree_preview.add_argument("--note")
+    p_worktree_preview.add_argument("--show-prompt", action="store_true")
+    p_worktree_preview.add_argument("--expand-contract", action="store_true")
+    p_worktree_preview.add_argument("--json", action="store_true")
 
     p_worktree_start = worktree_subparsers.add_parser("start", help="Create a task worktree and start the WTAM attempt")
     p_worktree_start.add_argument("--project-root", default=".")
@@ -218,9 +240,45 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_preflight_text(payload), end="")
             return 0
 
+        if args.command == "worktree" and args.worktree_command == "preview":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            prompt_text, prompt_source = _load_text_input(
+                label="worktree preview prompt",
+                raw_text=args.prompt,
+                file_path=args.prompt_file,
+            )
+            preview = preview_task_worktree(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                prompt=prompt_text,
+                prompt_source=prompt_source,
+                branch=args.branch,
+                from_ref=args.from_ref,
+                path=args.path,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+                note=args.note,
+                include_prompt=args.show_prompt,
+                expand_contract=args.expand_contract,
+            )
+            if args.json:
+                _emit_json({"worktree_preview": preview.to_dict()})
+            else:
+                print(
+                    render_preview_text(
+                        preview,
+                        show_prompt=args.show_prompt,
+                        expand_contract=args.expand_contract,
+                    ),
+                    end="",
+                )
+            return 0
+
         if args.command == "worktree" and args.worktree_command == "start":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            prompt_text = _load_text_input(
+            prompt_text, prompt_source = _load_text_input(
                 label="worktree start prompt",
                 raw_text=args.prompt,
                 file_path=args.prompt_file,
@@ -231,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=args.task,
                 actor=args.actor,
                 prompt=prompt_text,
+                prompt_source=prompt_source,
                 branch=args.branch,
                 from_ref=args.from_ref,
                 path=args.path,

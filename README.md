@@ -18,6 +18,7 @@ The current shipped CLI is deliberately narrow:
 - `blackdog next`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
+- `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree land`
 - `blackdog worktree cleanup`
@@ -39,6 +40,9 @@ In this repo, use `./.VE/bin/blackdog` when the worktree has a local `.VE`.
 Do not keep implementation edits in the primary worktree. Run
 `./.VE/bin/blackdog worktree preflight` first; if it reports the primary
 worktree, move into a branch-backed task worktree before editing files.
+Use `./.VE/bin/blackdog worktree preview` when you want to inspect the WTAM
+start plan, prompt receipt, and repo contract inputs before a claim/start.
+`blackdog worktree start` provisions a worktree-local `.VE` when needed.
 
 Blackdog has no non-WTAM implementation mode.
 

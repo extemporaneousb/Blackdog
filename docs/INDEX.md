@@ -27,6 +27,7 @@ CLI surfaces.
 - `blackdog next`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
+- `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree land`
 - `blackdog worktree cleanup`

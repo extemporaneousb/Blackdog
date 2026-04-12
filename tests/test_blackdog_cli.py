@@ -95,6 +95,72 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(stdout, "")
         self.assertIn("JSON object payload", stderr)
 
+    def test_worktree_preview_shows_the_start_plan_and_contract_inputs(self) -> None:
+        (self.root / ".codex" / "skills" / "blackdog").mkdir(parents=True, exist_ok=True)
+        skill_path = self.root / ".codex" / "skills" / "blackdog" / "SKILL.md"
+        skill_path.write_text("repo skill\n", encoding="utf-8")
+        agents_path = self.root / "AGENTS.md"
+        agents_path.write_text("repo contract\n", encoding="utf-8")
+
+        payload = {
+            "id": "preview-mode",
+            "title": "Preview mode",
+            "scope": {"kind": "repo", "paths": ["src", "docs"]},
+            "workspace": {"identity": "preview-workspace"},
+            "branch_intent": {"target_branch": "main", "integration_branch": "feature/preview"},
+            "tasks": [
+                {
+                    "id": "PV-1",
+                    "title": "Preview the WTAM plan",
+                    "intent": "surface the prompt receipt and contract inputs",
+                    "paths": ["src/blackdog/wtam.py"],
+                    "docs": ["docs/CLI.md"],
+                    "checks": ["make test"],
+                }
+            ],
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "preview",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "preview-mode",
+            "--task",
+            "PV-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Show me the exact WTAM start plan.",
+            "--show-prompt",
+            "--expand-contract",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        preview = json.loads(stdout)["worktree_preview"]
+        self.assertTrue(preview["start_ready"])
+        self.assertEqual(preview["execution_model"], "direct_wtam")
+        self.assertEqual(preview["workspace_identity"], "preview-workspace")
+        self.assertEqual(preview["prompt_text"], "Show me the exact WTAM start plan.")
+        self.assertEqual(preview["prompt_source"], "inline:--prompt")
+        self.assertEqual(preview["task_paths"], ["src/blackdog/wtam.py"])
+        self.assertEqual(preview["task_docs"], ["docs/CLI.md"])
+        self.assertEqual(preview["task_checks"], ["make test"])
+        self.assertEqual(preview["bootstrap"]["mode"], "launcher-shim")
+        self.assertTrue(any(item["path"] == str(skill_path.resolve()) for item in preview["contract_documents"]))
+        self.assertTrue(any(item["path"] == str(agents_path.resolve()) for item in preview["contract_documents"]))
+        self.assertTrue(any(item["text"] == "repo skill\n" for item in preview["contract_documents"]))
+
     def test_worktree_start_land_and_cleanup_drive_the_kept_change_flow(self) -> None:
         payload = {
             "id": "direct-mode",
@@ -152,9 +218,19 @@ class BlackdogCliTests(CoreAuditTestCase):
         ).hexdigest()
         worktree_path = Path(start_payload["worktree_path"])
         self.assertTrue(worktree_path.exists())
+        self.assertEqual(start_payload["bootstrap_mode"], "launcher-shim")
         self.assertEqual(start_payload["primary_worktree"], str(self.root.resolve()))
         self.assertTrue(start_payload["branch"].startswith("agent/"))
         self.assertEqual(start_payload["base_commit"], self.git_output("rev-parse", "HEAD"))
+        workspace_cli = worktree_path / ".VE" / "bin" / "blackdog"
+        self.assertTrue(workspace_cli.is_file())
+        completed = subprocess.run(
+            [str(workspace_cli), "summary", "--project-root", str(self.root)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("Project: CLI Demo", completed.stdout)
 
         exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
