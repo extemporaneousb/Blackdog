@@ -33,8 +33,12 @@ development.
 - `blackdog worktree start` is responsible for provisioning a worktree-local
   `.VE` and `blackdog` launcher when the task worktree does not already have
   one.
-- Do not use or preserve deleted backlog/board/bootstrap/inbox/render/tune
-  workflows unless they are explicitly rebuilt on top of the vNext core model.
+- Do not use or preserve deleted backlog/board/inbox/render flows or the old
+  bootstrap/tune implementations unless they are explicitly rebuilt on top of
+  the vNext core model.
+- Repo lifecycle workflows such as install/update/refresh/tune are distinct
+  from workset/task execution. If rebuilt, keep them in the product layer and
+  do not encode them as workset/task semantics.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents must review
   before editing.
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for
@@ -51,8 +55,8 @@ development.
 - `blackdog_core` explicitly excludes WTAM orchestration, supervisor policy,
   bootstrap/refresh flows, skill generation, prompt tuning, and rendered UI
   surfaces.
-- Keep `blackdog` limited to product-layer WTAM orchestration on top of the
-  typed core model.
+- Keep `blackdog` limited to product-layer WTAM orchestration plus repo
+  lifecycle workflows on top of the typed core model.
 - Keep `blackdog_cli` as a thin adapter over the shipped CLI surface. No
   domain logic belongs there.
 - If a change needs client-specific context to make sense, it does not belong

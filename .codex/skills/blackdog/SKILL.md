@@ -11,7 +11,9 @@ Use the local Blackdog CLI instead of mutating runtime files by hand.
 
 - `blackdog_core` is the durable contract: profile/path resolution, typed
   planning/runtime/event formats, claim semantics, and read models.
-- `blackdog` is the WTAM product layer built on that contract.
+- `blackdog` is the product layer built on that contract. It owns WTAM
+  execution workflows and repo lifecycle workflows such as install/update/
+  refresh/tune when those surfaces exist.
 - `blackdog_cli` is the thin command adapter behind the `blackdog` executable.
 
 ## CLI Entry Point
@@ -43,6 +45,9 @@ Blackdog is in an explicitly authorized breaking-change period.
 - Do not preserve a non-worktree execution mode in Blackdog.
 - Claims attach to both worksets and tasks.
 - First-class execution models: `direct_wtam` and `workset_manager`.
+- Treat repo lifecycle workflows as a separate first-class family:
+  install/update/refresh/tune and skill composition are product-layer
+  workflows, but they are not workset/task objects.
 - Tests should use fresh isolated git repos.
 
 ## Standard Flow
@@ -76,3 +81,5 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with that set.
 - Do not check in mutable runtime files from `@git-common/blackdog`.
 - Treat the documented CLI plus stable control-root artifacts as the supported
   integration contract for repo-local adapters and skills.
+- When repo lifecycle workflows are rebuilt, expose them as explicit skill/CLI
+  flows rather than hiding them inside workset/task execution.

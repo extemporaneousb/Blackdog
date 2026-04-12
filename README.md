@@ -46,6 +46,10 @@ start plan, prompt receipt, and repo contract inputs before a claim/start.
 
 Blackdog has no non-WTAM implementation mode.
 
+Blackdog also has a separate repo lifecycle concern set: install/update/refresh
+and prompt/skill composition. Those workflows belong in the product layer, but
+they are not workset/task operations.
+
 ## Docs
 
 - [docs/INDEX.md](docs/INDEX.md)

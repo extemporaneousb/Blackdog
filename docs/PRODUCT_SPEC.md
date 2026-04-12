@@ -30,6 +30,13 @@ Agents should use Blackdog to:
 - record prompts, results, and runtime evidence
 - expose status and history back to humans
 
+Blackdog also needs repo lifecycle workflows that are not themselves workset or
+task mutations:
+
+- install or update Blackdog in a repo
+- refresh or regenerate repo-local skill/scaffold surfaces
+- tune or preview prompt/skill composition against the repo contract
+
 ## Locked V1 Decisions
 
 These decisions are no longer open:
@@ -84,6 +91,44 @@ Blackdog is usable when it reliably supports these jobs:
 7. Let a human redirect or reshape work without losing history.
 8. Recover after interruption without forcing the user to reconstruct state
    from chat logs.
+
+It is also usable when it supports these repo lifecycle jobs without pretending
+they are task execution:
+
+1. install or update Blackdog in a target repo
+2. refresh repo-local skill or scaffold surfaces after a package change
+3. preview or tune prompt/skill composition before execution
+
+## Workflow Families
+
+Blackdog has two different workflow families.
+
+### 1. Workset Execution Workflows
+
+These workflows operate on durable planning/runtime state:
+
+- workset/task shaping
+- ready-task selection
+- WTAM claim/start/land/cleanup
+- status, snapshot, recovery, and result history
+
+These belong to the typed workset/task model and are represented in
+`planning.json`, `runtime.json`, and `events.jsonl`.
+
+### 2. Repo Lifecycle Workflows
+
+These workflows operate on the repo's Blackdog installation, skill contract,
+and prompt-composition surface:
+
+- install
+- update
+- refresh/regenerate
+- tune/preview prompt composition
+
+These are first-class product workflows, but they are not themselves
+worksets, tasks, claims, or attempts. They belong in the product layer and
+should surface through explicit CLI and skill workflows rather than being
+encoded as planning state.
 
 ## V1 Stories
 
@@ -213,6 +258,35 @@ Blackdog must support:
 
 This is essential for real-world dogfooding.
 
+### Story 8: Refresh A Repo After Blackdog Changes
+
+Human:
+"I updated Blackdog. Refresh this repo so the local skill and managed contract
+surfaces match the current package."
+
+Blackdog must support:
+
+- repo-local install/update/refresh behavior
+- clear knowledge of which repo-managed files are in scope
+- skill/scaffold regeneration without confusing that operation with task
+  execution
+
+This is a repo lifecycle story, not a workset/task story.
+
+### Story 9: Inspect Or Tune The Composed Prompt Surface
+
+Human:
+"Show me the prompt/skill context Blackdog would use, and help me tune it."
+
+Blackdog must support:
+
+- prompt/skill preview without starting task execution
+- the ability to include or omit expanded skill text
+- prompt shaping/tuning against the repo contract
+
+This is a first-class operator workflow. It should not be forced through task
+claims or attempt history unless execution actually starts.
+
 ## V1 Feature Set
 
 V1 should include these product capabilities:
@@ -229,6 +303,11 @@ V1 should include these product capabilities:
 - machine snapshot export
 - typed replan/update of workset and task state
 - interruption-safe state recovery
+
+Blackdog should also keep a first-class repo lifecycle family in scope:
+
+- repo install/update/refresh workflows
+- prompt/skill preview and tuning workflows
 
 ## Keep / Change / Combine / Defer / Remove
 
@@ -260,6 +339,10 @@ This is the decision frame for the rest of the repo.
 - prompt shaping and prompt reuse:
   keep the capability, but ground it in stored prompt receipts and attempt
   history instead of ad hoc chat memory
+- repo lifecycle workflows:
+  keep install/update/refresh/tune as first-class workflows, but rebuild them
+  as explicit repo lifecycle surfaces in the product layer rather than as task
+  or workset operations
 - supervisor/status:
   keep only if it reads and writes the new typed runtime state directly and
   uses `workset_manager` claim/execution semantics
@@ -276,7 +359,6 @@ This is the decision frame for the rest of the repo.
 - static HTML board
 - threads/conversation management
 - tracked installs and multi-repo observation
-- prompt/tune helpers beyond what is needed for workset shaping
 - browser write UI
 - richer multi-agent steering if it delays direct-mode usability
 
@@ -323,6 +405,8 @@ shape:
 - one planning write surface for workset/task updates
 - one WTAM lifecycle surface for `direct_wtam`
 - one supervisor/workset-manager surface for multi-agent workset execution
+- one repo lifecycle surface family for install/update/refresh/tune and skill
+  composition
 - one human summary surface
 - one machine snapshot surface
 - one ready-task selection surface

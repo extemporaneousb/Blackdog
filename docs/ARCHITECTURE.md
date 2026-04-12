@@ -17,7 +17,7 @@ For the supported human/agent stories and the v1 target, use
 | Package | Role | Must not absorb |
 | --- | --- | --- |
 | `blackdog_core` | Durable planning/runtime contracts, typed models, and derived read models. | CLI glue, supervisor policy, HTML/view composition, or prompt-only behavior. |
-| `blackdog` | Product-layer WTAM orchestration on top of the core contract. | Canonical planning or runtime storage ownership. |
+| `blackdog` | Product-layer WTAM orchestration and repo lifecycle workflows on top of the core contract. | Canonical planning or runtime storage ownership. |
 | `blackdog_cli` | Thin parser/help/dispatch layer behind the `blackdog` executable. | Domain logic or storage semantics. |
 
 The hard rule is unchanged: `blackdog_core` defines the contract and every
@@ -74,6 +74,18 @@ JSON file operations into every semantic function. The shipped implementation is
 runtime store. That keeps storage substitutable without reintroducing text-based
 plan editing.
 
+## Workflow Families
+
+Blackdog has two product-layer workflow families:
+
+1. workset execution workflows over typed planning/runtime state
+2. repo lifecycle workflows over installation, refresh, and prompt/skill
+   composition
+
+The second family is intentionally not part of the workset/task durable model.
+Install/update/refresh/tune are product workflows, but they are not claims,
+tasks, or attempts.
+
 ## Shipped Surface After The Sweep
 
 The minimum coherent product surface rebuilt on top of the new core is:
@@ -87,6 +99,12 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog summary`
 - `blackdog next`
 - `blackdog snapshot`
+
+This repo still intends to rebuild a separate repo lifecycle surface in
+`blackdog` for install/update/refresh/tune and skill composition. Removing the
+legacy scaffold/bootstrap code did not mean those workflows were conceptually
+wrong; it meant the old implementation was structurally wrong and must be
+rebuilt against the vNext core.
 
 These commands exercise one end-to-end vertical slice:
 

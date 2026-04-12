@@ -215,3 +215,9 @@ flows.
 
 If they are rebuilt later, they must target the new workset/runtime foundation
 instead of reviving `backlog.md`.
+
+Repo lifecycle workflows are different. Install/update/refresh/tune and
+skill-composition flows are still first-class product concerns, but they should
+be rebuilt as a separate workflow family in `blackdog`, not forced into
+workset/task semantics and not revived from the old scaffold command tree
+unchanged.
