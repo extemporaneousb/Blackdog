@@ -24,12 +24,9 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 - Profile: `blackdog.toml`
 - Control root: `@git-common/blackdog`
-- Backlog: `@git-common/blackdog/backlog.md`
-- State: `@git-common/blackdog/backlog-state.json`
+- Planning: `@git-common/blackdog/planning.json`
+- Runtime: `@git-common/blackdog/runtime.json`
 - Events: `@git-common/blackdog/events.jsonl`
-- Inbox: `@git-common/blackdog/inbox.jsonl`
-- Results: `@git-common/blackdog/task-results`
-- HTML view: `@git-common/blackdog/blackdog-backlog.html`
 
 ## Codex Skill Discovery
 
@@ -43,8 +40,27 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 ## Repo-Specific Planning Guidance
 
 - Workflow policy: Prefer the project-local blackdog CLI over hand-edited state transitions.
-
 - Summary focus: Lead with direct status, then backlog state, then test focus.
+
+## Rewrite Priority
+
+Blackdog is in an explicitly authorized breaking-change period.
+
+- Delete or narrow old code that is not being carried forward.
+- Do not preserve markdown backlog, compatibility shims, or old command shapes unless they are the fastest path to the new foundation.
+- Treat the WTAM kept-change workflow as the normative product path:
+  - `./.VE/bin/blackdog worktree preflight`
+  - `./.VE/bin/blackdog worktree start`
+  - execute inside the task worktree
+  - `./.VE/bin/blackdog worktree land`
+  - `./.VE/bin/blackdog worktree cleanup`
+- If analysis-only work is supported, keep it as a separate command family instead of a mode switch hidden inside kept-change execution.
+- Prioritize locking the base layer:
+  - workset/task shape
+  - claim semantics
+  - execution model
+  - durable completed/landed history
+- Tests should use fresh isolated git repos. Prefer cheap/low-reasoning execution for bulk task-flow tests.
 
 
 ## Host Project Creation
@@ -61,16 +77,13 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Standard Flow
 
-1. Run `./.VE/bin/blackdog validate`.
-2. Run `./.VE/bin/blackdog summary`.
-3. Inspect runnable work with `./.VE/bin/blackdog next`.
-4. Before any repo edit you intend to keep, run `./.VE/bin/blackdog worktree preflight`. If it reports `primary worktree: yes`, do not edit in that checkout; create or enter a branch-backed task worktree with `./.VE/bin/blackdog worktree start --id TASK` first. Analysis-only work can stay in the current checkout.
-5. Run `./.VE/bin/blackdog coverage --output coverage/latest.json` to collect shipping-surface validation coverage evidence before large surface edits.
-6. Claim one task with `./.VE/bin/blackdog claim --agent <agent-name>`, then record structured output with `./.VE/bin/blackdog result record ...`.
-7. Complete or release the task through the CLI for direct work.
-8. Use `./.VE/bin/blackdog supervise run` when you want Blackdog to launch child agents instead of editing directly.
-9. Check `./.VE/bin/blackdog inbox list --recipient <agent-name>` before claiming fresh work if the run may have pending instructions.
-10. Open `@git-common/blackdog/blackdog-backlog.html` directly when you want the static backlog board; `blackdog render` refreshes it and active supervisor runs rerender it after task-state changes, including run exit after landed updates.
+1. Run `./.VE/bin/blackdog summary`.
+2. Inspect runnable work with `./.VE/bin/blackdog next`.
+3. Check the WTAM gate with `./.VE/bin/blackdog worktree preflight`.
+4. Start a kept-change task with `./.VE/bin/blackdog worktree start --workset WORKSET --task TASK --actor AGENT --prompt "..."`.
+5. Make kept changes only inside that task worktree.
+6. Land successful kept changes with `./.VE/bin/blackdog worktree land --workset WORKSET --task TASK --actor AGENT`.
+7. Clean up with `./.VE/bin/blackdog worktree cleanup --workset WORKSET --task TASK`.
 
 ## Prompt Tuning
 
@@ -89,18 +102,14 @@ Use the local Blackdog CLI instead of mutating backlog state by hand.
 
 ## Static Board
 
-- `@git-common/blackdog/blackdog-backlog.html` renders a wide control board with a `Backlog Control` panel, `Status` panel, paired objective/release-gate tables, `Execution Map`, and `Completed Tasks`.
-- `blackdog snapshot` and the embedded HTML payload remain Blackdog-product surfaces, but machine-readable repo/header/plan/task facts flow through the neutral `runtime_snapshot`; prefer that export for extensions instead of the surrounding board-only projection fields.
-- The control panel shows the current push copy, branch/commit/run/time-on-task summary, progress bar, and plain artifact links.
-- The release-gates panel stays beside the objective table and shows explicit or inferred passed checks without making the rows interactive.
-- The execution map keeps only the current workset's live compatibility lanes and waves visible, carries the `Inbox JSON` link, and removes search/filter chrome.
-- Objective rows are summary-only, while execution-map and completed-task cards open the task reader popout. Completed history is grouped by sweep when run metadata exists.
+- Static board / HTML surfaces are deferred in vNext unless explicitly rebuilt on top of `planning.json` and `runtime.json`.
 
 ## Docs to Review
 
 Review these repo docs before editing when they apply:
   - `AGENTS.md`
   - `docs/INDEX.md`
+  - `docs/PRODUCT_SPEC.md`
   - `docs/ARCHITECTURE.md`
   - `docs/TARGET_MODEL.md`
   - `docs/CLI.md`
@@ -110,11 +119,8 @@ Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with the repo's r
 
 ## Supervisor Model
 
-- The coordinating agent stays in the primary worktree.
-- Child agents launched by `blackdog supervise ...` run in branch-backed task worktrees and land through the primary worktree after successful commits.
+- Supervisor/multi-agent surfaces are deferred unless they read and write the new typed workset/runtime model directly.
 - Blackdog uses branch-backed task worktrees for kept implementation changes.
-- `stop` messages are checked while a supervisor execution is active. Current artifacts still use `run_id` as a compatibility alias, but the steering semantics apply to the derived `WorksetExecution`.
-- Tasks completed during the active execution stay visible in the execution map until the next run starts and performs its opening sweep.
 
 ## Repo Contract
 

@@ -1,259 +1,104 @@
 # Architecture
 
-This document describes the narrowed runtime charter and the layer
-boundaries Blackdog is extracting toward.
+Blackdog vNext is organized around one durable idea: the machine-owned workset
+store is the semantic source of truth.
 
-Use it to answer:
+Humans author repository docs, design docs, approvals, and prompts.
+agents mutate planning and runtime state through typed Blackdog operations and
+CLI surfaces. Humans can inspect the resulting files, but they are not the
+preferred authoring plane.
 
-- what belongs in the durable runtime contract
-- what Blackdog owns as shipped product behavior on top of that
-  contract
-- what should remain optional adapter or operator surface
+This document is about package and storage ownership, not product workflows.
+For the supported human/agent stories and the v1 target, use
+[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).
 
-Do not use this document as the detailed command or file-schema
-reference. Keep those details in:
+## Package Boundaries
 
-- [docs/CLI.md](docs/CLI.md) for command ownership and command-level
-  behavior
-- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md) for canonical artifact
-  contracts
-- [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md) for the proposed future
-  object model, planning direction, and runtime-kernel design decisions
-- [docs/BOUNDARIES.md](docs/BOUNDARIES.md) for the frozen extraction
-  charter
+| Package | Role | Must not absorb |
+| --- | --- | --- |
+| `blackdog_core` | Durable planning/runtime contracts, typed models, and derived read models. | CLI glue, supervisor policy, HTML/view composition, or prompt-only behavior. |
+| `blackdog` | Product-layer orchestration and optional higher surfaces. In this sweep, most legacy product code is intentionally deferred. | Canonical planning or runtime storage ownership. |
+| `blackdog_cli` | Thin parser/help/dispatch layer behind the `blackdog` executable. | Domain logic or storage semantics. |
 
-For a code-derived maintainer companion, open
-[docs/architecture-diagrams.html](docs/architecture-diagrams.html).
-That page is generated from the checked-out Python sources by
-`blackdog architecture-docs` and is intended to make the current module
-guide, runtime artifact surface, canonical backlog workflows, and full
-CLI command tree easier to scan than prose alone.
+The hard rule is unchanged: `blackdog_core` defines the contract and every
+other layer consumes it.
 
-Use [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md) alongside this document
-when the question is not "how is Blackdog divided today?" but "what
-runtime model are we trying to build toward next?"
+## Durable Contract
 
-## System shape
+The vNext durable contract under the control root is:
 
-Blackdog is a repo-versioned backlog system built in four package
-surfaces:
+- `planning.json`
+- `runtime.json`
+- `events.jsonl`
 
-| Package | Target distribution name | Purpose | Must not absorb |
-| --- | --- | --- | --- |
-| `blackdog_core` | `blackdog-core` | Durable backlog/runtime contract shared by every Blackdog client. | Supervisor policy, HTML/view composition, skill scaffolding, editor UX, tracked-install registry logic, and other product-specific behavior. |
-| `blackdog` | `blackdog` | The shipped Blackdog product built on top of `blackdog_core`. | Canonical state formats or thin CLI adapter code. |
-| `blackdog_cli` | `blackdog-cli` | Thin parser and command adapter behind the `blackdog` executable. | Business logic, runtime ownership, or product policy. |
-| `extensions` | n/a | Optional adapters and operator surfaces that consume documented Blackdog contracts. | Canonical runtime state formats or write-path rules. |
+`planning.json` owns the durable workset/task DAG.
+`runtime.json` owns mutable task execution state, including prompt receipts and
+worktree/git lineage for attempts.
+`events.jsonl` records append-only mutations for audit and inspection.
 
-The critical architectural rule is that `blackdog_core` defines the
-contract and every other layer composes it. Blackdog should not keep
-redefining that contract in prompt text, static HTML, supervisor code,
-or editor tools.
+`backlog.md` is not a storage dependency anymore.
+Markdown fence parsing, raw text surgery, and plan-block compatibility logic are
+gone from the semantic write path.
 
-## Core runtime charter
+## Core Model
 
-`blackdog_core` is the narrow runtime export. It exists so humans,
-`blackdog`, `blackdog_cli`, and future adapters can all depend on the same
-dependency-light contract.
+The top-level durable planning object is `Workset`.
 
-Core owns:
+A workset owns:
 
-- repo-local profile loading and path resolution
-- canonical backlog parsing and validation
-- derived read-only snapshot builders over backlog/state/record inputs
-- typed runtime-model projections over repository, workset, task-attempt,
-  wait-condition, prompt-receipt, and result artifacts
-- canonical artifact contracts for backlog, state, events, inbox, and
-  task results
-- deterministic state transitions for approval, task claims, inbox
-  replay, comments, and structured results
-- task selection, dependency checks, and plan interpretation
-- WTAM safety facts such as workspace-contract inspection,
-  primary-worktree detection, and other readonly invariants shared by
-  higher layers
+- scope
+- task DAG
+- visibility boundary
+- policies
+- canonical exported workspace identity
+- branch intent for target and integration branches
 
-Core does not own:
+Tasks remain the executable unit inside a workset, but they are no longer
+grouped durably by `epic`, `lane`, or `wave`. Those concepts were structurally
+wrong for the AI-first target model and were removed instead of preserved as
+aliases.
 
-- worktree lifecycle orchestration such as start, land, and cleanup
-- supervisor launch policy, child prompts, or recovery workflows
-- prompt/tune/report policy
-- static HTML rendering or browser-facing interaction design
-- project skill scaffolding, bootstrap, refresh, or update flows
-- editor-specific conversation or task UX
+## Storage Boundary
 
-The core contract is intentionally boring: durable files, deterministic
-state, and stable inspection semantics. If a feature needs Blackdog
-defaults, a branded workflow, or an operator-facing UI, it does not
-belong in `blackdog_core`.
+`blackdog_core.backlog` exposes a planning-store interface rather than baking
+JSON file operations into every semantic function. The shipped implementation is
+`JsonPlanningStore`, but the semantic layer works on typed worksets and tasks.
 
-## Blackdog
+`blackdog_core.state` does the same for runtime state through a JSON-backed
+runtime store. That keeps storage substitutable without reintroducing text-based
+plan editing.
 
-`blackdog` owns the shipped Blackdog product experience layered
-on top of `blackdog_core`.
+## Shipped Surface After The Sweep
 
-`blackdog` owns:
+The minimum coherent product surface rebuilt on top of the new core is:
 
-- workflow orchestration such as `worktree start|land|cleanup`
-- the branch-backed worktree lifecycle plus supervisor run/recovery
-  state machines layered on top of the core runtime
-- supervisor orchestration and delegated child protocol
-- bootstrap, refresh, update, and project-local skill generation
-- prompt/tune/report helpers
-- Blackdog-owned conversation threads
-- tracked-install registry and unattended-tuning aggregation
-- snapshot composition and the rendered static HTML board
+- `blackdog workset put`
+- `blackdog worktree preflight`
+- `blackdog worktree start`
+- `blackdog worktree land`
+- `blackdog worktree cleanup`
+- `blackdog summary`
+- `blackdog next`
+- `blackdog snapshot`
 
-`blackdog` must remain a consumer of `blackdog_core`, not a replacement
-for it. Product code can choose defaults and compose workflows, but the
-durable artifact contract and basic state semantics still come from
-`blackdog_core`.
+These commands exercise one end-to-end vertical slice:
 
-## blackdog_cli
+1. create or update planning and runtime state
+2. inspect the WTAM contract before kept changes
+3. start one branch-backed task worktree with a prompt receipt and real git
+   execution identity
+4. land the task branch and record structured result, validation, and commit
+   lineage
+5. clean up the landed task worktree
+6. read summary/status
+7. identify the next runnable tasks
+8. emit a machine-readable runtime snapshot
 
-`blackdog_cli` exists so the executable stays thin.
+## Deferred Or Removed Product Code
 
-It owns:
+This sweep does not preserve the old backlog, board, supervisor, inbox, or
+compatibility-plan surfaces as normative behavior. Much of the old
+`blackdog` package remains only as historical code until later cleanup.
 
-- `argparse` command tree construction
-- CLI help text and option parsing
-- command-to-library dispatch into `blackdog_core` and `blackdog`
-- the single public `blackdog` command inventory; it does not hide or
-  filter commands based on internal package ownership
-
-It does not own:
-
-- persistent data structures
-- backlog/state semantics
-- snapshot semantics
-- supervisor or worktree policy
-
-For Blackdog's own repo, this layer is currently manual-first when the
-work touches implementation code: operators should be able to continue
-through the direct claim/worktree/result/land flow even when supervisor
-hardening is still in progress.
-
-## Extensions
-
-`extensions` own optional operator-specific integrations.
-
-Examples:
-
-- the Emacs workbench under `extensions/emacs/`
-- future IDE integrations
-- alternate viewers or reporting surfaces
-- host-specific wrappers that consume documented Blackdog behavior
-
-Extensions may depend on documented `blackdog` commands or on
-stable artifact contracts, but they must not redefine durable state or
-quietly become a second control plane.
-
-## Runtime composition
-
-Blackdog's runtime model is simple once the layers are separated:
-
-1. A repo-local `blackdog.toml` file defines the project identity and
-   resolves the shared control-root paths.
-2. `blackdog_core` interprets the backlog, reads and writes canonical
-   runtime artifacts, enforces deterministic state transitions, and
-   exposes readonly WTAM facts.
-3. `blackdog` turns those primitives into user-facing commands,
-   workflow orchestration, supervisor behavior, and rendered views.
-4. `extensions` consume the documented command and artifact surfaces
-   without owning the underlying runtime contract.
-
-The default shared control root still matters architecturally because it
-lets every worktree see the same backlog runtime state. But the exact
-artifact names, schemas, and CLI surfaces belong in the dedicated
-reference docs rather than being duplicated here.
-
-## Runtime and product surfaces
-
-The narrow boundary is easiest to keep clear when the main surfaces are
-classified explicitly:
-
-### Core-owned contract surfaces
-
-- `blackdog.toml` as the repo-local entrypoint
-- the canonical backlog/state/event/inbox/result artifact set under the
-  resolved control root
-- deterministic plan and task-state semantics over that artifact set
-- WTAM inspection facts used by higher layers to decide whether
-  implementation work is safe
-
-### Blackdog product surfaces
-
-- CLI workflow composition
-- branch-backed worktree lifecycle orchestration, including workspace
-  role and landing-readiness state
-- supervisor run artifacts, normalized run-state semantics, and
-  recovery behavior
-- Blackdog-owned conversation threads and tracked-install registry data
-- generated skills and bootstrap scaffolding
-- snapshot composition and rendered HTML
-
-### CLI adapter surface
-
-- the `blackdog` executable
-- `python -m blackdog_cli`
-- parser wiring that dispatches to `blackdog_core` and `blackdog`
-
-### Optional extension surfaces
-
-- editor integrations
-- alternate monitoring or reporting tools
-- host-specific wrappers around documented commands or artifact reads
-
-## Transitional package map
-
-The source tree is still transitional. Ownership follows the charter,
-not whichever top-level module currently contains the code.
-
-| Target layer | Transitional homes today |
-| --- | --- |
-| `blackdog_core` | `profile.py`, `backlog.py`, `state.py`, `snapshot.py` |
-| `blackdog` | `scaffold.py`, `worktree.py`, `supervisor.py`, `supervisor_policy.py`, `tuning.py`, `conversations.py`, `installs.py`, `board.py`, `ui.css` |
-| `blackdog_cli` | `main.py`, `__main__.py` |
-| `extensions` | `extensions/emacs/` and future optional adapter packages |
-
-## Migration rules
-
-Extraction work should follow these rules:
-
-1. Move reusable file-contract and state-transition logic toward
-   `blackdog_core`.
-2. Keep scaffold, supervisor, render, conversation, tracked-install,
-   and policy behavior in `blackdog`.
-3. Keep only parsing and dispatch in `blackdog_cli`.
-4. Push editor- or environment-specific behavior into `extensions`
-   instead of expanding the product runtime.
-5. Preserve the `blackdog` executable name and durable artifact
-   contracts while internal module ownership changes.
-6. Update this document, [docs/CLI.md](docs/CLI.md), and
-   [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md) when a boundary would
-   otherwise become ambiguous.
-
-## Non-goals
-
-The narrowed runtime charter explicitly rejects these moves:
-
-- treating the whole `blackdog` package as if it were all `core`
-- moving HTML, supervisor, prompt, scaffold, or skill logic into
-  `blackdog_core`
-- promoting optional extensions into canonical write-path owners
-- using current mixed file placement as proof of long-term ownership
-- changing durable artifact or executable contracts just because the
-  internal package layout is being cleaned up
-
-## Decision rule for new work
-
-Before adding or moving code, ask:
-
-1. Does this define or enforce the canonical backlog/runtime contract?
-2. Does it instead compose that contract into shipped Blackdog product
-   behavior?
-3. Is it optional operator or host integration that could be removed
-   without breaking the runtime contract?
-
-Route the change to `blackdog_core`, `blackdog`, or
-`extensions` based on that answer. If the answer is not obvious from the
-current docs, fix the docs before broadening the code.
+That is intentional. The goal of this pass is to leave the repo with a correct
+foundation, not to keep every former surface alive under a weaker model.

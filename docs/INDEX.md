@@ -1,33 +1,37 @@
 # Blackdog Docs
 
-Use this index as the entrypoint for the repo-scoped Blackdog system.
+Blackdog vNext is a machine-native planning and runtime kernel for AI-first
+repo work. Humans author repo docs, design intent, approvals, and prompts.
+Agents mutate planning and runtime state through typed Blackdog operations and
+CLI surfaces.
 
-## Document Map
+## Primary Docs
 
-- [docs/CHARTER.md](docs/CHARTER.md): product intent, current-vs-target scope, and success criteria for the multi-agent backlog system
-- [docs/BOUNDARIES.md](docs/BOUNDARIES.md): frozen ownership split between `core`, `blackdog`, and optional `extensions`
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): system boundaries, data flow, and the split between repo-local contract and shared runtime state
-- [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md): proposed future runtime kernel, first-class object model, planning direction, and decisions that still need to be locked down
-- [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md): compatibility-first slice plan for landing the target runtime model without breaking current callers
-- [docs/architecture-diagrams.html](docs/architecture-diagrams.html): generated maintainer overview rendered from the checked-out code, including workflows, module/class summaries, and the full CLI inventory
-- [docs/MODULE_INVENTORY.md](docs/MODULE_INVENTORY.md): file-level ownership tags and extraction targets across core runtime, `blackdog`, adapters, and removal candidates
-- [docs/CLI.md](docs/CLI.md): command reference for the `blackdog` executable and the `blackdog_cli` adapter package
-- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for `blackdog.toml`, backlog markdown, state, events, inbox, and task-result files
-- [docs/INTEGRATION.md](docs/INTEGRATION.md): current host-repo setup flow, configuration review points, and pilot rollout guidance
-- [docs/MIGRATION.md](docs/MIGRATION.md): migration guidance for callers moving onto the final remodeled surface
-- [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md): final remodel release notes and compatibility summary
-- [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md): final acceptance checklist, evidence sources, and validation commands
-- [docs/EXTRACTION_AUDIT.md](docs/EXTRACTION_AUDIT.md): extraction-risk audit for viewer, scaffold, supervisor, and Emacs adapter surfaces
-- [docs/OWNERSHIP_INVENTORY.md](docs/OWNERSHIP_INVENTORY.md): current file-level ownership map across `blackdog_core`, `blackdog`, viewers, and clients for extraction planning
+- [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md): supported workflows, v1 target,
+  keep/change/defer/remove decisions, and example human/agent stories
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): package boundaries, storage
+  ownership, and the minimum shipped product surface
+- [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md): the vNext object model and the
+  deliberate breaking changes that define it
+- [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md):
+  the sweep note that records the compatibility-first plan as superseded
+- [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`
+- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
+  `planning.json`, `runtime.json`, and `events.jsonl`
 
-## Working Guidance
+## Current Product Surface
 
-- Use the CLI for durable state transitions.
-- Use `blackdog worktree ...` for implementation tasks instead of editing from the primary checkout.
-- Do not plan around checked-in mutable runtime artifacts.
-- Use `blackdog bootstrap` to scaffold a host repo into the Blackdog contract in one command.
+- `blackdog workset put`: create or update one durable workset plus optional
+  task runtime rows
+- `blackdog summary`: read human-oriented status from the typed runtime model
+- `blackdog next`: list ready tasks from the task DAG
+- `blackdog snapshot`: emit the machine-readable runtime snapshot
 
-Current direction:
-- Treat the shared git control root as the runtime contract and `blackdog.toml` as the repo-local entrypoint.
-- Treat [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md) as the place to freeze future object-model and workflow decisions before broadening the runtime.
-- Treat `docs/BOUNDARIES.md` as the ownership contract for what belongs in `core`, `blackdog`, and `extensions`.
+## Direction
+
+- Do not author planning truth in markdown.
+- Do not treat `epic`, `lane`, or `wave` as durable concepts.
+- Do not use architecture prose as the product workflow spec; use
+  [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for that.
+- Do not depend on removed compatibility surfaces unless the docs explicitly
+  reintroduce them.

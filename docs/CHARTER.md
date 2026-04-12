@@ -2,6 +2,10 @@
 
 Blackdog exists to make repo-scoped backlog processing and multi-agent development practical, inspectable, and steerable.
 
+This document is the charter and intent statement. For the concrete v1 product
+target and supported user/agent stories, use
+[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).
+
 ## Product intent
 
 Blackdog is not only a task list. The target product is a coordinating agent interface backed by repo-scoped local state, where:

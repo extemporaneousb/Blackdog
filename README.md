@@ -24,6 +24,8 @@ Use these docs for the detailed contract:
 
 - [docs/BOUNDARIES.md](docs/BOUNDARIES.md): ownership rules and
   extraction phases
+- [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md): supported workflows,
+  v1 feature target, and keep/change/defer/remove decisions
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how `blackdog_core`,
   `blackdog`, `blackdog_cli`, and `extensions` compose
 - [docs/CLI.md](docs/CLI.md): command ownership and command-level

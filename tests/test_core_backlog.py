@@ -1,216 +1,241 @@
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
+from pathlib import Path
 
-from tests import test_blackdog_cli as cli_tests
+from blackdog_core.backlog import (
+    JsonPlanningStore,
+    PlanningState,
+    TaskSpec,
+    Workset,
+    default_planning_state,
+    finish_task,
+    load_planning_state,
+    next_ready_tasks,
+    save_planning_state,
+    start_task,
+    upsert_workset,
+)
+from blackdog_core.state import JsonRuntimeStore, create_prompt_receipt, load_runtime_state
 from tests.core_audit_support import CoreAuditTestCase
 
 
-class CoreBacklogAuditTests(CoreAuditTestCase):
-    def test_core_audit_backlog_task_shaping_normalizes_and_rejects_invalid_values(self) -> None:
-        shaped = cli_tests.backlog_module._coerce_task_shaping(
+class _MemoryPlanningStore:
+    def __init__(self) -> None:
+        self.state = default_planning_state()
+
+    def load(self, path: Path) -> PlanningState:
+        return self.state
+
+    def save(self, path: Path, state: PlanningState) -> None:
+        self.state = state
+
+
+class CorePlanningTests(CoreAuditTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_profile("Demo")
+        self.profile = self.load_test_profile()
+
+    def test_workset_round_trip_ignores_legacy_markdown_files(self) -> None:
+        legacy_backlog = self.profile.paths.control_dir / "backlog.md"
+        legacy_backlog.parent.mkdir(parents=True, exist_ok=True)
+        legacy_backlog.write_text("```json backlog-task\nnot valid anymore\n```", encoding="utf-8")
+
+        workset = upsert_workset(
+            self.profile,
             {
-                "estimated_elapsed_minutes": "30",
-                "estimated_touched_paths": [" docs/FILE_FORMATS.md ", "", "tests/test_core_backlog.py", "docs/FILE_FORMATS.md"],
-                "estimated_worktrees": "2",
-                "parallelizable_groups": 1,
+                "id": "foundation",
+                "title": "Foundation",
+                "scope": {"kind": "repo", "paths": ["src/blackdog_core"]},
+                "visibility": {"kind": "workset"},
+                "workspace": {"identity": "blackdog-main"},
+                "branch_intent": {"target_branch": "main", "integration_branch": "main"},
+                "tasks": [
+                    {
+                        "id": "FOUND-1",
+                        "title": "Create planning store",
+                        "intent": "replace backlog markdown with planning.json",
+                        "paths": ["src/blackdog_core/backlog.py"],
+                        "docs": ["docs/FILE_FORMATS.md"],
+                        "checks": ["make test"],
+                    }
+                ],
             },
-            fallback_paths=["pyproject.toml"],
         )
-        self.assertEqual(shaped["estimated_elapsed_minutes"], 30)
+
+        self.assertEqual(workset.workset_id, "foundation")
+        planning_state = load_planning_state(self.profile.paths)
+        self.assertEqual(len(planning_state.worksets), 1)
+        self.assertEqual(planning_state.worksets[0].tasks[0].task_id, "FOUND-1")
+        self.assertTrue(self.profile.paths.planning_file.is_file())
+        self.assertTrue(legacy_backlog.is_file())
+
+    def test_planning_store_protocol_allows_non_json_backends(self) -> None:
+        store = _MemoryPlanningStore()
+        state = PlanningState(
+            schema_version=1,
+            store_version="blackdog.planning/vnext1",
+            worksets=(
+                Workset(
+                    workset_id="memory",
+                    title="Memory",
+                    scope={},
+                    visibility={},
+                    policies={},
+                    workspace={},
+                    branch_intent={},
+                    tasks=(
+                        TaskSpec(
+                            task_id="MEM-1",
+                            title="Stored in memory",
+                            intent="prove provider boundary",
+                            description=None,
+                            depends_on=(),
+                            paths=(),
+                            docs=(),
+                            checks=(),
+                            metadata={},
+                        ),
+                    ),
+                    metadata={},
+                ),
+            ),
+        )
+
+        save_planning_state(self.profile.paths, state, store=store)
+        loaded = load_planning_state(self.profile.paths, store=store)
+
+        self.assertEqual(loaded.worksets[0].workset_id, "memory")
+        self.assertEqual(loaded.worksets[0].tasks[0].task_id, "MEM-1")
+
+    def test_next_ready_tasks_follow_workset_dag_and_runtime_state(self) -> None:
+        payload = {
+            "id": "rewrite",
+            "title": "Rewrite",
+            "workspace": {"identity": "rewrite-workspace"},
+            "branch_intent": {"target_branch": "main", "integration_branch": "main"},
+            "tasks": [
+                {
+                    "id": "RW-1",
+                    "title": "Replace planning store",
+                    "intent": "introduce planning.json",
+                },
+                {
+                    "id": "RW-2",
+                    "title": "Rebuild snapshot",
+                    "intent": "project worksets into runtime_model",
+                    "depends_on": ["RW-1"],
+                },
+            ],
+        }
+
+        upsert_workset(self.profile, payload)
+        planning_state = load_planning_state(self.profile.paths)
+        runtime_state = load_runtime_state(self.profile.paths)
         self.assertEqual(
-            shaped["estimated_touched_paths"],
-            ["docs/FILE_FORMATS.md", "tests/test_core_backlog.py"],
+            [(workset.workset_id, task.task_id) for workset, task in next_ready_tasks(planning_state, runtime_state=runtime_state)],
+            [("rewrite", "RW-1")],
         )
-        self.assertEqual(shaped["estimated_worktrees"], 2)
-        self.assertEqual(shaped["parallelizable_groups"], 1)
 
-        with self.assertRaises(cli_tests.backlog_module.BacklogError):
-            cli_tests.backlog_module._coerce_task_shaping(
-                {"estimated_validation_minutes": -5},
-                fallback_paths=["pyproject.toml"],
-            )
-
-    def test_core_audit_backlog_reconcile_prunes_orphans_and_promotes_done_approval(self) -> None:
-        cli_tests.run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        profile = cli_tests.load_profile(self.root)
-        cli_tests.backlog_module.add_task(
-            profile,
-            title="Reconcile canonical state",
-            bucket="core",
-            priority="P1",
-            risk="medium",
-            effort="M",
-            why="Core state should reconcile approval and claim semantics from one pass.",
-            evidence="The previous sync logic only seeded approval rows and left stale runtime entries behind.",
-            safe_first_slice="Prune orphans and promote completed approval rows during backlog sync.",
-            paths=["src/blackdog_core/state.py"],
-            checks=[],
-            docs=["docs/FILE_FORMATS.md"],
-            domains=["state"],
-            packages=[],
-            affected_paths=["src/blackdog_core/state.py"],
-            task_shaping=None,
-            objective="Core hardening",
-            requires_approval=True,
-            approval_reason="This task changes durable runtime semantics.",
-            epic_id="core-hardening",
-            epic_title="Core hardening",
-            lane_id="hardening-audit",
-            lane_title="Hardening audit",
-            wave=0,
-        )
-        snapshot = cli_tests.load_backlog(profile.paths, profile)
-        task_id = next(iter(snapshot.tasks))
-        reconciled, report = cli_tests.backlog_module.reconcile_state_for_backlog(
+        upsert_workset(
+            self.profile,
             {
-                "schema_version": 1,
-                "approval_tasks": {
-                    task_id: {"status": "pending"},
-                    "BLACK-orphan": {"status": "pending"},
-                },
-                "task_claims": {
-                    task_id: {
-                        "status": "done",
-                        "claimed_by": "codex",
-                        "claimed_pid": 1234,
-                        "claimed_process_missing_scans": 4,
-                    },
-                    "BLACK-orphan": {"status": "claimed", "claimed_by": "stale-agent"},
-                },
+                **payload,
+                "task_states": [{"task_id": "RW-1", "status": "done"}],
             },
-            snapshot,
         )
-        self.assertTrue(report["state_reconciled"])
-        self.assertEqual(report["pruned_approval_rows"], 1)
-        self.assertEqual(report["pruned_claim_rows"], 1)
-        self.assertEqual(report["promoted_done_approvals"], 1)
-        self.assertEqual(report["updated_claim_rows"], 1)
-        self.assertEqual(report["claim_runtime_fields_dropped"], 1)
-        self.assertNotIn("BLACK-orphan", reconciled["approval_tasks"])
-        self.assertNotIn("BLACK-orphan", reconciled["task_claims"])
-        self.assertEqual(reconciled["approval_tasks"][task_id]["status"], "done")
-        self.assertEqual(reconciled["approval_tasks"][task_id]["title"], snapshot.tasks[task_id].title)
+        runtime_state = load_runtime_state(self.profile.paths)
         self.assertEqual(
-            reconciled["approval_tasks"][task_id]["approval_reason"],
-            "This task changes durable runtime semantics.",
+            [(workset.workset_id, task.task_id) for workset, task in next_ready_tasks(planning_state, runtime_state=runtime_state)],
+            [("rewrite", "RW-2")],
         )
-        self.assertNotIn("claimed_pid", reconciled["task_claims"][task_id])
-        self.assertNotIn("claimed_process_missing_scans", reconciled["task_claims"][task_id])
 
-    def test_core_audit_validate_reports_reconcile_and_strict_sections(self) -> None:
-        cli_tests.run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        cli_tests.run_cli(
-            "add",
-            "--project-root",
-            str(self.root),
-            "--title",
-            "Validate strict runtime",
-            "--bucket",
-            "core",
-            "--why",
-            "Validate should report the canonical reconcile pass and strict artifact checks.",
-            "--evidence",
-            "Core validation previously only returned a small counter payload.",
-            "--safe-first-slice",
-            "Record one canonical result and surface the strict validation counts.",
-            "--path",
-            "src/blackdog_core/backlog.py",
-            "--requires-approval",
-            "--approval-reason",
-            "This task changes durable runtime semantics.",
-            "--wave",
-            "0",
+    def test_json_runtime_round_trip_uses_typed_runtime_rows(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "runtime",
+                "title": "Runtime",
+                "tasks": [{"id": "RUN-1", "title": "Track runtime", "intent": "write runtime.json"}],
+                "task_states": [
+                    {
+                        "task_id": "RUN-1",
+                        "status": "in_progress",
+                        "owner": "codex",
+                        "note": "editing",
+                    }
+                ],
+            },
         )
-        profile = cli_tests.load_profile(self.root)
-        snapshot = cli_tests.load_backlog(profile.paths, profile)
-        task_id = next(iter(snapshot.tasks))
-        cli_tests.record_task_result(
-            self.runtime_paths(),
-            task_id=task_id,
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+
+        self.assertEqual(runtime_state.worksets[0].workset_id, "runtime")
+        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "in_progress")
+        self.assertEqual(runtime_state.worksets[0].task_states[0].owner, "codex")
+        self.assertEqual(runtime_state.worksets[0].attempts, ())
+
+    def test_start_and_finish_task_record_attempt_stats(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "direct",
+                "title": "Direct",
+                "workspace": {"identity": "direct-workspace"},
+                "branch_intent": {"target_branch": "main", "integration_branch": "feature/direct"},
+                "tasks": [
+                    {"id": "DIR-1", "title": "Start task", "intent": "capture direct-agent attempt"},
+                ],
+            },
+        )
+
+        attempt = start_task(
+            self.profile,
+            workset_id="direct",
+            task_id="DIR-1",
+            actor="codex",
+            workspace_mode="git-worktree",
+            worktree_role="linked",
+            worktree_path="/tmp/direct-worktree",
+            branch="feature/direct",
+            start_commit="0123456789abcdef",
+            model="gpt-5.4",
+            reasoning_effort="high",
+            prompt_receipt=create_prompt_receipt(
+                "Implement the direct slice and record runtime stats.",
+                recorded_at="2026-04-12T09:00:00-07:00",
+                source="unit-test",
+            ),
+            note="starting work",
+        )
+        self.assertEqual(attempt.status, "in_progress")
+        self.assertEqual(attempt.workspace_identity, "direct-workspace")
+        self.assertEqual(attempt.branch, "feature/direct")
+        self.assertEqual(attempt.worktree_role, "linked")
+        self.assertEqual(attempt.worktree_path, "/tmp/direct-worktree")
+        self.assertEqual(attempt.start_commit, "0123456789abcdef")
+        self.assertEqual(attempt.prompt_receipt.prompt_hash, create_prompt_receipt("Implement the direct slice and record runtime stats.").prompt_hash)
+
+        finished = finish_task(
+            self.profile,
+            workset_id="direct",
+            task_id="DIR-1",
+            attempt_id=attempt.attempt_id,
             actor="codex",
             status="success",
-            what_changed=["Recorded one canonical result row."],
-            validation=["unit"],
-            residual=[],
-            needs_user_input=False,
-            followup_candidates=[],
-            run_id="core-validate",
+            summary="finished the direct slice",
+            changed_paths=("src/blackdog_core/backlog.py",),
+            residuals=("none",),
+            followup_candidates=("ship it",),
+            commit="abc123",
+            landed_commit="def456",
+            elapsed_seconds=42,
         )
-        payload = json.loads(
-            subprocess.run(
-                [sys.executable, "-m", "blackdog_cli.main", "validate", "--project-root", str(self.root)],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=cli_tests.cli_env(),
-                cwd=self.root,
-            ).stdout
-        )
-        self.assertEqual(payload["tasks"], 1)
-        self.assertEqual(payload["results"], 1)
-        self.assertIn("reconcile", payload)
-        self.assertIn("strict_validation", payload)
-        self.assertEqual(payload["strict_validation"]["issue_count"], 0)
-        self.assertEqual(payload["strict_validation"]["task_result_events"], 1)
-        self.assertGreaterEqual(payload["reconcile"]["seeded_approval_rows"], 1)
+        self.assertEqual(finished.status, "success")
+        self.assertEqual(finished.elapsed_seconds, 42)
 
-    def test_core_audit_validate_rejects_result_without_task_result_event(self) -> None:
-        cli_tests.run_cli("init", "--project-root", str(self.root), "--project-name", "Demo")
-        cli_tests.run_cli(
-            "add",
-            "--project-root",
-            str(self.root),
-            "--title",
-            "Validate missing result event",
-            "--bucket",
-            "core",
-            "--why",
-            "Strict validate should fail when result evidence loses its matching task_result event.",
-            "--evidence",
-            "The append-only result contract requires result files and task_result events to stay paired.",
-            "--safe-first-slice",
-            "Write a valid result file without the matching event and run validate.",
-            "--path",
-            "src/blackdog_core/state.py",
-            "--wave",
-            "0",
-        )
-        profile = cli_tests.load_profile(self.root)
-        snapshot = cli_tests.load_backlog(profile.paths, profile)
-        task_id = next(iter(snapshot.tasks))
-        result_dir = self.runtime_paths().results_dir / task_id
-        result_dir.mkdir(parents=True, exist_ok=True)
-        (result_dir / "20260408-120000-core-validate.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "task_id": task_id,
-                    "recorded_at": "2026-04-08T12:00:00-07:00",
-                    "actor": "codex",
-                    "run_id": "core-validate",
-                    "status": "success",
-                    "what_changed": ["Recorded evidence without the matching task_result event."],
-                    "validation": ["unit"],
-                    "residual": [],
-                    "needs_user_input": False,
-                    "followup_candidates": [],
-                    "metadata": {},
-                    "task_shaping_telemetry": {},
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        completed = subprocess.run(
-            [sys.executable, "-m", "blackdog_cli.main", "validate", "--project-root", str(self.root)],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=cli_tests.cli_env(),
-            cwd=self.root,
-        )
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("result_missing_task_result_event", completed.stderr)
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "done")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].attempt_id, attempt.attempt_id)
+        self.assertEqual(runtime_state.worksets[0].attempts[0].commit, "abc123")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].landed_commit, "def456")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].prompt_receipt.source, "unit-test")

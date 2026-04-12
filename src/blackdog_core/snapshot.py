@@ -1,4 +1,4 @@
-"""Derived read-only views over canonical Blackdog runtime artifacts."""
+"""Read models and renderers for the vNext Blackdog runtime."""
 
 from __future__ import annotations
 
@@ -6,22 +6,12 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from .backlog import (
-    RuntimeArtifacts,
-    build_plan_snapshot,
-    build_runtime_snapshot as _build_legacy_runtime_snapshot,
-    build_runtime_summary,
-    build_workset_snapshot,
-    load_runtime_artifacts,
-    render_plan_text,
-    summary_open_messages,
-)
-from .runtime_model import (
-    RuntimeModel,
-    load_runtime_model,
-    project_runtime_model,
-)
-from .state import load_events, load_inbox, load_task_results
+from .profile import RepoProfile
+from .runtime_model import RuntimeModel, TaskView, WorksetView, load_runtime_model
+from .state import now_iso
+
+
+SNAPSHOT_FORMAT = "blackdog.snapshot/vnext1"
 
 
 def _jsonable(value: Any) -> Any:
@@ -43,57 +33,138 @@ def runtime_model_snapshot(model: RuntimeModel) -> dict[str, Any]:
     return payload
 
 
-def build_runtime_snapshot(
-    profile,
-    snapshot,
-    state,
-    *,
-    messages: list[dict[str, Any]] | None = None,
-    results: list[dict[str, Any]] | None = None,
-    allow_high_risk: bool = False,
-    focus_task_ids: list[str] | tuple[str, ...] | None = None,
-) -> dict[str, Any]:
-    message_rows = messages if messages is not None else load_inbox(profile.paths)
-    result_rows = results if results is not None else load_task_results(profile.paths)
-    base = _build_legacy_runtime_snapshot(
-        profile,
-        snapshot,
-        state,
-        messages=message_rows,
-        results=result_rows,
-        allow_high_risk=allow_high_risk,
-        focus_task_ids=focus_task_ids,
-    )
-    model = project_runtime_model(
-        profile,
-        snapshot,
-        state,
-        events=load_events(profile.paths),
-        inbox=message_rows,
-        results=result_rows,
-        allow_high_risk=allow_high_risk,
-        execution_mode="snapshot",
-        focus_task_ids=tuple(focus_task_ids or ()),
-    )
-    base["runtime_model"] = runtime_model_snapshot(model)
-    base["task_attempts"] = base["runtime_model"]["task_attempts"]
-    base["wait_conditions"] = base["runtime_model"]["wait_conditions"]
-    base["control_messages"] = base["runtime_model"]["control_messages"]
-    base["workset_execution"] = base["runtime_model"]["workset_execution"]
-    base["prompt_receipts"] = base["runtime_model"]["prompt_receipts"]
-    return base
+def build_runtime_snapshot(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    return {
+        "schema_version": model.schema_version,
+        "format": SNAPSHOT_FORMAT,
+        "generated_at": now_iso(),
+        "runtime_model": runtime_model_snapshot(model),
+    }
+
+
+def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    return {
+        "project_name": model.repository.project_name,
+        "counts": dict(model.counts),
+        "worksets": [
+            {
+                "id": workset.workset_id,
+                "title": workset.title,
+                "counts": dict(workset.counts),
+                "target_branch": workset.branch_intent.get("target_branch"),
+                "integration_branch": workset.branch_intent.get("integration_branch"),
+                "workspace": dict(workset.workspace),
+                "next_task_ids": list(workset.next_task_ids),
+                "recent_attempts": [
+                    {
+                        "attempt_id": attempt.attempt_id,
+                        "task_id": attempt.task_id,
+                        "status": attempt.status,
+                        "actor": attempt.actor,
+                        "worktree_role": attempt.worktree_role,
+                        "branch": attempt.branch,
+                        "start_commit": attempt.start_commit,
+                        "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
+                        "summary": attempt.summary,
+                        "elapsed_seconds": attempt.elapsed_seconds,
+                    }
+                    for attempt in workset.attempts[:3]
+                ],
+            }
+            for workset in model.worksets
+        ],
+        "recent_attempts": [
+            {
+                "attempt_id": attempt.attempt_id,
+                "task_id": attempt.task_id,
+                "status": attempt.status,
+                "actor": attempt.actor,
+                "worktree_role": attempt.worktree_role,
+                "branch": attempt.branch,
+                "start_commit": attempt.start_commit,
+                "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
+                "summary": attempt.summary,
+                "elapsed_seconds": attempt.elapsed_seconds,
+            }
+            for attempt in model.recent_attempts[:5]
+        ],
+    }
+
+
+def _task_label(task: TaskView) -> str:
+    if task.readiness == "blocked" and task.blocked_by:
+        return f"{task.task_id} {task.title} ({', '.join(task.blocked_by)})"
+    return f"{task.task_id} {task.title}"
+
+
+def render_summary_text(model: RuntimeModel) -> str:
+    lines = [
+        f"Project: {model.repository.project_name}",
+        f"Worksets: {model.counts['worksets']}",
+        f"Tasks: {model.counts['tasks']}",
+        f"Ready: {model.counts['ready']} | In progress: {model.counts['in_progress']} | Blocked: {model.counts['blocked']} | Done: {model.counts['done']}",
+        f"Attempts: {model.counts['attempts']} | Active attempts: {model.counts['active_attempts']}",
+    ]
+    if not model.worksets:
+        lines.append("")
+        lines.append("No worksets have been defined.")
+        return "\n".join(lines)
+    for workset in model.worksets:
+        lines.append("")
+        lines.append(f"{workset.workset_id}: {workset.title}")
+        target_branch = workset.branch_intent.get("target_branch") or "unset"
+        integration_branch = workset.branch_intent.get("integration_branch") or "unset"
+        workspace_identity = workset.workspace.get("identity") or "unset"
+        lines.append(
+            f"  target_branch={target_branch} integration_branch={integration_branch} workspace={workspace_identity}"
+        )
+        lines.append(
+            f"  ready={workset.counts['ready']} in_progress={workset.counts['in_progress']} blocked={workset.counts['blocked']} done={workset.counts['done']} attempts={workset.counts['attempts']}"
+        )
+        for task in workset.tasks:
+            detail = ""
+            if task.latest_attempt_status:
+                detail = f" latest_attempt={task.latest_attempt_status}"
+            lines.append(f"  [{task.readiness.upper()}] {_task_label(task)}{detail}")
+        if workset.attempts:
+            lines.append("  Recent attempts:")
+            for attempt in workset.attempts[:3]:
+                detail = attempt.summary or attempt.note or ""
+                elapsed = f" elapsed={attempt.elapsed_seconds}s" if attempt.elapsed_seconds is not None else ""
+                branch = f" branch={attempt.branch}" if attempt.branch else ""
+                worktree = f" worktree={attempt.worktree_role}" if attempt.worktree_role else ""
+                prompt_hash = (
+                    f" prompt={attempt.prompt_receipt.prompt_hash[:10]}"
+                    if attempt.prompt_receipt is not None
+                    else ""
+                )
+                lines.append(
+                    (
+                        f"    - {attempt.attempt_id} task={attempt.task_id} status={attempt.status} "
+                        f"actor={attempt.actor}{branch}{worktree}{prompt_hash}{elapsed} {detail}"
+                    ).rstrip()
+                )
+    return "\n".join(lines)
+
+
+def render_next_text(model: RuntimeModel) -> str:
+    if not model.next_tasks:
+        return "No ready tasks."
+    lines = []
+    for task in model.next_tasks:
+        lines.append(f"{task.task_id} {task.title}")
+    return "\n".join(lines)
 
 
 __all__ = [
-    "RuntimeArtifacts",
+    "SNAPSHOT_FORMAT",
     "RuntimeModel",
-    "build_plan_snapshot",
     "build_runtime_snapshot",
     "build_runtime_summary",
-    "build_workset_snapshot",
-    "load_runtime_artifacts",
     "load_runtime_model",
-    "render_plan_text",
+    "render_next_text",
+    "render_summary_text",
     "runtime_model_snapshot",
-    "summary_open_messages",
 ]
