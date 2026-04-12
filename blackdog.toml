@@ -4,30 +4,8 @@ profile_version = 1
 
 [paths]
 control_dir = "@git-common/blackdog"
-skill_dir = ".codex/skills/blackdog"
 worktrees_dir = "../.worktrees"
 
-[ids]
-prefix = "BLACK"
-digest_length = 10
-
-[rules]
-require_claim_for_completion = true
-auto_render_html = true
-
-[supervisor]
-launch_command = ["/Applications/Codex.app/Contents/Resources/codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
-model = "gpt-5.4"
-reasoning_effort = "high"
-dynamic_reasoning = true
-max_parallel = 2
-
 [taxonomy]
-buckets = ["core", "cli", "html", "skills", "docs", "testing", "integration"]
-domains = ["cli", "docs", "html", "state", "events", "inbox", "results", "skills"]
 validation_commands = ["PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'"]
 doc_routing_defaults = ["AGENTS.md", "docs/INDEX.md", "docs/PRODUCT_SPEC.md", "docs/ARCHITECTURE.md", "docs/TARGET_MODEL.md", "docs/CLI.md", "docs/FILE_FORMATS.md"]
-
-[pm_heuristics]
-summary_focus = "Lead with direct status, then backlog state, then test focus."
-skill_usage = "Prefer the project-local blackdog CLI over hand-edited state transitions."

@@ -16,18 +16,17 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.paths.planning_file, profile.paths.control_dir / "planning.json")
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
-        self.assertEqual(profile.paths.skill_dir, (self.root / ".codex" / "skills" / "blackdog-demo").resolve())
+        self.assertEqual(profile.paths.worktrees_dir, (self.root.parent / f".worktrees-{self.root.name}").resolve())
 
     def test_load_profile_accepts_explicit_runtime_paths_without_control_dir(self) -> None:
         (self.root / "blackdog.toml").write_text(
             "[project]\nname = \"Demo\"\n\n"
             "[paths]\n"
-            "skill_dir = \".codex/skills/demo\"\n"
             "planning_file = \".git/coord/planning.json\"\n"
             "runtime_file = \".git/coord/runtime.json\"\n"
             "events_file = \".git/coord/events.jsonl\"\n\n"
-            "[supervisor]\n"
-            "launch_command = \"codex exec --dangerously-bypass-approvals-and-sandbox\"\n",
+            "[taxonomy]\n"
+            "validation_commands = [\"make test\"]\n",
             encoding="utf-8",
         )
 
@@ -37,32 +36,7 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.paths.planning_file, profile.paths.control_dir / "planning.json")
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
-        self.assertEqual(
-            profile.supervisor_launch_command,
-            ("codex", "exec", "--dangerously-bypass-approvals-and-sandbox"),
-        )
-
-    def test_profile_rejects_invalid_supervisor_settings(self) -> None:
-        cases = (
-            ('launch_command = "   "\n', "supervisor.launch_command"),
-            ('reasoning_effort = "extreme"\n', "supervisor.reasoning_effort"),
-            ('workspace_mode = "linked"\n', "supervisor.workspace_mode"),
-            ("max_parallel = 0\n", "supervisor.max_parallel"),
-        )
-        for supervisor_lines, expected in cases:
-            with self.subTest(expected=expected):
-                (self.root / "blackdog.toml").write_text(
-                    "[project]\nname = \"Demo\"\n\n"
-                    "[paths]\n"
-                    "control_dir = \"@git-common/blackdog\"\n"
-                    "skill_dir = \".codex/skills/demo\"\n\n"
-                    "[supervisor]\n"
-                    + supervisor_lines,
-                    encoding="utf-8",
-                )
-                with self.assertRaises(profile_module.ConfigError) as exc:
-                    self.load_test_profile()
-                self.assertIn(expected, str(exc.exception))
+        self.assertEqual(profile.validation_commands, ("make test",))
 
     def test_git_common_resolution_uses_repo_common_dir(self) -> None:
         with patch("blackdog_core.profile._run_git", return_value=".git"):

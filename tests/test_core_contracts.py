@@ -10,17 +10,14 @@ class CoreContractTests(CoreAuditTestCase):
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(pyproject["project"]["scripts"], {"blackdog": "blackdog_cli.main:main"})
         self.assertEqual(
-            pyproject["tool"]["blackdog"]["coverage"]["shipped_surface"],
-            [
-                "src/blackdog_core/backlog.py",
-                "src/blackdog_core/profile.py",
-                "src/blackdog_core/runtime_model.py",
-                "src/blackdog_core/snapshot.py",
-                "src/blackdog_core/state.py",
-            ],
+            pyproject["project"]["description"],
+            "Repo-scoped workset runtime for AI-assisted local development",
         )
+        self.assertNotIn("blackdog", pyproject.get("tool", {}))
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertIn("python3 -m blackdog_cli", makefile)
+        self.assertIn("python3 -m unittest discover", makefile)
+        self.assertNotIn("coverage:", makefile)
+        self.assertNotIn("test-emacs:", makefile)
 
     def test_core_import_boundaries_exclude_blackdog_product_code(self) -> None:
         self.assertEqual(self.core_import_boundary_violations(), [])
@@ -73,6 +70,38 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("prompt_receipt", file_formats)
         self.assertIn("worktree.start", file_formats)
         self.assertIn("backlog.md is not part of the vNext contract", file_formats)
+
+    def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:
+        removed_paths = [
+            "src/blackdog/architecture.py",
+            "src/blackdog/board.py",
+            "src/blackdog/conversations.py",
+            "src/blackdog/execution_context.py",
+            "src/blackdog/installs.py",
+            "src/blackdog/scaffold.py",
+            "src/blackdog/supervisor.py",
+            "src/blackdog/supervisor_policy.py",
+            "src/blackdog/tuning.py",
+            "src/blackdog/ui.css",
+            "src/blackdog/worktree.py",
+            "docs/ACCEPTANCE.md",
+            "docs/BOUNDARIES.md",
+            "docs/EMACS.md",
+            "docs/EXTRACTION_AUDIT.md",
+            "docs/INTEGRATION.md",
+            "docs/MIGRATION.md",
+            "docs/MODULE_INVENTORY.md",
+            "docs/OWNERSHIP_INVENTORY.md",
+            "docs/RELEASE_NOTES.md",
+            "docs/architecture-diagrams.html",
+        ]
+        for relative_path in removed_paths:
+            with self.subTest(path=relative_path):
+                self.assertFalse((REPO_ROOT / relative_path).exists(), f"{relative_path} should be removed")
+        self.assertFalse(
+            any(path.is_file() for path in (REPO_ROOT / "extensions").rglob("*")),
+            "legacy editor surfaces under extensions/ should be removed",
+        )
 
     def test_doc_routing_still_points_at_required_repo_contract_docs(self) -> None:
         profile = tomllib.loads((REPO_ROOT / "blackdog.toml").read_text(encoding="utf-8"))

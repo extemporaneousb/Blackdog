@@ -17,7 +17,7 @@ For the supported human/agent stories and the v1 target, use
 | Package | Role | Must not absorb |
 | --- | --- | --- |
 | `blackdog_core` | Durable planning/runtime contracts, typed models, and derived read models. | CLI glue, supervisor policy, HTML/view composition, or prompt-only behavior. |
-| `blackdog` | Product-layer orchestration and optional higher surfaces. In this sweep, most legacy product code is intentionally deferred. | Canonical planning or runtime storage ownership. |
+| `blackdog` | Product-layer WTAM orchestration on top of the core contract. | Canonical planning or runtime storage ownership. |
 | `blackdog_cli` | Thin parser/help/dispatch layer behind the `blackdog` executable. | Domain logic or storage semantics. |
 
 The hard rule is unchanged: `blackdog_core` defines the contract and every
@@ -102,11 +102,7 @@ These commands exercise one end-to-end vertical slice:
 
 ## Deferred Or Removed Product Code
 
-This sweep does not preserve the old backlog, board, inbox, or
-compatibility-plan surfaces as normative behavior. Supervisor/workset-manager
+This repo no longer keeps legacy backlog, board, inbox, bootstrap, or
+compatibility-plan code as dormant historical baggage. Supervisor/workset-manager
 mode is still a first-class product target, but any rebuilt supervisor surface
-must target the new claim/runtime contract directly. Much of the old
-`blackdog` package remains only as historical code until later cleanup.
-
-That is intentional. The goal of this pass is to leave the repo with a correct
-foundation, not to keep every former surface alive under a weaker model.
+must target the new claim/runtime contract directly.

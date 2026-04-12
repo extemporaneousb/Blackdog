@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blackdog"
 version = "0.1.0"
-description = "Repo-scoped backlog system for AI-assisted local development"
+description = "Repo-scoped workset runtime for AI-assisted local development"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -17,27 +17,9 @@ blackdog = "blackdog_cli.main:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
-[tool.setuptools.package-data]
-blackdog = ["ui.css"]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 # Keep one distribution while the repo ships three explicit Python packages:
-# `blackdog_core` for the durable contract, `blackdog` for the product layer,
+# `blackdog_core` for the durable contract, `blackdog` for WTAM orchestration,
 # and `blackdog_cli` for the command adapter.
 include = ["blackdog", "blackdog.*", "blackdog_core", "blackdog_core.*", "blackdog_cli", "blackdog_cli.*"]
-
-[tool.blackdog.coverage]
-artifact_output = "coverage/latest.json"
-# Phase 0 freezes the shipped core audit surface and evidence command.
-# Numeric gating stays documented-only until the direct core semantics tests
-# close the remaining gaps called out in docs/FILE_FORMATS.md.
-# Focus the audit surface on core state and backlog semantics; broad CLI,
-# supervisor, scaffold, and UI coverage stays in the repo-wide test suite.
-shipped_surface = [
-  "src/blackdog_core/backlog.py",
-  "src/blackdog_core/profile.py",
-  "src/blackdog_core/runtime_model.py",
-  "src/blackdog_core/snapshot.py",
-  "src/blackdog_core/state.py",
-]
