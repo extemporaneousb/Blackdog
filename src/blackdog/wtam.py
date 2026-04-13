@@ -3,14 +3,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-import shlex
 import os
 import subprocess
-import sys
 import time
-import tomllib
 
 from blackdog.contract import ContractDocument, contract_documents
+from blackdog.handlers import HandlerPlanSummary, execute_worktree_handlers, plan_worktree_handlers
 from blackdog_core.backlog import BacklogError, TaskSpec, Workset, find_workset, finish_task, load_planning_state, start_task
 from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
@@ -31,10 +29,6 @@ WORKSPACE_MODE_GIT_WORKTREE = "git-worktree"
 WORKTREE_ROLE_PRIMARY = "primary"
 WORKTREE_ROLE_TASK = "task"
 WORKTREE_ROLE_LINKED = "linked"
-WORKTREE_BOOTSTRAP_EDITABLE = "editable-worktree-source"
-WORKTREE_BOOTSTRAP_SHIM = "launcher-shim"
-WORKTREE_BOOTSTRAP_PROXY = "launcher-proxy"
-WORKTREE_BOOTSTRAP_REUSE = "reuse-existing"
 
 
 class WorktreeError(RuntimeError):
@@ -79,25 +73,18 @@ class WorktreeSpec:
     attempt_id: str
     prompt_hash: str
     prompt_source: str | None
-    workspace_ve: str
-    workspace_blackdog_path: str
-    bootstrap_mode: str
-    bootstrap_source_root: str | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class WorktreeBootstrapPlan:
-    ve_path: str
-    blackdog_path: str
-    mode: str
+    workspace_ve: str | None
+    workspace_blackdog_path: str | None
+    runtime_mode: str | None
     source_root: str | None
-    note: str
+    source_mode: str | None
+    script_policy: str | None
+    handlers: HandlerPlanSummary
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["handlers"] = self.handlers.to_dict()
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +116,7 @@ class WorktreePreview:
     validation_commands: tuple[str, ...]
     doc_routing_defaults: tuple[str, ...]
     contract_documents: tuple[ContractDocument, ...]
-    bootstrap: WorktreeBootstrapPlan
+    handlers: HandlerPlanSummary
     existing_branch_worktree: str | None
     path_exists: bool
     start_ready: bool
@@ -138,7 +125,7 @@ class WorktreePreview:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["contract_documents"] = [item.to_dict() for item in self.contract_documents]
-        payload["bootstrap"] = self.bootstrap.to_dict()
+        payload["handlers"] = self.handlers.to_dict()
         return payload
 
 
@@ -304,106 +291,6 @@ def _run_command(*args: str, cwd: Path | None = None) -> None:
         raise WorktreeError(f"{rendered} failed: {detail}")
 
 
-def _looks_like_blackdog_source_checkout(root: Path) -> bool:
-    pyproject = root / "pyproject.toml"
-    if not pyproject.is_file():
-        return False
-    if not (root / "src" / "blackdog_cli" / "main.py").is_file():
-        return False
-    try:
-        payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    return str((payload.get("project") or {}).get("name") or "") == "blackdog"
-
-
-def _current_blackdog_source_root() -> Path | None:
-    candidate = Path(__file__).resolve().parents[2]
-    if _looks_like_blackdog_source_checkout(candidate):
-        return candidate
-    return None
-
-
-def _current_blackdog_executable() -> str | None:
-    candidate = (Path(sys.executable).resolve().parent / "blackdog").resolve()
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
-    return None
-
-
-def _bootstrap_plan_for_worktree(profile: RepoProfile, *, worktree_path: Path) -> WorktreeBootstrapPlan:
-    blackdog_path = (worktree_path / ".VE" / "bin" / "blackdog").resolve()
-    if blackdog_path.is_file() and os.access(blackdog_path, os.X_OK):
-        return WorktreeBootstrapPlan(
-            ve_path=str((worktree_path / ".VE").resolve()),
-            blackdog_path=str(blackdog_path),
-            mode=WORKTREE_BOOTSTRAP_REUSE,
-            source_root=None,
-            note="reuse the existing worktree-local Blackdog CLI",
-        )
-    if _looks_like_blackdog_source_checkout(profile.paths.project_root):
-        return WorktreeBootstrapPlan(
-            ve_path=str((worktree_path / ".VE").resolve()),
-            blackdog_path=str(blackdog_path),
-            mode=WORKTREE_BOOTSTRAP_EDITABLE,
-            source_root=str(worktree_path.resolve()),
-            note="install editable Blackdog from the task worktree source checkout",
-        )
-    source_root = _current_blackdog_source_root()
-    if source_root is not None:
-        return WorktreeBootstrapPlan(
-            ve_path=str((worktree_path / ".VE").resolve()),
-            blackdog_path=str(blackdog_path),
-            mode=WORKTREE_BOOTSTRAP_SHIM,
-            source_root=str(source_root),
-            note="create a worktree-local launcher shim backed by the current Blackdog source checkout",
-        )
-    current_executable = _current_blackdog_executable()
-    return WorktreeBootstrapPlan(
-        ve_path=str((worktree_path / ".VE").resolve()),
-        blackdog_path=str(blackdog_path),
-        mode=WORKTREE_BOOTSTRAP_PROXY,
-        source_root=current_executable,
-        note="create a worktree-local launcher proxy to the currently running Blackdog CLI",
-    )
-
-
-def _ensure_workspace_ve(plan: WorktreeBootstrapPlan) -> None:
-    ve_path = Path(plan.ve_path).resolve()
-    blackdog_path = Path(plan.blackdog_path).resolve()
-    if plan.mode == WORKTREE_BOOTSTRAP_REUSE:
-        return
-    ve_path.parent.mkdir(parents=True, exist_ok=True)
-    if not (ve_path / "bin" / "python").is_file():
-        _run_command(sys.executable, "-m", "venv", str(ve_path))
-    workspace_python = (ve_path / "bin" / "python").resolve()
-    if not workspace_python.is_file():
-        raise WorktreeError(f"expected worktree-local python at {workspace_python}")
-    if plan.mode == WORKTREE_BOOTSTRAP_EDITABLE:
-        source_root = Path(str(plan.source_root or "")).resolve()
-        _run_command(str(workspace_python), "-m", "pip", "install", "-e", str(source_root))
-        return
-    blackdog_path.parent.mkdir(parents=True, exist_ok=True)
-    if plan.mode == WORKTREE_BOOTSTRAP_SHIM:
-        source_root = Path(str(plan.source_root or "")).resolve()
-        script = (
-            "#!/bin/sh\n"
-            f"PYTHONPATH={shlex.quote(str((source_root / 'src').resolve()))}"
-            '${PYTHONPATH:+":$PYTHONPATH"} '
-            f"exec {shlex.quote(str(workspace_python))} -m blackdog_cli \"$@\"\n"
-        )
-    else:
-        target = str(plan.source_root or "").strip()
-        if not target:
-            raise WorktreeError("could not determine a Blackdog launcher target for the worktree")
-        script = (
-            "#!/bin/sh\n"
-            f"exec {shlex.quote(target)} \"$@\"\n"
-        )
-    blackdog_path.write_text(script, encoding="utf-8")
-    blackdog_path.chmod(0o755)
-
-
 def preview_task_worktree(
     profile: RepoProfile,
     *,
@@ -441,7 +328,12 @@ def preview_task_worktree(
         conflicts.append(f"refusing worktree path inside the repository: {worktree_path}")
     elif worktree_path.exists():
         conflicts.append(f"worktree path already exists: {worktree_path}")
-    bootstrap = _bootstrap_plan_for_worktree(profile, worktree_path=worktree_path)
+    handlers = plan_worktree_handlers(profile, worktree_path=worktree_path)
+    if not handlers.ready:
+        blocked = [action.message for action in handlers.actions if action.status == "blocked"]
+        conflicts.extend(blocked)
+        if handlers.remediation and handlers.remediation not in conflicts:
+            conflicts.append(handlers.remediation)
     return WorktreePreview(
         workset_id=workset_id,
         task_id=task.task_id,
@@ -474,10 +366,10 @@ def preview_task_worktree(
             expand_skill_text=expand_contract,
             expand_doc_text=expand_contract,
         ),
-        bootstrap=bootstrap,
+        handlers=handlers,
         existing_branch_worktree=str(existing_worktree) if existing_worktree is not None else None,
         path_exists=worktree_path.exists(),
-        start_ready=not conflicts,
+        start_ready=not conflicts and handlers.ready,
         conflicts=tuple(conflicts),
     )
 
@@ -687,7 +579,13 @@ def start_task_worktree(
         detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
         raise WorktreeError(f"git worktree add failed: {detail}")
     try:
-        _ensure_workspace_ve(preview.bootstrap)
+        handlers = execute_worktree_handlers(profile, worktree_path=worktree_path)
+        if not handlers.ready:
+            blocked = [action.message for action in handlers.actions if action.status == "blocked"]
+            detail = "; ".join(blocked)
+            if handlers.remediation:
+                detail = "; ".join(item for item in [detail, handlers.remediation] if item)
+            raise WorktreeError(detail or "worktree handler execution did not produce a ready workspace")
         attempt = start_task(
             profile,
             workset_id=workset_id,
@@ -725,10 +623,13 @@ def start_task_worktree(
         attempt_id=attempt.attempt_id,
         prompt_hash=preview.prompt_hash,
         prompt_source=preview.prompt_source,
-        workspace_ve=preview.bootstrap.ve_path,
-        workspace_blackdog_path=preview.bootstrap.blackdog_path,
-        bootstrap_mode=preview.bootstrap.mode,
-        bootstrap_source_root=preview.bootstrap.source_root,
+        workspace_ve=handlers.worktree_ve_path,
+        workspace_blackdog_path=handlers.blackdog_path,
+        runtime_mode=handlers.runtime_mode,
+        source_root=handlers.source_root,
+        source_mode=handlers.source_mode,
+        script_policy=handlers.script_policy,
+        handlers=handlers,
     )
     append_event(
         profile.paths.events_file,
@@ -745,8 +646,11 @@ def start_task_worktree(
             "worktree_path": str(worktree_path),
             "prompt_hash": preview.prompt_hash,
             "prompt_source": preview.prompt_source,
-            "workspace_blackdog_path": preview.bootstrap.blackdog_path,
-            "bootstrap_mode": preview.bootstrap.mode,
+            "workspace_blackdog_path": handlers.blackdog_path,
+            "runtime_mode": handlers.runtime_mode,
+            "source_mode": handlers.source_mode,
+            "script_policy": handlers.script_policy,
+            "handler_actions": [action.to_dict() for action in handlers.actions],
         },
     )
     return spec
@@ -996,10 +900,16 @@ def render_preview_text(
         f"[blackdog-worktree] workspace identity: {preview.workspace_identity or 'unset'}",
         f"[blackdog-worktree] prompt hash: {preview.prompt_hash}",
         f"[blackdog-worktree] prompt source: {preview.prompt_source or 'unspecified'}",
-        f"[blackdog-worktree] bootstrap: {preview.bootstrap.mode} ({preview.bootstrap.note})",
-        f"[blackdog-worktree] workspace CLI: {preview.bootstrap.blackdog_path}",
+        f"[blackdog-worktree] runtime mode: {preview.handlers.runtime_mode or 'unset'}",
+        f"[blackdog-worktree] workspace CLI: {preview.handlers.blackdog_path or 'missing'}",
         f"[blackdog-worktree] start ready: {'yes' if preview.start_ready else 'no'}",
     ]
+    if preview.handlers.script_policy:
+        lines.append(f"[blackdog-worktree] script policy: {preview.handlers.script_policy}")
+    if preview.handlers.source_mode:
+        lines.append(f"[blackdog-worktree] source mode: {preview.handlers.source_mode}")
+    if preview.handlers.source_root:
+        lines.append(f"[blackdog-worktree] source root: {preview.handlers.source_root}")
     if preview.model:
         lines.append(f"[blackdog-worktree] model: {preview.model}")
     if preview.reasoning_effort:
@@ -1016,6 +926,11 @@ def render_preview_text(
         lines.append("[blackdog-worktree] repo contract inputs:")
         for document in preview.contract_documents:
             lines.append(f"  - {document.kind}: {document.path}")
+    if preview.handlers.actions:
+        lines.append("[blackdog-worktree] handler plan:")
+        for action in preview.handlers.actions:
+            target = f" -> {action.target_path}" if action.target_path else ""
+            lines.append(f"  - {action.handler_id}: {action.action} {action.status}{target} ({action.message})")
     if preview.conflicts:
         lines.append(f"[blackdog-worktree] conflicts: {'; '.join(preview.conflicts)}")
     if show_prompt and preview.prompt_text is not None:
@@ -1040,9 +955,23 @@ def render_start_text(spec: WorktreeSpec) -> str:
         f"[blackdog-worktree] attempt: {spec.attempt_id}",
         f"[blackdog-worktree] prompt hash: {spec.prompt_hash}",
         f"[blackdog-worktree] prompt source: {spec.prompt_source or 'unspecified'}",
-        f"[blackdog-worktree] workspace CLI: {spec.workspace_blackdog_path}",
-        f"[blackdog-worktree] bootstrap: {spec.bootstrap_mode}",
+        f"[blackdog-worktree] workspace CLI: {spec.workspace_blackdog_path or 'missing'}",
+        f"[blackdog-worktree] runtime mode: {spec.runtime_mode or 'unset'}",
     ]
+    if spec.script_policy:
+        lines.append(f"[blackdog-worktree] script policy: {spec.script_policy}")
+    if spec.source_mode:
+        lines.append(f"[blackdog-worktree] source mode: {spec.source_mode}")
+    if spec.source_root:
+        lines.append(f"[blackdog-worktree] source root: {spec.source_root}")
+    if spec.handlers.actions:
+        lines.append("[blackdog-worktree] handler results:")
+        for action in spec.handlers.actions:
+            target = f" -> {action.target_path}" if action.target_path else ""
+            timing = "" if action.elapsed_ms is None else f" [{action.elapsed_ms}ms]"
+            lines.append(
+                f"  - {action.handler_id}: {action.action} {action.status}{target}{timing} ({action.message})"
+            )
     return "\n".join(lines) + "\n"
 
 

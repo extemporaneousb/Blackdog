@@ -17,6 +17,9 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
         self.assertEqual(profile.paths.worktrees_dir, (self.root.parent / f".worktrees-{self.root.name}").resolve())
+        self.assertTrue(profile.handlers_explicit)
+        self.assertEqual(profile.handlers[0].kind, profile_module.HANDLER_KIND_PYTHON_OVERLAY_VENV)
+        self.assertEqual(profile.handlers[1].kind, profile_module.HANDLER_KIND_BLACKDOG_RUNTIME)
 
     def test_load_profile_accepts_explicit_runtime_paths_without_control_dir(self) -> None:
         (self.root / "blackdog.toml").write_text(
@@ -37,6 +40,68 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
         self.assertEqual(profile.validation_commands, ("make test",))
+        self.assertFalse(profile.handlers_explicit)
+        self.assertEqual(profile.handlers[0].handler_id, "python")
+        self.assertEqual(profile.handlers[1].handler_id, "blackdog")
+
+    def test_load_profile_rejects_invalid_handler_kind(self) -> None:
+        (self.root / "blackdog.toml").write_text(
+            "[project]\nname = \"Demo\"\n\n"
+            "[paths]\n"
+            "control_dir = \"@git-common/blackdog\"\n\n"
+            "[[handlers]]\n"
+            "id = \"broken\"\n"
+            "kind = \"not-real\"\n"
+            "enabled = true\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(profile_module.ConfigError):
+            self.load_test_profile()
+
+    def test_load_profile_rejects_handler_dependency_cycles(self) -> None:
+        (self.root / "blackdog.toml").write_text(
+            "[project]\nname = \"Demo\"\n\n"
+            "[paths]\n"
+            "control_dir = \"@git-common/blackdog\"\n\n"
+            "[[handlers]]\n"
+            "id = \"python\"\n"
+            "kind = \"python-overlay-venv\"\n"
+            "enabled = true\n"
+            "depends_on = [\"blackdog\"]\n"
+            "root_path = \".VE\"\n"
+            "worktree_path = \".VE\"\n"
+            "script_policy = \"root-bin-fallback\"\n\n"
+            "[[handlers]]\n"
+            "id = \"blackdog\"\n"
+            "kind = \"blackdog-runtime\"\n"
+            "enabled = true\n"
+            "depends_on = [\"python\"]\n"
+            "launcher_path = \".VE/bin/blackdog\"\n"
+            "source_mode = \"managed-checkout\"\n"
+            "managed_source_dir = \"@git-common/blackdog/source/blackdog\"\n"
+            "self_repo_install_mode = \"editable-worktree-source\"\n"
+            "other_repo_install_mode = \"launcher-shim\"\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(profile_module.ConfigError):
+            self.load_test_profile()
+
+    def test_ensure_default_handlers_appends_blocks_once(self) -> None:
+        profile_path = self.root / "blackdog.toml"
+        profile_path.write_text(
+            "[project]\nname = \"Demo\"\n\n"
+            "[paths]\n"
+            "control_dir = \"@git-common/blackdog\"\n",
+            encoding="utf-8",
+        )
+
+        self.assertTrue(profile_module.ensure_default_handlers_in_profile(profile_path))
+        self.assertFalse(profile_module.ensure_default_handlers_in_profile(profile_path))
+        profile = self.load_test_profile()
+        self.assertTrue(profile.handlers_explicit)
+        self.assertEqual(len(profile.handlers), 2)
 
     def test_git_common_resolution_uses_repo_common_dir(self) -> None:
         with patch("blackdog_core.profile._run_git", return_value=".git"):

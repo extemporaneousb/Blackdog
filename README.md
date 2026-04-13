@@ -48,8 +48,13 @@ Do not keep implementation edits in the primary worktree. Run
 `./.VE/bin/blackdog worktree preflight` first; if it reports the primary
 worktree, move into a branch-backed task worktree before editing files.
 Use `./.VE/bin/blackdog worktree preview` when you want to inspect the WTAM
-start plan, prompt receipt, and repo contract inputs before a claim/start.
-`blackdog worktree start` provisions a worktree-local `.VE` when needed.
+start plan, prompt receipt, repo contract inputs, and handler actions before a
+claim/start.
+`blackdog.toml` owns explicit `[[handlers]]` blocks for repo-root and
+worktree-local env/runtime setup.
+`blackdog worktree start` executes that handler plan, creating the worktree
+`.VE`, wiring the repo-root package overlay, linking root-bin fallbacks, and
+writing the worktree-local launcher when needed.
 Use `blackdog next --workset WORKSET` for human or recovery-oriented task
 selection inside one workset; direct-agent WTAM flows that already know the
 task id can go straight to `worktree preview` or `worktree start`.
@@ -64,8 +69,10 @@ For non-Blackdog repos, `blackdog repo install` defaults to a managed Blackdog
 source checkout under the control root, sourced from GitHub. Use
 `--source-root /path/to/blackdog` to override that with a local checkout. When
 the target repo is Blackdog itself, install/update reuse that repo as the
-source checkout. `blackdog repo refresh` also prunes known legacy backlog-era
-artifacts from the shared control root.
+source checkout. The shipped Python handler keeps repo-root `.VE` as the
+canonical base env and gives each task worktree its own overlay `.VE`.
+`blackdog repo refresh` also prunes known legacy backlog-era artifacts from the
+shared control root.
 
 ## Docs
 

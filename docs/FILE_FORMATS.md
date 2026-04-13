@@ -16,6 +16,10 @@ The durable control-root files are:
 - `runtime.json`
 - `events.jsonl`
 
+The repo-local profile file is:
+
+- `blackdog.toml`
+
 Optional product-layer control-root paths may also exist. The current shipped
 repo lifecycle family may create:
 
@@ -23,6 +27,26 @@ repo lifecycle family may create:
 
 when a repo uses the managed Blackdog source checkout path for `repo install`
 or `repo update`.
+
+## `blackdog.toml`
+
+Repo-local product contract and path/handler configuration.
+
+Current required top-level sections:
+
+- `[project]`
+- `[paths]`
+- `[taxonomy]`
+- `[[handlers]]`
+
+Current shipped handler kinds:
+
+- `python-overlay-venv`
+- `blackdog-runtime`
+
+The default profile writes explicit handler blocks for repo-root `.VE`,
+worktree-local overlay `.VE`, root-bin fallback policy, launcher location, and
+managed-source defaults.
 
 ## `planning.json`
 
@@ -210,7 +234,10 @@ Current `worktree.start` payloads record:
 - `prompt_hash`
 - optional `prompt_source`
 - `workspace_blackdog_path`
-- `bootstrap_mode`
+- optional `runtime_mode`
+- optional `source_mode`
+- optional `script_policy`
+- `handler_actions`
 
 ## Semantic Boundary
 

@@ -12,6 +12,11 @@ runtime logic.
 
 Write a default repo-local `blackdog.toml` profile.
 
+The default profile includes explicit `[[handlers]]` blocks for:
+
+- `python-overlay-venv`
+- `blackdog-runtime`
+
 ```bash
 blackdog init --project-root /path/to/repo --project-name "Repo Name"
 ```
@@ -23,6 +28,7 @@ Create or repair the minimum repo-local Blackdog contract:
 - repo-local `.VE`
 - repo-local `blackdog` launcher
 - `blackdog.toml` when missing
+- explicit handler blocks when the profile still relies on synthesized defaults
 - repo-local `$blackdog` skill when missing
 
 ```bash
@@ -40,8 +46,11 @@ Important flags:
 creates or reuses a managed Blackdog source checkout under the control root,
 sourced from GitHub. Use `--source-root` to point the repo-local launcher at a
 local Blackdog checkout instead. When the target repo is Blackdog itself,
-install uses that repo as the source checkout. If `blackdog.toml` or the
-repo-local skill already exist, it preserves them.
+install uses that repo as the source checkout. The shipped Python handler keeps
+repo-root `.VE` as the canonical base env; WTAM worktrees later get their own
+overlay `.VE` rooted at the task worktree. If `blackdog.toml` or the repo-local
+skill already exist, install preserves repo-owned files and repairs runtime
+artifacts through handler actions.
 
 ### `blackdog repo update`
 
@@ -60,7 +69,8 @@ Important flags:
 `repo update` requires an existing `blackdog.toml`. It repairs or replaces the
 repo-local launcher and preserves repo-owned contract files such as the skill.
 When using the managed source checkout path, it also fast-forwards that source
-checkout from GitHub.
+checkout from GitHub. `repo update` does not silently rewrite custom handler
+config, but it does execute the configured handlers and report their actions.
 
 ### `blackdog repo refresh`
 
@@ -76,8 +86,8 @@ Important flags:
 
 `repo refresh` requires an existing `blackdog.toml`. It rewrites the repo-local
 `$blackdog` skill so the skill matches the current shipped product surface and
-routed-doc contract. It also prunes known legacy backlog-era artifacts from the
-shared control root.
+routed-doc contract. It also validates the configured handlers and prunes known
+legacy backlog-era artifacts from the shared control root.
 
 ### `blackdog prompt preview`
 
@@ -193,7 +203,9 @@ Important flags:
 - prompt receipt hash and prompt source
 - task paths, docs, checks, and validation defaults
 - repo contract inputs such as the repo-local Blackdog skill and routed docs
-- the worktree-local `.VE` / `blackdog` bootstrap plan
+- the ordered handler plan for the task worktree, including repo-root env
+  validation, worktree overlay setup, source mode, launcher path, and
+  remediation when start is blocked
 
 Use `--show-prompt` when you want the exact prompt receipt text.
 Use `--expand-contract` when you want the preview to inline the contract
@@ -226,7 +238,8 @@ Important flags:
 - optional `--note`
 
 `worktree start` creates a linked worktree outside the repo, starts the typed
-attempt, claims both the workset and task for `direct_wtam`, and records:
+attempt, claims both the workset and task for `direct_wtam`, executes the
+handler plan, and records:
 
 - worktree path
 - worktree-local `.VE` and `blackdog` launcher path
@@ -236,6 +249,19 @@ attempt, claims both the workset and task for `direct_wtam`, and records:
 - execution model
 - prompt source
 - prompt receipt hash
+- handler actions and timings
+
+On the shipped handler path, `worktree start`:
+
+- validates the repo-root `.VE`
+- creates the task worktree `.VE` from the repo-root env
+- wires a site-packages overlay back to the repo-root env
+- links root-bin fallback tools into the task worktree env
+- writes the worktree-local `blackdog` launcher
+
+`worktree start` never fetches from network or repairs the managed source
+checkout. If the base env or managed source is missing, it fails explicitly and
+points back to `blackdog repo install` or `blackdog repo update`.
 
 ### `blackdog worktree land`
 

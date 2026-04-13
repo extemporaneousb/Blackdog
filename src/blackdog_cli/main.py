@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from blackdog.handlers import HandlerError
 from blackdog.prompting import preview_prompt, render_prompt_preview_text, tune_prompt
 from blackdog.repo_lifecycle import (
     RepoLifecycleError,
@@ -170,7 +171,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
     repo_subparsers = p_repo.add_subparsers(dest="repo_command", required=True)
 
-    p_repo_install = repo_subparsers.add_parser("install", help="Install or repair repo-local Blackdog bootstrap surfaces")
+    p_repo_install = repo_subparsers.add_parser("install", help="Install or repair repo-local Blackdog runtime handlers")
     p_repo_install.add_argument("--project-root", default=".")
     p_repo_install.add_argument("--project-name")
     p_repo_install.add_argument("--source-root")
@@ -498,6 +499,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         raise BacklogError(f"Unsupported command: {args.command}")
-    except (BacklogError, ConfigError, RepoLifecycleError, StoreError, WorktreeError, OSError, ValueError) as exc:
+    except (BacklogError, ConfigError, HandlerError, RepoLifecycleError, StoreError, WorktreeError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

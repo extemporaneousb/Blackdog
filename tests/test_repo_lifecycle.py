@@ -40,9 +40,11 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(payload["action"], "install")
         self.assertEqual(payload["source_mode"], "local-override")
         self.assertEqual(payload["source_root"], str(REPO_ROOT))
+        self.assertIsNotNone(payload["handlers"])
         self.assertTrue(profile_path.is_file())
         self.assertTrue(skill_path.is_file())
         self.assertTrue(launcher_path.is_file())
+        self.assertIn("[[handlers]]", profile_path.read_text(encoding="utf-8"))
 
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn("Lifecycle Demo", skill_text)
@@ -52,6 +54,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         launcher_text = launcher_path.read_text(encoding="utf-8")
         self.assertIn("blackdog_cli", launcher_text)
         self.assertIn(str((REPO_ROOT / "src").resolve()), launcher_text)
+        self.assertIn(str(self.root / ".VE" / "bin" / "python"), launcher_text)
+        self.assertTrue(any(action["action"] == "create-root-venv" for action in payload["handlers"]["actions"]))
 
         completed = subprocess.run(
             [str(launcher_path), "summary", "--project-root", str(self.root)],
@@ -91,9 +95,11 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         payload = json.loads(stdout)["repo"]
 
         self.assertEqual(payload["action"], "update")
+        self.assertTrue(any(action["action"] == "write-blackdog-launcher" for action in payload["handlers"]["actions"]))
         self.assertEqual(skill_path.read_text(encoding="utf-8"), "custom skill\n")
         self.assertIn("blackdog_cli", launcher_path.read_text(encoding="utf-8"))
         self.assertIn(str((REPO_ROOT / "src").resolve()), launcher_path.read_text(encoding="utf-8"))
+        self.assertIn(str(self.root / ".VE" / "bin" / "python"), launcher_path.read_text(encoding="utf-8"))
 
     def test_repo_refresh_regenerates_skill_from_profile_contract(self) -> None:
         exit_code, _, stderr = self.run_cli(
@@ -133,6 +139,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(payload["action"], "refresh")
         self.assertIn(str(legacy_backlog.resolve()), payload["removed"])
         self.assertFalse(legacy_backlog.exists())
+        self.assertIsNotNone(payload["handlers"])
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertNotIn("stale skill", skill_text)
         self.assertIn("docs/CUSTOM.md", skill_text)

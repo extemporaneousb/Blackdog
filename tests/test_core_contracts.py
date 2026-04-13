@@ -55,6 +55,9 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("repo install", architecture)
         self.assertIn("repo update", architecture)
         self.assertIn("repo refresh", architecture)
+        self.assertIn("handler blocks", architecture)
+        self.assertIn("python-overlay-venv", architecture)
+        self.assertIn("blackdog-runtime", architecture)
         self.assertIn("Workset", target_model)
         self.assertIn("TaskAttemptRecord", target_model)
         self.assertIn("WorksetClaimRecord", target_model)
@@ -76,6 +79,9 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("worktree start", cli_doc)
         self.assertIn("worktree land", cli_doc)
         self.assertIn("worktree cleanup", cli_doc)
+        self.assertIn("[[handlers]]", cli_doc)
+        self.assertIn("handler plan", cli_doc)
+        self.assertIn("root-bin fallback", cli_doc)
         self.assertIn("--prompt", cli_doc)
         self.assertIn("--show-prompt", cli_doc)
         self.assertIn("summary", cli_doc)
@@ -93,6 +99,10 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("execution_model", file_formats)
         self.assertIn("prompt_receipt", file_formats)
         self.assertIn("worktree.start", file_formats)
+        self.assertIn("blackdog.toml", file_formats)
+        self.assertIn("python-overlay-venv", file_formats)
+        self.assertIn("blackdog-runtime", file_formats)
+        self.assertIn("handler_actions", file_formats)
         self.assertIn("backlog.md is not part of the vNext contract", file_formats)
 
     def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:
@@ -142,3 +152,6 @@ class CoreContractTests(CoreAuditTestCase):
                 "docs/FILE_FORMATS.md",
             ],
         )
+        handlers = profile["handlers"]
+        self.assertEqual(handlers[0]["kind"], "python-overlay-venv")
+        self.assertEqual(handlers[1]["kind"], "blackdog-runtime")

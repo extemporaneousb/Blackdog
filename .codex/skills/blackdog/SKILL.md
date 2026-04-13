@@ -6,6 +6,7 @@ description: "Use the repo-local Blackdog CLI and contract for Blackdog."
 # Blackdog: Blackdog
 
 Use the repo-local Blackdog CLI instead of mutating control-root files by hand.
+The repo-local blackdog.toml handler blocks own env/runtime setup.
 
 ## CLI Entry Point
 

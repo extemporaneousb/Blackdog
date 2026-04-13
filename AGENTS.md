@@ -34,10 +34,12 @@ development.
   direct-agent WTAM path usually already knows `--workset` and `--task`.
 - Use `blackdog worktree preview` before `start` when you need to inspect the
   prompt receipt, repo contract inputs, branch/worktree plan, or worktree-local
-  CLI bootstrap plan.
-- `blackdog worktree start` is responsible for provisioning a worktree-local
-  `.VE` and `blackdog` launcher when the task worktree does not already have
-  one.
+  handler plan.
+- `blackdog.toml` owns explicit `[[handlers]]` blocks for repo-local env and
+  runtime setup. Keep env/bootstrap policy there, not in the skill.
+- `blackdog worktree start` is responsible for executing the handler plan:
+  creating the worktree-local `.VE`, wiring the repo-root overlay, linking
+  fallback root-bin tools, and writing the worktree-local `blackdog` launcher.
 - Do not use or preserve deleted backlog/board/inbox/render flows or the old
   bootstrap/tune implementations unless they are explicitly rebuilt on top of
   the vNext core model.

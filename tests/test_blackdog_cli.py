@@ -11,7 +11,7 @@ from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.profile import load_profile
 from blackdog_core.state import ValidationRecord, create_prompt_receipt
 from blackdog_cli.main import main as blackdog_main
-from tests.core_audit_support import CoreAuditTestCase
+from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
 class BlackdogCliTests(CoreAuditTestCase):
@@ -32,6 +32,30 @@ class BlackdogCliTests(CoreAuditTestCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def install_repo_runtime(self) -> None:
+        exit_code, _, stderr = self.run_cli(
+            "repo",
+            "install",
+            "--project-root",
+            str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "blackdog.toml", ".codex/skills/blackdog/SKILL.md"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if self.git_output("status", "--short"):
+            subprocess.run(
+                ["git", "-C", str(self.root), "commit", "-m", "Add Blackdog repo runtime"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
     def test_workset_put_summary_next_and_snapshot_form_one_vertical_slice(self) -> None:
         payload = {
@@ -163,6 +187,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             json.dumps(payload),
         )
         self.assertEqual(exit_code, 0, stderr)
+        self.install_repo_runtime()
 
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -191,7 +216,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(preview["task_paths"], ["src/blackdog/wtam.py"])
         self.assertEqual(preview["task_docs"], ["docs/CLI.md"])
         self.assertEqual(preview["task_checks"], ["make test"])
-        self.assertEqual(preview["bootstrap"]["mode"], "launcher-shim")
+        self.assertEqual(preview["handlers"]["runtime_mode"], "launcher-shim")
+        self.assertEqual(preview["handlers"]["source_mode"], "managed-checkout")
+        self.assertTrue(any(action["action"] == "ensure-worktree-venv" for action in preview["handlers"]["actions"]))
         self.assertTrue(any(item["path"] == str(skill_path.resolve()) for item in preview["contract_documents"]))
         self.assertTrue(any(item["path"] == str(agents_path.resolve()) for item in preview["contract_documents"]))
         self.assertTrue(any(item["text"] == "repo skill\n" for item in preview["contract_documents"]))
@@ -213,6 +240,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             json.dumps(payload),
         )
         self.assertEqual(exit_code, 0, stderr)
+        self.install_repo_runtime()
 
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -253,7 +281,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         ).hexdigest()
         worktree_path = Path(start_payload["worktree_path"])
         self.assertTrue(worktree_path.exists())
-        self.assertEqual(start_payload["bootstrap_mode"], "launcher-shim")
+        self.assertEqual(start_payload["runtime_mode"], "launcher-shim")
+        self.assertEqual(start_payload["source_mode"], "managed-checkout")
+        self.assertEqual(start_payload["script_policy"], "root-bin-fallback")
         self.assertEqual(start_payload["primary_worktree"], str(self.root.resolve()))
         self.assertTrue(start_payload["branch"].startswith("agent/"))
         self.assertEqual(start_payload["base_commit"], self.git_output("rev-parse", "HEAD"))
@@ -474,6 +504,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--json",
             json.dumps(payload),
         )
+        self.install_repo_runtime()
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
             "start",

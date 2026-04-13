@@ -116,14 +116,25 @@ GitHub. `--source-root` is the explicit local override.
 `repo refresh` is also the shipped cleanup path for removing known legacy
 backlog-era artifacts from the shared control root.
 
+Repo-local env/runtime setup is now owned by explicit handler blocks in
+`blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1
+handlers are:
+
+- `python-overlay-venv` for the repo-root `.VE`, worktree-local overlay `.VE`,
+  and root-bin fallback linking
+- `blackdog-runtime` for the repo-local or worktree-local `blackdog` launcher
+  plus managed-source resolution
+
 These commands exercise one end-to-end vertical slice:
 
 1. create or update planning and runtime state
 2. inspect the WTAM contract before kept changes
 3. preview one branch-backed task execution plan, including prompt receipt
-   metadata, repo contract inputs, and the worktree-local CLI bootstrap plan
+   metadata, repo contract inputs, and the ordered handler plan for the task
+   worktree
 4. start one branch-backed task worktree with a prompt receipt, a provisioned
-   worktree-local `.VE`, and real git execution identity while claiming both
+   worktree-local `.VE`, repo-root overlay wiring, root-bin fallback links, a
+   worktree-local launcher, and real git execution identity while claiming both
    the workset and the task
 5. land the task branch and record structured result, validation, and commit
    lineage while releasing those claims

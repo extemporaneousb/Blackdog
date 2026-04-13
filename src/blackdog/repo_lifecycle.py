@@ -3,19 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
-import shlex
 import shutil
 import subprocess
-import sys
-import tomllib
 
-from blackdog_core.profile import RepoProfile, ConfigError, load_profile, write_default_profile
+from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
+from blackdog_core.profile import (
+    RepoProfile,
+    ConfigError,
+    ensure_default_handlers_in_profile,
+    load_profile,
+    write_default_profile,
+)
 
 
 MANAGED_SKILL_RELATIVE_PATH = Path(".codex") / "skills" / "blackdog" / "SKILL.md"
-MANAGED_SOURCE_RELATIVE_PATH = Path("source") / "blackdog"
-DEFAULT_SOURCE_REMOTE = "https://github.com/extemporaneousb/Blackdog.git"
-DEFAULT_SOURCE_BRANCH = "main"
 LEGACY_CONTROL_ARTIFACTS = (
     "backlog-index.html",
     "backlog-state.json",
@@ -39,11 +40,11 @@ class RepoLifecycleResult:
     project_root: str
     source_root: str | None
     source_mode: str | None
-    source_remote: str | None
     profile_path: str | None
     skill_path: str | None
     ve_path: str | None
     blackdog_path: str | None
+    handlers: HandlerPlanSummary | None
     created: tuple[str, ...]
     updated: tuple[str, ...]
     removed: tuple[str, ...]
@@ -56,11 +57,11 @@ class RepoLifecycleResult:
             "project_root": self.project_root,
             "source_root": self.source_root,
             "source_mode": self.source_mode,
-            "source_remote": self.source_remote,
             "profile_path": self.profile_path,
             "skill_path": self.skill_path,
             "ve_path": self.ve_path,
             "blackdog_path": self.blackdog_path,
+            "handlers": self.handlers.to_dict() if self.handlers is not None else None,
             "created": list(self.created),
             "updated": list(self.updated),
             "removed": list(self.removed),
@@ -101,135 +102,6 @@ def _resolve_repo_root(project_root: Path) -> Path:
         raise RepoLifecycleError(f"{project_root.resolve()} is not inside a git repo") from exc
 
 
-def _git_remote_url(repo_root: Path) -> str | None:
-    try:
-        remote = _run_git(repo_root, "remote", "get-url", "origin")
-    except RepoLifecycleError:
-        return None
-    return remote or None
-
-
-def _looks_like_blackdog_source_checkout(root: Path) -> bool:
-    pyproject = root / "pyproject.toml"
-    if not pyproject.is_file():
-        return False
-    if not (root / "src" / "blackdog_cli" / "main.py").is_file():
-        return False
-    try:
-        payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    return str((payload.get("project") or {}).get("name") or "") == "blackdog"
-
-
-def _resolve_source_root(source_root: str) -> Path:
-    candidate = Path(source_root).resolve()
-    if not _looks_like_blackdog_source_checkout(candidate):
-        raise RepoLifecycleError(f"expected a Blackdog source checkout at {candidate}")
-    return candidate
-
-
-def _current_blackdog_source_root() -> Path | None:
-    candidate = Path(__file__).resolve().parents[2]
-    if _looks_like_blackdog_source_checkout(candidate):
-        return candidate
-    return None
-
-
-def _default_source_remote() -> str:
-    current = _current_blackdog_source_root()
-    if current is not None:
-        remote = _git_remote_url(current)
-        if remote:
-            return remote
-    return DEFAULT_SOURCE_REMOTE
-
-
-def _ensure_repo_venv(project_root: Path) -> tuple[Path, bool]:
-    ve_path = (project_root / ".VE").resolve()
-    python_path = ve_path / "bin" / "python"
-    created = False
-    if not python_path.is_file():
-        ve_path.parent.mkdir(parents=True, exist_ok=True)
-        _run_command(sys.executable, "-m", "venv", str(ve_path))
-        created = True
-    if not python_path.is_file():
-        raise RepoLifecycleError(f"expected repo-local python at {python_path}")
-    return ve_path, created
-
-
-def _launcher_script(*, project_root: Path, source_root: Path) -> str:
-    python_path = (project_root / ".VE" / "bin" / "python").resolve()
-    source_src = (source_root / "src").resolve()
-    return (
-        "#!/bin/sh\n"
-        f"PYTHONPATH={shlex.quote(str(source_src))}"
-        '${PYTHONPATH:+":$PYTHONPATH"} '
-        f"exec {shlex.quote(str(python_path))} -m blackdog_cli \"$@\"\n"
-    )
-
-
-def _write_blackdog_launcher(*, project_root: Path, source_root: Path) -> tuple[Path, bool, bool]:
-    launcher_path = (project_root / ".VE" / "bin" / "blackdog").resolve()
-    launcher_path.parent.mkdir(parents=True, exist_ok=True)
-    existed_before = launcher_path.is_file()
-    next_text = _launcher_script(project_root=project_root, source_root=source_root)
-    previous_text = launcher_path.read_text(encoding="utf-8") if existed_before else None
-    launcher_path.write_text(next_text, encoding="utf-8")
-    launcher_path.chmod(0o755)
-    return launcher_path, existed_before, previous_text != next_text
-
-
-def _ensure_managed_source_checkout(
-    profile: RepoProfile,
-    *,
-    update: bool,
-) -> tuple[Path, str | None, bool, bool]:
-    source_root = (profile.paths.control_dir / MANAGED_SOURCE_RELATIVE_PATH).resolve()
-    remote = _default_source_remote()
-    created = False
-    updated = False
-    if (source_root / ".git").is_dir():
-        if update:
-            current_branch = _run_git(source_root, "rev-parse", "--abbrev-ref", "HEAD")
-            branch = current_branch if current_branch and current_branch != "HEAD" else DEFAULT_SOURCE_BRANCH
-            if current_branch == "HEAD":
-                _run_command("git", "-C", str(source_root), "checkout", branch)
-            _run_command("git", "-C", str(source_root), "pull", "--ff-only", "origin", branch)
-            updated = True
-        return source_root, remote, created, updated
-    if source_root.exists():
-        raise RepoLifecycleError(
-            f"managed source path exists but is not a git checkout: {source_root}"
-        )
-    source_root.parent.mkdir(parents=True, exist_ok=True)
-    _run_command("git", "clone", remote, str(source_root))
-    return source_root, remote, True, False
-
-
-def _resolve_install_source(
-    profile: RepoProfile,
-    *,
-    source_root: str | None,
-    update_managed: bool,
-) -> tuple[Path, str, str | None, tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    if source_root is not None:
-        resolved = _resolve_source_root(source_root)
-        return resolved, "local-override", None, (), (), ()
-    if _looks_like_blackdog_source_checkout(profile.paths.project_root):
-        return profile.paths.project_root, "target-repo", None, (), (), (
-            "using the target repo checkout as the Blackdog source",
-        )
-    managed_root, remote, created, updated = _ensure_managed_source_checkout(
-        profile,
-        update=update_managed,
-    )
-    created_paths = (str(managed_root),) if created else ()
-    updated_paths = (str(managed_root),) if updated else ()
-    notes = (f"using managed source checkout from {remote}",)
-    return managed_root, "managed-checkout", remote, created_paths, updated_paths, notes
-
-
 def render_repo_skill(profile: RepoProfile) -> str:
     docs = "\n".join(f"- `{item}`" for item in profile.doc_routing_defaults)
     return (
@@ -238,7 +110,8 @@ def render_repo_skill(profile: RepoProfile) -> str:
         f'description: "Use the repo-local Blackdog CLI and contract for {profile.project_name}."\n'
         "---\n\n"
         f"# Blackdog: {profile.project_name}\n\n"
-        "Use the repo-local Blackdog CLI instead of mutating control-root files by hand.\n\n"
+        "Use the repo-local Blackdog CLI instead of mutating control-root files by hand.\n"
+        "The repo-local blackdog.toml handler blocks own env/runtime setup.\n\n"
         "## CLI Entry Point\n\n"
         "- `./.VE/bin/blackdog`\n\n"
         "## Shipped Workflow Families\n\n"
@@ -298,6 +171,29 @@ def _require_profile(project_root: Path) -> RepoProfile:
         raise RepoLifecycleError(str(exc)) from exc
 
 
+def _apply_handler_actions(
+    summary: HandlerPlanSummary,
+    *,
+    created: list[str],
+    updated: list[str],
+    preserved: list[str],
+    notes: list[str],
+) -> None:
+    for action in summary.actions:
+        if action.target_path is None:
+            continue
+        if action.status == "created":
+            created.append(action.target_path)
+        elif action.status == "updated":
+            updated.append(action.target_path)
+        elif action.status in {"preserved", "validated"}:
+            preserved.append(action.target_path)
+        elif action.status == "blocked":
+            notes.append(action.message)
+    if summary.remediation:
+        notes.append(summary.remediation)
+
+
 def install_repo(
     project_root: Path,
     *,
@@ -320,28 +216,22 @@ def install_repo(
         if project_name:
             notes.append("ignored --project-name because blackdog.toml already exists")
 
+    if ensure_default_handlers_in_profile(profile_path):
+        updated.append(str(profile_path))
     profile = load_profile(repo_root)
-    source, source_mode, source_remote, source_created, source_updated, source_notes = _resolve_install_source(
+    handler_summary = execute_repo_handlers(
         profile,
+        operation="repo-install",
         source_root=source_root,
-        update_managed=False,
+        update_managed_source=False,
     )
-    created.extend(source_created)
-    updated.extend(source_updated)
-    notes.extend(source_notes)
-    ve_path, ve_created = _ensure_repo_venv(profile.paths.project_root)
-    if ve_created:
-        created.append(str(ve_path))
-    launcher_path, launcher_existed, launcher_changed = _write_blackdog_launcher(
-        project_root=profile.paths.project_root,
-        source_root=source,
+    _apply_handler_actions(
+        handler_summary,
+        created=created,
+        updated=updated,
+        preserved=preserved,
+        notes=notes,
     )
-    if launcher_changed and launcher_existed:
-        updated.append(str(launcher_path))
-    elif launcher_changed:
-        created.append(str(launcher_path))
-    else:
-        preserved.append(str(launcher_path))
 
     skill_path, skill_changed = _write_repo_skill(profile, overwrite=False)
     if skill_changed:
@@ -352,13 +242,13 @@ def install_repo(
     return RepoLifecycleResult(
         action="install",
         project_root=str(profile.paths.project_root),
-        source_root=str(source),
-        source_mode=source_mode,
-        source_remote=source_remote,
+        source_root=handler_summary.source_root,
+        source_mode=handler_summary.source_mode,
         profile_path=str(profile.paths.profile_file),
         skill_path=str(skill_path),
-        ve_path=str(ve_path),
-        blackdog_path=str(launcher_path),
+        ve_path=handler_summary.root_ve_path,
+        blackdog_path=handler_summary.blackdog_path,
+        handlers=handler_summary,
         created=tuple(dict.fromkeys(created)),
         updated=tuple(dict.fromkeys(updated)),
         removed=tuple(dict.fromkeys(removed)),
@@ -379,28 +269,21 @@ def update_repo(
     removed: list[str] = []
     preserved: list[str] = [str(profile.paths.profile_file)]
     notes: list[str] = []
-    source, source_mode, source_remote, source_created, source_updated, source_notes = _resolve_install_source(
+    if not profile.handlers_explicit:
+        notes.append("profile uses synthesized default handlers; run `blackdog repo install` to pin handler blocks explicitly")
+    handler_summary = execute_repo_handlers(
         profile,
+        operation="repo-update",
         source_root=source_root,
-        update_managed=True,
+        update_managed_source=True,
     )
-    created.extend(source_created)
-    updated.extend(source_updated)
-    notes.extend(source_notes)
-
-    ve_path, ve_created = _ensure_repo_venv(profile.paths.project_root)
-    if ve_created:
-        created.append(str(ve_path))
-    launcher_path, launcher_existed, launcher_changed = _write_blackdog_launcher(
-        project_root=profile.paths.project_root,
-        source_root=source,
+    _apply_handler_actions(
+        handler_summary,
+        created=created,
+        updated=updated,
+        preserved=preserved,
+        notes=notes,
     )
-    if launcher_changed and launcher_existed:
-        updated.append(str(launcher_path))
-    elif launcher_changed:
-        created.append(str(launcher_path))
-    else:
-        preserved.append(str(launcher_path))
 
     skill_path = (profile.paths.project_root / MANAGED_SKILL_RELATIVE_PATH).resolve()
     if skill_path.exists():
@@ -411,13 +294,13 @@ def update_repo(
     return RepoLifecycleResult(
         action="update",
         project_root=str(profile.paths.project_root),
-        source_root=str(source),
-        source_mode=source_mode,
-        source_remote=source_remote,
+        source_root=handler_summary.source_root,
+        source_mode=handler_summary.source_mode,
         profile_path=str(profile.paths.profile_file),
         skill_path=str(skill_path),
-        ve_path=str(ve_path),
-        blackdog_path=str(launcher_path),
+        ve_path=handler_summary.root_ve_path,
+        blackdog_path=handler_summary.blackdog_path,
+        handlers=handler_summary,
         created=tuple(dict.fromkeys(created)),
         updated=tuple(dict.fromkeys(updated)),
         removed=tuple(dict.fromkeys(removed)),
@@ -429,25 +312,29 @@ def update_repo(
 def refresh_repo(project_root: Path) -> RepoLifecycleResult:
     repo_root = _resolve_repo_root(project_root)
     profile = _require_profile(repo_root)
+    handler_summary = plan_repo_handlers(profile, operation="repo-refresh")
     skill_path, skill_changed = _write_repo_skill(profile, overwrite=True)
     removed = list(_prune_legacy_control_artifacts(profile))
     preserved = [str(profile.paths.profile_file)]
     updated = [str(skill_path)] if skill_changed else []
-    ve_path = (profile.paths.project_root / ".VE").resolve()
-    blackdog_path = (ve_path / "bin" / "blackdog").resolve()
     notes: list[str] = []
-    if not blackdog_path.is_file() or not os.access(blackdog_path, os.X_OK):
-        notes.append("repo-local blackdog launcher is missing; run `blackdog repo install` or `blackdog repo update`")
+    _apply_handler_actions(
+        handler_summary,
+        created=[],
+        updated=[],
+        preserved=preserved,
+        notes=notes,
+    )
     return RepoLifecycleResult(
         action="refresh",
         project_root=str(profile.paths.project_root),
-        source_root=None,
-        source_mode=None,
-        source_remote=None,
+        source_root=handler_summary.source_root,
+        source_mode=handler_summary.source_mode,
         profile_path=str(profile.paths.profile_file),
         skill_path=str(skill_path),
-        ve_path=str(ve_path),
-        blackdog_path=str(blackdog_path),
+        ve_path=handler_summary.root_ve_path,
+        blackdog_path=handler_summary.blackdog_path,
+        handlers=handler_summary,
         created=(),
         updated=tuple(updated),
         removed=tuple(removed),
@@ -465,14 +352,23 @@ def render_repo_lifecycle_text(result: RepoLifecycleResult) -> str:
         lines.append(f"[blackdog-repo] source root: {result.source_root}")
     if result.source_mode:
         lines.append(f"[blackdog-repo] source mode: {result.source_mode}")
-    if result.source_remote:
-        lines.append(f"[blackdog-repo] source remote: {result.source_remote}")
     if result.profile_path:
         lines.append(f"[blackdog-repo] profile: {result.profile_path}")
     if result.skill_path:
         lines.append(f"[blackdog-repo] skill: {result.skill_path}")
     if result.blackdog_path:
         lines.append(f"[blackdog-repo] launcher: {result.blackdog_path}")
+    if result.handlers is not None:
+        if result.handlers.runtime_mode:
+            lines.append(f"[blackdog-repo] runtime mode: {result.handlers.runtime_mode}")
+        if result.handlers.script_policy:
+            lines.append(f"[blackdog-repo] script policy: {result.handlers.script_policy}")
+        for action in result.handlers.actions:
+            target = f" -> {action.target_path}" if action.target_path else ""
+            timing = "" if action.elapsed_ms is None else f" [{action.elapsed_ms}ms]"
+            lines.append(
+                f"[blackdog-repo] handler {action.handler_id}: {action.action} {action.status}{target}{timing} ({action.message})"
+            )
     if result.created:
         lines.append(f"[blackdog-repo] created: {', '.join(result.created)}")
     if result.updated:

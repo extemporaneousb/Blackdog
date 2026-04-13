@@ -9,3 +9,22 @@ worktrees_dir = "../.worktrees"
 [taxonomy]
 validation_commands = ["PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'"]
 doc_routing_defaults = ["AGENTS.md", "docs/INDEX.md", "docs/PRODUCT_SPEC.md", "docs/ARCHITECTURE.md", "docs/TARGET_MODEL.md", "docs/CLI.md", "docs/FILE_FORMATS.md"]
+
+[[handlers]]
+id = "python"
+kind = "python-overlay-venv"
+enabled = true
+root_path = ".VE"
+worktree_path = ".VE"
+script_policy = "root-bin-fallback"
+
+[[handlers]]
+id = "blackdog"
+kind = "blackdog-runtime"
+enabled = true
+depends_on = ["python"]
+launcher_path = ".VE/bin/blackdog"
+source_mode = "managed-checkout"
+managed_source_dir = "@git-common/blackdog/source/blackdog"
+self_repo_install_mode = "editable-worktree-source"
+other_repo_install_mode = "launcher-shim"
