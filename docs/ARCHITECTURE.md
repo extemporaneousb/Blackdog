@@ -90,6 +90,9 @@ tasks, or attempts.
 
 The minimum coherent product surface rebuilt on top of the new core is:
 
+- `blackdog repo install`
+- `blackdog repo update`
+- `blackdog repo refresh`
 - `blackdog workset put`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
@@ -100,11 +103,9 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog next`
 - `blackdog snapshot`
 
-This repo still intends to rebuild a separate repo lifecycle surface in
-`blackdog` for install/update/refresh/tune and skill composition. Removing the
-legacy scaffold/bootstrap code did not mean those workflows were conceptually
-wrong; it meant the old implementation was structurally wrong and must be
-rebuilt against the vNext core.
+The repo lifecycle family now has a shipped base in `blackdog` for
+install/update/refresh. Prompt/skill preview, tuning, and inspection remain
+separate repo lifecycle work to rebuild on top of the same product layer.
 
 These commands exercise one end-to-end vertical slice:
 

@@ -16,6 +16,63 @@ Write a default repo-local `blackdog.toml` profile.
 blackdog init --project-root /path/to/repo --project-name "Repo Name"
 ```
 
+### `blackdog repo install`
+
+Create or repair the minimum repo-local Blackdog contract:
+
+- repo-local `.VE`
+- repo-local `blackdog` launcher
+- `blackdog.toml` when missing
+- repo-local `$blackdog` skill when missing
+
+```bash
+blackdog repo install --project-root /path/to/repo --project-name "Repo Name"
+blackdog repo install --project-root /path/to/repo --source-root /path/to/blackdog
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--project-name`
+- optional `--source-root`
+
+`repo install` requires the target path to be inside a git repo. By default it
+points the repo-local launcher at the current Blackdog source checkout. If
+`blackdog.toml` or the repo-local skill already exist, it preserves them.
+
+### `blackdog repo update`
+
+Refresh the repo-local `blackdog` launcher from a Blackdog source checkout.
+
+```bash
+blackdog repo update --project-root /path/to/repo
+blackdog repo update --project-root /path/to/repo --source-root /path/to/blackdog
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--source-root`
+
+`repo update` requires an existing `blackdog.toml`. It repairs or replaces the
+repo-local launcher and preserves repo-owned contract files such as the skill.
+
+### `blackdog repo refresh`
+
+Regenerate the managed repo-local skill from `blackdog.toml`.
+
+```bash
+blackdog repo refresh --project-root /path/to/repo
+```
+
+Important flags:
+
+- `--project-root`
+
+`repo refresh` requires an existing `blackdog.toml`. It rewrites the repo-local
+`$blackdog` skill so the skill matches the current shipped product surface and
+routed-doc contract.
+
 ### `blackdog workset put`
 
 Create or update one workset in `planning.json`.
@@ -218,6 +275,5 @@ instead of reviving `backlog.md`.
 
 Repo lifecycle workflows are different. Install/update/refresh/tune and
 skill-composition flows are still first-class product concerns, but they should
-be rebuilt as a separate workflow family in `blackdog`, not forced into
-workset/task semantics and not revived from the old scaffold command tree
-unchanged.
+live as a separate workflow family in `blackdog`, not forced into workset/task
+semantics and not revived from the old scaffold command tree unchanged.

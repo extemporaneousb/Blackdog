@@ -22,6 +22,7 @@ development.
   implementation mode.
 - The active shipped CLI surface is:
   - `blackdog init`
+  - `blackdog repo install|update|refresh`
   - `blackdog workset put`
   - `blackdog summary`
   - `blackdog next`

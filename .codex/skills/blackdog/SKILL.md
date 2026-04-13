@@ -46,8 +46,9 @@ Blackdog is in an explicitly authorized breaking-change period.
 - Claims attach to both worksets and tasks.
 - First-class execution models: `direct_wtam` and `workset_manager`.
 - Treat repo lifecycle workflows as a separate first-class family:
-  install/update/refresh/tune and skill composition are product-layer
-  workflows, but they are not workset/task objects.
+  install/update/refresh are shipped product-layer workflows, and tune/skill
+  composition remains product-layer work, but none of them are workset/task
+  objects.
 - Tests should use fresh isolated git repos.
 
 ## Standard Flow
@@ -60,6 +61,12 @@ Blackdog is in an explicitly authorized breaking-change period.
 6. Make kept changes only inside that task worktree.
 7. Land successful kept changes with `./.VE/bin/blackdog worktree land --workset WORKSET --task TASK --actor AGENT`.
 8. Clean up with `./.VE/bin/blackdog worktree cleanup --workset WORKSET --task TASK`.
+
+## Repo Lifecycle Flow
+
+1. Install or repair a repo with `./.VE/bin/blackdog repo install --project-root .`.
+2. Refresh the repo-local launcher with `./.VE/bin/blackdog repo update --project-root .`.
+3. Regenerate the repo-local skill with `./.VE/bin/blackdog repo refresh --project-root .`.
 
 ## Docs To Review
 

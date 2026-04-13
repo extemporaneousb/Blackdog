@@ -13,6 +13,9 @@ CLI and typed runtime operations.
 The current shipped CLI is deliberately narrow:
 
 - `blackdog init`
+- `blackdog repo install`
+- `blackdog repo update`
+- `blackdog repo refresh`
 - `blackdog workset put`
 - `blackdog summary`
 - `blackdog next`
@@ -46,9 +49,10 @@ start plan, prompt receipt, and repo contract inputs before a claim/start.
 
 Blackdog has no non-WTAM implementation mode.
 
-Blackdog also has a separate repo lifecycle concern set: install/update/refresh
-and prompt/skill composition. Those workflows belong in the product layer, but
-they are not workset/task operations.
+Blackdog also has a separate repo lifecycle concern set. Install/update/refresh
+now ship as explicit product-layer workflows. Prompt/skill composition and
+inspection remain separate repo lifecycle work to rebuild on top of this base,
+not workset/task operations.
 
 ## Docs
 

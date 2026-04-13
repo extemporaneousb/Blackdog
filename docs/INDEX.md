@@ -22,6 +22,9 @@ CLI surfaces.
 ## Current Product Surface
 
 - `blackdog init`
+- `blackdog repo install`
+- `blackdog repo update`
+- `blackdog repo refresh`
 - `blackdog workset put`
 - `blackdog summary`
 - `blackdog next`

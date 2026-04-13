@@ -6,6 +6,13 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from blackdog.repo_lifecycle import (
+    RepoLifecycleError,
+    install_repo,
+    refresh_repo,
+    render_repo_lifecycle_text,
+    update_repo,
+)
 from blackdog.wtam import (
     WorktreeError,
     cleanup_task_worktree,
@@ -108,6 +115,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p_next = subparsers.add_parser("next", help="Show ready tasks from the current vNext worksets")
     p_next.add_argument("--project-root", default=".")
     p_next.add_argument("--json", action="store_true")
+
+    p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
+    repo_subparsers = p_repo.add_subparsers(dest="repo_command", required=True)
+
+    p_repo_install = repo_subparsers.add_parser("install", help="Install or repair repo-local Blackdog bootstrap surfaces")
+    p_repo_install.add_argument("--project-root", default=".")
+    p_repo_install.add_argument("--project-name")
+    p_repo_install.add_argument("--source-root")
+    p_repo_install.add_argument("--json", action="store_true")
+
+    p_repo_update = repo_subparsers.add_parser("update", help="Refresh the repo-local Blackdog launcher from a source checkout")
+    p_repo_update.add_argument("--project-root", default=".")
+    p_repo_update.add_argument("--source-root")
+    p_repo_update.add_argument("--json", action="store_true")
+
+    p_repo_refresh = repo_subparsers.add_parser("refresh", help="Regenerate repo-local managed contract surfaces")
+    p_repo_refresh.add_argument("--project-root", default=".")
+    p_repo_refresh.add_argument("--json", action="store_true")
 
     p_workset = subparsers.add_parser("workset", help="Create or update vNext workset planning state")
     workset_subparsers = p_workset.add_subparsers(dest="workset_command", required=True)
@@ -224,6 +249,37 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_next_text(model))
             return 0
 
+        if args.command == "repo" and args.repo_command == "install":
+            result = install_repo(
+                Path(args.project_root).resolve(),
+                project_name=args.project_name,
+                source_root=args.source_root,
+            )
+            if args.json:
+                _emit_json({"repo": result.to_dict()})
+            else:
+                print(render_repo_lifecycle_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "update":
+            result = update_repo(
+                Path(args.project_root).resolve(),
+                source_root=args.source_root,
+            )
+            if args.json:
+                _emit_json({"repo": result.to_dict()})
+            else:
+                print(render_repo_lifecycle_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "refresh":
+            result = refresh_repo(Path(args.project_root).resolve())
+            if args.json:
+                _emit_json({"repo": result.to_dict()})
+            else:
+                print(render_repo_lifecycle_text(result), end="")
+            return 0
+
         if args.command == "workset" and args.workset_command == "put":
             payload = _load_json_payload(raw_json=args.json, file_path=args.file)
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
@@ -338,6 +394,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         raise BacklogError(f"Unsupported command: {args.command}")
-    except (BacklogError, ConfigError, StoreError, WorktreeError, OSError, ValueError) as exc:
+    except (BacklogError, ConfigError, RepoLifecycleError, StoreError, WorktreeError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
