@@ -14,7 +14,7 @@ Use the repo-local Blackdog CLI instead of mutating control-root files by hand.
 ## Shipped Workflow Families
 
 - repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
-- workset/task runtime: `workset put`, `summary`, `next`, `snapshot`
+- workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`
 - WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree land`, `worktree cleanup`
 
 ## Repo Lifecycle Flow
@@ -28,7 +28,7 @@ Use the repo-local Blackdog CLI instead of mutating control-root files by hand.
 ## WTAM Flow
 
 1. `./.VE/bin/blackdog summary --project-root .`
-2. `./.VE/bin/blackdog next --project-root .`
+2. `./.VE/bin/blackdog next --project-root . --workset WORKSET`
 3. `./.VE/bin/blackdog worktree preflight --project-root .`
 4. `./.VE/bin/blackdog worktree preview --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
 5. `./.VE/bin/blackdog worktree start --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`

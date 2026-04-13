@@ -111,6 +111,7 @@ class AttemptView:
 
 @dataclass(frozen=True, slots=True)
 class TaskView:
+    workset_id: str
     task_id: str
     title: str
     intent: str
@@ -290,6 +291,7 @@ def _task_view(
         readiness = "ready" if dependencies_ready else "blocked"
         blocked_by = missing_dependencies
     return TaskView(
+        workset_id=workset.workset_id,
         task_id=task.task_id,
         title=task.title,
         intent=task.intent,
@@ -436,6 +438,54 @@ def project_runtime_model(
     )
 
 
+def scope_runtime_model(model: RuntimeModel, *, workset_id: str | None = None) -> RuntimeModel:
+    if workset_id is None:
+        return model
+    scoped_worksets = tuple(workset for workset in model.worksets if workset.workset_id == workset_id)
+    if not scoped_worksets:
+        raise ValueError(f"Unknown workset: {workset_id!r}")
+    scoped_recent_attempts = tuple(
+        sorted(
+            (attempt for workset in scoped_worksets for attempt in workset.attempts),
+            key=lambda item: (
+                parse_iso(item.ended_at or item.started_at) or parse_iso("1970-01-01T00:00:00+00:00")
+            ).timestamp(),
+            reverse=True,
+        )
+    )
+    counts = {
+        "worksets": len(scoped_worksets),
+        "claimed_worksets": 0,
+        "tasks": 0,
+        "ready": 0,
+        "in_progress": 0,
+        "blocked": 0,
+        "done": 0,
+        "claimed_tasks": 0,
+        "attempts": 0,
+        "active_attempts": 0,
+    }
+    for workset in scoped_worksets:
+        if workset.claim is not None:
+            counts["claimed_worksets"] += 1
+        for key, value in workset.counts.items():
+            counts[key] = counts.get(key, 0) + value
+    scoped_events = tuple(
+        event
+        for event in model.events
+        if isinstance(event.get("payload"), dict) and event["payload"].get("workset_id") == workset_id
+    )
+    return RuntimeModel(
+        schema_version=model.schema_version,
+        repository=model.repository,
+        worksets=scoped_worksets,
+        counts=counts,
+        next_tasks=tuple(task for task in model.next_tasks if task.workset_id == workset_id),
+        recent_attempts=scoped_recent_attempts,
+        events=scoped_events,
+    )
+
+
 def load_runtime_model(profile: RepoProfile) -> RuntimeModel:
     planning_state = load_planning_state(profile.paths)
     runtime_state = load_runtime_state(profile.paths)
@@ -456,4 +506,5 @@ __all__ = [
     "load_runtime_model",
     "project_repository",
     "project_runtime_model",
+    "scope_runtime_model",
 ]

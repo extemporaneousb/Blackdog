@@ -104,7 +104,7 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog worktree land`
 - `blackdog worktree cleanup`
 - `blackdog summary`
-- `blackdog next`
+- `blackdog next --workset`
 - `blackdog snapshot`
 
 The repo lifecycle family now has a shipped base in `blackdog` for

@@ -291,17 +291,22 @@ Read the typed runtime model and print a human-oriented status summary.
 
 ```bash
 blackdog summary --project-root /path/to/repo
+blackdog summary --project-root /path/to/repo --workset kernel
 blackdog summary --project-root /path/to/repo --json
 ```
 
 ### `blackdog next`
 
-List ready tasks across the stored worksets.
+Select the next task inside one workset.
 
 ```bash
-blackdog next --project-root /path/to/repo
-blackdog next --project-root /path/to/repo --json
+blackdog next --project-root /path/to/repo --workset kernel
+blackdog next --project-root /path/to/repo --workset kernel --json
 ```
+
+`next` is workset-scoped by design. It selects one task to continue or start,
+and it also reports blocked tasks for that workset so recovery does not require
+reading the raw snapshot by hand.
 
 ### `blackdog snapshot`
 
@@ -309,6 +314,7 @@ Emit the canonical machine-readable runtime snapshot.
 
 ```bash
 blackdog snapshot --project-root /path/to/repo
+blackdog snapshot --project-root /path/to/repo --workset kernel
 ```
 
 The snapshot embeds the fully typed runtime model under `runtime_model`.
@@ -320,6 +326,7 @@ Summarize completed attempt history from the typed runtime model.
 
 ```bash
 blackdog attempts summary --project-root /path/to/repo
+blackdog attempts summary --project-root /path/to/repo --workset kernel
 blackdog attempts summary --project-root /path/to/repo --json
 ```
 
@@ -327,6 +334,9 @@ The summary centers on completed attempts and includes:
 
 - recent completed attempts
 - completed counts by workset
+- model / reasoning-effort when present
+- prompt source plus prompt hash
+- commit and landed-commit linkage
 - validation pass/fail/skipped totals
 - landed vs not-landed completion totals
 
@@ -336,6 +346,7 @@ Emit a stable table over completed attempt history.
 
 ```bash
 blackdog attempts table --project-root /path/to/repo
+blackdog attempts table --project-root /path/to/repo --workset kernel
 blackdog attempts table --project-root /path/to/repo --json
 ```
 
@@ -351,13 +362,18 @@ columns plus row dictionaries. Current columns are:
 - `ended_at`
 - `elapsed_seconds`
 - `execution_model`
+- `model`
+- `reasoning_effort`
+- `prompt_source`
 - `branch`
 - `target_branch`
 - `start_commit`
+- `commit`
 - `landed_commit`
 - `prompt_hash`
 - `changed_paths_count`
 - `validation_summary`
+- `summary`
 
 ## Removed Or Deferred Commands
 

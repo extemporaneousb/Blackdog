@@ -325,7 +325,7 @@ This is the decision frame for the rest of the repo.
 - `worktree land`
 - `worktree cleanup`
 - `summary`
-- `next`
+- `next --workset`
 - `snapshot`
 
 ### Keep With Changes
@@ -387,7 +387,9 @@ Minimum per-attempt stats:
 - branch / target branch / integration branch
 - start_commit
 - execution_model
+- prompt_source
 - prompt_hash
+- commit when applicable
 - changed_paths
 - validations and statuses
 - result status
@@ -421,7 +423,7 @@ Blackdog is usable again when you can dogfood it in another repo for a real
 direct-agent workflow:
 
 1. shape a workset from a real goal
-2. ask what is next
+2. ask what is next in one workset
 3. execute at least one kept-change task with explicit worktree/git identity
    and a stored prompt receipt
 4. land it through the primary checkout and clean up the task worktree

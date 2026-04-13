@@ -22,7 +22,7 @@ The current shipped CLI is deliberately narrow:
 - `blackdog attempts table`
 - `blackdog workset put`
 - `blackdog summary`
-- `blackdog next`
+- `blackdog next --workset`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
@@ -50,6 +50,9 @@ worktree, move into a branch-backed task worktree before editing files.
 Use `./.VE/bin/blackdog worktree preview` when you want to inspect the WTAM
 start plan, prompt receipt, and repo contract inputs before a claim/start.
 `blackdog worktree start` provisions a worktree-local `.VE` when needed.
+Use `blackdog next --workset WORKSET` for human or recovery-oriented task
+selection inside one workset; direct-agent WTAM flows that already know the
+task id can go straight to `worktree preview` or `worktree start`.
 
 Blackdog has no non-WTAM implementation mode.
 

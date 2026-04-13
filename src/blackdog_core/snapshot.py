@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .profile import RepoProfile
-from .runtime_model import AttemptView, RuntimeModel, TaskView, WorksetView, load_runtime_model
+from .runtime_model import AttemptView, RuntimeModel, TaskView, WorksetView, load_runtime_model, scope_runtime_model
 from .state import now_iso, parse_iso
 
 
@@ -33,8 +33,12 @@ def runtime_model_snapshot(model: RuntimeModel) -> dict[str, Any]:
     return payload
 
 
-def build_runtime_snapshot(profile: RepoProfile) -> dict[str, Any]:
-    model = load_runtime_model(profile)
+def _scoped_model(profile: RepoProfile, *, workset_id: str | None = None) -> RuntimeModel:
+    return scope_runtime_model(load_runtime_model(profile), workset_id=workset_id)
+
+
+def build_runtime_snapshot(profile: RepoProfile, *, workset_id: str | None = None) -> dict[str, Any]:
+    model = _scoped_model(profile, workset_id=workset_id)
     return {
         "schema_version": model.schema_version,
         "format": SNAPSHOT_FORMAT,
@@ -43,10 +47,11 @@ def build_runtime_snapshot(profile: RepoProfile) -> dict[str, Any]:
     }
 
 
-def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
-    model = load_runtime_model(profile)
+def build_runtime_summary(profile: RepoProfile, *, workset_id: str | None = None) -> dict[str, Any]:
+    model = _scoped_model(profile, workset_id=workset_id)
     return {
         "project_name": model.repository.project_name,
+        "workset_scope": workset_id,
         "counts": dict(model.counts),
         "worksets": [
             {
@@ -106,13 +111,18 @@ ATTEMPTS_TABLE_COLUMNS = (
     "ended_at",
     "elapsed_seconds",
     "execution_model",
+    "model",
+    "reasoning_effort",
+    "prompt_source",
     "branch",
     "target_branch",
     "start_commit",
+    "commit",
     "landed_commit",
     "prompt_hash",
     "changed_paths_count",
     "validation_summary",
+    "summary",
 )
 
 
@@ -142,8 +152,8 @@ def _validation_summary(attempt: AttemptView) -> str:
     return f"passed={passed} failed={failed} skipped={skipped}"
 
 
-def build_attempts_table(profile: RepoProfile) -> dict[str, Any]:
-    model = load_runtime_model(profile)
+def build_attempts_table(profile: RepoProfile, *, workset_id: str | None = None) -> dict[str, Any]:
+    model = _scoped_model(profile, workset_id=workset_id)
     rows = []
     for workset, attempt in _completed_attempt_items(model):
         rows.append(
@@ -157,24 +167,30 @@ def build_attempts_table(profile: RepoProfile) -> dict[str, Any]:
                 "ended_at": attempt.ended_at,
                 "elapsed_seconds": attempt.elapsed_seconds,
                 "execution_model": attempt.execution_model,
+                "model": attempt.model,
+                "reasoning_effort": attempt.reasoning_effort,
+                "prompt_source": attempt.prompt_receipt.source if attempt.prompt_receipt else None,
                 "branch": attempt.branch,
                 "target_branch": attempt.target_branch,
                 "start_commit": attempt.start_commit,
+                "commit": attempt.commit,
                 "landed_commit": attempt.landed_commit,
                 "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                 "changed_paths_count": len(attempt.changed_paths),
                 "validation_summary": _validation_summary(attempt),
+                "summary": attempt.summary,
             }
         )
     return {
         "project_name": model.repository.project_name,
+        "workset_scope": workset_id,
         "columns": list(ATTEMPTS_TABLE_COLUMNS),
         "rows": rows,
     }
 
 
-def build_attempts_summary(profile: RepoProfile) -> dict[str, Any]:
-    model = load_runtime_model(profile)
+def build_attempts_summary(profile: RepoProfile, *, workset_id: str | None = None) -> dict[str, Any]:
+    model = _scoped_model(profile, workset_id=workset_id)
     completed = _completed_attempt_items(model)
     validation_totals = {"passed": 0, "failed": 0, "skipped": 0}
     by_workset = []
@@ -202,6 +218,7 @@ def build_attempts_summary(profile: RepoProfile) -> dict[str, Any]:
             validation_totals[validation.status] = validation_totals.get(validation.status, 0) + 1
     return {
         "project_name": model.repository.project_name,
+        "workset_scope": workset_id,
         "counts": {
             "completed_attempts": len(completed),
             "landed": landed_total,
@@ -218,8 +235,13 @@ def build_attempts_summary(profile: RepoProfile) -> dict[str, Any]:
                 "attempt_id": attempt.attempt_id,
                 "status": attempt.status,
                 "actor": attempt.actor,
+                "execution_model": attempt.execution_model,
+                "model": attempt.model,
+                "reasoning_effort": attempt.reasoning_effort,
                 "branch": attempt.branch,
+                "commit": attempt.commit,
                 "landed_commit": attempt.landed_commit,
+                "prompt_source": attempt.prompt_receipt.source if attempt.prompt_receipt else None,
                 "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                 "validation_summary": _validation_summary(attempt),
                 "elapsed_seconds": attempt.elapsed_seconds,
@@ -227,6 +249,56 @@ def build_attempts_summary(profile: RepoProfile) -> dict[str, Any]:
             }
             for workset, attempt in completed[:10]
         ],
+    }
+
+
+def _task_payload(task: TaskView) -> dict[str, Any]:
+    return {
+        "workset_id": task.workset_id,
+        "task_id": task.task_id,
+        "title": task.title,
+        "intent": task.intent,
+        "runtime_status": task.runtime_status,
+        "readiness": task.readiness,
+        "blocked_by": list(task.blocked_by),
+        "claim_actor": task.claim_actor,
+        "claim_execution_model": task.claim_execution_model,
+        "latest_attempt_id": task.latest_attempt_id,
+        "latest_attempt_status": task.latest_attempt_status,
+        "latest_attempt_summary": task.latest_attempt_summary,
+        "active_attempt_id": task.active_attempt_id,
+    }
+
+
+def build_next_payload(model: RuntimeModel, *, workset_id: str) -> dict[str, Any]:
+    scoped = scope_runtime_model(model, workset_id=workset_id)
+    workset = scoped.worksets[0]
+    active_tasks = [
+        task
+        for task in workset.tasks
+        if task.active_attempt_id is not None or task.runtime_status == "in_progress" or task.claim_actor is not None
+    ]
+    ready_tasks = [task for task in workset.tasks if task.is_ready]
+    blocked_tasks = [task for task in workset.tasks if task.readiness == "blocked"]
+    if active_tasks:
+        selection_mode = "continue"
+        selected_task = active_tasks[0]
+    elif ready_tasks:
+        selection_mode = "start"
+        selected_task = ready_tasks[0]
+    else:
+        selection_mode = "blocked"
+        selected_task = None
+    return {
+        "project_name": scoped.repository.project_name,
+        "workset_id": workset.workset_id,
+        "workset_title": workset.title,
+        "selection_mode": selection_mode,
+        "counts": dict(workset.counts),
+        "selected_task": _task_payload(selected_task) if selected_task is not None else None,
+        "ready_tasks": [_task_payload(task) for task in ready_tasks],
+        "blocked_tasks": [_task_payload(task) for task in blocked_tasks],
+        "active_tasks": [_task_payload(task) for task in active_tasks],
     }
 
 
@@ -295,19 +367,44 @@ def render_summary_text(model: RuntimeModel) -> str:
     return "\n".join(lines)
 
 
-def render_next_text(model: RuntimeModel) -> str:
-    if not model.next_tasks:
-        return "No ready tasks."
-    lines = []
-    for task in model.next_tasks:
-        lines.append(f"{task.task_id} {task.title}")
+def render_next_text(payload: dict[str, Any]) -> str:
+    lines = [f"Workset: {payload['workset_id']} {payload['workset_title']}"]
+    selected = payload["selected_task"]
+    if selected is None:
+        lines.append("Selected: none")
+    else:
+        lines.append(
+            f"Selected ({payload['selection_mode']}): {selected['task_id']} {selected['title']}"
+        )
+        lines.append(f"Intent: {selected['intent']}")
+        if selected["claim_actor"]:
+            lines.append(
+                f"Claim: {selected['claim_actor']}/{selected['claim_execution_model'] or 'unknown'}"
+            )
+        if selected["latest_attempt_status"]:
+            lines.append(
+                f"Latest attempt: {selected['latest_attempt_status']} {selected['latest_attempt_id'] or ''}".rstrip()
+            )
+    if payload["blocked_tasks"]:
+        lines.append("")
+        lines.append("Blocked tasks:")
+        for task in payload["blocked_tasks"]:
+            blockers = ", ".join(task["blocked_by"]) if task["blocked_by"] else "unspecified"
+            lines.append(f"  - {task['task_id']} {task['title']} ({blockers})")
+    elif selected is None:
+        lines.append("")
+        lines.append("No blocked tasks are recorded.")
     return "\n".join(lines)
 
 
 def render_attempts_summary_text(payload: dict[str, Any]) -> str:
     counts = payload["counts"]
+    scope = payload.get("workset_scope")
+    header = f"Project: {payload['project_name']}"
+    if scope:
+        header = f"{header} | Workset: {scope}"
     lines = [
-        f"Project: {payload['project_name']}",
+        header,
         (
             "Completed attempts: "
             f"{counts['completed_attempts']} | Landed: {counts['landed']} | Not landed: {counts['not_landed']}"
@@ -332,11 +429,22 @@ def render_attempts_summary_text(payload: dict[str, Any]) -> str:
         lines.append("Recent completed attempts:")
         for attempt in payload["recent_completed_attempts"]:
             landed = f" landed={attempt['landed_commit']}" if attempt["landed_commit"] else ""
+            commit = f" commit={attempt['commit']}" if attempt["commit"] else ""
+            model = (
+                f" model={attempt['model']}/{attempt['reasoning_effort']}"
+                if attempt["model"] or attempt["reasoning_effort"]
+                else ""
+            )
+            prompt = (
+                f" prompt={attempt['prompt_source']}:{attempt['prompt_hash'][:10]}"
+                if attempt["prompt_hash"]
+                else ""
+            )
             summary = f" {attempt['summary']}" if attempt["summary"] else ""
             lines.append(
                 (
                     f"  - {attempt['attempt_id']} workset={attempt['workset_id']} task={attempt['task_id']} "
-                    f"status={attempt['status']} actor={attempt['actor']} validation={attempt['validation_summary']}{landed}{summary}"
+                    f"status={attempt['status']} actor={attempt['actor']} validation={attempt['validation_summary']}{model}{prompt}{commit}{landed}{summary}"
                 ).rstrip()
             )
     elif counts["completed_attempts"] == 0:
@@ -365,6 +473,7 @@ __all__ = [
     "build_runtime_summary",
     "build_attempts_summary",
     "build_attempts_table",
+    "build_next_payload",
     "load_runtime_model",
     "render_attempts_summary_text",
     "render_attempts_table_text",

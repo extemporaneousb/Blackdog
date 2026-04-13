@@ -168,7 +168,7 @@ The minimum coherent shipped slice after the sweep is:
 - one WTAM cleanup surface: `blackdog worktree cleanup`
 - one summary surface: `blackdog summary`
 - one machine snapshot surface: `blackdog snapshot`
-- one execution-facing read surface: `blackdog next`
+- one workset-scoped execution-facing read surface: `blackdog next --workset`
 
 That slice is intentionally smaller than the previous Blackdog surface area.
 It is enough to prove the new foundation while keeping the package boundaries

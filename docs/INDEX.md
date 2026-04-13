@@ -31,7 +31,7 @@ CLI surfaces.
 - `blackdog attempts table`
 - `blackdog workset put`
 - `blackdog summary`
-- `blackdog next`
+- `blackdog next --workset`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`

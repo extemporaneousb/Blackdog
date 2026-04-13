@@ -74,13 +74,45 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("vertical-slice: Vertical slice", stdout)
         self.assertIn("[READY] VS-2 Read status", stdout)
 
-        exit_code, stdout, stderr = self.run_cli("next", "--project-root", str(self.root), "--json")
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "vertical-slice",
+            "--json",
+        )
         self.assertEqual(exit_code, 0, stderr)
-        self.assertEqual(json.loads(stdout), [{"task_id": "VS-2", "title": "Read status", "intent": "surface a machine-readable snapshot"}])
+        scoped_summary = json.loads(stdout)
+        self.assertEqual(scoped_summary["workset_scope"], "vertical-slice")
+        self.assertEqual(scoped_summary["counts"]["worksets"], 1)
+        self.assertEqual(scoped_summary["worksets"][0]["id"], "vertical-slice")
 
-        exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
+        exit_code, stdout, stderr = self.run_cli(
+            "next",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "vertical-slice",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        next_payload = json.loads(stdout)
+        self.assertEqual(next_payload["workset_id"], "vertical-slice")
+        self.assertEqual(next_payload["selection_mode"], "start")
+        self.assertEqual(next_payload["selected_task"]["task_id"], "VS-2")
+        self.assertEqual(next_payload["ready_tasks"][0]["workset_id"], "vertical-slice")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "snapshot",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "vertical-slice",
+        )
         self.assertEqual(exit_code, 0, stderr)
         snapshot = json.loads(stdout)
+        self.assertEqual(len(snapshot["runtime_model"]["worksets"]), 1)
         self.assertEqual(snapshot["runtime_model"]["counts"]["ready"], 1)
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["workspace"]["identity"], "vertical-slice-workspace")
         self.assertEqual(snapshot["runtime_model"]["counts"]["attempts"], 0)
@@ -386,6 +418,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             "summary",
             "--project-root",
             str(self.root),
+            "--workset",
+            "attempt-audit",
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
@@ -395,20 +429,31 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary["counts"]["not_landed"], 1)
         self.assertEqual(summary["counts"]["validation_passed"], 1)
         self.assertEqual(summary["counts"]["validation_failed"], 1)
+        self.assertEqual(summary["workset_scope"], "attempt-audit")
         self.assertEqual(summary["worksets"][0]["workset_id"], "attempt-audit")
+        self.assertEqual(summary["recent_completed_attempts"][0]["prompt_source"], "unit-test")
 
         exit_code, stdout, stderr = self.run_cli(
             "attempts",
             "table",
             "--project-root",
             str(self.root),
+            "--workset",
+            "attempt-audit",
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
         table = json.loads(stdout)
         self.assertEqual(table["columns"][0], "workset_id")
+        self.assertIn("model", table["columns"])
+        self.assertIn("reasoning_effort", table["columns"])
+        self.assertIn("prompt_source", table["columns"])
+        self.assertIn("commit", table["columns"])
+        self.assertIn("summary", table["columns"])
         self.assertEqual(len(table["rows"]), 2)
+        self.assertEqual(table["workset_scope"], "attempt-audit")
         self.assertEqual(table["rows"][0]["workset_id"], "attempt-audit")
+        self.assertEqual(table["rows"][0]["prompt_source"], "unit-test")
         self.assertIn(table["rows"][0]["validation_summary"], {"passed=1 failed=0 skipped=0", "passed=0 failed=1 skipped=0"})
         self.assertEqual(
             {row["landed_commit"] for row in table["rows"]},

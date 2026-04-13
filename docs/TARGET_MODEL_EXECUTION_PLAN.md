@@ -9,15 +9,23 @@ This repo now treats the vNext sweep as the active plan:
 3. remove durable `epic`, `lane`, and `wave`
 4. rebuild only the minimum coherent surfaces on top of the new core
 
-The current shipped slice is deliberately narrow:
+The current shipped surface is:
 
+- `blackdog repo install`
+- `blackdog repo update`
+- `blackdog repo refresh`
+- `blackdog prompt preview`
+- `blackdog prompt tune`
+- `blackdog attempts summary`
+- `blackdog attempts table`
 - `blackdog workset put`
 - `blackdog worktree preflight`
+- `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree land`
 - `blackdog worktree cleanup`
 - `blackdog summary`
-- `blackdog next`
+- `blackdog next --workset`
 - `blackdog snapshot`
 
 Everything else should be considered removed, deferred, or subject to explicit
@@ -36,7 +44,7 @@ Use this prompt to continue the rewrite:
 > 1. a rock-solid workset/task model
 > 2. explicit workset/task claim semantics
 > 3. the kept-change WTAM lifecycle:
->    `worktree preflight -> worktree start -> execute -> worktree land -> worktree cleanup`
+>    `worktree preflight -> worktree preview -> worktree start -> execute -> worktree land -> worktree cleanup`
 > 4. durable accumulation of completed/landed work and attempt history
 > 5. a clear execution model for direct work and any later delegated work
 >

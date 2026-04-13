@@ -29,9 +29,11 @@ from blackdog.wtam import (
 )
 from blackdog_core.backlog import BacklogError, upsert_workset, workset_to_payload
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
+from blackdog_core.runtime_model import scope_runtime_model
 from blackdog_core.snapshot import (
     build_attempts_summary,
     build_attempts_table,
+    build_next_payload,
     build_runtime_snapshot,
     build_runtime_summary,
     load_runtime_model,
@@ -118,13 +120,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_summary = subparsers.add_parser("summary", help="Summarize vNext workset and task runtime state")
     p_summary.add_argument("--project-root", default=".")
+    p_summary.add_argument("--workset")
     p_summary.add_argument("--json", action="store_true")
 
     p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable vNext runtime snapshot")
     p_snapshot.add_argument("--project-root", default=".")
+    p_snapshot.add_argument("--workset")
 
-    p_next = subparsers.add_parser("next", help="Show ready tasks from the current vNext worksets")
+    p_next = subparsers.add_parser("next", help="Select the next task within one workset")
     p_next.add_argument("--project-root", default=".")
+    p_next.add_argument("--workset", required=True)
     p_next.add_argument("--json", action="store_true")
 
     p_prompt = subparsers.add_parser("prompt", help="Preview or tune prompt composition against the repo contract")
@@ -154,10 +159,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_attempts_summary = attempts_subparsers.add_parser("summary", help="Summarize completed attempts")
     p_attempts_summary.add_argument("--project-root", default=".")
+    p_attempts_summary.add_argument("--workset")
     p_attempts_summary.add_argument("--json", action="store_true")
 
     p_attempts_table = attempts_subparsers.add_parser("table", help="Emit a stable table over completed attempts")
     p_attempts_table.add_argument("--project-root", default=".")
+    p_attempts_table.add_argument("--workset")
     p_attempts_table.add_argument("--json", action="store_true")
 
     p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
@@ -265,32 +272,26 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "summary":
             profile, model = _load_model(args.project_root)
+            if args.workset:
+                model = scope_runtime_model(model, workset_id=args.workset)
             if args.json:
-                _emit_json(build_runtime_summary(profile))
+                _emit_json(build_runtime_summary(profile, workset_id=args.workset))
             else:
                 print(render_summary_text(model))
             return 0
 
         if args.command == "snapshot":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            _emit_json(build_runtime_snapshot(profile))
+            _emit_json(build_runtime_snapshot(profile, workset_id=args.workset))
             return 0
 
         if args.command == "next":
             _, model = _load_model(args.project_root)
+            payload = build_next_payload(model, workset_id=args.workset)
             if args.json:
-                _emit_json(
-                    [
-                        {
-                            "task_id": task.task_id,
-                            "title": task.title,
-                            "intent": task.intent,
-                        }
-                        for task in model.next_tasks
-                    ]
-                )
+                _emit_json(payload)
             else:
-                print(render_next_text(model))
+                print(render_next_text(payload))
             return 0
 
         if args.command == "prompt" and args.prompt_command == "preview":
@@ -336,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "attempts" and args.attempts_command == "summary":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = build_attempts_summary(profile)
+            payload = build_attempts_summary(profile, workset_id=args.workset)
             if args.json:
                 _emit_json(payload)
             else:
@@ -345,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "attempts" and args.attempts_command == "table":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = build_attempts_table(profile)
+            payload = build_attempts_table(profile, workset_id=args.workset)
             if args.json:
                 _emit_json(payload)
             else:

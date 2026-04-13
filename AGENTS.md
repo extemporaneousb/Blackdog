@@ -27,9 +27,11 @@ development.
   - `blackdog attempts summary|table`
   - `blackdog workset put`
   - `blackdog summary`
-  - `blackdog next`
+  - `blackdog next --workset`
   - `blackdog snapshot`
   - `blackdog worktree preflight|preview|start|land|cleanup`
+- Treat `blackdog next` as a workset-scoped operator/recovery surface. The
+  direct-agent WTAM path usually already knows `--workset` and `--task`.
 - Use `blackdog worktree preview` before `start` when you need to inspect the
   prompt receipt, repo contract inputs, branch/worktree plan, or worktree-local
   CLI bootstrap plan.

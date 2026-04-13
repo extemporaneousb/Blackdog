@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
-from blackdog_core.runtime_model import load_runtime_model
+from blackdog_core.runtime_model import load_runtime_model, scope_runtime_model
 from blackdog_core.snapshot import build_runtime_snapshot
 from blackdog_core.state import create_prompt_receipt
 from tests.core_audit_support import CoreAuditTestCase
@@ -53,7 +53,9 @@ class RuntimeModelTests(CoreAuditTestCase):
         self.assertEqual(model.worksets[0].branch_intent["target_branch"], "main")
         self.assertEqual(model.worksets[0].tasks[0].readiness, "done")
         self.assertEqual(model.worksets[0].tasks[1].readiness, "ready")
+        self.assertEqual(model.worksets[0].tasks[1].workset_id, "kernel")
         self.assertEqual(model.next_tasks[0].task_id, "KERN-2")
+        self.assertEqual(model.next_tasks[0].workset_id, "kernel")
 
     def test_runtime_snapshot_embeds_the_typed_runtime_model(self) -> None:
         upsert_workset(
@@ -130,3 +132,28 @@ class RuntimeModelTests(CoreAuditTestCase):
         self.assertIsNone(model.worksets[0].claim)
         self.assertEqual(model.worksets[0].task_claims, ())
         self.assertEqual(model.worksets[0].attempts[0].elapsed_seconds, 15)
+
+    def test_runtime_model_can_scope_to_one_workset(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "alpha",
+                "title": "Alpha",
+                "tasks": [{"id": "A-1", "title": "Alpha task", "intent": "stay scoped"}],
+            },
+        )
+        upsert_workset(
+            self.profile,
+            {
+                "id": "beta",
+                "title": "Beta",
+                "tasks": [{"id": "B-1", "title": "Beta task", "intent": "drop out"}],
+            },
+        )
+
+        scoped = scope_runtime_model(load_runtime_model(self.profile), workset_id="alpha")
+
+        self.assertEqual(scoped.counts["worksets"], 1)
+        self.assertEqual(scoped.worksets[0].workset_id, "alpha")
+        self.assertEqual(scoped.next_tasks[0].workset_id, "alpha")
+        self.assertEqual(len(scoped.events), 1)
