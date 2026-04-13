@@ -77,7 +77,9 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("worktree preflight", cli_doc)
         self.assertIn("worktree preview", cli_doc)
         self.assertIn("worktree start", cli_doc)
+        self.assertIn("worktree show", cli_doc)
         self.assertIn("worktree land", cli_doc)
+        self.assertIn("worktree close", cli_doc)
         self.assertIn("worktree cleanup", cli_doc)
         self.assertIn("[[handlers]]", cli_doc)
         self.assertIn("handler plan", cli_doc)
@@ -91,6 +93,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("commit", cli_doc)
         self.assertNotIn("analysis-only workflow", cli_doc)
         self.assertIn("Install/update/refresh/tune", cli_doc)
+        self.assertIn("canonical landed commit", cli_doc)
         self.assertIn("planning.json", file_formats)
         self.assertIn("runtime.json", file_formats)
         self.assertIn("attempts", file_formats)
@@ -103,6 +106,8 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("python-overlay-venv", file_formats)
         self.assertIn("blackdog-runtime", file_formats)
         self.assertIn("handler_actions", file_formats)
+        self.assertIn("abandoned", file_formats)
+        self.assertIn("worktree.close", file_formats)
         self.assertIn("backlog.md is not part of the vNext contract", file_formats)
 
     def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:

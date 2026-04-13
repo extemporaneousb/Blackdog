@@ -249,3 +249,36 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(runtime_state.worksets[0].attempts[0].landed_commit, "def456")
         self.assertEqual(runtime_state.worksets[0].attempts[0].execution_model, "direct_wtam")
         self.assertEqual(runtime_state.worksets[0].attempts[0].prompt_receipt.source, "unit-test")
+
+    def test_abandoned_attempt_releases_claims_and_returns_task_to_planned(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "abandon",
+                "title": "Abandon",
+                "tasks": [{"id": "AB-1", "title": "Abort task", "intent": "release the claim without completing work"}],
+            },
+        )
+
+        attempt = start_task(
+            self.profile,
+            workset_id="abandon",
+            task_id="AB-1",
+            actor="codex",
+            prompt_receipt=create_prompt_receipt("Abort the direct slice.", source="unit-test"),
+        )
+        finished = finish_task(
+            self.profile,
+            workset_id="abandon",
+            task_id="AB-1",
+            attempt_id=attempt.attempt_id,
+            actor="codex",
+            status="abandoned",
+            summary="abandoned the slice",
+        )
+
+        self.assertEqual(finished.status, "abandoned")
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "planned")
+        self.assertIsNone(runtime_state.worksets[0].workset_claim)
+        self.assertEqual(runtime_state.worksets[0].task_claims, ())

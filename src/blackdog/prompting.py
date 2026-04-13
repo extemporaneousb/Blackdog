@@ -21,7 +21,9 @@ WTAM_COMMANDS = (
     "blackdog worktree preflight",
     "blackdog worktree preview",
     "blackdog worktree start",
+    "blackdog worktree show",
     "blackdog worktree land",
+    "blackdog worktree close",
     "blackdog worktree cleanup",
 )
 

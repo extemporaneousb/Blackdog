@@ -16,7 +16,7 @@ The repo-local blackdog.toml handler blocks own env/runtime setup.
 
 - repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
 - workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`
-- WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree land`, `worktree cleanup`
+- WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`
 
 ## Repo Lifecycle Flow
 
@@ -34,8 +34,9 @@ The repo-local blackdog.toml handler blocks own env/runtime setup.
 4. `./.VE/bin/blackdog worktree preview --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
 5. `./.VE/bin/blackdog worktree start --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
 6. make kept changes only inside that task worktree
-7. `./.VE/bin/blackdog worktree land --project-root . --workset WORKSET --task TASK --actor AGENT`
-8. `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK`
+7. `./.VE/bin/blackdog worktree land --project-root . --workset WORKSET --task TASK --actor AGENT --summary "..."`
+8. if recovery is needed, use `./.VE/bin/blackdog worktree show --project-root . --workset WORKSET --task TASK` or `./.VE/bin/blackdog worktree close --project-root . --workset WORKSET --task TASK --actor AGENT --status blocked|failed|abandoned --summary "..."`
+9. use `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK` only for retained or leftover task worktrees
 
 ## Docs To Review
 

@@ -101,7 +101,9 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
 - `blackdog worktree start`
+- `blackdog worktree show`
 - `blackdog worktree land`
+- `blackdog worktree close`
 - `blackdog worktree cleanup`
 - `blackdog summary`
 - `blackdog next --workset`
@@ -136,12 +138,16 @@ These commands exercise one end-to-end vertical slice:
    worktree-local `.VE`, repo-root overlay wiring, root-bin fallback links, a
    worktree-local launcher, and real git execution identity while claiming both
    the workset and the task
-5. land the task branch and record structured result, validation, and commit
-   lineage while releasing those claims
-6. clean up the landed task worktree
-7. read summary/status
-8. identify the next runnable tasks
-9. emit a machine-readable runtime snapshot
+5. inspect one active or latest task attempt for recovery-oriented worktree and
+   claim state
+6. land one successful task attempt through a canonical landed commit while
+   recording structured result, validation, commit lineage, releasing claims,
+   and cleaning up the task worktree by default
+7. close one blocked, failed, or abandoned task attempt without landing code
+8. clean up any retained or leftover task worktree
+9. read summary/status
+10. identify the next runnable tasks
+11. emit a machine-readable runtime snapshot
 
 ## Deferred Or Removed Product Code
 

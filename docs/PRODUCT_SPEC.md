@@ -191,7 +191,12 @@ For v1, the kept-change path should be one operator workflow:
 - `blackdog worktree start`
 - do the work inside that task worktree
 - `blackdog worktree land`
-- `blackdog worktree cleanup`
+
+`worktree land` is the normative success-closure action. It should create one
+canonical landed commit per successful task attempt, record runtime, release
+claims, and clean up by default. Recovery-oriented flows use `worktree show`,
+`worktree close`, and `worktree cleanup` when the canonical success path cannot
+finish.
 
 ### Story 4: Record Results And Stats
 
@@ -210,6 +215,7 @@ Blackdog must support recording:
 - changed paths
 - validation commands and outcomes
 - result status
+- one canonical landed commit per successful task attempt
 - residual risks or follow-up candidates
 - commit or landed-commit linkage when present
 
@@ -295,7 +301,7 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
-- worktree-backed WTAM preflight/preview/start/land/cleanup
+- worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
 - prompt receipt capture
 - prompt/contract preview before execution start
 - result/stat recording
@@ -321,8 +327,11 @@ This is the decision frame for the rest of the repo.
 - workset/task typed model
 - workset/task claim model
 - `worktree preflight`
+- `worktree preview`
 - `worktree start`
+- `worktree show`
 - `worktree land`
+- `worktree close`
 - `worktree cleanup`
 - `summary`
 - `next --workset`
@@ -350,7 +359,8 @@ This is the decision frame for the rest of the repo.
 ### Combine
 
 - claim + execution start are one operator-facing action in `direct_wtam`
-- result record + land may become one finish/report action
+- success record + canonical landed commit + default cleanup are one
+  finish/report action in `direct_wtam`
 - summary + next may remain separate commands but should read from one status
   model
 
@@ -405,7 +415,8 @@ The exact names can change, but the product should expose capabilities in this
 shape:
 
 - one planning write surface for workset/task updates
-- one WTAM lifecycle surface for `direct_wtam`
+- one WTAM lifecycle surface for `direct_wtam`, with explicit recovery reads
+  and non-success closure
 - one supervisor/workset-manager surface for multi-agent workset execution
 - one repo lifecycle surface family for install/update/refresh/tune and skill
   composition

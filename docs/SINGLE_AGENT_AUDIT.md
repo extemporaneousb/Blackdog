@@ -13,14 +13,17 @@ workset/task flow before Blackdog grows a multi-agent `workset_manager` mode.
 3. `./.VE/bin/blackdog worktree preflight --project-root .`
 4. `./.VE/bin/blackdog worktree preview --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
 5. `./.VE/bin/blackdog worktree start --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
-6. make and commit kept changes only inside that task worktree
+6. make kept changes only inside that task worktree
 7. `./.VE/bin/blackdog worktree land --project-root . --workset WORKSET --task TASK --actor AGENT --summary "..."`
-8. `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK`
-9. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
+8. if recovery is needed, inspect `./.VE/bin/blackdog worktree show --project-root . --workset WORKSET --task TASK`
+9. if the work should not land, close it with `./.VE/bin/blackdog worktree close --project-root . --workset WORKSET --task TASK --actor AGENT --status blocked|failed|abandoned --summary "..."`
+10. use `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK` only for retained or leftover task worktrees
+11. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
 
 The direct-agent hot path is workset-scoped and task-specific. Once the agent
 already knows the workset and task, `next` is no longer the critical path; the
-critical path is `preflight -> preview -> start -> land -> cleanup`.
+critical path is `preflight -> preview -> start -> land`. `show`, `close`, and
+`cleanup` are the recovery/fallback surfaces around that canonical path.
 
 ## What The Current CLI Assesses Well
 
@@ -32,6 +35,10 @@ critical path is `preflight -> preview -> start -> land -> cleanup`.
   Shows branch/base/target details, prompt receipt metadata, routed contract
   docs, and the ordered handler plan for the task worktree. This is the main
   start-readiness surface.
+- `worktree show`
+  Shows one active or latest attempt with task-worktree dirtiness, branch
+  status, primary-worktree dirtiness, and recommended next actions. This is
+  the main focused recovery read surface.
 - `summary --workset`
   Shows claimed workset/task state and recent attempts for one workset.
 - `snapshot --workset`
@@ -72,20 +79,28 @@ That is sufficient for prompt tuning, git audit, and coarse runtime review.
 
 ## Current Landing Contract
 
-The intended kept-change landing path is still:
+The canonical kept-change success path is now:
 
-- land back into the target branch checked out in the primary worktree when
-  that worktree exists and is clean
+- start one WTAM attempt through `blackdog worktree start`
+- do the kept work only inside that task worktree
+- finish with `blackdog worktree land`
 
-Blackdog does this today when:
+`worktree land` owns the success closure contract. For a successful task
+attempt it:
 
-- the task was started through `blackdog worktree start`
-- the task branch contains committed work
-- the primary worktree is on the target branch
-- the primary worktree has no uncommitted tracked changes
+- creates one canonical Blackdog landed commit
+- records result stats, validation outcomes, and commit lineage
+- releases the active task/workset claims
+- removes the task worktree and deletes its branch by default
 
-If that contract is violated, `worktree land` fails explicitly instead of
-trying to guess. The most common blocking case is a dirty primary worktree.
+If the task worktree still has uncommitted changes, `worktree land` stages them
+and creates an internal prep commit before synthesizing the canonical landed
+commit. The operator does not need a separate success-commit command.
+
+Operational landing failures still block the success path, but they do not
+leave the attempt active. `worktree land` closes the attempt as `blocked`,
+records the end time, releases claims, and returns a non-zero exit code. The
+most common blocking case is still a dirty primary worktree.
 
 The earlier env-handler sweep did not produce attempt history because it was
 implemented in a manual branch worktree and merged directly. That is precisely
@@ -97,18 +112,20 @@ the kind of mixed operating mode Blackdog should avoid when dogfooding itself.
 
 Symptoms:
 
-- `worktree land` fails with a dirty-primary-worktree error
+- `worktree land` returns non-zero and reports a dirty-primary-worktree error
+- `summary --workset` no longer shows an active claim for that task
 
 Assessment:
 
-- `blackdog worktree preflight`
+- `blackdog worktree show --project-root . --workset WORKSET --task TASK`
 - `git status --short` in the primary worktree
 
 Recovery:
 
 - review and either land or discard the unrelated primary-worktree changes
 - do not use stash as an implicit recovery mechanism
-- rerun `worktree land`
+- start a fresh attempt and rerun `worktree land` when the primary worktree is
+  clean again
 
 ### 2. Repo-root `.VE` is missing or stale before `start`
 
@@ -153,16 +170,16 @@ Symptoms:
 
 Assessment:
 
+- `blackdog worktree show --project-root . --workset WORKSET --task TASK`
 - `blackdog summary --project-root . --workset WORKSET`
-- `blackdog snapshot --project-root . --workset WORKSET`
 - `git status --short` in the task worktree
 
 Recovery:
 
-- if the work is valid, commit it and run `worktree land`
-- if the work should not land, decide explicitly whether to finish blocked,
-  finish failed, or abandon the branch manually
-- after the branch is no longer needed, run `worktree cleanup`
+- if the work is valid, run `worktree land`
+- if the work should not land, run `worktree close --status blocked|failed|abandoned`
+- if the worktree was retained or left dirty, run `worktree cleanup` after the
+  branch is no longer needed
 
 ### 5. Planning state is stale relative to what actually landed
 
@@ -186,13 +203,9 @@ The single-agent base is much better, but it is not complete.
 
 The biggest remaining gaps are:
 
-- no explicit `attempt show` or `workset show` command focused on one active
-  attempt with recovery guidance
-- no first-class CLI for marking an in-progress attempt blocked/failed without
-  landing code
 - no explicit stale-claim recovery command
 - no dedicated recovery command that answers "what should I do with this dirty
-  task worktree right now?"
+  task worktree right now?" across multiple stale or conflicting attempts
 - no benchmark history persistence; the current timing harness is file-based
   and ad hoc
 
@@ -202,10 +215,10 @@ Do not start the supervisor rebuild yet.
 
 The next single-agent slices should focus on:
 
-1. explicit active-attempt inspection
-2. explicit blocked/failed/abandon recovery commands
-3. clearer stale-claim and dirty-worktree remediation
-4. continued audit of landed attempt stats and prompt lineage
+1. clearer stale-claim and dirty-worktree remediation
+2. continued audit of landed attempt stats and prompt lineage
+3. benchmark history persistence if the current file-based timing harness
+   becomes a real operating dependency
 
 Only after those are coherent should Blackdog treat `workset_manager` as a
 serious operator surface.

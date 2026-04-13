@@ -24,6 +24,8 @@ These decisions are no longer provisional:
 - `events.jsonl` remains append-only audit history
 - claims attach to both worksets and tasks
 - the first-class execution models are `direct_wtam` and `workset_manager`
+- each successful `direct_wtam` task attempt lands as one canonical Blackdog
+  commit
 - non-worktree execution is not part of the product model
 - `blackdog_cli` stays thin and only dispatches into core/product code
 
@@ -120,7 +122,7 @@ It carries:
 - worktree role and worktree path
 - branch intent plus observed branch and start commit
 - execution model
-- result summary, validations, changed paths, and commit linkage
+- result summary, validations, changed paths, closure status, and commit linkage
 
 The attempt record is where Blackdog stops being only a planner and becomes a
 usable execution-memory system.
@@ -164,8 +166,10 @@ The minimum coherent shipped slice after the sweep is:
 - one write surface for workset/task state: `blackdog workset put`
 - one WTAM contract/readiness surface: `blackdog worktree preflight`
 - one WTAM execution start surface: `blackdog worktree start`
-- one WTAM landing/report surface: `blackdog worktree land`
-- one WTAM cleanup surface: `blackdog worktree cleanup`
+- one WTAM inspection/recovery read surface: `blackdog worktree show`
+- one WTAM success-closure surface: `blackdog worktree land`
+- one WTAM non-success closure surface: `blackdog worktree close`
+- one WTAM cleanup fallback surface: `blackdog worktree cleanup`
 - one summary surface: `blackdog summary`
 - one machine snapshot surface: `blackdog snapshot`
 - one workset-scoped execution-facing read surface: `blackdog next --workset`

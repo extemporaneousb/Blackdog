@@ -263,10 +263,37 @@ On the shipped handler path, `worktree start`:
 checkout. If the base env or managed source is missing, it fails explicitly and
 points back to `blackdog repo install` or `blackdog repo update`.
 
+### `blackdog worktree show`
+
+Inspect the current active attempt, or the latest attempt if none is active,
+for one WTAM task.
+
+```bash
+blackdog worktree show \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1
+```
+
+Important flags:
+
+- `--workset`
+- `--task`
+
+`worktree show` is the focused recovery read surface. It reports:
+
+- whether an active attempt still exists
+- branch and target-branch identity
+- task-worktree path and dirty paths
+- whether the branch is ahead of target
+- prompt hash and prompt source when captured
+- primary-worktree dirtiness
+- recommended next actions such as `land`, `close`, or `cleanup`
+
 ### `blackdog worktree land`
 
-Land the active WTAM task branch through the primary checkout and record
-success/result stats.
+Create the canonical landed commit for the active WTAM task, close the attempt,
+and clean up by default.
 
 ```bash
 blackdog worktree land \
@@ -283,19 +310,66 @@ Important flags:
 - `--workset`
 - `--task`
 - `--actor`
-- optional `--summary`
+- required `--summary`
 - repeatable `--validation NAME=STATUS`
 - repeatable `--residual`
 - repeatable `--followup`
 - optional `--note`
+- optional `--keep-worktree`
 
-`worktree land` derives `changed_paths`, `commit`, and `landed_commit` from the
-branch being landed. It is the kept-change finish/report action for v1 and
-releases the active task/workset claims when the WTAM slice is complete.
+`worktree land` is the canonical success-closure surface for `direct_wtam`.
+It:
+
+- auto-stages dirty task-worktree changes and creates an internal prep commit
+  on the task branch when needed
+- creates one canonical landed commit for the successful task attempt
+- records `changed_paths`, branch-head `commit`, `landed_commit`, validation
+  results, and closure timing
+- releases the active task/workset claims
+- removes the task worktree and deletes its branch unless `--keep-worktree` is
+  set
+
+If the operational landing step cannot complete, `worktree land` closes the
+active attempt as `blocked`, records the end time and note, releases the
+claims, and returns a non-zero exit code. That prevents stale direct-WTAM
+claims from lingering after a failed landing.
+
+### `blackdog worktree close`
+
+Close the active WTAM task without landing code.
+
+```bash
+blackdog worktree close \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1 \
+  --actor codex \
+  --status blocked \
+  --summary "blocked on fixture mismatch"
+```
+
+Important flags:
+
+- `--workset`
+- `--task`
+- `--actor`
+- required `--status blocked|failed|abandoned`
+- required `--summary`
+- repeatable `--validation NAME=STATUS`
+- repeatable `--residual`
+- repeatable `--followup`
+- optional `--note`
+- optional `--cleanup`
+
+`worktree close` is the non-success closure surface for `direct_wtam`.
+It records the attempt result, releases the active task/workset claims, and
+preserves branch/worktree lineage for later inspection. `--cleanup` asks
+Blackdog to remove the task worktree immediately, but cleanup only proceeds
+when that worktree is already clean.
 
 ### `blackdog worktree cleanup`
 
-Remove the landed WTAM worktree and delete its branch.
+Remove a retained or leftover WTAM worktree and delete its branch.
 
 ```bash
 blackdog worktree cleanup \
@@ -310,6 +384,10 @@ Important flags:
 - `--task`
 - optional `--path`
 - optional `--branch`
+
+Use `worktree cleanup` after `worktree land --keep-worktree`, after
+`worktree close --cleanup` was skipped because the worktree was dirty, or for
+manual recovery when a task worktree is no longer needed.
 
 ### `blackdog summary`
 

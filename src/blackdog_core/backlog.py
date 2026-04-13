@@ -10,6 +10,7 @@ import uuid
 
 from .profile import RepoProfile, BlackdogPaths, slugify
 from .state import (
+    ATTEMPT_STATUS_ABANDONED,
     ATTEMPT_STATUS_BLOCKED,
     ATTEMPT_STATUS_FAILED,
     ATTEMPT_STATUS_IN_PROGRESS,
@@ -540,8 +541,13 @@ def finish_task(
     planning_store: PlanningStore | None = None,
     runtime_store: RuntimeStore | None = None,
 ) -> TaskAttemptRecord:
-    if status not in {ATTEMPT_STATUS_SUCCESS, ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}:
-        raise BacklogError(f"task finish status must be one of success, blocked, failed; got {status!r}")
+    if status not in {
+        ATTEMPT_STATUS_SUCCESS,
+        ATTEMPT_STATUS_BLOCKED,
+        ATTEMPT_STATUS_FAILED,
+        ATTEMPT_STATUS_ABANDONED,
+    }:
+        raise BacklogError(f"task finish status must be one of success, blocked, failed, abandoned; got {status!r}")
     planning_state = load_planning_state(profile.paths, planning_store)
     workset, _ = _require_workset_and_task(planning_state, workset_id=workset_id, task_id=task_id)
     runtime_state = load_runtime_state(profile.paths, runtime_store)
@@ -591,7 +597,12 @@ def finish_task(
         landed_commit=landed_commit,
         elapsed_seconds=derived_elapsed_seconds,
     )
-    task_runtime_status = TASK_STATUS_DONE if status == ATTEMPT_STATUS_SUCCESS else TASK_STATUS_BLOCKED
+    if status == ATTEMPT_STATUS_SUCCESS:
+        task_runtime_status = TASK_STATUS_DONE
+    elif status == ATTEMPT_STATUS_ABANDONED:
+        task_runtime_status = TASK_STATUS_PLANNED
+    else:
+        task_runtime_status = TASK_STATUS_BLOCKED
     task_runtime = TaskRuntimeRecord(
         task_id=task_id,
         status=task_runtime_status,

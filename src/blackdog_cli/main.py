@@ -18,11 +18,15 @@ from blackdog.repo_lifecycle import (
 from blackdog.wtam import (
     WorktreeError,
     cleanup_task_worktree,
+    close_task_worktree,
+    inspect_task_worktree,
     land_task_worktree,
     render_cleanup_text,
+    render_close_text,
     render_land_text,
     render_preflight_text,
     render_preview_text,
+    render_show_text,
     render_start_text,
     preview_task_worktree,
     start_task_worktree,
@@ -234,17 +238,38 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_start.add_argument("--note")
     p_worktree_start.add_argument("--json", action="store_true")
 
-    p_worktree_land = worktree_subparsers.add_parser("land", help="Land the active WTAM task branch and record success")
+    p_worktree_show = worktree_subparsers.add_parser("show", help="Inspect the current or latest WTAM attempt for one task")
+    p_worktree_show.add_argument("--project-root", default=".")
+    p_worktree_show.add_argument("--workset", required=True)
+    p_worktree_show.add_argument("--task", required=True)
+    p_worktree_show.add_argument("--json", action="store_true")
+
+    p_worktree_land = worktree_subparsers.add_parser("land", help="Create the canonical landed commit for the active WTAM task and close it")
     p_worktree_land.add_argument("--project-root", default=".")
     p_worktree_land.add_argument("--workset", required=True)
     p_worktree_land.add_argument("--task", required=True)
     p_worktree_land.add_argument("--actor", required=True)
-    p_worktree_land.add_argument("--summary")
+    p_worktree_land.add_argument("--summary", required=True)
     p_worktree_land.add_argument("--validation", action="append", default=[])
     p_worktree_land.add_argument("--residual", action="append", default=[])
     p_worktree_land.add_argument("--followup", action="append", default=[])
     p_worktree_land.add_argument("--note")
+    p_worktree_land.add_argument("--keep-worktree", action="store_true")
     p_worktree_land.add_argument("--json", action="store_true")
+
+    p_worktree_close = worktree_subparsers.add_parser("close", help="Close the active WTAM task without landing code")
+    p_worktree_close.add_argument("--project-root", default=".")
+    p_worktree_close.add_argument("--workset", required=True)
+    p_worktree_close.add_argument("--task", required=True)
+    p_worktree_close.add_argument("--actor", required=True)
+    p_worktree_close.add_argument("--status", required=True, choices=["blocked", "failed", "abandoned"])
+    p_worktree_close.add_argument("--summary", required=True)
+    p_worktree_close.add_argument("--validation", action="append", default=[])
+    p_worktree_close.add_argument("--residual", action="append", default=[])
+    p_worktree_close.add_argument("--followup", action="append", default=[])
+    p_worktree_close.add_argument("--note")
+    p_worktree_close.add_argument("--cleanup", action="store_true")
+    p_worktree_close.add_argument("--json", action="store_true")
 
     p_worktree_cleanup = worktree_subparsers.add_parser("cleanup", help="Remove the landed WTAM worktree and delete its branch")
     p_worktree_cleanup.add_argument("--project-root", default=".")
@@ -464,6 +489,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_start_text(spec), end="")
             return 0
 
+        if args.command == "worktree" and args.worktree_command == "show":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = inspect_task_worktree(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+            )
+            if args.json:
+                _emit_json({"worktree_show": payload})
+            else:
+                print(render_show_text(payload), end="")
+            return 0
+
         if args.command == "worktree" and args.worktree_command == "land":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = land_task_worktree(
@@ -476,11 +514,33 @@ def main(argv: list[str] | None = None) -> int:
                 residuals=tuple(args.residual),
                 followup_candidates=tuple(args.followup),
                 note=args.note,
+                cleanup=not args.keep_worktree,
             )
             if args.json:
                 _emit_json({"landing": payload})
             else:
                 print(render_land_text(payload), end="")
+            return 0 if payload.get("status") == "success" else 1
+
+        if args.command == "worktree" and args.worktree_command == "close":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = close_task_worktree(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                status=args.status,
+                summary=args.summary,
+                validations=_parse_validation_flags(args.validation),
+                residuals=tuple(args.residual),
+                followup_candidates=tuple(args.followup),
+                note=args.note,
+                cleanup=args.cleanup,
+            )
+            if args.json:
+                _emit_json({"closure": payload})
+            else:
+                print(render_close_text(payload), end="")
             return 0
 
         if args.command == "worktree" and args.worktree_command == "cleanup":

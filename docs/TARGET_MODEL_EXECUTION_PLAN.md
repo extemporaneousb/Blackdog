@@ -22,7 +22,9 @@ The current shipped surface is:
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
 - `blackdog worktree start`
+- `blackdog worktree show`
 - `blackdog worktree land`
+- `blackdog worktree close`
 - `blackdog worktree cleanup`
 - `blackdog summary`
 - `blackdog next --workset`
@@ -44,9 +46,12 @@ Use this prompt to continue the rewrite:
 > 1. a rock-solid workset/task model
 > 2. explicit workset/task claim semantics
 > 3. the kept-change WTAM lifecycle:
->    `worktree preflight -> worktree preview -> worktree start -> execute -> worktree land -> worktree cleanup`
+>    `worktree preflight -> worktree preview -> worktree start -> execute -> worktree land`
 > 4. durable accumulation of completed/landed work and attempt history
 > 5. a clear execution model for direct work and any later delegated work
+>
+> Treat `worktree show`, `worktree close`, and `worktree cleanup` as the
+> recovery and fallback surfaces around that canonical success path.
 >
 > Treat WTAM as the normative kept-change workflow. Do not preserve a
 > non-worktree execution mode in Blackdog.

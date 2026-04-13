@@ -12,6 +12,9 @@ from blackdog.handlers import HandlerPlanSummary, execute_worktree_handlers, pla
 from blackdog_core.backlog import BacklogError, TaskSpec, Workset, find_workset, finish_task, load_planning_state, start_task
 from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
+    ATTEMPT_STATUS_ABANDONED,
+    ATTEMPT_STATUS_BLOCKED,
+    ATTEMPT_STATUS_FAILED,
     ValidationRecord,
     active_task_attempt,
     append_event,
@@ -149,6 +152,20 @@ def _run_git_no_check(repo_root: Path, *args: str) -> subprocess.CompletedProces
         text=True,
         check=False,
     )
+
+
+def _run_git_with_input(repo_root: Path, *args: str, input_text: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        input=input_text,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise WorktreeError(f"git {' '.join(args)} failed: {detail}")
+    return completed.stdout.strip()
 
 
 def _repo_root(project_root: Path) -> Path:
@@ -530,6 +547,129 @@ def branch_ahead_of_target(profile: RepoProfile, *, branch: str, target_branch: 
     return int(completed.stdout.strip() or "0") > 0
 
 
+def _resolve_attempt_worktree(profile: RepoProfile, *, branch: str | None, worktree_path: str | None) -> Path | None:
+    if worktree_path:
+        candidate = Path(worktree_path).resolve()
+        if candidate.exists():
+            return candidate
+    if branch:
+        existing = find_worktree_for_branch(profile, branch)
+        if existing:
+            candidate = Path(existing).resolve()
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def _worktree_changed_paths(profile: RepoProfile, worktree_path: Path) -> list[str]:
+    return dirty_paths(
+        worktree_path,
+        ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=worktree_path),
+    )
+
+
+def _attempt_changed_paths(
+    profile: RepoProfile,
+    *,
+    branch: str | None,
+    target_branch: str | None,
+    worktree_path: Path | None,
+) -> list[str]:
+    changed: set[str] = set()
+    if branch:
+        try:
+            changed.update(branch_changed_paths(profile, branch=branch, target_branch=target_branch))
+        except WorktreeError:
+            pass
+    if worktree_path is not None and worktree_path.exists():
+        changed.update(_worktree_changed_paths(profile, worktree_path))
+    return sorted(changed)
+
+
+def _canonical_commit_message(
+    workset: Workset,
+    task: TaskSpec,
+    *,
+    attempt_id: str,
+    actor: str,
+    prompt_hash: str | None,
+    target_branch: str | None,
+    status: str,
+    summary: str,
+    validations: tuple[ValidationRecord, ...],
+    residuals: tuple[str, ...],
+    followup_candidates: tuple[str, ...],
+) -> str:
+    subject = f"blackdog({workset.workset_id}/{task.task_id}): {task.title}"
+    lines = [
+        subject,
+        "",
+        summary.strip(),
+        "",
+        f"Blackdog-Workset: {workset.workset_id}",
+        f"Blackdog-Task: {task.task_id}",
+        f"Blackdog-Attempt: {attempt_id}",
+        f"Blackdog-Actor: {actor}",
+        f"Blackdog-Status: {status}",
+    ]
+    if target_branch:
+        lines.append(f"Blackdog-Target-Branch: {target_branch}")
+    if prompt_hash:
+        lines.append(f"Blackdog-Prompt-Hash: {prompt_hash}")
+    for validation in validations:
+        lines.append(f"Blackdog-Validation: {validation.name}={validation.status}")
+    for residual in residuals:
+        lines.append(f"Blackdog-Residual: {residual}")
+    for followup in followup_candidates:
+        lines.append(f"Blackdog-Followup: {followup}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _landing_prep_commit_message(
+    workset: Workset,
+    task: TaskSpec,
+    *,
+    attempt_id: str,
+) -> str:
+    return (
+        f"blackdog-wip({workset.workset_id}/{task.task_id}): prepare land\n\n"
+        "Auto-commit task worktree changes so `blackdog worktree land` can create\n"
+        "one canonical landed commit for the attempt.\n\n"
+        f"Blackdog-Workset: {workset.workset_id}\n"
+        f"Blackdog-Task: {task.task_id}\n"
+        f"Blackdog-Attempt: {attempt_id}\n"
+        "Blackdog-Status: staged-for-land\n"
+    )
+
+
+def _commit_dirty_attempt_worktree(
+    profile: RepoProfile,
+    *,
+    workset: Workset,
+    task: TaskSpec,
+    branch: str | None,
+    worktree_path: Path | None,
+    attempt_id: str,
+) -> str | None:
+    if branch is None or worktree_path is None or not worktree_path.exists():
+        return None
+    if not _status_dirty(worktree_path, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=worktree_path)):
+        return None
+    _run_git(worktree_path, "add", "-A")
+    staged = _run_git_no_check(worktree_path, "diff", "--cached", "--quiet")
+    if staged.returncode == 0:
+        return None
+    _run_git_with_input(
+        worktree_path,
+        "commit",
+        "--quiet",
+        "-F",
+        "-",
+        input_text=_landing_prep_commit_message(workset, task, attempt_id=attempt_id),
+    )
+    return _run_git(find_primary_worktree(profile.paths.project_root), "rev-parse", branch)
+
+
 def start_task_worktree(
     profile: RepoProfile,
     *,
@@ -661,6 +801,7 @@ def land_branch(
     *,
     branch: str | None = None,
     target_branch: str | None = None,
+    commit_message: str,
     pull: bool = True,
     cleanup: bool = False,
 ) -> dict[str, Any]:
@@ -675,17 +816,23 @@ def land_branch(
 
     target_ref = f"refs/heads/{resolved_target}"
     target_worktree = _find_worktree_for_branch(primary_root, target_ref)
+    landing_worktree: Path | None = None
     created_target = False
-    if target_worktree is None:
-        target_worktree = (profile.paths.worktrees_dir / f"wt-land-{slugify(f'{resolved_target}-{int(time.time())}') }").resolve()
-        target_worktree.parent.mkdir(parents=True, exist_ok=True)
-        _run_git(primary_root, "worktree", "add", str(target_worktree), resolved_target)
-        created_target = True
+    created_landing = False
     try:
-        if _status_dirty(target_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=target_worktree)):
-            if target_worktree == primary_root:
-                raise dirty_primary_worktree_error(profile, branch=resolved_branch, target_branch=resolved_target)
-            raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
+        if target_worktree is not None:
+            if _status_dirty(target_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=target_worktree)):
+                if target_worktree == primary_root:
+                    raise dirty_primary_worktree_error(profile, branch=resolved_branch, target_branch=resolved_target)
+                raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
+        else:
+            target_worktree = (
+                profile.paths.worktrees_dir / f"wt-land-{slugify(f'{resolved_target}-{int(time.time())}')}"
+            ).resolve()
+            target_worktree.parent.mkdir(parents=True, exist_ok=True)
+            _run_git(primary_root, "worktree", "add", str(target_worktree), resolved_target)
+            created_target = True
+
         if pull:
             upstream = _run_git_no_check(target_worktree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
             if upstream.returncode == 0:
@@ -697,8 +844,36 @@ def land_branch(
             raise WorktreeError(
                 f"cannot land: {resolved_branch} is not based on the current {resolved_target}; rebase it first"
             )
-        landed_commit = _run_git(target_worktree, "rev-parse", resolved_branch)
-        _run_git(target_worktree, "merge", "--ff-only", resolved_branch)
+
+        changed_paths = branch_changed_paths(profile, branch=resolved_branch, target_branch=resolved_target)
+        if not changed_paths:
+            raise WorktreeError(f"cannot land: {resolved_branch} has no changes relative to {resolved_target}")
+
+        if created_target:
+            landing_worktree = target_worktree
+        else:
+            landing_worktree = (
+                profile.paths.worktrees_dir / f"wt-land-{slugify(f'{resolved_target}-{int(time.time())}-shadow')}"
+            ).resolve()
+            landing_worktree.parent.mkdir(parents=True, exist_ok=True)
+            _run_git(primary_root, "worktree", "add", "--detach", str(landing_worktree), resolved_target)
+            created_landing = True
+
+        completed = _run_git_no_check(landing_worktree, "merge", "--squash", "--no-commit", resolved_branch)
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+            raise WorktreeError(f"git merge --squash --no-commit {resolved_branch} failed: {detail}")
+        _run_git_with_input(
+            landing_worktree,
+            "commit",
+            "--quiet",
+            "-F",
+            "-",
+            input_text=commit_message,
+        )
+        landed_commit = _run_git(landing_worktree, "rev-parse", "HEAD")
+        if landing_worktree != target_worktree:
+            _run_git(target_worktree, "merge", "--ff-only", landed_commit)
 
         cleaned_worktree: str | None = None
         deleted_branch = False
@@ -708,11 +883,13 @@ def land_branch(
                 raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {branch_worktree}")
             _run_git(primary_root, "worktree", "remove", str(branch_worktree))
             cleaned_worktree = str(branch_worktree)
-            _run_git(target_worktree, "branch", "-d", resolved_branch)
+            _run_git(target_worktree, "branch", "-D", resolved_branch)
             deleted_branch = True
 
         removed_target = False
-        if created_target:
+        if created_landing and landing_worktree is not None and landing_worktree.exists():
+            _run_git(primary_root, "worktree", "remove", str(landing_worktree))
+        if created_target and target_worktree.exists():
             _run_git(primary_root, "worktree", "remove", str(target_worktree))
             removed_target = True
 
@@ -721,15 +898,19 @@ def land_branch(
             "target_branch": resolved_target,
             "primary_worktree": str(primary_root),
             "target_worktree": str(target_worktree),
+            "landing_worktree": str(landing_worktree),
             "landed_commit": landed_commit,
             "diff_file": None,
             "diffstat_file": None,
+            "changed_paths": changed_paths,
             "cleanup": cleanup,
             "cleaned_worktree": cleaned_worktree,
             "deleted_branch": deleted_branch,
             "removed_temporary_target": removed_target,
         }
     except Exception:
+        if created_landing and landing_worktree is not None and landing_worktree.exists():
+            _run_git_no_check(primary_root, "worktree", "remove", "--force", str(landing_worktree))
         if created_target and target_worktree.exists():
             _run_git_no_check(primary_root, "worktree", "remove", "--force", str(target_worktree))
         raise
@@ -746,7 +927,9 @@ def land_task_worktree(
     residuals: tuple[str, ...] = (),
     followup_candidates: tuple[str, ...] = (),
     note: str | None = None,
+    cleanup: bool = True,
 ) -> dict[str, Any]:
+    workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
     runtime_state = load_runtime_state(profile.paths)
     attempt = active_task_attempt(runtime_state, workset_id, task_id)
     if attempt is None:
@@ -755,9 +938,62 @@ def land_task_worktree(
         raise WorktreeError(f"active attempt {attempt.attempt_id} is missing its branch")
     if attempt.target_branch is None:
         raise WorktreeError(f"active attempt {attempt.attempt_id} is missing its target_branch")
-    branch_head_commit = _run_git(find_primary_worktree(profile.paths.project_root), "rev-parse", attempt.branch)
-    changed = tuple(branch_changed_paths(profile, branch=attempt.branch, target_branch=attempt.target_branch))
-    landing = land_branch(profile, branch=attempt.branch, target_branch=attempt.target_branch, cleanup=False)
+    resolved_summary = str(summary or "").strip() or task.title
+    task_worktree = _resolve_attempt_worktree(
+        profile,
+        branch=attempt.branch,
+        worktree_path=attempt.worktree_path,
+    )
+    prompt_hash = attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt is not None else None
+    branch_head_commit: str | None = None
+    commit_message = _canonical_commit_message(
+        workset,
+        task,
+        attempt_id=attempt.attempt_id,
+        actor=actor,
+        prompt_hash=prompt_hash,
+        target_branch=attempt.target_branch,
+        status="success",
+        summary=resolved_summary,
+        validations=validations,
+        residuals=residuals,
+        followup_candidates=followup_candidates,
+    )
+    try:
+        prepared_commit = _commit_dirty_attempt_worktree(
+            profile,
+            workset=workset,
+            task=task,
+            branch=attempt.branch,
+            worktree_path=task_worktree,
+            attempt_id=attempt.attempt_id,
+        )
+        branch_head_commit = prepared_commit or _run_git(find_primary_worktree(profile.paths.project_root), "rev-parse", attempt.branch)
+        landing = land_branch(
+            profile,
+            branch=attempt.branch,
+            target_branch=attempt.target_branch,
+            commit_message=commit_message,
+            cleanup=cleanup,
+        )
+    except Exception as exc:
+        payload = close_task_worktree(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor=actor,
+            status=ATTEMPT_STATUS_BLOCKED,
+            summary=f"Landing blocked: {exc}",
+            validations=validations,
+            residuals=residuals,
+            followup_candidates=followup_candidates,
+            note=note or str(exc),
+            cleanup=False,
+        )
+        payload["error"] = str(exc)
+        return payload
+
+    changed = tuple(landing["changed_paths"])
     finished = finish_task(
         profile,
         workset_id=workset_id,
@@ -765,7 +1001,7 @@ def land_task_worktree(
         attempt_id=attempt.attempt_id,
         actor=actor,
         status="success",
-        summary=summary,
+        summary=resolved_summary,
         changed_paths=changed,
         validations=validations,
         residuals=residuals,
@@ -786,14 +1022,204 @@ def land_task_worktree(
             "target_branch": attempt.target_branch,
             "landed_commit": landing["landed_commit"],
             "changed_paths": list(changed),
+            "commit_message": commit_message,
+            "cleanup": landing["cleanup"],
         },
     )
     return {
         **landing,
         "attempt_id": finished.attempt_id,
         "task_id": finished.task_id,
+        "status": "success",
+        "summary": resolved_summary,
         "commit": branch_head_commit,
+        "commit_message": commit_message,
         "changed_paths": list(changed),
+    }
+
+
+def inspect_task_worktree(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+) -> dict[str, Any]:
+    _workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
+    runtime_state = load_runtime_state(profile.paths)
+    active_attempt = active_task_attempt(runtime_state, workset_id, task_id)
+    latest_attempt = latest_task_attempt(runtime_state, workset_id, task_id)
+    selected_attempt = active_attempt or latest_attempt
+    branch = selected_attempt.branch if selected_attempt is not None else None
+    target_branch = selected_attempt.target_branch if selected_attempt is not None else None
+    task_worktree = (
+        _resolve_attempt_worktree(
+            profile,
+            branch=branch,
+            worktree_path=selected_attempt.worktree_path if selected_attempt is not None else None,
+        )
+        if selected_attempt is not None
+        else None
+    )
+    worktree_dirty_paths = _worktree_changed_paths(profile, task_worktree) if task_worktree is not None else []
+    branch_ahead = (
+        branch_ahead_of_target(profile, branch=branch, target_branch=target_branch)
+        if branch and target_branch
+        else False
+    )
+    recommended_actions: list[str] = []
+    if active_attempt is None:
+        recommended_actions.append("start a new WTAM attempt for this task")
+    else:
+        if worktree_dirty_paths or branch_ahead:
+            recommended_actions.append("run `blackdog worktree land` to create the canonical landed commit")
+        recommended_actions.append("run `blackdog worktree close --status blocked|failed|abandoned` to close without landing")
+    if task_worktree is not None and not worktree_dirty_paths:
+        recommended_actions.append("run `blackdog worktree cleanup` if the task worktree is no longer needed")
+    return {
+        "workset_id": workset_id,
+        "task_id": task_id,
+        "task_title": task.title,
+        "active_attempt": active_attempt is not None,
+        "attempt_id": selected_attempt.attempt_id if selected_attempt is not None else None,
+        "latest_attempt_id": latest_attempt.attempt_id if latest_attempt is not None else None,
+        "latest_attempt_status": latest_attempt.status if latest_attempt is not None else None,
+        "latest_attempt_summary": latest_attempt.summary if latest_attempt is not None else None,
+        "actor": selected_attempt.actor if selected_attempt is not None else None,
+        "branch": branch,
+        "target_branch": target_branch,
+        "worktree_path": str(task_worktree) if task_worktree is not None else None,
+        "worktree_exists": task_worktree is not None and task_worktree.exists(),
+        "worktree_dirty": bool(worktree_dirty_paths),
+        "worktree_dirty_paths": worktree_dirty_paths,
+        "branch_ahead_of_target": branch_ahead,
+        "changed_paths": _attempt_changed_paths(
+            profile,
+            branch=branch,
+            target_branch=target_branch,
+            worktree_path=task_worktree,
+        ),
+        "prompt_hash": (
+            selected_attempt.prompt_receipt.prompt_hash
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "prompt_source": (
+            selected_attempt.prompt_receipt.source
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "started_at": selected_attempt.started_at if selected_attempt is not None else None,
+        "ended_at": selected_attempt.ended_at if selected_attempt is not None else None,
+        "primary_worktree": str(find_primary_worktree(profile.paths.project_root)),
+        "primary_dirty": primary_worktree_is_dirty(profile, ignore_runtime=True),
+        "primary_dirty_paths": primary_worktree_dirty_paths(profile, ignore_runtime=True),
+        "recommended_actions": recommended_actions,
+    }
+
+
+def close_task_worktree(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    actor: str,
+    status: str,
+    summary: str,
+    validations: tuple[ValidationRecord, ...] = (),
+    residuals: tuple[str, ...] = (),
+    followup_candidates: tuple[str, ...] = (),
+    note: str | None = None,
+    cleanup: bool = False,
+) -> dict[str, Any]:
+    runtime_state = load_runtime_state(profile.paths)
+    attempt = active_task_attempt(runtime_state, workset_id, task_id)
+    if attempt is None:
+        raise BacklogError(f"No active WTAM attempt for task {task_id!r} in workset {workset_id!r}")
+    resolved_summary = str(summary or "").strip() or f"{status} {task_id}"
+    task_worktree = _resolve_attempt_worktree(
+        profile,
+        branch=attempt.branch,
+        worktree_path=attempt.worktree_path,
+    )
+    changed = tuple(
+        _attempt_changed_paths(
+            profile,
+            branch=attempt.branch,
+            target_branch=attempt.target_branch,
+            worktree_path=task_worktree,
+        )
+    )
+    branch_head_commit: str | None = None
+    if attempt.branch:
+        completed = _run_git_no_check(find_primary_worktree(profile.paths.project_root), "rev-parse", attempt.branch)
+        if completed.returncode == 0:
+            branch_head_commit = completed.stdout.strip() or None
+    finished = finish_task(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt_id=attempt.attempt_id,
+        actor=actor,
+        status=status,
+        summary=resolved_summary,
+        changed_paths=changed,
+        validations=validations,
+        residuals=residuals,
+        followup_candidates=followup_candidates,
+        commit=branch_head_commit,
+        note=note,
+    )
+    cleanup_reason: str | None = None
+    cleanup_payload: dict[str, Any] | None = None
+    if cleanup and task_worktree is not None and task_worktree.exists():
+        if _status_dirty(task_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=task_worktree)):
+            cleanup_reason = f"cleanup skipped because the task worktree is dirty: {task_worktree}"
+        else:
+            try:
+                cleanup_payload = cleanup_task_worktree(
+                    profile,
+                    workset_id=workset_id,
+                    task_id=task_id,
+                    path=str(task_worktree),
+                    branch=attempt.branch,
+                )
+            except WorktreeError as exc:
+                cleanup_reason = str(exc)
+    append_event(
+        profile.paths.events_file,
+        event_type="worktree.close",
+        actor=actor,
+        payload={
+            "workset_id": workset_id,
+            "task_id": task_id,
+            "attempt_id": attempt.attempt_id,
+            "status": status,
+            "summary": resolved_summary,
+            "branch": attempt.branch,
+            "target_branch": attempt.target_branch,
+            "worktree_path": str(task_worktree) if task_worktree is not None else None,
+            "changed_paths": list(changed),
+            "commit": branch_head_commit,
+            "cleanup_requested": cleanup,
+            "cleanup_performed": cleanup_payload is not None,
+            "cleanup_reason": cleanup_reason,
+        },
+    )
+    return {
+        "workset_id": workset_id,
+        "task_id": task_id,
+        "attempt_id": finished.attempt_id,
+        "status": finished.status,
+        "summary": resolved_summary,
+        "branch": finished.branch,
+        "target_branch": finished.target_branch,
+        "worktree_path": str(task_worktree) if task_worktree is not None else None,
+        "changed_paths": list(changed),
+        "commit": branch_head_commit,
+        "cleanup_requested": cleanup,
+        "cleanup_performed": cleanup_payload is not None,
+        "cleanup_reason": cleanup_reason,
+        "cleanup": cleanup_payload,
     }
 
 
@@ -976,6 +1402,8 @@ def render_start_text(spec: WorktreeSpec) -> str:
 
 
 def render_land_text(payload: dict[str, Any]) -> str:
+    if payload.get("status") and payload["status"] != "success":
+        return render_close_text(payload)
     lines = [
         f"[blackdog-worktree] landed: {payload['branch']} -> {payload['target_branch']}",
         f"[blackdog-worktree] target worktree: {payload['target_worktree']}",
@@ -983,6 +1411,64 @@ def render_land_text(payload: dict[str, Any]) -> str:
     ]
     if payload["changed_paths"]:
         lines.append(f"[blackdog-worktree] changed paths: {', '.join(payload['changed_paths'])}")
+    if payload.get("cleaned_worktree"):
+        lines.append(f"[blackdog-worktree] removed task worktree: {payload['cleaned_worktree']}")
+    if payload.get("deleted_branch"):
+        lines.append(f"[blackdog-worktree] deleted branch: {payload['branch']}")
+    return "\n".join(lines) + "\n"
+
+
+def render_show_text(payload: dict[str, Any]) -> str:
+    lines = [
+        f"[blackdog-worktree] show: {payload['task_id']} {payload['task_title']}",
+        f"[blackdog-worktree] active attempt: {'yes' if payload['active_attempt'] else 'no'}",
+    ]
+    if payload["attempt_id"]:
+        lines.append(f"[blackdog-worktree] attempt: {payload['attempt_id']}")
+    if payload["latest_attempt_status"]:
+        lines.append(f"[blackdog-worktree] latest attempt: {payload['latest_attempt_status']} {payload['latest_attempt_id']}")
+    if payload["latest_attempt_summary"]:
+        lines.append(f"[blackdog-worktree] latest summary: {payload['latest_attempt_summary']}")
+    if payload["branch"]:
+        lines.append(f"[blackdog-worktree] branch: {payload['branch']}")
+    if payload["target_branch"]:
+        lines.append(f"[blackdog-worktree] target branch: {payload['target_branch']}")
+    if payload["worktree_path"]:
+        lines.append(f"[blackdog-worktree] worktree: {payload['worktree_path']}")
+    lines.append(f"[blackdog-worktree] worktree dirty: {'yes' if payload['worktree_dirty'] else 'no'}")
+    lines.append(f"[blackdog-worktree] branch ahead of target: {'yes' if payload['branch_ahead_of_target'] else 'no'}")
+    lines.append(f"[blackdog-worktree] primary dirty: {'yes' if payload['primary_dirty'] else 'no'}")
+    if payload["worktree_dirty_paths"]:
+        lines.append(f"[blackdog-worktree] worktree dirty paths: {', '.join(payload['worktree_dirty_paths'])}")
+    if payload["changed_paths"]:
+        lines.append(f"[blackdog-worktree] attempt paths: {', '.join(payload['changed_paths'])}")
+    if payload["prompt_hash"]:
+        lines.append(f"[blackdog-worktree] prompt hash: {payload['prompt_hash']}")
+    if payload["recommended_actions"]:
+        lines.append("[blackdog-worktree] recommended actions:")
+        lines.extend(f"  - {item}" for item in payload["recommended_actions"])
+    return "\n".join(lines) + "\n"
+
+
+def render_close_text(payload: dict[str, Any]) -> str:
+    lines = [
+        f"[blackdog-worktree] closed: {payload['task_id']} attempt={payload['attempt_id']} status={payload['status']}",
+        f"[blackdog-worktree] summary: {payload['summary']}",
+    ]
+    if payload.get("branch"):
+        lines.append(f"[blackdog-worktree] branch: {payload['branch']}")
+    if payload.get("target_branch"):
+        lines.append(f"[blackdog-worktree] target branch: {payload['target_branch']}")
+    if payload.get("worktree_path"):
+        lines.append(f"[blackdog-worktree] worktree: {payload['worktree_path']}")
+    if payload.get("changed_paths"):
+        lines.append(f"[blackdog-worktree] changed paths: {', '.join(payload['changed_paths'])}")
+    if payload.get("cleanup_performed") and payload.get("cleanup"):
+        lines.append(f"[blackdog-worktree] removed: {payload['cleanup']['worktree_path']}")
+    elif payload.get("cleanup_reason"):
+        lines.append(f"[blackdog-worktree] cleanup: {payload['cleanup_reason']}")
+    if payload.get("error"):
+        lines.append(f"[blackdog-worktree] error: {payload['error']}")
     return "\n".join(lines) + "\n"
 
 
@@ -1006,21 +1492,25 @@ __all__ = [
     "branch_ahead_of_target",
     "branch_changed_paths",
     "cleanup_task_worktree",
+    "close_task_worktree",
     "default_task_branch",
     "default_task_worktree_path",
     "dirty_paths",
     "dirty_primary_worktree_error",
     "find_primary_worktree",
     "find_worktree_for_branch",
+    "inspect_task_worktree",
     "land_branch",
     "land_task_worktree",
     "primary_worktree_dirty_paths",
     "primary_worktree_is_dirty",
     "preview_task_worktree",
     "render_cleanup_text",
+    "render_close_text",
     "render_land_text",
     "render_preflight_text",
     "render_preview_text",
+    "render_show_text",
     "render_start_text",
     "start_task_worktree",
     "worktree_contract",

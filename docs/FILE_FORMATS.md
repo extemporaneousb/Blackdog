@@ -176,6 +176,10 @@ Allowed attempt statuses:
 - `success`
 - `blocked`
 - `failed`
+- `abandoned`
+
+`abandoned` closes the active attempt and releases its claims while returning
+the task runtime state to `planned`.
 
 Allowed validation statuses:
 
@@ -219,6 +223,7 @@ Current shipped write path:
 - `task.finish`
 - `worktree.start`
 - `worktree.land`
+- `worktree.close`
 - `worktree.cleanup`
 
 Current `worktree.start` payloads record:
@@ -238,6 +243,34 @@ Current `worktree.start` payloads record:
 - optional `source_mode`
 - optional `script_policy`
 - `handler_actions`
+
+Current `worktree.land` payloads record:
+
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `branch`
+- `target_branch`
+- `landed_commit`
+- `changed_paths`
+- `commit_message`
+- `cleanup`
+
+Current `worktree.close` payloads record:
+
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `status`
+- `summary`
+- `branch`
+- `target_branch`
+- `worktree_path`
+- `changed_paths`
+- optional `commit`
+- `cleanup_requested`
+- `cleanup_performed`
+- optional `cleanup_reason`
 
 ## Semantic Boundary
 

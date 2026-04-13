@@ -309,8 +309,6 @@ class BlackdogCliTests(CoreAuditTestCase):
 
         note_path = worktree_path / "notes.txt"
         note_path.write_text("WTAM kept change\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(worktree_path), "add", "notes.txt"], check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", str(worktree_path), "commit", "-m", "Implement DM-1"], check=True, capture_output=True, text=True)
 
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -335,10 +333,19 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         land_payload = json.loads(stdout)["landing"]
+        self.assertEqual(land_payload["status"], "success")
         self.assertEqual(land_payload["attempt_id"], attempt_id)
         self.assertEqual(land_payload["branch"], start_payload["branch"])
         self.assertIn("notes.txt", land_payload["changed_paths"])
-        self.assertEqual(land_payload["commit"], land_payload["landed_commit"])
+        self.assertNotEqual(land_payload["commit"], land_payload["landed_commit"])
+        self.assertTrue(land_payload["deleted_branch"])
+        self.assertEqual(land_payload["cleaned_worktree"], str(worktree_path))
+        self.assertFalse(worktree_path.exists())
+        landed_message = self.git_output("show", "-s", "--format=%B", land_payload["landed_commit"])
+        self.assertIn("blackdog(direct-mode/DM-1): Record stats", landed_message)
+        self.assertIn("Blackdog-Workset: direct-mode", landed_message)
+        self.assertIn("Blackdog-Task: DM-1", landed_message)
+        self.assertIn("Blackdog-Status: success", landed_message)
 
         exit_code, stdout, stderr = self.run_cli("summary", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
@@ -360,24 +367,192 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["task_claims"], [])
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["worktree_role"], "task")
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["landed_commit"], land_payload["landed_commit"])
+        self.assertEqual((self.root / "notes.txt").read_text(encoding="utf-8"), "WTAM kept change\n")
 
+    def test_worktree_show_and_close_surface_active_attempt_recovery(self) -> None:
+        payload = {
+            "id": "recovery-mode",
+            "title": "Recovery mode",
+            "tasks": [{"id": "RC-1", "title": "Recover the slice", "intent": "inspect and close an active attempt"}],
+        }
+        self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.install_repo_runtime()
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
-            "cleanup",
+            "start",
             "--project-root",
             str(self.root),
             "--workset",
-            "direct-mode",
+            "recovery-mode",
             "--task",
-            "DM-1",
+            "RC-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Start the recovery slice.",
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
-        cleanup_payload = json.loads(stdout)["cleanup"]
-        self.assertEqual(cleanup_payload["branch"], start_payload["branch"])
-        self.assertTrue(cleanup_payload["deleted_branch"])
-        self.assertFalse(worktree_path.exists())
-        self.assertEqual((self.root / "notes.txt").read_text(encoding="utf-8"), "WTAM kept change\n")
+        start_payload = json.loads(stdout)["worktree"]
+        worktree_path = Path(start_payload["worktree_path"])
+        (worktree_path / "recover.txt").write_text("recover\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "recovery-mode",
+            "--task",
+            "RC-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        show_payload = json.loads(stdout)["worktree_show"]
+        self.assertTrue(show_payload["active_attempt"])
+        self.assertTrue(show_payload["worktree_dirty"])
+        self.assertIn("recover.txt", show_payload["changed_paths"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "recovery-mode",
+            "--task",
+            "RC-1",
+            "--actor",
+            "codex",
+            "--status",
+            "abandoned",
+            "--summary",
+            "abandoned the recovery slice",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        close_payload = json.loads(stdout)["closure"]
+        self.assertEqual(close_payload["status"], "abandoned")
+        self.assertIn("recover.txt", close_payload["changed_paths"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "next",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "recovery-mode",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        next_payload = json.loads(stdout)
+        self.assertEqual(next_payload["selection_mode"], "start")
+        self.assertEqual(next_payload["selected_task"]["task_id"], "RC-1")
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", start_payload["branch"]],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_worktree_land_closes_the_attempt_when_landing_is_blocked(self) -> None:
+        payload = {
+            "id": "blocked-land",
+            "title": "Blocked land",
+            "tasks": [{"id": "BL-1", "title": "Block landing", "intent": "close the attempt when landing cannot proceed"}],
+        }
+        self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "blocked-land",
+            "--task",
+            "BL-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Attempt the blocked land slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        worktree_path = Path(start_payload["worktree_path"])
+        (worktree_path / "blocked.txt").write_text("blocked\n", encoding="utf-8")
+        (self.root / "primary-dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "blocked-land",
+            "--task",
+            "BL-1",
+            "--actor",
+            "codex",
+            "--summary",
+            "attempted the blocked land slice",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        land_payload = json.loads(stdout)["landing"]
+        self.assertEqual(land_payload["status"], "blocked")
+        self.assertIn("dirty primary worktree", land_payload["error"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "blocked-land",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["counts"]["active_attempts"], 0)
+        self.assertEqual(summary["counts"]["claimed_tasks"], 0)
+        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "blocked")
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", start_payload["branch"]],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (self.root / "primary-dirty.txt").unlink()
 
     def test_attempts_summary_and_table_report_completed_history(self) -> None:
         profile = load_profile(self.root)
@@ -524,8 +699,6 @@ class BlackdogCliTests(CoreAuditTestCase):
         worktree_payload = json.loads(stdout)["worktree"]
         worktree_path = Path(worktree_payload["worktree_path"])
         (worktree_path / "invalid.txt").write_text("invalid\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(worktree_path), "add", "invalid.txt"], check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", str(worktree_path), "commit", "-m", "Invalid validation"], check=True, capture_output=True, text=True)
 
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -538,6 +711,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             "IV-1",
             "--actor",
             "codex",
+            "--summary",
+            "attempt the invalid validation closure",
             "--validation",
             "unit=unknown",
         )
