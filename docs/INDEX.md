@@ -18,6 +18,8 @@ CLI surfaces.
 - [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
   `planning.json`, `runtime.json`, and `events.jsonl`
+- [docs/SINGLE_AGENT_AUDIT.md](docs/SINGLE_AGENT_AUDIT.md): single-agent WTAM
+  flow, recovery surfaces, and current gaps before supervisor work
 
 ## Current Product Surface
 
