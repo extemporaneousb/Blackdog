@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from blackdog.prompting import preview_prompt, render_prompt_preview_text, tune_prompt
 from blackdog.repo_lifecycle import (
     RepoLifecycleError,
     install_repo,
@@ -28,7 +29,17 @@ from blackdog.wtam import (
 )
 from blackdog_core.backlog import BacklogError, upsert_workset, workset_to_payload
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
-from blackdog_core.snapshot import build_runtime_snapshot, build_runtime_summary, load_runtime_model, render_next_text, render_summary_text
+from blackdog_core.snapshot import (
+    build_attempts_summary,
+    build_attempts_table,
+    build_runtime_snapshot,
+    build_runtime_summary,
+    load_runtime_model,
+    render_attempts_summary_text,
+    render_attempts_table_text,
+    render_next_text,
+    render_summary_text,
+)
 from blackdog_core.state import StoreError, VALIDATION_STATUSES, ValidationRecord
 
 
@@ -115,6 +126,39 @@ def _build_parser() -> argparse.ArgumentParser:
     p_next = subparsers.add_parser("next", help="Show ready tasks from the current vNext worksets")
     p_next.add_argument("--project-root", default=".")
     p_next.add_argument("--json", action="store_true")
+
+    p_prompt = subparsers.add_parser("prompt", help="Preview or tune prompt composition against the repo contract")
+    prompt_subparsers = p_prompt.add_subparsers(dest="prompt_command", required=True)
+
+    p_prompt_preview = prompt_subparsers.add_parser("preview", help="Show repo-contract prompt composition without starting execution")
+    p_prompt_preview.add_argument("--project-root", default=".")
+    preview_input_group = p_prompt_preview.add_mutually_exclusive_group(required=True)
+    preview_input_group.add_argument("--prompt")
+    preview_input_group.add_argument("--prompt-file")
+    p_prompt_preview.add_argument("--show-prompt", action="store_true")
+    p_prompt_preview.add_argument("--expand-skill-text", action="store_true")
+    p_prompt_preview.add_argument("--expand-contract", action="store_true")
+    p_prompt_preview.add_argument("--json", action="store_true")
+
+    p_prompt_tune = prompt_subparsers.add_parser("tune", help="Rewrite a request into a repo-contract-aware prompt")
+    p_prompt_tune.add_argument("--project-root", default=".")
+    tune_input_group = p_prompt_tune.add_mutually_exclusive_group(required=True)
+    tune_input_group.add_argument("--prompt")
+    tune_input_group.add_argument("--prompt-file")
+    p_prompt_tune.add_argument("--expand-skill-text", action="store_true")
+    p_prompt_tune.add_argument("--expand-contract", action="store_true")
+    p_prompt_tune.add_argument("--json", action="store_true")
+
+    p_attempts = subparsers.add_parser("attempts", help="Inspect completed attempt history")
+    attempts_subparsers = p_attempts.add_subparsers(dest="attempts_command", required=True)
+
+    p_attempts_summary = attempts_subparsers.add_parser("summary", help="Summarize completed attempts")
+    p_attempts_summary.add_argument("--project-root", default=".")
+    p_attempts_summary.add_argument("--json", action="store_true")
+
+    p_attempts_table = attempts_subparsers.add_parser("table", help="Emit a stable table over completed attempts")
+    p_attempts_table.add_argument("--project-root", default=".")
+    p_attempts_table.add_argument("--json", action="store_true")
 
     p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
     repo_subparsers = p_repo.add_subparsers(dest="repo_command", required=True)
@@ -247,6 +291,65 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 print(render_next_text(model))
+            return 0
+
+        if args.command == "prompt" and args.prompt_command == "preview":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            prompt_text, prompt_source = _load_text_input(
+                label="prompt preview",
+                raw_text=args.prompt,
+                file_path=args.prompt_file,
+            )
+            preview = preview_prompt(
+                profile,
+                request=prompt_text,
+                prompt_source=prompt_source,
+                include_prompt=args.show_prompt,
+                expand_skill_text=args.expand_skill_text,
+                expand_contract=args.expand_contract,
+            )
+            if args.json:
+                _emit_json({"prompt_preview": preview.to_dict()})
+            else:
+                print(render_prompt_preview_text(preview, show_prompt=args.show_prompt), end="")
+            return 0
+
+        if args.command == "prompt" and args.prompt_command == "tune":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            prompt_text, prompt_source = _load_text_input(
+                label="prompt tune",
+                raw_text=args.prompt,
+                file_path=args.prompt_file,
+            )
+            tuned = tune_prompt(
+                profile,
+                request=prompt_text,
+                prompt_source=prompt_source,
+                expand_skill_text=args.expand_skill_text,
+                expand_contract=args.expand_contract,
+            )
+            if args.json:
+                _emit_json({"prompt_tune": tuned.to_dict()})
+            else:
+                print(tuned.tuned_prompt, end="")
+            return 0
+
+        if args.command == "attempts" and args.attempts_command == "summary":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = build_attempts_summary(profile)
+            if args.json:
+                _emit_json(payload)
+            else:
+                print(render_attempts_summary_text(payload), end="")
+            return 0
+
+        if args.command == "attempts" and args.attempts_command == "table":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = build_attempts_table(profile)
+            if args.json:
+                _emit_json(payload)
+            else:
+                print(render_attempts_table_text(payload), end="")
             return 0
 
         if args.command == "repo" and args.repo_command == "install":

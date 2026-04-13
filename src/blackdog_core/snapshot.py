@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .profile import RepoProfile
-from .runtime_model import RuntimeModel, TaskView, WorksetView, load_runtime_model
-from .state import now_iso
+from .runtime_model import AttemptView, RuntimeModel, TaskView, WorksetView, load_runtime_model
+from .state import now_iso, parse_iso
 
 
 SNAPSHOT_FORMAT = "blackdog.snapshot/vnext1"
@@ -96,6 +96,140 @@ def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
     }
 
 
+ATTEMPTS_TABLE_COLUMNS = (
+    "workset_id",
+    "task_id",
+    "attempt_id",
+    "status",
+    "actor",
+    "started_at",
+    "ended_at",
+    "elapsed_seconds",
+    "execution_model",
+    "branch",
+    "target_branch",
+    "start_commit",
+    "landed_commit",
+    "prompt_hash",
+    "changed_paths_count",
+    "validation_summary",
+)
+
+
+def _completed_attempt_items(model: RuntimeModel) -> list[tuple[WorksetView, AttemptView]]:
+    rows = [
+        (workset, attempt)
+        for workset in model.worksets
+        for attempt in workset.attempts
+        if not attempt.is_active
+    ]
+    rows.sort(
+        key=lambda item: (
+            parse_iso(item[1].ended_at or item[1].started_at)
+            or parse_iso("1970-01-01T00:00:00+00:00")
+        ).timestamp(),
+        reverse=True,
+    )
+    return rows
+
+
+def _validation_summary(attempt: AttemptView) -> str:
+    if not attempt.validations:
+        return "none"
+    passed = sum(1 for item in attempt.validations if item.status == "passed")
+    failed = sum(1 for item in attempt.validations if item.status == "failed")
+    skipped = sum(1 for item in attempt.validations if item.status == "skipped")
+    return f"passed={passed} failed={failed} skipped={skipped}"
+
+
+def build_attempts_table(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    rows = []
+    for workset, attempt in _completed_attempt_items(model):
+        rows.append(
+            {
+                "workset_id": workset.workset_id,
+                "task_id": attempt.task_id,
+                "attempt_id": attempt.attempt_id,
+                "status": attempt.status,
+                "actor": attempt.actor,
+                "started_at": attempt.started_at,
+                "ended_at": attempt.ended_at,
+                "elapsed_seconds": attempt.elapsed_seconds,
+                "execution_model": attempt.execution_model,
+                "branch": attempt.branch,
+                "target_branch": attempt.target_branch,
+                "start_commit": attempt.start_commit,
+                "landed_commit": attempt.landed_commit,
+                "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
+                "changed_paths_count": len(attempt.changed_paths),
+                "validation_summary": _validation_summary(attempt),
+            }
+        )
+    return {
+        "project_name": model.repository.project_name,
+        "columns": list(ATTEMPTS_TABLE_COLUMNS),
+        "rows": rows,
+    }
+
+
+def build_attempts_summary(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    completed = _completed_attempt_items(model)
+    validation_totals = {"passed": 0, "failed": 0, "skipped": 0}
+    by_workset = []
+    landed_total = 0
+    not_landed_total = 0
+    for workset in model.worksets:
+        attempts = [attempt for item_workset, attempt in completed if item_workset.workset_id == workset.workset_id]
+        landed = sum(1 for attempt in attempts if attempt.landed_commit)
+        not_landed = len(attempts) - landed
+        by_workset.append(
+            {
+                "workset_id": workset.workset_id,
+                "title": workset.title,
+                "completed_attempts": len(attempts),
+                "landed": landed,
+                "not_landed": not_landed,
+            }
+        )
+    for _, attempt in completed:
+        if attempt.landed_commit:
+            landed_total += 1
+        else:
+            not_landed_total += 1
+        for validation in attempt.validations:
+            validation_totals[validation.status] = validation_totals.get(validation.status, 0) + 1
+    return {
+        "project_name": model.repository.project_name,
+        "counts": {
+            "completed_attempts": len(completed),
+            "landed": landed_total,
+            "not_landed": not_landed_total,
+            "validation_passed": validation_totals["passed"],
+            "validation_failed": validation_totals["failed"],
+            "validation_skipped": validation_totals["skipped"],
+        },
+        "worksets": by_workset,
+        "recent_completed_attempts": [
+            {
+                "workset_id": workset.workset_id,
+                "task_id": attempt.task_id,
+                "attempt_id": attempt.attempt_id,
+                "status": attempt.status,
+                "actor": attempt.actor,
+                "branch": attempt.branch,
+                "landed_commit": attempt.landed_commit,
+                "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
+                "validation_summary": _validation_summary(attempt),
+                "elapsed_seconds": attempt.elapsed_seconds,
+                "summary": attempt.summary,
+            }
+            for workset, attempt in completed[:10]
+        ],
+    }
+
+
 def _task_label(task: TaskView) -> str:
     if task.readiness == "blocked" and task.blocked_by:
         return f"{task.task_id} {task.title} ({', '.join(task.blocked_by)})"
@@ -170,12 +304,70 @@ def render_next_text(model: RuntimeModel) -> str:
     return "\n".join(lines)
 
 
+def render_attempts_summary_text(payload: dict[str, Any]) -> str:
+    counts = payload["counts"]
+    lines = [
+        f"Project: {payload['project_name']}",
+        (
+            "Completed attempts: "
+            f"{counts['completed_attempts']} | Landed: {counts['landed']} | Not landed: {counts['not_landed']}"
+        ),
+        (
+            "Validations: "
+            f"passed={counts['validation_passed']} failed={counts['validation_failed']} skipped={counts['validation_skipped']}"
+        ),
+    ]
+    if payload["worksets"]:
+        lines.append("")
+        lines.append("By workset:")
+        for workset in payload["worksets"]:
+            lines.append(
+                (
+                    f"  - {workset['workset_id']}: completed={workset['completed_attempts']} "
+                    f"landed={workset['landed']} not_landed={workset['not_landed']}"
+                )
+            )
+    if payload["recent_completed_attempts"]:
+        lines.append("")
+        lines.append("Recent completed attempts:")
+        for attempt in payload["recent_completed_attempts"]:
+            landed = f" landed={attempt['landed_commit']}" if attempt["landed_commit"] else ""
+            summary = f" {attempt['summary']}" if attempt["summary"] else ""
+            lines.append(
+                (
+                    f"  - {attempt['attempt_id']} workset={attempt['workset_id']} task={attempt['task_id']} "
+                    f"status={attempt['status']} actor={attempt['actor']} validation={attempt['validation_summary']}{landed}{summary}"
+                ).rstrip()
+            )
+    elif counts["completed_attempts"] == 0:
+        lines.append("")
+        lines.append("No completed attempts.")
+    return "\n".join(lines)
+
+
+def render_attempts_table_text(payload: dict[str, Any]) -> str:
+    rows = payload["rows"]
+    columns = payload["columns"]
+    if not rows:
+        return "\t".join(columns) + "\n"
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append(
+            "\t".join("" if row.get(column) is None else str(row.get(column)) for column in columns)
+        )
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
     "SNAPSHOT_FORMAT",
     "RuntimeModel",
     "build_runtime_snapshot",
     "build_runtime_summary",
+    "build_attempts_summary",
+    "build_attempts_table",
     "load_runtime_model",
+    "render_attempts_summary_text",
+    "render_attempts_table_text",
     "render_next_text",
     "render_summary_text",
     "runtime_model_snapshot",

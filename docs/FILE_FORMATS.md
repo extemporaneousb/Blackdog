@@ -16,6 +16,14 @@ The durable control-root files are:
 - `runtime.json`
 - `events.jsonl`
 
+Optional product-layer control-root paths may also exist. The current shipped
+repo lifecycle family may create:
+
+- `source/blackdog/`
+
+when a repo uses the managed Blackdog source checkout path for `repo install`
+or `repo update`.
+
 ## `planning.json`
 
 Canonical planning truth.
@@ -226,3 +234,7 @@ The following are intentionally removed from the canonical contract:
 
 Those concepts may exist in old artifacts or old code, but they do not define
 Blackdog vNext behavior.
+
+Legacy backlog-era artifacts such as `backlog.md`, `backlog-state.json`,
+`inbox.jsonl`, `tracked-installs.json`, rendered backlog HTML, and old
+supervisor/task-result folders are not part of the vNext control-root contract.

@@ -93,6 +93,10 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog repo install`
 - `blackdog repo update`
 - `blackdog repo refresh`
+- `blackdog prompt preview`
+- `blackdog prompt tune`
+- `blackdog attempts summary`
+- `blackdog attempts table`
 - `blackdog workset put`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
@@ -104,8 +108,13 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog snapshot`
 
 The repo lifecycle family now has a shipped base in `blackdog` for
-install/update/refresh. Prompt/skill preview, tuning, and inspection remain
-separate repo lifecycle work to rebuild on top of the same product layer.
+install/update/refresh, prompt preview/tune, and attempt inspection.
+
+For repos other than Blackdog itself, `repo install` and `repo update` default
+to a managed Blackdog source checkout under the control root, sourced from
+GitHub. `--source-root` is the explicit local override.
+`repo refresh` is also the shipped cleanup path for removing known legacy
+backlog-era artifacts from the shared control root.
 
 These commands exercise one end-to-end vertical slice:
 

@@ -26,6 +26,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             str(self.root),
             "--project-name",
             "Lifecycle Demo",
+            "--source-root",
+            str(REPO_ROOT),
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
@@ -36,6 +38,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         launcher_path = self.root / ".VE" / "bin" / "blackdog"
 
         self.assertEqual(payload["action"], "install")
+        self.assertEqual(payload["source_mode"], "local-override")
+        self.assertEqual(payload["source_root"], str(REPO_ROOT))
         self.assertTrue(profile_path.is_file())
         self.assertTrue(skill_path.is_file())
         self.assertTrue(launcher_path.is_file())
@@ -63,6 +67,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             "install",
             "--project-root",
             str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
         )
         self.assertEqual(exit_code, 0, stderr)
 
@@ -77,6 +83,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             "update",
             "--project-root",
             str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
@@ -93,6 +101,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             "install",
             "--project-root",
             str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
         )
         self.assertEqual(exit_code, 0, stderr)
 
@@ -106,6 +116,9 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         skill_path = self.root / ".codex" / "skills" / "blackdog" / "SKILL.md"
         skill_path.write_text("stale skill\n", encoding="utf-8")
+        legacy_backlog = self.root / ".git" / "blackdog" / "backlog.md"
+        legacy_backlog.parent.mkdir(parents=True, exist_ok=True)
+        legacy_backlog.write_text("legacy backlog\n", encoding="utf-8")
 
         exit_code, stdout, stderr = self.run_cli(
             "repo",
@@ -118,7 +131,61 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         payload = json.loads(stdout)["repo"]
 
         self.assertEqual(payload["action"], "refresh")
+        self.assertIn(str(legacy_backlog.resolve()), payload["removed"])
+        self.assertFalse(legacy_backlog.exists())
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertNotIn("stale skill", skill_text)
         self.assertIn("docs/CUSTOM.md", skill_text)
         self.assertIn("repo refresh", skill_text)
+
+    def test_prompt_preview_and_tune_use_repo_contract_inputs(self) -> None:
+        exit_code, _, stderr = self.run_cli(
+            "repo",
+            "install",
+            "--project-root",
+            str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        (self.root / "AGENTS.md").write_text("repo contract\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "prompt",
+            "preview",
+            "--project-root",
+            str(self.root),
+            "--prompt",
+            "Round out repo lifecycle behavior.",
+            "--show-prompt",
+            "--expand-skill-text",
+            "--expand-contract",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        preview = json.loads(stdout)["prompt_preview"]
+        self.assertEqual(preview["workflow_family"], "repo-lifecycle")
+        self.assertEqual(preview["prompt_text"], "Round out repo lifecycle behavior.")
+        self.assertIn("blackdog repo install", preview["composed_prompt"])
+        self.assertTrue(
+            any(item["kind"] == "skill" and item["text"] is not None for item in preview["contract_documents"])
+        )
+        self.assertTrue(
+            any(item["path"] == str((self.root / "AGENTS.md").resolve()) and item["text"] == "repo contract\n" for item in preview["contract_documents"])
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "prompt",
+            "tune",
+            "--project-root",
+            str(self.root),
+            "--prompt",
+            "Round out repo lifecycle behavior.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        tuned = json.loads(stdout)["prompt_tune"]
+        self.assertEqual(tuned["workflow_family"], "repo-lifecycle")
+        self.assertIn("Round out repo lifecycle behavior.", tuned["tuned_prompt"])
+        self.assertIn("blackdog repo refresh", tuned["tuned_prompt"])

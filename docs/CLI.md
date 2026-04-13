@@ -37,8 +37,11 @@ Important flags:
 - optional `--source-root`
 
 `repo install` requires the target path to be inside a git repo. By default it
-points the repo-local launcher at the current Blackdog source checkout. If
-`blackdog.toml` or the repo-local skill already exist, it preserves them.
+creates or reuses a managed Blackdog source checkout under the control root,
+sourced from GitHub. Use `--source-root` to point the repo-local launcher at a
+local Blackdog checkout instead. When the target repo is Blackdog itself,
+install uses that repo as the source checkout. If `blackdog.toml` or the
+repo-local skill already exist, it preserves them.
 
 ### `blackdog repo update`
 
@@ -56,6 +59,8 @@ Important flags:
 
 `repo update` requires an existing `blackdog.toml`. It repairs or replaces the
 repo-local launcher and preserves repo-owned contract files such as the skill.
+When using the managed source checkout path, it also fast-forwards that source
+checkout from GitHub.
 
 ### `blackdog repo refresh`
 
@@ -71,7 +76,56 @@ Important flags:
 
 `repo refresh` requires an existing `blackdog.toml`. It rewrites the repo-local
 `$blackdog` skill so the skill matches the current shipped product surface and
-routed-doc contract.
+routed-doc contract. It also prunes known legacy backlog-era artifacts from the
+shared control root.
+
+### `blackdog prompt preview`
+
+Preview repo-contract prompt composition without starting task execution.
+
+```bash
+blackdog prompt preview \
+  --project-root /path/to/repo \
+  --prompt "Round out the repo lifecycle MVP."
+```
+
+Important flags:
+
+- `--project-root`
+- exactly one of `--prompt` or `--prompt-file`
+- optional `--show-prompt`
+- optional `--expand-skill-text`
+- optional `--expand-contract`
+
+`prompt preview` is read-only. It shows:
+
+- prompt hash and source
+- repo lifecycle commands Blackdog expects in that repo
+- routed contract docs and the repo-local skill
+- the composed prompt text when `--show-prompt` is set
+
+Use `--expand-skill-text` when you want the repo-local skill text inlined.
+Use `--expand-contract` when you want routed doc text inlined as well.
+
+### `blackdog prompt tune`
+
+Rewrite a request into a repo-contract-aware prompt.
+
+```bash
+blackdog prompt tune \
+  --project-root /path/to/repo \
+  --prompt "Round out the repo lifecycle MVP."
+```
+
+Important flags:
+
+- `--project-root`
+- exactly one of `--prompt` or `--prompt-file`
+- optional `--expand-skill-text`
+- optional `--expand-contract`
+
+Text output emits the tuned prompt directly. `--json` returns the tuned prompt
+plus prompt-hash and contract metadata.
 
 ### `blackdog workset put`
 
@@ -259,6 +313,51 @@ blackdog snapshot --project-root /path/to/repo
 
 The snapshot embeds the fully typed runtime model under `runtime_model`.
 That runtime model now includes attempt/result rows from the WTAM lifecycle.
+
+### `blackdog attempts summary`
+
+Summarize completed attempt history from the typed runtime model.
+
+```bash
+blackdog attempts summary --project-root /path/to/repo
+blackdog attempts summary --project-root /path/to/repo --json
+```
+
+The summary centers on completed attempts and includes:
+
+- recent completed attempts
+- completed counts by workset
+- validation pass/fail/skipped totals
+- landed vs not-landed completion totals
+
+### `blackdog attempts table`
+
+Emit a stable table over completed attempt history.
+
+```bash
+blackdog attempts table --project-root /path/to/repo
+blackdog attempts table --project-root /path/to/repo --json
+```
+
+Text output is tab-separated with stable columns. JSON output returns the same
+columns plus row dictionaries. Current columns are:
+
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `status`
+- `actor`
+- `started_at`
+- `ended_at`
+- `elapsed_seconds`
+- `execution_model`
+- `branch`
+- `target_branch`
+- `start_commit`
+- `landed_commit`
+- `prompt_hash`
+- `changed_paths_count`
+- `validation_summary`
 
 ## Removed Or Deferred Commands
 

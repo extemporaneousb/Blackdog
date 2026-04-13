@@ -25,6 +25,10 @@ CLI surfaces.
 - `blackdog repo install`
 - `blackdog repo update`
 - `blackdog repo refresh`
+- `blackdog prompt preview`
+- `blackdog prompt tune`
+- `blackdog attempts summary`
+- `blackdog attempts table`
 - `blackdog workset put`
 - `blackdog summary`
 - `blackdog next`

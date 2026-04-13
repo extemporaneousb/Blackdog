@@ -10,6 +10,7 @@ import sys
 import time
 import tomllib
 
+from blackdog.contract import ContractDocument, contract_documents
 from blackdog_core.backlog import BacklogError, TaskSpec, Workset, find_workset, finish_task, load_planning_state, start_task
 from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
@@ -82,16 +83,6 @@ class WorktreeSpec:
     workspace_blackdog_path: str
     bootstrap_mode: str
     bootstrap_source_root: str | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class ContractDocument:
-    path: str
-    kind: str
-    text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -313,11 +304,6 @@ def _run_command(*args: str, cwd: Path | None = None) -> None:
         raise WorktreeError(f"{rendered} failed: {detail}")
 
 
-def _project_skill_path(project_root: Path) -> Path | None:
-    candidate = (project_root / ".codex" / "skills" / "blackdog" / "SKILL.md").resolve()
-    return candidate if candidate.is_file() else None
-
-
 def _looks_like_blackdog_source_checkout(root: Path) -> bool:
     pyproject = root / "pyproject.toml"
     if not pyproject.is_file():
@@ -380,36 +366,6 @@ def _bootstrap_plan_for_worktree(profile: RepoProfile, *, worktree_path: Path) -
         source_root=current_executable,
         note="create a worktree-local launcher proxy to the currently running Blackdog CLI",
     )
-
-
-def _contract_documents(
-    profile: RepoProfile,
-    *,
-    expand_text: bool = False,
-) -> tuple[ContractDocument, ...]:
-    candidates: list[tuple[str, Path]] = []
-    skill_path = _project_skill_path(profile.paths.project_root)
-    if skill_path is not None:
-        candidates.append(("skill", skill_path))
-    for raw in profile.doc_routing_defaults:
-        candidate = (profile.paths.project_root / raw).resolve()
-        if candidate.is_file():
-            candidates.append(("doc", candidate))
-    seen: set[Path] = set()
-    documents: list[ContractDocument] = []
-    for kind, candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        text = candidate.read_text(encoding="utf-8") if expand_text else None
-        documents.append(
-            ContractDocument(
-                path=str(candidate),
-                kind=kind,
-                text=text,
-            )
-        )
-    return tuple(documents)
 
 
 def _ensure_workspace_ve(plan: WorktreeBootstrapPlan) -> None:
@@ -513,7 +469,11 @@ def preview_task_worktree(
         task_checks=task.checks,
         validation_commands=profile.validation_commands,
         doc_routing_defaults=profile.doc_routing_defaults,
-        contract_documents=_contract_documents(profile, expand_text=expand_contract),
+        contract_documents=contract_documents(
+            profile,
+            expand_skill_text=expand_contract,
+            expand_doc_text=expand_contract,
+        ),
         bootstrap=bootstrap,
         existing_branch_worktree=str(existing_worktree) if existing_worktree is not None else None,
         path_exists=worktree_path.exists(),

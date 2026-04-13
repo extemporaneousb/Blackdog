@@ -16,6 +16,10 @@ The current shipped CLI is deliberately narrow:
 - `blackdog repo install`
 - `blackdog repo update`
 - `blackdog repo refresh`
+- `blackdog prompt preview`
+- `blackdog prompt tune`
+- `blackdog attempts summary`
+- `blackdog attempts table`
 - `blackdog workset put`
 - `blackdog summary`
 - `blackdog next`
@@ -49,10 +53,16 @@ start plan, prompt receipt, and repo contract inputs before a claim/start.
 
 Blackdog has no non-WTAM implementation mode.
 
-Blackdog also has a separate repo lifecycle concern set. Install/update/refresh
-now ship as explicit product-layer workflows. Prompt/skill composition and
-inspection remain separate repo lifecycle work to rebuild on top of this base,
-not workset/task operations.
+Blackdog also has a separate repo lifecycle concern set. Install/update/refresh,
+prompt composition, and attempt inspection now ship as explicit product-layer
+workflows, not workset/task operations.
+
+For non-Blackdog repos, `blackdog repo install` defaults to a managed Blackdog
+source checkout under the control root, sourced from GitHub. Use
+`--source-root /path/to/blackdog` to override that with a local checkout. When
+the target repo is Blackdog itself, install/update reuse that repo as the
+source checkout. `blackdog repo refresh` also prunes known legacy backlog-era
+artifacts from the shared control root.
 
 ## Docs
 

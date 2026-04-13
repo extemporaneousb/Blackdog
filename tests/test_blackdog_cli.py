@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 import subprocess
 
+from blackdog_core.backlog import finish_task, start_task, upsert_workset
+from blackdog_core.profile import load_profile
+from blackdog_core.state import ValidationRecord, create_prompt_receipt
 from blackdog_cli.main import main as blackdog_main
 from tests.core_audit_support import CoreAuditTestCase
 
@@ -313,6 +316,104 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(cleanup_payload["deleted_branch"])
         self.assertFalse(worktree_path.exists())
         self.assertEqual((self.root / "notes.txt").read_text(encoding="utf-8"), "WTAM kept change\n")
+
+    def test_attempts_summary_and_table_report_completed_history(self) -> None:
+        profile = load_profile(self.root)
+        upsert_workset(
+            profile,
+            {
+                "id": "attempt-audit",
+                "title": "Attempt audit",
+                "workspace": {"identity": "attempt-audit-workspace"},
+                "branch_intent": {"target_branch": "main", "integration_branch": "main"},
+                "tasks": [
+                    {"id": "AT-1", "title": "Land a change", "intent": "record a landed attempt"},
+                    {"id": "AT-2", "title": "Block a change", "intent": "record a blocked attempt"},
+                ],
+            },
+        )
+        landed_attempt = start_task(
+            profile,
+            workset_id="attempt-audit",
+            task_id="AT-1",
+            actor="codex",
+            workspace_mode="git-worktree",
+            worktree_role="linked",
+            worktree_path="/tmp/attempt-audit-1",
+            branch="feature/attempt-audit-1",
+            start_commit="abc123",
+            prompt_receipt=create_prompt_receipt("Land the audit slice.", source="unit-test"),
+        )
+        finish_task(
+            profile,
+            workset_id="attempt-audit",
+            task_id="AT-1",
+            attempt_id=landed_attempt.attempt_id,
+            actor="codex",
+            status="success",
+            summary="landed the slice",
+            changed_paths=("src/blackdog_cli/main.py",),
+            validations=(ValidationRecord(name="unit", status="passed"),),
+            landed_commit="def456",
+            elapsed_seconds=11,
+        )
+        blocked_attempt = start_task(
+            profile,
+            workset_id="attempt-audit",
+            task_id="AT-2",
+            actor="codex",
+            workspace_mode="git-worktree",
+            worktree_role="linked",
+            worktree_path="/tmp/attempt-audit-2",
+            branch="feature/attempt-audit-2",
+            start_commit="abc124",
+            prompt_receipt=create_prompt_receipt("Block the audit slice.", source="unit-test"),
+        )
+        finish_task(
+            profile,
+            workset_id="attempt-audit",
+            task_id="AT-2",
+            attempt_id=blocked_attempt.attempt_id,
+            actor="codex",
+            status="blocked",
+            summary="waiting on review",
+            validations=(ValidationRecord(name="unit", status="failed"),),
+            elapsed_seconds=7,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "attempts",
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["counts"]["completed_attempts"], 2)
+        self.assertEqual(summary["counts"]["landed"], 1)
+        self.assertEqual(summary["counts"]["not_landed"], 1)
+        self.assertEqual(summary["counts"]["validation_passed"], 1)
+        self.assertEqual(summary["counts"]["validation_failed"], 1)
+        self.assertEqual(summary["worksets"][0]["workset_id"], "attempt-audit")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "attempts",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        table = json.loads(stdout)
+        self.assertEqual(table["columns"][0], "workset_id")
+        self.assertEqual(len(table["rows"]), 2)
+        self.assertEqual(table["rows"][0]["workset_id"], "attempt-audit")
+        self.assertIn(table["rows"][0]["validation_summary"], {"passed=1 failed=0 skipped=0", "passed=0 failed=1 skipped=0"})
+        self.assertEqual(
+            {row["landed_commit"] for row in table["rows"]},
+            {"def456", None},
+        )
 
     def test_worktree_land_rejects_invalid_validation_status(self) -> None:
         payload = {

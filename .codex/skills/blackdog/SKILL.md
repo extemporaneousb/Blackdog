@@ -1,76 +1,43 @@
 ---
 name: blackdog
-description: "Use the project-local Blackdog repo contract when working on Blackdog itself. Prefer the typed vNext CLI/runtime surface over direct control-root edits."
+description: "Use the repo-local Blackdog CLI and contract for Blackdog."
 ---
 
 # Blackdog: Blackdog
 
-Use the local Blackdog CLI instead of mutating runtime files by hand.
-
-## Layer Contract
-
-- `blackdog_core` is the durable contract: profile/path resolution, typed
-  planning/runtime/event formats, claim semantics, and read models.
-- `blackdog` is the product layer built on that contract. It owns WTAM
-  execution workflows and repo lifecycle workflows such as install/update/
-  refresh/tune when those surfaces exist.
-- `blackdog_cli` is the thin command adapter behind the `blackdog` executable.
+Use the repo-local Blackdog CLI instead of mutating control-root files by hand.
 
 ## CLI Entry Point
 
-- Blackdog CLI: `./.VE/bin/blackdog`
+- `./.VE/bin/blackdog`
 
-## Core Paths
+## Shipped Workflow Families
 
-- Profile: `blackdog.toml`
-- Control root: `@git-common/blackdog`
-- Planning: `@git-common/blackdog/planning.json`
-- Runtime: `@git-common/blackdog/runtime.json`
-- Events: `@git-common/blackdog/events.jsonl`
-
-## Rewrite Priority
-
-Blackdog is in an explicitly authorized breaking-change period.
-
-- Delete or narrow old code that is not being carried forward.
-- Do not preserve legacy backlog, board, bootstrap, inbox, render, or prompt
-  tuning surfaces unless they are explicitly rebuilt on the vNext core model.
-- Treat the WTAM kept-change workflow as the normative product path:
-  - `./.VE/bin/blackdog worktree preflight`
-  - `./.VE/bin/blackdog worktree preview --workset WORKSET --task TASK --actor AGENT --prompt "..."`
-  - `./.VE/bin/blackdog worktree start`
-  - execute inside the task worktree
-  - `./.VE/bin/blackdog worktree land`
-  - `./.VE/bin/blackdog worktree cleanup`
-- Do not preserve a non-worktree execution mode in Blackdog.
-- Claims attach to both worksets and tasks.
-- First-class execution models: `direct_wtam` and `workset_manager`.
-- Treat repo lifecycle workflows as a separate first-class family:
-  install/update/refresh are shipped product-layer workflows, and tune/skill
-  composition remains product-layer work, but none of them are workset/task
-  objects.
-- Tests should use fresh isolated git repos.
-
-## Standard Flow
-
-1. Run `./.VE/bin/blackdog summary`.
-2. Inspect runnable work with `./.VE/bin/blackdog next`.
-3. Check the WTAM gate with `./.VE/bin/blackdog worktree preflight`.
-4. Preview the exact WTAM plan with `./.VE/bin/blackdog worktree preview --workset WORKSET --task TASK --actor AGENT --prompt "..."`.
-5. Start a kept-change task with `./.VE/bin/blackdog worktree start --workset WORKSET --task TASK --actor AGENT --prompt "..."`.
-6. Make kept changes only inside that task worktree.
-7. Land successful kept changes with `./.VE/bin/blackdog worktree land --workset WORKSET --task TASK --actor AGENT`.
-8. Clean up with `./.VE/bin/blackdog worktree cleanup --workset WORKSET --task TASK`.
+- repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
+- workset/task runtime: `workset put`, `summary`, `next`, `snapshot`
+- WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree land`, `worktree cleanup`
 
 ## Repo Lifecycle Flow
 
-1. Install or repair a repo with `./.VE/bin/blackdog repo install --project-root .`.
-2. Refresh the repo-local launcher with `./.VE/bin/blackdog repo update --project-root .`.
-3. Regenerate the repo-local skill with `./.VE/bin/blackdog repo refresh --project-root .`.
+1. `./.VE/bin/blackdog repo update --project-root .`
+2. `./.VE/bin/blackdog repo refresh --project-root .`
+3. `./.VE/bin/blackdog prompt preview --project-root . --prompt "..."`
+4. `./.VE/bin/blackdog prompt tune --project-root . --prompt "..."`
+5. review the routed docs below before editing
+
+## WTAM Flow
+
+1. `./.VE/bin/blackdog summary --project-root .`
+2. `./.VE/bin/blackdog next --project-root .`
+3. `./.VE/bin/blackdog worktree preflight --project-root .`
+4. `./.VE/bin/blackdog worktree preview --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
+5. `./.VE/bin/blackdog worktree start --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
+6. make kept changes only inside that task worktree
+7. `./.VE/bin/blackdog worktree land --project-root . --workset WORKSET --task TASK --actor AGENT`
+8. `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK`
 
 ## Docs To Review
 
-Review these repo docs before editing when they apply:
 - `AGENTS.md`
 - `docs/INDEX.md`
 - `docs/PRODUCT_SPEC.md`
@@ -78,15 +45,3 @@ Review these repo docs before editing when they apply:
 - `docs/TARGET_MODEL.md`
 - `docs/CLI.md`
 - `docs/FILE_FORMATS.md`
-
-Keep `blackdog.toml` `[taxonomy].doc_routing_defaults` aligned with that set.
-
-## Repo Contract
-
-- Commit `blackdog.toml` and this project-local skill if the repo wants a
-  shared Blackdog operating contract.
-- Do not check in mutable runtime files from `@git-common/blackdog`.
-- Treat the documented CLI plus stable control-root artifacts as the supported
-  integration contract for repo-local adapters and skills.
-- When repo lifecycle workflows are rebuilt, expose them as explicit skill/CLI
-  flows rather than hiding them inside workset/task execution.

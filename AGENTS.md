@@ -23,6 +23,8 @@ development.
 - The active shipped CLI surface is:
   - `blackdog init`
   - `blackdog repo install|update|refresh`
+  - `blackdog prompt preview|tune`
+  - `blackdog attempts summary|table`
   - `blackdog workset put`
   - `blackdog summary`
   - `blackdog next`
