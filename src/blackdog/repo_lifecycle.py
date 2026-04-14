@@ -28,6 +28,9 @@ LEGACY_CONTROL_ARTIFACTS = (
     "threads",
     "tracked-installs.json",
 )
+AGENTS_FILE_NAME = "AGENTS.md"
+AGENTS_MANAGED_BEGIN = "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->"
+AGENTS_MANAGED_END = "<!-- BLACKDOG MANAGED CONTRACT:END -->"
 
 
 class RepoLifecycleError(RuntimeError):
@@ -110,6 +113,10 @@ def _legacy_managed_skill_path(profile: RepoProfile) -> Path:
     return (profile.paths.project_root / legacy_managed_skill_relative_path()).resolve()
 
 
+def _repo_agents_path(profile: RepoProfile) -> Path:
+    return (profile.paths.project_root / AGENTS_FILE_NAME).resolve()
+
+
 def _remove_if_empty(path: Path, *, stop_at: Path) -> None:
     current = path.resolve()
     limit = stop_at.resolve()
@@ -138,6 +145,64 @@ def _migrate_legacy_skill_path(profile: RepoProfile) -> tuple[str, ...]:
     return tuple(sorted(removed))
 
 
+def _render_repo_agents_contract(profile: RepoProfile) -> str:
+    routed_docs = tuple(item for item in profile.doc_routing_defaults if item != AGENTS_FILE_NAME)
+    lines = [
+        AGENTS_MANAGED_BEGIN,
+        "## Blackdog Contract",
+        "",
+        "This section is managed by `blackdog repo install` and `blackdog repo refresh`.",
+        "Keep repo-specific requirements outside this block.",
+        "",
+        "- Use the repo-local `./.VE/bin/blackdog` when it exists instead of mutating Blackdog control files by hand.",
+        "- `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.",
+        "- Before any repo edit you intend to keep, run `./.VE/bin/blackdog worktree preflight --project-root .`.",
+        "- If preflight reports `primary worktree: yes`, do not keep implementation edits in that checkout; start or enter a branch-backed task worktree first.",
+        "- Analysis-only work may stay in the current checkout.",
+        "- `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.",
+        "- Prefer `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt \"...\" --prompt-mode raw` for the normal same-thread path.",
+        "- Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.",
+    ]
+    if routed_docs:
+        lines.extend(("", "Review these routed docs before editing when they apply:"))
+        lines.extend(f"- `{item}`" for item in routed_docs)
+    if profile.validation_commands:
+        lines.extend(("", "Run the narrowest relevant validation after changes. Repo defaults:"))
+        lines.extend(f"- `{command}`" for command in profile.validation_commands)
+    lines.extend(("", AGENTS_MANAGED_END))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_repo_agents_file(profile: RepoProfile, existing_text: str | None = None) -> str:
+    contract = _render_repo_agents_contract(profile).rstrip()
+    if existing_text is None or not existing_text.strip():
+        return (
+            "# AGENTS\n\n"
+            "Keep repo-specific requirements outside the managed Blackdog section below.\n\n"
+            f"{contract}\n"
+        )
+    start = existing_text.find(AGENTS_MANAGED_BEGIN)
+    end = existing_text.find(AGENTS_MANAGED_END)
+    if start != -1 and end != -1 and end > start:
+        end += len(AGENTS_MANAGED_END)
+        prefix = existing_text[:start].rstrip()
+        suffix = existing_text[end:].lstrip("\n")
+        parts = [part for part in (prefix, contract, suffix) if part]
+        return "\n\n".join(parts).rstrip() + "\n"
+    return existing_text.rstrip() + "\n\n" + contract + "\n"
+
+
+def _write_repo_agents(profile: RepoProfile) -> tuple[Path, str]:
+    agents_path = _repo_agents_path(profile)
+    existing_text = agents_path.read_text(encoding="utf-8") if agents_path.exists() else None
+    rendered = _render_repo_agents_file(profile, existing_text=existing_text)
+    if existing_text == rendered:
+        return agents_path, "preserved"
+    agents_path.parent.mkdir(parents=True, exist_ok=True)
+    agents_path.write_text(rendered, encoding="utf-8")
+    return agents_path, "created" if existing_text is None else "updated"
+
+
 def render_repo_skill(profile: RepoProfile) -> str:
     docs = "\n".join(f"- `{item}`" for item in profile.doc_routing_defaults)
     skill_name = managed_skill_name(profile)
@@ -148,7 +213,8 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "---\n\n"
         f"# Repo Skill: {profile.project_name}\n\n"
         "Use the repo-local Blackdog CLI instead of mutating control-root files by hand.\n"
-        "The repo-local blackdog.toml handler blocks own env/runtime setup.\n\n"
+        "`blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.\n"
+        "Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the generated Blackdog summary.\n\n"
         "## CLI Entry Point\n\n"
         "- `./.VE/bin/blackdog`\n\n"
         "## Shipped Workflow Families\n\n"
@@ -276,6 +342,14 @@ def install_repo(
         notes=notes,
     )
 
+    agents_path, agents_status = _write_repo_agents(profile)
+    if agents_status == "created":
+        created.append(str(agents_path))
+    elif agents_status == "updated":
+        updated.append(str(agents_path))
+    else:
+        preserved.append(str(agents_path))
+
     skill_path, skill_changed = _write_repo_skill(profile, overwrite=False)
     if skill_changed:
         created.append(str(skill_path))
@@ -365,11 +439,20 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
     repo_root = _resolve_repo_root(project_root)
     profile = _require_profile(repo_root)
     handler_summary = plan_repo_handlers(profile, operation="repo-refresh")
+    agents_path, agents_status = _write_repo_agents(profile)
     skill_path, skill_changed = _write_repo_skill(profile, overwrite=True)
     removed = list(_prune_legacy_control_artifacts(profile))
     removed.extend(_migrate_legacy_skill_path(profile))
     preserved = [str(profile.paths.profile_file)]
-    updated = [str(skill_path)] if skill_changed else []
+    updated = []
+    if agents_status == "created":
+        updated.append(str(agents_path))
+    elif agents_status == "updated":
+        updated.append(str(agents_path))
+    else:
+        preserved.append(str(agents_path))
+    if skill_changed:
+        updated.append(str(skill_path))
     notes: list[str] = []
     _apply_handler_actions(
         handler_summary,

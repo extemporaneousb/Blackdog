@@ -120,8 +120,12 @@ install/update/refresh, prompt preview/tune, and attempt inspection.
 For repos other than Blackdog itself, `repo install` and `repo update` default
 to a managed Blackdog source checkout under the control root, sourced from
 GitHub. `--source-root` is the explicit local override.
-`repo refresh` is also the shipped cleanup path for removing known legacy
-backlog-era artifacts from the shared control root.
+When install has to create a fresh profile, it seeds routed docs from
+`AGENTS.md` plus common host-repo docs that already exist, and it writes a
+managed Blackdog contract block into `AGENTS.md` so WTAM rules live in repo
+docs instead of only in the generated skill. `repo refresh` rewrites that
+managed `AGENTS.md` block and is also the shipped cleanup path for removing
+known legacy backlog-era artifacts from the shared control root.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

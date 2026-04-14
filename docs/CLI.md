@@ -17,6 +17,10 @@ The default profile includes explicit `[[handlers]]` blocks for:
 - `python-overlay-venv`
 - `blackdog-runtime`
 
+When the target repo already has agent-facing docs, `init` seeds
+`[taxonomy].doc_routing_defaults` from `AGENTS.md` plus the common doc names
+that already exist in that repo.
+
 ```bash
 blackdog init --project-root /path/to/repo --project-name "Repo Name"
 ```
@@ -29,6 +33,7 @@ Create or repair the minimum repo-local Blackdog contract:
 - repo-local `blackdog` launcher
 - `blackdog.toml` when missing
 - explicit handler blocks when the profile still relies on synthesized defaults
+- a managed Blackdog contract section in `AGENTS.md`
 - repo-local managed skill under `.codex/skills/<repo-slug>/SKILL.md` when missing
 
 ```bash
@@ -50,7 +55,10 @@ install uses that repo as the source checkout. The shipped Python handler keeps
 repo-root `.VE` as the canonical base env; WTAM worktrees later get their own
 overlay `.VE` rooted at the task worktree. If `blackdog.toml` or the repo-local
 skill already exist, install preserves repo-owned files and repairs runtime
-artifacts through handler actions.
+artifacts through handler actions. When install has to create `blackdog.toml`,
+it seeds `doc_routing_defaults` from `AGENTS.md` plus common repo docs that
+already exist in the host repo so the initial contract matches the converted
+repo instead of Blackdog's own docs.
 
 ### `blackdog repo update`
 
@@ -74,7 +82,7 @@ config, but it does execute the configured handlers and report their actions.
 
 ### `blackdog repo refresh`
 
-Regenerate the managed repo-local skill from `blackdog.toml`.
+Regenerate the managed repo-local Blackdog scaffold from `blackdog.toml`.
 
 ```bash
 blackdog repo refresh --project-root /path/to/repo
@@ -84,10 +92,11 @@ Important flags:
 
 - `--project-root`
 
-`repo refresh` requires an existing `blackdog.toml`. It rewrites the
-repo-local managed skill at `.codex/skills/<repo-slug>/SKILL.md` so the skill
-matches the current shipped product surface and routed-doc contract. It also
-validates the configured handlers, migrates the legacy
+`repo refresh` requires an existing `blackdog.toml`. It rewrites the managed
+Blackdog section in `AGENTS.md` and the repo-local managed skill at
+`.codex/skills/<repo-slug>/SKILL.md` so both match the current shipped product
+surface and routed-doc contract. It also validates the configured handlers,
+migrates the legacy
 `.codex/skills/blackdog/SKILL.md` path when needed, and prunes known legacy
 backlog-era artifacts from the shared control root.
 

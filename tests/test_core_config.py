@@ -108,6 +108,21 @@ class CoreConfigTests(CoreAuditTestCase):
             resolved = profile_module._resolve_path_value(self.root, "@git-common/blackdog")
         self.assertEqual(resolved, (self.root / ".git" / "blackdog").resolve())
 
+    def test_write_default_profile_prefers_existing_agent_docs(self) -> None:
+        docs_dir = self.root / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "AGENT_START.md").write_text("start here\n", encoding="utf-8")
+        (docs_dir / "INDEX.md").write_text("index\n", encoding="utf-8")
+        (self.root / "README.md").write_text("readme\n", encoding="utf-8")
+
+        profile_module.write_default_profile(self.root, "Demo", force=True)
+        profile = self.load_test_profile()
+
+        self.assertEqual(
+            profile.doc_routing_defaults,
+            ("AGENTS.md", "docs/AGENT_START.md", "docs/INDEX.md"),
+        )
+
     def test_write_default_profile_refuses_to_overwrite_without_force(self) -> None:
         profile_path = profile_module.write_default_profile(self.root, "Demo", force=True)
         self.assertEqual(profile_path, (self.root / "blackdog.toml").resolve())

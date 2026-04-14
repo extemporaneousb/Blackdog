@@ -90,9 +90,14 @@ source checkout under the control root, sourced from GitHub. Use
 the target repo is Blackdog itself, install/update reuse that repo as the
 source checkout. The shipped Python handler keeps repo-root `.VE` as the
 canonical base env and gives each task worktree its own overlay `.VE`.
-`blackdog repo refresh` also prunes known legacy backlog-era artifacts from the
-shared control root and keeps the repo-local managed skill aligned to the repo
-slug instead of a fixed `blackdog` skill name.
+When install has to write a fresh profile, it seeds `doc_routing_defaults`
+from `AGENTS.md` plus common repo docs that already exist, instead of assuming
+Blackdog-specific docs are present in the host repo. `repo install` also
+ensures `AGENTS.md` carries a managed Blackdog contract block so converted
+repos start with explicit WTAM rules in repo docs, not only in the generated
+skill. `blackdog repo refresh` rewrites that managed `AGENTS.md` block,
+regenerates the repo-local skill, and prunes known legacy backlog-era
+artifacts from the shared control root.
 
 ## Docs
 

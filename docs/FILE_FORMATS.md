@@ -21,12 +21,15 @@ The repo-local profile file is:
 - `blackdog.toml`
 
 Optional product-layer control-root paths may also exist. The current shipped
-repo lifecycle family may create:
+repo lifecycle family may create or manage:
 
 - `source/blackdog/`
+- `AGENTS.md` with a managed Blackdog contract section
+- `.codex/skills/<repo-slug>/SKILL.md`
 
 when a repo uses the managed Blackdog source checkout path for `repo install`
-or `repo update`.
+or `repo update`. The `AGENTS.md` section and repo-local skill are regenerated
+by `repo refresh`.
 
 ## `blackdog.toml`
 

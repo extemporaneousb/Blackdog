@@ -46,7 +46,15 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         profile = load_profile(self.root)
         subprocess.run(
-            ["git", "-C", str(self.root), "add", "blackdog.toml", str(managed_skill_relative_path(profile))],
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "add",
+                "blackdog.toml",
+                "AGENTS.md",
+                str(managed_skill_relative_path(profile)),
+            ],
             check=True,
             capture_output=True,
             text=True,

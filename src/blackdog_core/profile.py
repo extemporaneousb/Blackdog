@@ -32,6 +32,20 @@ DEFAULT_DOC_ROUTING = (
     "docs/CLI.md",
     "docs/FILE_FORMATS.md",
 )
+DEFAULT_DOC_ROUTING_CANDIDATES = (
+    "AGENTS.md",
+    "docs/AGENT_START.md",
+    "docs/AGENT_WORKFLOW.md",
+    "docs/INDEX.md",
+    "docs/REPO_MAP.md",
+    "docs/LOCAL_DEV.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CLI.md",
+    "docs/FILE_FORMATS.md",
+    "docs/PRODUCT_SPEC.md",
+    "docs/TARGET_MODEL.md",
+)
+DEFAULT_DOC_ROUTING_FALLBACK = "README.md"
 
 
 class ConfigError(RuntimeError):
@@ -423,9 +437,13 @@ def render_default_handlers() -> str:
     )
 
 
-def render_default_profile(project_name: str) -> str:
+def render_default_profile(
+    project_name: str,
+    *,
+    doc_routing_defaults: tuple[str, ...] | None = None,
+) -> str:
     validations = ", ".join(f'"{item}"' for item in DEFAULT_VALIDATION_COMMANDS)
-    doc_routing = ", ".join(f'"{item}"' for item in DEFAULT_DOC_ROUTING)
+    doc_routing = ", ".join(f'"{item}"' for item in (doc_routing_defaults or DEFAULT_DOC_ROUTING))
     return (
         f'[project]\n'
         f'name = "{project_name}"\n'
@@ -438,6 +456,17 @@ def render_default_profile(project_name: str) -> str:
         f'doc_routing_defaults = [{doc_routing}]\n\n'
         f"{render_default_handlers()}"
     )
+
+
+def suggest_default_doc_routing(project_root: Path) -> tuple[str, ...]:
+    root = project_root.resolve()
+    routed = ["AGENTS.md"]
+    for relative_path in DEFAULT_DOC_ROUTING_CANDIDATES[1:]:
+        if (root / relative_path).is_file():
+            routed.append(relative_path)
+    if len(routed) == 1 and (root / DEFAULT_DOC_ROUTING_FALLBACK).is_file():
+        routed.append(DEFAULT_DOC_ROUTING_FALLBACK)
+    return tuple(routed)
 
 
 def ensure_default_handlers_in_profile(profile_file: Path) -> bool:
@@ -455,5 +484,11 @@ def write_default_profile(project_root: Path, project_name: str, *, force: bool 
     profile_file = root / PROFILE_FILE_NAME
     if profile_file.exists() and not force:
         raise ConfigError(f"Refusing to overwrite {profile_file}; pass force=True to replace it")
-    profile_file.write_text(render_default_profile(project_name), encoding="utf-8")
+    profile_file.write_text(
+        render_default_profile(
+            project_name,
+            doc_routing_defaults=suggest_default_doc_routing(root),
+        ),
+        encoding="utf-8",
+    )
     return profile_file

@@ -37,6 +37,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         profile_path = self.root / "blackdog.toml"
         profile = load_profile(self.root)
+        agents_path = self.root / "AGENTS.md"
         skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
         launcher_path = self.root / ".VE" / "bin" / "blackdog"
 
@@ -45,15 +46,23 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(payload["source_root"], str(REPO_ROOT))
         self.assertIsNotNone(payload["handlers"])
         self.assertTrue(profile_path.is_file())
+        self.assertTrue(agents_path.is_file())
         self.assertTrue(skill_path.is_file())
         self.assertTrue(launcher_path.is_file())
         self.assertIn("[[handlers]]", profile_path.read_text(encoding="utf-8"))
+        self.assertEqual(profile.doc_routing_defaults, ("AGENTS.md",))
+
+        agents_text = agents_path.read_text(encoding="utf-8")
+        self.assertIn("BLACKDOG MANAGED CONTRACT:BEGIN", agents_text)
+        self.assertIn("worktree preflight", agents_text)
+        self.assertIn("primary worktree: yes", agents_text)
 
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
         self.assertIn("Lifecycle Demo", skill_text)
         self.assertIn("repo install", skill_text)
-        self.assertIn("docs/INDEX.md", skill_text)
+        self.assertIn("AGENTS.md", skill_text)
+        self.assertNotIn("docs/INDEX.md", skill_text)
 
         launcher_text = launcher_path.read_text(encoding="utf-8")
         self.assertIn("blackdog_cli", launcher_text)
@@ -120,13 +129,19 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         profile_path = self.root / "blackdog.toml"
         profile_text = profile_path.read_text(encoding="utf-8")
         profile_text = profile_text.replace(
-            'doc_routing_defaults = ["AGENTS.md", "docs/INDEX.md", "docs/PRODUCT_SPEC.md", "docs/ARCHITECTURE.md", "docs/TARGET_MODEL.md", "docs/CLI.md", "docs/FILE_FORMATS.md"]',
+            'doc_routing_defaults = ["AGENTS.md"]',
             'doc_routing_defaults = ["AGENTS.md", "docs/CUSTOM.md"]',
         )
         profile_path.write_text(profile_text, encoding="utf-8")
 
         profile = load_profile(self.root)
+        agents_path = self.root / "AGENTS.md"
         skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
+        agents_path.write_text(
+            "# AGENTS\n\nRepo-specific rule.\n\n"
+            "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->\nold contract\n<!-- BLACKDOG MANAGED CONTRACT:END -->\n",
+            encoding="utf-8",
+        )
         skill_path.write_text("stale skill\n", encoding="utf-8")
         legacy_skill_path = (self.root / legacy_managed_skill_relative_path()).resolve()
         if legacy_skill_path != skill_path:
@@ -153,6 +168,10 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             self.assertFalse(legacy_skill_path.exists())
         self.assertFalse(legacy_backlog.exists())
         self.assertIsNotNone(payload["handlers"])
+        agents_text = agents_path.read_text(encoding="utf-8")
+        self.assertIn("Repo-specific rule.", agents_text)
+        self.assertNotIn("old contract", agents_text)
+        self.assertIn("docs/CUSTOM.md", agents_text)
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertNotIn("stale skill", skill_text)
         self.assertIn("docs/CUSTOM.md", skill_text)
