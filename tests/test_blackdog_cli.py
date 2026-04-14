@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 
+from blackdog.contract import managed_skill_relative_path
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.profile import load_profile
 from blackdog_core.state import ValidationRecord, create_prompt_receipt
@@ -43,8 +44,9 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(REPO_ROOT),
         )
         self.assertEqual(exit_code, 0, stderr)
+        profile = load_profile(self.root)
         subprocess.run(
-            ["git", "-C", str(self.root), "add", "blackdog.toml", ".codex/skills/blackdog/SKILL.md"],
+            ["git", "-C", str(self.root), "add", "blackdog.toml", str(managed_skill_relative_path(profile))],
             check=True,
             capture_output=True,
             text=True,
@@ -155,8 +157,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("JSON object payload", stderr)
 
     def test_worktree_preview_shows_the_start_plan_and_contract_inputs(self) -> None:
-        (self.root / ".codex" / "skills" / "blackdog").mkdir(parents=True, exist_ok=True)
-        skill_path = self.root / ".codex" / "skills" / "blackdog" / "SKILL.md"
+        profile = load_profile(self.root)
+        skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
         skill_path.write_text("repo skill\n", encoding="utf-8")
         agents_path = self.root / "AGENTS.md"
         agents_path.write_text("repo contract\n", encoding="utf-8")

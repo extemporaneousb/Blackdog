@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 import subprocess
 
+from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_relative_path, managed_skill_name
 from blackdog_cli.main import main as blackdog_main
+from blackdog_core.profile import load_profile
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
@@ -34,7 +36,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         payload = json.loads(stdout)["repo"]
 
         profile_path = self.root / "blackdog.toml"
-        skill_path = self.root / ".codex" / "skills" / "blackdog" / "SKILL.md"
+        profile = load_profile(self.root)
+        skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
         launcher_path = self.root / ".VE" / "bin" / "blackdog"
 
         self.assertEqual(payload["action"], "install")
@@ -47,6 +50,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("[[handlers]]", profile_path.read_text(encoding="utf-8"))
 
         skill_text = skill_path.read_text(encoding="utf-8")
+        self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
         self.assertIn("Lifecycle Demo", skill_text)
         self.assertIn("repo install", skill_text)
         self.assertIn("docs/INDEX.md", skill_text)
@@ -76,7 +80,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
 
-        skill_path = self.root / ".codex" / "skills" / "blackdog" / "SKILL.md"
+        profile = load_profile(self.root)
+        skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
         launcher_path = self.root / ".VE" / "bin" / "blackdog"
         skill_path.write_text("custom skill\n", encoding="utf-8")
         launcher_path.write_text("#!/bin/sh\necho broken\n", encoding="utf-8")
@@ -120,8 +125,13 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         )
         profile_path.write_text(profile_text, encoding="utf-8")
 
-        skill_path = self.root / ".codex" / "skills" / "blackdog" / "SKILL.md"
+        profile = load_profile(self.root)
+        skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
         skill_path.write_text("stale skill\n", encoding="utf-8")
+        legacy_skill_path = (self.root / legacy_managed_skill_relative_path()).resolve()
+        if legacy_skill_path != skill_path:
+            legacy_skill_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_skill_path.write_text("legacy skill\n", encoding="utf-8")
         legacy_backlog = self.root / ".git" / "blackdog" / "backlog.md"
         legacy_backlog.parent.mkdir(parents=True, exist_ok=True)
         legacy_backlog.write_text("legacy backlog\n", encoding="utf-8")
@@ -138,6 +148,9 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         self.assertEqual(payload["action"], "refresh")
         self.assertIn(str(legacy_backlog.resolve()), payload["removed"])
+        if legacy_skill_path != skill_path:
+            self.assertIn(str(legacy_skill_path), payload["removed"])
+            self.assertFalse(legacy_skill_path.exists())
         self.assertFalse(legacy_backlog.exists())
         self.assertIsNotNone(payload["handlers"])
         skill_text = skill_path.read_text(encoding="utf-8")

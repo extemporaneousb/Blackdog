@@ -91,7 +91,8 @@ the target repo is Blackdog itself, install/update reuse that repo as the
 source checkout. The shipped Python handler keeps repo-root `.VE` as the
 canonical base env and gives each task worktree its own overlay `.VE`.
 `blackdog repo refresh` also prunes known legacy backlog-era artifacts from the
-shared control root.
+shared control root and keeps the repo-local managed skill aligned to the repo
+slug instead of a fixed `blackdog` skill name.
 
 ## Docs
 

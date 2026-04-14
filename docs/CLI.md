@@ -29,7 +29,7 @@ Create or repair the minimum repo-local Blackdog contract:
 - repo-local `blackdog` launcher
 - `blackdog.toml` when missing
 - explicit handler blocks when the profile still relies on synthesized defaults
-- repo-local `$blackdog` skill when missing
+- repo-local managed skill under `.codex/skills/<repo-slug>/SKILL.md` when missing
 
 ```bash
 blackdog repo install --project-root /path/to/repo --project-name "Repo Name"
@@ -84,10 +84,12 @@ Important flags:
 
 - `--project-root`
 
-`repo refresh` requires an existing `blackdog.toml`. It rewrites the repo-local
-`$blackdog` skill so the skill matches the current shipped product surface and
-routed-doc contract. It also validates the configured handlers and prunes known
-legacy backlog-era artifacts from the shared control root.
+`repo refresh` requires an existing `blackdog.toml`. It rewrites the
+repo-local managed skill at `.codex/skills/<repo-slug>/SKILL.md` so the skill
+matches the current shipped product surface and routed-doc contract. It also
+validates the configured handlers, migrates the legacy
+`.codex/skills/blackdog/SKILL.md` path when needed, and prunes known legacy
+backlog-era artifacts from the shared control root.
 
 ### `blackdog prompt preview`
 
@@ -111,7 +113,7 @@ Important flags:
 
 - prompt hash and source
 - repo lifecycle commands Blackdog expects in that repo
-- routed contract docs and the repo-local skill
+- routed contract docs and the repo-local managed skill
 - the composed prompt text when `--show-prompt` is set
 
 Use `--expand-skill-text` when you want the repo-local skill text inlined.

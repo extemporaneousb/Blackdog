@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 
+from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_name, managed_skill_relative_path
 from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
 from blackdog_core.profile import (
     RepoProfile,
@@ -16,7 +17,6 @@ from blackdog_core.profile import (
 )
 
 
-MANAGED_SKILL_RELATIVE_PATH = Path(".codex") / "skills" / "blackdog" / "SKILL.md"
 LEGACY_CONTROL_ARTIFACTS = (
     "backlog-index.html",
     "backlog-state.json",
@@ -102,14 +102,51 @@ def _resolve_repo_root(project_root: Path) -> Path:
         raise RepoLifecycleError(f"{project_root.resolve()} is not inside a git repo") from exc
 
 
+def _managed_skill_path(profile: RepoProfile) -> Path:
+    return (profile.paths.project_root / managed_skill_relative_path(profile)).resolve()
+
+
+def _legacy_managed_skill_path(profile: RepoProfile) -> Path:
+    return (profile.paths.project_root / legacy_managed_skill_relative_path()).resolve()
+
+
+def _remove_if_empty(path: Path, *, stop_at: Path) -> None:
+    current = path.resolve()
+    limit = stop_at.resolve()
+    while current != limit and current.exists():
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
+def _migrate_legacy_skill_path(profile: RepoProfile) -> tuple[str, ...]:
+    managed_skill = _managed_skill_path(profile)
+    skills_root = (profile.paths.project_root / ".codex" / "skills").resolve()
+    obsolete_paths = {
+        _legacy_managed_skill_path(profile),
+        (profile.paths.project_root / managed_skill_relative_path(profile.paths.project_root)).resolve(),
+    }
+    removed: list[str] = []
+    for candidate in obsolete_paths:
+        if candidate == managed_skill or not candidate.exists():
+            continue
+        candidate.unlink()
+        _remove_if_empty(candidate.parent, stop_at=skills_root)
+        removed.append(str(candidate))
+    return tuple(sorted(removed))
+
+
 def render_repo_skill(profile: RepoProfile) -> str:
     docs = "\n".join(f"- `{item}`" for item in profile.doc_routing_defaults)
+    skill_name = managed_skill_name(profile)
     return (
         "---\n"
-        'name: blackdog\n'
+        f"name: {skill_name}\n"
         f'description: "Use the repo-local Blackdog CLI and contract for {profile.project_name}."\n'
         "---\n\n"
-        f"# Blackdog: {profile.project_name}\n\n"
+        f"# Repo Skill: {profile.project_name}\n\n"
         "Use the repo-local Blackdog CLI instead of mutating control-root files by hand.\n"
         "The repo-local blackdog.toml handler blocks own env/runtime setup.\n\n"
         "## CLI Entry Point\n\n"
@@ -145,7 +182,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
 
 
 def _write_repo_skill(profile: RepoProfile, *, overwrite: bool) -> tuple[Path, bool]:
-    skill_path = (profile.paths.project_root / MANAGED_SKILL_RELATIVE_PATH).resolve()
+    skill_path = _managed_skill_path(profile)
     if skill_path.exists() and not overwrite:
         return skill_path, False
     skill_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +281,10 @@ def install_repo(
         created.append(str(skill_path))
     else:
         preserved.append(str(skill_path))
+    legacy_skill = _legacy_managed_skill_path(profile)
+    if legacy_skill.exists() and legacy_skill != skill_path:
+        preserved.append(str(legacy_skill))
+        notes.append("legacy repo skill path still exists; run `blackdog repo refresh` to migrate it to the repo-slug skill path")
 
     return RepoLifecycleResult(
         action="install",
@@ -291,11 +332,16 @@ def update_repo(
         notes=notes,
     )
 
-    skill_path = (profile.paths.project_root / MANAGED_SKILL_RELATIVE_PATH).resolve()
+    skill_path = _managed_skill_path(profile)
     if skill_path.exists():
         preserved.append(str(skill_path))
     else:
-        notes.append("repo skill is missing; run `blackdog repo refresh` to regenerate it")
+        legacy_skill = _legacy_managed_skill_path(profile)
+        if legacy_skill.exists() and legacy_skill != skill_path:
+            preserved.append(str(legacy_skill))
+            notes.append("repo skill is still at the legacy blackdog path; run `blackdog repo refresh` to migrate it")
+        else:
+            notes.append("repo skill is missing; run `blackdog repo refresh` to regenerate it")
 
     return RepoLifecycleResult(
         action="update",
@@ -321,6 +367,7 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
     handler_summary = plan_repo_handlers(profile, operation="repo-refresh")
     skill_path, skill_changed = _write_repo_skill(profile, overwrite=True)
     removed = list(_prune_legacy_control_artifacts(profile))
+    removed.extend(_migrate_legacy_skill_path(profile))
     preserved = [str(profile.paths.profile_file)]
     updated = [str(skill_path)] if skill_changed else []
     notes: list[str] = []
