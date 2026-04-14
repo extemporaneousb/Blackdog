@@ -13,11 +13,11 @@ workset/task flow before Blackdog grows a multi-agent `workset_manager` mode.
 3. `./.VE/bin/blackdog task land --project-root . --summary "..."`
 4. if recovery is needed from that task worktree, inspect `./.VE/bin/blackdog task show --project-root .`
 5. if the work should not land, close it with `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary "..."`
-6. use `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK` only for retained or leftover task worktrees
+6. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`
 7. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
 
 The default direct-agent hot path is now `task begin -> land`. `task show`,
-`task close`, `worktree show`, `worktree close`, and `worktree cleanup` are the
+`task close`, `task cleanup`, `worktree show`, and `worktree close` are the
 recovery/fallback surfaces around that canonical path.
 
 ## Explicit Planned-Task Operator Flow
@@ -178,7 +178,7 @@ Recovery:
 Symptoms:
 
 - `summary --workset` shows a claimed workset/task or an active attempt
-- `worktree cleanup` may refuse to remove a dirty worktree
+- `task cleanup` may refuse to remove a dirty worktree
 
 Assessment:
 
@@ -190,7 +190,7 @@ Recovery:
 
 - if the work is valid, run `worktree land`
 - if the work should not land, run `worktree close --status blocked|failed|abandoned`
-- if the worktree was retained or left dirty, run `worktree cleanup` after the
+- if the worktree was retained or left dirty, run `task cleanup` after the
   branch is no longer needed
 
 ### 5. Planning state is stale relative to what actually landed

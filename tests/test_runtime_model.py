@@ -102,6 +102,13 @@ class RuntimeModelTests(CoreAuditTestCase):
                 "Record result stats for the direct execution slice.",
                 recorded_at="2026-04-12T09:00:00-07:00",
                 source="unit-test",
+                mode="tuned",
+            ),
+            user_prompt_receipt=create_prompt_receipt(
+                "User asked to record result stats.",
+                recorded_at="2026-04-12T08:59:00-07:00",
+                source="user-test",
+                mode="raw",
             ),
         )
         finish_task(
@@ -128,6 +135,9 @@ class RuntimeModelTests(CoreAuditTestCase):
         self.assertEqual(model.recent_attempts[0].start_commit, "feedface1234")
         self.assertEqual(model.recent_attempts[0].execution_model, "direct_wtam")
         self.assertEqual(model.recent_attempts[0].prompt_receipt.source, "unit-test")
+        self.assertEqual(model.recent_attempts[0].prompt_receipt.mode, "tuned")
+        self.assertEqual(model.recent_attempts[0].user_prompt_receipt.source, "user-test")
+        self.assertEqual(model.recent_attempts[0].user_prompt_receipt.mode, "raw")
         self.assertEqual(model.worksets[0].tasks[0].latest_attempt_status, "success")
         self.assertIsNone(model.worksets[0].claim)
         self.assertEqual(model.worksets[0].task_claims, ())

@@ -57,6 +57,7 @@ class PromptReceiptView:
     prompt_hash: str
     recorded_at: str
     source: str | None
+    mode: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +100,7 @@ class AttemptView:
     model: str | None
     reasoning_effort: str | None
     prompt_receipt: PromptReceiptView | None
+    user_prompt_receipt: PromptReceiptView | None
     changed_paths: tuple[str, ...]
     validations: tuple[ValidationView, ...]
     residuals: tuple[str, ...]
@@ -203,6 +205,7 @@ def _prompt_receipt_view(prompt_receipt) -> PromptReceiptView | None:
         prompt_hash=prompt_receipt.prompt_hash,
         recorded_at=prompt_receipt.recorded_at,
         source=prompt_receipt.source,
+        mode=prompt_receipt.mode,
     )
 
 
@@ -250,6 +253,7 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
         model=attempt.model,
         reasoning_effort=attempt.reasoning_effort,
         prompt_receipt=_prompt_receipt_view(attempt.prompt_receipt),
+        user_prompt_receipt=_prompt_receipt_view(attempt.user_prompt_receipt),
         changed_paths=attempt.changed_paths,
         validations=tuple(_validation_view(item) for item in attempt.validations),
         residuals=attempt.residuals,

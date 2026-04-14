@@ -204,6 +204,13 @@ class CorePlanningTests(CoreAuditTestCase):
                 "Implement the direct slice and record runtime stats.",
                 recorded_at="2026-04-12T09:00:00-07:00",
                 source="unit-test",
+                mode="tuned",
+            ),
+            user_prompt_receipt=create_prompt_receipt(
+                "User asked to implement the direct slice.",
+                recorded_at="2026-04-12T08:59:00-07:00",
+                source="user-test",
+                mode="raw",
             ),
             note="starting work",
         )
@@ -215,6 +222,7 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(attempt.start_commit, "0123456789abcdef")
         self.assertEqual(attempt.execution_model, "direct_wtam")
         self.assertEqual(attempt.prompt_receipt.prompt_hash, create_prompt_receipt("Implement the direct slice and record runtime stats.").prompt_hash)
+        self.assertEqual(attempt.user_prompt_receipt.source, "user-test")
 
         runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
         self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "codex")
@@ -249,6 +257,9 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(runtime_state.worksets[0].attempts[0].landed_commit, "def456")
         self.assertEqual(runtime_state.worksets[0].attempts[0].execution_model, "direct_wtam")
         self.assertEqual(runtime_state.worksets[0].attempts[0].prompt_receipt.source, "unit-test")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].prompt_receipt.mode, "tuned")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].user_prompt_receipt.source, "user-test")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].user_prompt_receipt.mode, "raw")
 
     def test_abandoned_attempt_releases_claims_and_returns_task_to_planned(self) -> None:
         upsert_workset(

@@ -23,13 +23,14 @@ The current shipped surface is:
 - `blackdog task show`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cleanup`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree show`
 - `blackdog worktree land`
 - `blackdog worktree close`
-- `blackdog worktree cleanup`
+- `blackdog task cleanup`
 - `blackdog summary`
 - `blackdog next --workset`
 - `blackdog snapshot`
@@ -54,8 +55,8 @@ Use this prompt to continue the rewrite:
 > 4. durable accumulation of completed/landed work and attempt history
 > 5. a clear execution model for direct work and any later delegated work
 >
-> Treat `task show`, `task close`, `worktree show`, `worktree close`, and
-> `worktree cleanup` as the recovery and fallback surfaces around that
+> Treat `task show`, `task close`, `task cleanup`, `worktree show`, and
+> `worktree close` as the recovery and fallback surfaces around that
 > canonical success path. Keep `worktree preflight|preview|start` as the
 > explicit operator surfaces for planned workset/task execution.
 >

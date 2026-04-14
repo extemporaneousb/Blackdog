@@ -176,7 +176,7 @@ Blackdog must support:
 - actual worktree path and role
 - branch and start-commit identity from the executing checkout
 - target branch / integration branch intent
-- prompt receipt capture at execution start
+- raw user-prompt and execution-prompt capture at execution start
 - repo contract inputs visible before execution start
 - worktree-local CLI setup so the task worktree can run Blackdog directly
 - enough attempt identity that later stats, summaries, and prompt review make sense
@@ -195,8 +195,8 @@ It may create a one-task workset automatically when the caller does not target
 existing planning state. `task land` is the normative success-closure action.
 It should create one canonical landed commit per successful task attempt,
 record runtime, release claims, and clean up by default. Recovery-oriented
-flows use `task show`, `task close`, `worktree show`, `worktree close`, and
-`worktree cleanup` when the canonical success path cannot finish.
+flows use `task show`, `task close`, `task cleanup`, `worktree show`, and
+`worktree close` when the canonical success path cannot finish.
 
 The explicit planned-task operator path remains:
 
@@ -309,9 +309,9 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
-- same-thread task begin/show/land/close
+- same-thread task begin/show/land/close/cleanup
 - worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
-- prompt receipt capture
+- raw user-prompt and execution-prompt capture
 - prompt/contract preview before execution start
 - result/stat recording
 - human summary/status
@@ -339,6 +339,7 @@ This is the decision frame for the rest of the repo.
 - `task show`
 - `task land`
 - `task close`
+- `task cleanup`
 - `worktree preflight`
 - `worktree preview`
 - `worktree start`

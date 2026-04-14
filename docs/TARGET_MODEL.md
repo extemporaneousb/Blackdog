@@ -168,12 +168,13 @@ The minimum coherent shipped slice after the sweep is:
 - one same-thread task inspection surface: `blackdog task show`
 - one same-thread task success-closure surface: `blackdog task land`
 - one same-thread task non-success closure surface: `blackdog task close`
+- one same-thread task cleanup surface: `blackdog task cleanup`
 - one WTAM contract/readiness surface: `blackdog worktree preflight`
 - one WTAM execution start surface: `blackdog worktree start`
 - one WTAM inspection/recovery read surface: `blackdog worktree show`
 - one WTAM success-closure surface: `blackdog worktree land`
 - one WTAM non-success closure surface: `blackdog worktree close`
-- one WTAM cleanup fallback surface: `blackdog worktree cleanup`
+- one WTAM cleanup fallback surface: `blackdog task cleanup` (`worktree cleanup` remains a low-level alias)
 - one summary surface: `blackdog summary`
 - one machine snapshot surface: `blackdog snapshot`
 - one workset-scoped execution-facing read surface: `blackdog next --workset`

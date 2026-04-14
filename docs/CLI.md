@@ -191,13 +191,15 @@ Important flags:
 
 `task begin` is the default same-thread agent entrypoint. When `--workset` and
 `--task` are omitted, it creates a one-task workset automatically, claims it
-for the caller, records the prompt receipt, provisions the task worktree, and
-starts the WTAM attempt in one command.
+for the caller, records both the raw user prompt receipt and the execution
+prompt receipt, provisions the task worktree, and starts the WTAM attempt in
+one command.
 
 `--prompt-mode raw` records the supplied prompt directly. `--prompt-mode tuned`
 runs the user request through `blackdog prompt tune` first and records the
 tuned execution prompt as the attempt prompt receipt. The prompt receipt stores
-its `mode` as `raw` or `tuned`.
+its `mode` as `raw` or `tuned`. The separate `user_prompt_receipt` keeps the
+raw user request for later audit and prompt-tuning review.
 
 ### `blackdog task show`
 
@@ -217,7 +219,8 @@ Important flags:
 
 When `--workset` and `--task` are omitted, `task show` infers the task from the
 current task worktree. This is the same-thread recovery read surface that
-avoids repeating ids on every follow-on command.
+avoids repeating ids on every follow-on command. It reports both the raw user
+prompt lineage and the execution-prompt lineage when those differ.
 
 ### `blackdog task land`
 
@@ -244,7 +247,9 @@ Important flags:
 
 When `--workset` and `--task` are omitted, `task land` infers the active task
 from the current task worktree and reuses the active attempt actor. It then
-delegates to the canonical `worktree land` success-closure path.
+delegates to the canonical `worktree land` success-closure path. Use
+`--keep-worktree` when you want to retain the task workspace and close it later
+through `task cleanup`.
 
 ### `blackdog task close`
 
@@ -274,6 +279,29 @@ Important flags:
 When `--workset` and `--task` are omitted, `task close` infers the active task
 from the current task worktree and reuses the active attempt actor. It then
 delegates to the canonical non-success closure path.
+
+### `blackdog task cleanup`
+
+Remove a retained or leftover task workspace and delete its branch.
+
+```bash
+blackdog task cleanup --project-root /path/to/repo
+blackdog task cleanup --project-root /path/to/repo --workset kernel --task KERN-1
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+- optional `--path`
+- optional `--branch`
+
+When `--workset` and `--task` are omitted, `task cleanup` infers the current
+task from the task worktree you are in, or falls back to the latest attempt
+for that task when the attempt is already closed. This is the public same-thread
+cleanup surface after `task land --keep-worktree` or after `task close --cleanup`
+was skipped because the task workspace stayed dirty.
 
 ### `blackdog worktree preflight`
 
@@ -401,7 +429,7 @@ Important flags:
 - branch and target-branch identity
 - task-worktree path and dirty paths
 - whether the branch is ahead of target
-- prompt hash and prompt source when captured
+- raw user-prompt and execution-prompt hashes, sources, and modes when captured
 - primary-worktree dirtiness
 - recommended next actions such as `land`, `close`, or `cleanup`
 
@@ -500,9 +528,10 @@ Important flags:
 - optional `--path`
 - optional `--branch`
 
-Use `worktree cleanup` after `worktree land --keep-worktree`, after
-`worktree close --cleanup` was skipped because the worktree was dirty, or for
-manual recovery when a task worktree is no longer needed.
+`worktree cleanup` remains the lower-level WTAM operator alias. Prefer
+`task cleanup` for the same-thread agent workflow. Use `worktree cleanup`
+when you are operating explicitly on the WTAM worktree surface or recovering a
+task workspace from outside that worktree.
 
 ### `blackdog summary`
 

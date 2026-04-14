@@ -377,6 +377,7 @@ def start_task(
     model: str | None = None,
     reasoning_effort: str | None = None,
     prompt_receipt: PromptReceiptRecord | None = None,
+    user_prompt_receipt: PromptReceiptRecord | None = None,
     note: str | None = None,
     planning_store: PlanningStore | None = None,
     runtime_store: RuntimeStore | None = None,
@@ -413,6 +414,7 @@ def start_task(
         raise BacklogError(f"Task {task_id!r} is blocked by {', '.join(blocked_by)}")
     if prompt_receipt is None:
         raise BacklogError("task start requires a prompt receipt")
+    resolved_user_prompt_receipt = user_prompt_receipt or prompt_receipt
     if branch is _UNSET:
         resolved_branch = str(
             workset.branch_intent.get("integration_branch") or workset.branch_intent.get("target_branch") or ""
@@ -439,6 +441,7 @@ def start_task(
         model=model,
         reasoning_effort=reasoning_effort,
         prompt_receipt=prompt_receipt,
+        user_prompt_receipt=resolved_user_prompt_receipt,
         note=note,
     )
     next_workset_claim = current_workset_claim or WorksetClaimRecord(
@@ -516,6 +519,17 @@ def start_task(
             "model": attempt.model,
             "reasoning_effort": attempt.reasoning_effort,
             "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt is not None else None,
+            "prompt_source": attempt.prompt_receipt.source if attempt.prompt_receipt is not None else None,
+            "prompt_mode": attempt.prompt_receipt.mode if attempt.prompt_receipt is not None else None,
+            "user_prompt_hash": (
+                attempt.user_prompt_receipt.prompt_hash if attempt.user_prompt_receipt is not None else None
+            ),
+            "user_prompt_source": (
+                attempt.user_prompt_receipt.source if attempt.user_prompt_receipt is not None else None
+            ),
+            "user_prompt_mode": (
+                attempt.user_prompt_receipt.mode if attempt.user_prompt_receipt is not None else None
+            ),
         },
     )
     return attempt
@@ -588,6 +602,7 @@ def finish_task(
         model=existing_attempt.model,
         reasoning_effort=existing_attempt.reasoning_effort,
         prompt_receipt=existing_attempt.prompt_receipt,
+        user_prompt_receipt=existing_attempt.user_prompt_receipt,
         changed_paths=tuple(changed_paths),
         validations=tuple(validations),
         residuals=tuple(residuals),
@@ -668,6 +683,31 @@ def finish_task(
             "prompt_hash": (
                 finished_attempt.prompt_receipt.prompt_hash
                 if finished_attempt.prompt_receipt is not None
+                else None
+            ),
+            "prompt_source": (
+                finished_attempt.prompt_receipt.source
+                if finished_attempt.prompt_receipt is not None
+                else None
+            ),
+            "prompt_mode": (
+                finished_attempt.prompt_receipt.mode
+                if finished_attempt.prompt_receipt is not None
+                else None
+            ),
+            "user_prompt_hash": (
+                finished_attempt.user_prompt_receipt.prompt_hash
+                if finished_attempt.user_prompt_receipt is not None
+                else None
+            ),
+            "user_prompt_source": (
+                finished_attempt.user_prompt_receipt.source
+                if finished_attempt.user_prompt_receipt is not None
+                else None
+            ),
+            "user_prompt_mode": (
+                finished_attempt.user_prompt_receipt.mode
+                if finished_attempt.user_prompt_receipt is not None
                 else None
             ),
             "changed_paths": list(changed_paths),

@@ -73,9 +73,9 @@ def build_runtime_summary(profile: RepoProfile, *, workset_id: str | None = None
                         "branch": attempt.branch,
                         "start_commit": attempt.start_commit,
                         "execution_model": attempt.execution_model,
-                        "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                         "summary": attempt.summary,
                         "elapsed_seconds": attempt.elapsed_seconds,
+                        **_prompt_lineage_payload(attempt),
                     }
                     for attempt in workset.attempts[:3]
                 ],
@@ -92,9 +92,9 @@ def build_runtime_summary(profile: RepoProfile, *, workset_id: str | None = None
                 "branch": attempt.branch,
                 "start_commit": attempt.start_commit,
                 "execution_model": attempt.execution_model,
-                "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                 "summary": attempt.summary,
                 "elapsed_seconds": attempt.elapsed_seconds,
+                **_prompt_lineage_payload(attempt),
             }
             for attempt in model.recent_attempts[:5]
         ],
@@ -113,17 +113,70 @@ ATTEMPTS_TABLE_COLUMNS = (
     "execution_model",
     "model",
     "reasoning_effort",
+    "execution_prompt_source",
+    "user_prompt_source",
     "prompt_source",
+    "execution_prompt_mode",
+    "user_prompt_mode",
+    "prompt_mode",
     "branch",
     "target_branch",
     "start_commit",
     "commit",
     "landed_commit",
+    "execution_prompt_hash",
+    "user_prompt_hash",
     "prompt_hash",
     "changed_paths_count",
     "validation_summary",
     "summary",
 )
+
+
+def _prompt_lineage_payload(attempt: AttemptView) -> dict[str, Any]:
+    execution_prompt = attempt.prompt_receipt
+    user_prompt = attempt.user_prompt_receipt or execution_prompt
+    return {
+        "execution_prompt_source": execution_prompt.source if execution_prompt else None,
+        "execution_prompt_hash": execution_prompt.prompt_hash if execution_prompt else None,
+        "execution_prompt_mode": execution_prompt.mode if execution_prompt else None,
+        "user_prompt_source": user_prompt.source if user_prompt else None,
+        "user_prompt_hash": user_prompt.prompt_hash if user_prompt else None,
+        "user_prompt_mode": user_prompt.mode if user_prompt else None,
+        "prompt_source": execution_prompt.source if execution_prompt else None,
+        "prompt_hash": execution_prompt.prompt_hash if execution_prompt else None,
+        "prompt_mode": execution_prompt.mode if execution_prompt else None,
+    }
+
+
+def _prompt_receipt_label(source: str | None, prompt_hash: str | None, mode: str | None) -> str | None:
+    if prompt_hash is None:
+        return None
+    label = prompt_hash[:10]
+    if source:
+        label = f"{source}:{label}"
+    if mode:
+        label = f"{label}/{mode}"
+    return label
+
+
+def _attempt_prompt_lineage_text(attempt: AttemptView) -> str:
+    payload = _prompt_lineage_payload(attempt)
+    execution_label = _prompt_receipt_label(
+        payload["execution_prompt_source"],
+        payload["execution_prompt_hash"],
+        payload["execution_prompt_mode"],
+    )
+    user_label = _prompt_receipt_label(
+        payload["user_prompt_source"],
+        payload["user_prompt_hash"],
+        payload["user_prompt_mode"],
+    )
+    if execution_label is None:
+        return ""
+    if user_label is None or user_label == execution_label:
+        return f" prompt={execution_label}"
+    return f" user_prompt={user_label} execution_prompt={execution_label}"
 
 
 def _completed_attempt_items(model: RuntimeModel) -> list[tuple[WorksetView, AttemptView]]:
@@ -169,16 +222,15 @@ def build_attempts_table(profile: RepoProfile, *, workset_id: str | None = None)
                 "execution_model": attempt.execution_model,
                 "model": attempt.model,
                 "reasoning_effort": attempt.reasoning_effort,
-                "prompt_source": attempt.prompt_receipt.source if attempt.prompt_receipt else None,
                 "branch": attempt.branch,
                 "target_branch": attempt.target_branch,
                 "start_commit": attempt.start_commit,
                 "commit": attempt.commit,
                 "landed_commit": attempt.landed_commit,
-                "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                 "changed_paths_count": len(attempt.changed_paths),
                 "validation_summary": _validation_summary(attempt),
                 "summary": attempt.summary,
+                **_prompt_lineage_payload(attempt),
             }
         )
     return {
@@ -241,11 +293,10 @@ def build_attempts_summary(profile: RepoProfile, *, workset_id: str | None = Non
                 "branch": attempt.branch,
                 "commit": attempt.commit,
                 "landed_commit": attempt.landed_commit,
-                "prompt_source": attempt.prompt_receipt.source if attempt.prompt_receipt else None,
-                "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None,
                 "validation_summary": _validation_summary(attempt),
                 "elapsed_seconds": attempt.elapsed_seconds,
                 "summary": attempt.summary,
+                **_prompt_lineage_payload(attempt),
             }
             for workset, attempt in completed[:10]
         ],
@@ -353,11 +404,7 @@ def render_summary_text(model: RuntimeModel) -> str:
                 branch = f" branch={attempt.branch}" if attempt.branch else ""
                 worktree = f" worktree={attempt.worktree_role}" if attempt.worktree_role else ""
                 execution_model = f" exec={attempt.execution_model}" if attempt.execution_model else ""
-                prompt_hash = (
-                    f" prompt={attempt.prompt_receipt.prompt_hash[:10]}"
-                    if attempt.prompt_receipt is not None
-                    else ""
-                )
+                prompt_hash = _attempt_prompt_lineage_text(attempt)
                 lines.append(
                     (
                         f"    - {attempt.attempt_id} task={attempt.task_id} status={attempt.status} "
@@ -435,11 +482,19 @@ def render_attempts_summary_text(payload: dict[str, Any]) -> str:
                 if attempt["model"] or attempt["reasoning_effort"]
                 else ""
             )
-            prompt = (
-                f" prompt={attempt['prompt_source']}:{attempt['prompt_hash'][:10]}"
-                if attempt["prompt_hash"]
-                else ""
-            )
+            if attempt["user_prompt_hash"] and attempt["user_prompt_hash"] != attempt["execution_prompt_hash"]:
+                prompt = (
+                    " "
+                    f"user_prompt={_prompt_receipt_label(attempt['user_prompt_source'], attempt['user_prompt_hash'], attempt['user_prompt_mode'])} "
+                    f"execution_prompt={_prompt_receipt_label(attempt['execution_prompt_source'], attempt['execution_prompt_hash'], attempt['execution_prompt_mode'])}"
+                )
+            else:
+                label = _prompt_receipt_label(
+                    attempt["execution_prompt_source"],
+                    attempt["execution_prompt_hash"],
+                    attempt["execution_prompt_mode"],
+                )
+                prompt = f" prompt={label}" if label else ""
             summary = f" {attempt['summary']}" if attempt["summary"] else ""
             lines.append(
                 (

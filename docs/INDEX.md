@@ -36,6 +36,7 @@ CLI surfaces.
 - `blackdog task show`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cleanup`
 - `blackdog summary`
 - `blackdog next --workset`
 - `blackdog snapshot`

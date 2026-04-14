@@ -18,6 +18,7 @@ from blackdog.repo_lifecycle import (
 from blackdog.wtam import (
     WorktreeError,
     begin_task_worktree,
+    cleanup_task,
     cleanup_task_worktree,
     close_task,
     close_task_worktree,
@@ -259,6 +260,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_close.add_argument("--note")
     p_task_close.add_argument("--cleanup", action="store_true")
     p_task_close.add_argument("--json", action="store_true")
+
+    p_task_cleanup = task_subparsers.add_parser("cleanup", help="Remove a retained or leftover task workspace and delete its branch")
+    p_task_cleanup.add_argument("--project-root", default=".")
+    p_task_cleanup.add_argument("--workset")
+    p_task_cleanup.add_argument("--task")
+    p_task_cleanup.add_argument("--path")
+    p_task_cleanup.add_argument("--branch")
+    p_task_cleanup.add_argument("--json", action="store_true")
 
     p_worktree = subparsers.add_parser("worktree", help="WTAM branch-backed implementation workflow")
     worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
@@ -521,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 _emit_json({"task_show": payload})
             else:
-                print(render_show_text(payload), end="")
+                print(render_show_text(payload, surface="task"), end="")
             return 0
 
         if args.command == "task" and args.task_command == "land":
@@ -542,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 _emit_json({"landing": payload})
             else:
-                print(render_land_text(payload), end="")
+                print(render_land_text(payload, surface="task"), end="")
             return 0 if payload.get("status") == "success" else 1
 
         if args.command == "task" and args.task_command == "close":
@@ -564,7 +573,23 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 _emit_json({"closure": payload})
             else:
-                print(render_close_text(payload), end="")
+                print(render_close_text(payload, surface="task"), end="")
+            return 0
+
+        if args.command == "task" and args.task_command == "cleanup":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = cleanup_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                path=args.path,
+                branch=args.branch,
+                cwd=Path.cwd(),
+            )
+            if args.json:
+                _emit_json({"cleanup": payload})
+            else:
+                print(render_cleanup_text(payload, surface="task"), end="")
             return 0
 
         if args.command == "worktree" and args.worktree_command == "preflight":

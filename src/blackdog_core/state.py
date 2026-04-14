@@ -138,6 +138,7 @@ class TaskAttemptRecord:
     model: str | None = None
     reasoning_effort: str | None = None
     prompt_receipt: PromptReceiptRecord | None = None
+    user_prompt_receipt: PromptReceiptRecord | None = None
     changed_paths: tuple[str, ...] = ()
     validations: tuple[ValidationRecord, ...] = ()
     residuals: tuple[str, ...] = ()
@@ -393,6 +394,16 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
     status = _optional_text(payload.get("status")) or ATTEMPT_STATUS_IN_PROGRESS
     if status not in ATTEMPT_STATUSES:
         raise StoreError(f"attempt.status must be one of {sorted(ATTEMPT_STATUSES)} in {source}")
+    prompt_receipt = _prompt_receipt_from_payload(
+        payload.get("prompt_receipt"),
+        field="attempt.prompt_receipt",
+        source=source,
+    )
+    user_prompt_receipt = _prompt_receipt_from_payload(
+        payload.get("user_prompt_receipt"),
+        field="attempt.user_prompt_receipt",
+        source=source,
+    ) or prompt_receipt
     return TaskAttemptRecord(
         attempt_id=attempt_id,
         task_id=task_id,
@@ -416,7 +427,8 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         ),
         model=_optional_text(payload.get("model")),
         reasoning_effort=_optional_text(payload.get("reasoning_effort")),
-        prompt_receipt=_prompt_receipt_from_payload(payload.get("prompt_receipt"), field="attempt.prompt_receipt", source=source),
+        prompt_receipt=prompt_receipt,
+        user_prompt_receipt=user_prompt_receipt,
         changed_paths=_normalize_string_list(payload.get("changed_paths"), field="attempt.changed_paths", source=source),
         validations=_validations_from_payload(payload.get("validations"), field="attempt.validations", source=source),
         residuals=_normalize_string_list(payload.get("residuals"), field="attempt.residuals", source=source),
@@ -559,6 +571,17 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                                 "mode": attempt.prompt_receipt.mode,
                             }
                             if attempt.prompt_receipt is not None
+                            else None
+                        ),
+                        "user_prompt_receipt": (
+                            {
+                                "text": attempt.user_prompt_receipt.text,
+                                "prompt_hash": attempt.user_prompt_receipt.prompt_hash,
+                                "recorded_at": attempt.user_prompt_receipt.recorded_at,
+                                "source": attempt.user_prompt_receipt.source,
+                                "mode": attempt.user_prompt_receipt.mode,
+                            }
+                            if attempt.user_prompt_receipt is not None
                             else None
                         ),
                         "changed_paths": list(attempt.changed_paths),

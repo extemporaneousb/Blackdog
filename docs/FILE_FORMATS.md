@@ -154,6 +154,7 @@ Each attempt row contains:
 - optional `model`
 - optional `reasoning_effort`
 - optional `prompt_receipt`
+- optional `user_prompt_receipt`
 - `changed_paths`
 - `validations`
 - `residuals`
@@ -187,7 +188,17 @@ Allowed validation statuses:
 - `failed`
 - `skipped`
 
-`prompt_receipt`, when present, is one JSON object with:
+`prompt_receipt`, when present, is one JSON object with the execution prompt
+Blackdog actually ran:
+
+- `text`
+- `prompt_hash`
+- `recorded_at`
+- optional `source`
+- optional `mode`
+
+`user_prompt_receipt`, when present, is one JSON object with the raw user
+request Blackdog received before any prompt tuning:
 
 - `text`
 - `prompt_hash`
@@ -245,6 +256,9 @@ Current `worktree.start` payloads record:
 - `prompt_hash`
 - optional `prompt_source`
 - optional `prompt_mode`
+- `user_prompt_hash`
+- optional `user_prompt_source`
+- optional `user_prompt_mode`
 - `workspace_blackdog_path`
 - optional `runtime_mode`
 - optional `source_mode`

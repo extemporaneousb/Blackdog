@@ -102,6 +102,7 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog task show`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cleanup`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
 - `blackdog worktree start`

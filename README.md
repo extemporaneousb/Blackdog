@@ -25,6 +25,7 @@ The current shipped CLI is deliberately narrow:
 - `blackdog task show`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cleanup`
 - `blackdog summary`
 - `blackdog next --workset`
 - `blackdog snapshot`
@@ -69,9 +70,10 @@ claims, and cleans up the task worktree by default.
 `blackdog task begin` accepts `--prompt-mode raw|tuned` so the same-thread
 entrypoint can either record the user prompt directly or run it through the
 repo-local prompt tuning flow before starting the attempt.
-Use `blackdog worktree show` to inspect an active or latest attempt, and
-`blackdog worktree close --status blocked|failed|abandoned` to close an
-in-progress attempt without landing code.
+Use `blackdog task show` to inspect an active or latest same-thread task,
+`blackdog task close --status blocked|failed|abandoned` to close an
+in-progress attempt without landing code, and `blackdog task cleanup` to
+remove a retained task workspace.
 Use `blackdog next --workset WORKSET` for human or recovery-oriented task
 selection inside one workset; explicit planned-task flows can still go through
 `worktree preview` and `worktree start` when they need that control.

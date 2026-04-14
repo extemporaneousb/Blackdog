@@ -26,8 +26,10 @@ from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
     ATTEMPT_STATUS_BLOCKED,
     ATTEMPT_STATUS_FAILED,
+    ATTEMPT_STATUS_SUCCESS,
     PROMPT_MODE_RAW,
     PROMPT_MODE_TUNED,
+    PromptReceiptRecord,
     ValidationRecord,
     active_task_attempt,
     append_event,
@@ -387,7 +389,7 @@ def _resolve_task_begin_prompts(
     prompt: str,
     prompt_source: str | None,
     prompt_mode: str,
-) -> tuple[Any, Any]:
+) -> tuple[PromptReceiptRecord, PromptReceiptRecord]:
     user_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=PROMPT_MODE_RAW)
     if prompt_mode == PROMPT_MODE_TUNED:
         tuned = tune_prompt(
@@ -473,6 +475,7 @@ def _task_surface_actions(actions: list[str]) -> list[str]:
             "blackdog worktree close --status blocked|failed|abandoned",
             "blackdog task close --status blocked|failed|abandoned",
         )
+        text = text.replace("blackdog worktree cleanup", "blackdog task cleanup")
         rewritten.append(text)
     return rewritten
 
@@ -864,6 +867,7 @@ def start_task_worktree(
     prompt: str,
     prompt_source: str | None = None,
     prompt_mode: str = PROMPT_MODE_RAW,
+    user_prompt_receipt: PromptReceiptRecord | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
     branch: str | None = None,
@@ -919,6 +923,7 @@ def start_task_worktree(
             task_id=task_id,
             actor=actor,
             prompt_receipt=create_prompt_receipt(prompt, source=prompt_source, mode=prompt_mode),
+            user_prompt_receipt=user_prompt_receipt,
             workspace_identity=preview.workspace_identity,
             workspace_mode=WORKSPACE_MODE_GIT_WORKTREE,
             worktree_role=WORKTREE_ROLE_TASK,
@@ -975,6 +980,9 @@ def start_task_worktree(
             "prompt_hash": preview.prompt_hash,
             "prompt_source": preview.prompt_source,
             "prompt_mode": preview.prompt_mode,
+            "user_prompt_hash": user_prompt_receipt.prompt_hash if user_prompt_receipt is not None else preview.prompt_hash,
+            "user_prompt_source": user_prompt_receipt.source if user_prompt_receipt is not None else preview.prompt_source,
+            "user_prompt_mode": user_prompt_receipt.mode if user_prompt_receipt is not None else preview.prompt_mode,
             "workspace_blackdog_path": handlers.blackdog_path,
             "runtime_mode": handlers.runtime_mode,
             "source_mode": handlers.source_mode,
@@ -1033,6 +1041,7 @@ def begin_task_worktree(
         prompt=execution_receipt.text,
         prompt_source=execution_receipt.source,
         prompt_mode=prompt_mode,
+        user_prompt_receipt=user_receipt,
         model=model,
         reasoning_effort=reasoning_effort,
         branch=branch,
@@ -1150,6 +1159,31 @@ def close_task(
         followup_candidates=followup_candidates,
         note=note,
         cleanup=cleanup,
+    )
+
+
+def cleanup_task(
+    profile: RepoProfile,
+    *,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    path: str | None = None,
+    branch: str | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    resolved_workset, resolved_task, _attempt = _resolve_task_command_target(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        cwd=cwd,
+        allow_latest=True,
+    )
+    return cleanup_task_worktree(
+        profile,
+        workset_id=resolved_workset,
+        task_id=resolved_task,
+        path=path,
+        branch=branch,
     )
 
 
@@ -1428,10 +1462,10 @@ def inspect_task_worktree(
         recommended_actions.append("start a new WTAM attempt for this task")
     else:
         if worktree_dirty_paths or branch_ahead:
-            recommended_actions.append("run `blackdog worktree land` to create the canonical landed commit")
-        recommended_actions.append("run `blackdog worktree close --status blocked|failed|abandoned` to close without landing")
+            recommended_actions.append("run `blackdog task land` to create the canonical landed commit")
+        recommended_actions.append("run `blackdog task close --status blocked|failed|abandoned` to close without landing")
     if task_worktree is not None and not worktree_dirty_paths:
-        recommended_actions.append("run `blackdog worktree cleanup` if the task worktree is no longer needed")
+        recommended_actions.append("run `blackdog task cleanup` if the task workspace is no longer needed")
     return {
         "workset_id": workset_id,
         "task_id": task_id,
@@ -1454,6 +1488,36 @@ def inspect_task_worktree(
             branch=branch,
             target_branch=target_branch,
             worktree_path=task_worktree,
+        ),
+        "execution_prompt_hash": (
+            selected_attempt.prompt_receipt.prompt_hash
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "execution_prompt_source": (
+            selected_attempt.prompt_receipt.source
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "execution_prompt_mode": (
+            selected_attempt.prompt_receipt.mode
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "user_prompt_hash": (
+            selected_attempt.user_prompt_receipt.prompt_hash
+            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
+            else None
+        ),
+        "user_prompt_source": (
+            selected_attempt.user_prompt_receipt.source
+            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
+            else None
+        ),
+        "user_prompt_mode": (
+            selected_attempt.user_prompt_receipt.mode
+            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
+            else None
         ),
         "prompt_hash": (
             selected_attempt.prompt_receipt.prompt_hash
@@ -1609,12 +1673,29 @@ def cleanup_task_worktree(
     _run_git(primary_root, "worktree", "remove", str(resolved_path))
     deleted_branch = False
     if resolved_branch:
+        can_force_delete = (
+            latest_attempt is not None
+            and latest_attempt.branch == resolved_branch
+            and latest_attempt.status == ATTEMPT_STATUS_SUCCESS
+            and latest_attempt.landed_commit is not None
+        )
         delete = _run_git_no_check(primary_root, "branch", "-d", resolved_branch)
         if delete.returncode == 0:
             deleted_branch = True
-        elif "not found" not in (delete.stderr or "").lower():
-            detail = delete.stderr.strip() or delete.stdout.strip() or f"exit code {delete.returncode}"
-            raise WorktreeError(f"git branch -d {resolved_branch} failed: {detail}")
+        else:
+            detail_text = "\n".join(item for item in [delete.stderr, delete.stdout] if item).lower()
+            if "not found" in detail_text:
+                pass
+            elif "not fully merged" in detail_text and can_force_delete:
+                forced = _run_git_no_check(primary_root, "branch", "-D", resolved_branch)
+                if forced.returncode == 0:
+                    deleted_branch = True
+                else:
+                    detail = forced.stderr.strip() or forced.stdout.strip() or f"exit code {forced.returncode}"
+                    raise WorktreeError(f"git branch -D {resolved_branch} failed: {detail}")
+            else:
+                detail = delete.stderr.strip() or delete.stdout.strip() or f"exit code {delete.returncode}"
+                raise WorktreeError(f"git branch -d {resolved_branch} failed: {detail}")
     append_event(
         profile.paths.events_file,
         event_type="worktree.cleanup",
@@ -1729,28 +1810,29 @@ def render_preview_text(
     return "\n".join(lines) + "\n"
 
 
-def render_start_text(spec: WorktreeSpec) -> str:
+def render_start_text(spec: WorktreeSpec, *, surface: str = "worktree") -> str:
+    prefix = f"[blackdog-{surface}]"
     lines = [
-        f"[blackdog-worktree] created: {spec.worktree_path}",
-        f"[blackdog-worktree] branch: {spec.branch}",
-        f"[blackdog-worktree] base: {spec.base_ref} ({spec.base_commit})",
-        f"[blackdog-worktree] target branch: {spec.target_branch}",
-        f"[blackdog-worktree] task: {spec.task_id} {spec.task_title}",
-        f"[blackdog-worktree] attempt: {spec.attempt_id}",
-        f"[blackdog-worktree] prompt hash: {spec.prompt_hash}",
-        f"[blackdog-worktree] prompt source: {spec.prompt_source or 'unspecified'}",
-        f"[blackdog-worktree] prompt mode: {spec.prompt_mode or 'unset'}",
-        f"[blackdog-worktree] workspace CLI: {spec.workspace_blackdog_path or 'missing'}",
-        f"[blackdog-worktree] runtime mode: {spec.runtime_mode or 'unset'}",
+        f"{prefix} created: {spec.worktree_path}",
+        f"{prefix} branch: {spec.branch}",
+        f"{prefix} base: {spec.base_ref} ({spec.base_commit})",
+        f"{prefix} target branch: {spec.target_branch}",
+        f"{prefix} task: {spec.task_id} {spec.task_title}",
+        f"{prefix} attempt: {spec.attempt_id}",
+        f"{prefix} prompt hash: {spec.prompt_hash}",
+        f"{prefix} prompt source: {spec.prompt_source or 'unspecified'}",
+        f"{prefix} prompt mode: {spec.prompt_mode or 'unset'}",
+        f"{prefix} workspace CLI: {spec.workspace_blackdog_path or 'missing'}",
+        f"{prefix} runtime mode: {spec.runtime_mode or 'unset'}",
     ]
     if spec.script_policy:
-        lines.append(f"[blackdog-worktree] script policy: {spec.script_policy}")
+        lines.append(f"{prefix} script policy: {spec.script_policy}")
     if spec.source_mode:
-        lines.append(f"[blackdog-worktree] source mode: {spec.source_mode}")
+        lines.append(f"{prefix} source mode: {spec.source_mode}")
     if spec.source_root:
-        lines.append(f"[blackdog-worktree] source root: {spec.source_root}")
+        lines.append(f"{prefix} source root: {spec.source_root}")
     if spec.handlers.actions:
-        lines.append("[blackdog-worktree] handler results:")
+        lines.append(f"{prefix} handler results:")
         for action in spec.handlers.actions:
             target = f" -> {action.target_path}" if action.target_path else ""
             timing = "" if action.elapsed_ms is None else f" [{action.elapsed_ms}ms]"
@@ -1760,20 +1842,23 @@ def render_start_text(spec: WorktreeSpec) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_land_text(payload: dict[str, Any]) -> str:
+def render_land_text(payload: dict[str, Any], *, surface: str = "worktree") -> str:
+    prefix = f"[blackdog-{surface}]"
+    workspace_label = "task workspace" if surface == "task" else "worktree"
+    target_label = "checkout" if surface == "task" else "worktree"
     if payload.get("status") and payload["status"] != "success":
-        return render_close_text(payload)
+        return render_close_text(payload, surface=surface)
     lines = [
-        f"[blackdog-worktree] landed: {payload['branch']} -> {payload['target_branch']}",
-        f"[blackdog-worktree] target worktree: {payload['target_worktree']}",
-        f"[blackdog-worktree] landed commit: {payload['landed_commit']}",
+        f"{prefix} landed: {payload['branch']} -> {payload['target_branch']}",
+        f"{prefix} target {target_label}: {payload['target_worktree']}",
+        f"{prefix} landed commit: {payload['landed_commit']}",
     ]
     if payload["changed_paths"]:
-        lines.append(f"[blackdog-worktree] changed paths: {', '.join(payload['changed_paths'])}")
+        lines.append(f"{prefix} changed paths: {', '.join(payload['changed_paths'])}")
     if payload.get("cleaned_worktree"):
-        lines.append(f"[blackdog-worktree] removed task worktree: {payload['cleaned_worktree']}")
+        lines.append(f"{prefix} removed {workspace_label}: {payload['cleaned_worktree']}")
     if payload.get("deleted_branch"):
-        lines.append(f"[blackdog-worktree] deleted branch: {payload['branch']}")
+        lines.append(f"{prefix} deleted branch: {payload['branch']}")
     return "\n".join(lines) + "\n"
 
 
@@ -1788,69 +1873,84 @@ def render_task_begin_text(spec: TaskBeginSpec, *, show_prompt: bool = False) ->
     if show_prompt and spec.execution_prompt_text is not None:
         lines.append("[blackdog-task] execution prompt:")
         lines.extend(f"  {line}" for line in spec.execution_prompt_text.splitlines())
-    lines.append(render_start_text(spec.worktree).rstrip())
+    lines.append(render_start_text(spec.worktree, surface="task").rstrip())
     return "\n".join(lines) + "\n"
 
 
-def render_show_text(payload: dict[str, Any]) -> str:
+def render_show_text(payload: dict[str, Any], *, surface: str = "worktree") -> str:
+    prefix = f"[blackdog-{surface}]"
+    workspace_label = "task workspace" if surface == "task" else "worktree"
     lines = [
-        f"[blackdog-worktree] show: {payload['task_id']} {payload['task_title']}",
-        f"[blackdog-worktree] active attempt: {'yes' if payload['active_attempt'] else 'no'}",
+        f"{prefix} show: {payload['task_id']} {payload['task_title']}",
+        f"{prefix} active attempt: {'yes' if payload['active_attempt'] else 'no'}",
     ]
     if payload["attempt_id"]:
-        lines.append(f"[blackdog-worktree] attempt: {payload['attempt_id']}")
+        lines.append(f"{prefix} attempt: {payload['attempt_id']}")
     if payload["latest_attempt_status"]:
-        lines.append(f"[blackdog-worktree] latest attempt: {payload['latest_attempt_status']} {payload['latest_attempt_id']}")
+        lines.append(f"{prefix} latest attempt: {payload['latest_attempt_status']} {payload['latest_attempt_id']}")
     if payload["latest_attempt_summary"]:
-        lines.append(f"[blackdog-worktree] latest summary: {payload['latest_attempt_summary']}")
+        lines.append(f"{prefix} latest summary: {payload['latest_attempt_summary']}")
     if payload["branch"]:
-        lines.append(f"[blackdog-worktree] branch: {payload['branch']}")
+        lines.append(f"{prefix} branch: {payload['branch']}")
     if payload["target_branch"]:
-        lines.append(f"[blackdog-worktree] target branch: {payload['target_branch']}")
+        lines.append(f"{prefix} target branch: {payload['target_branch']}")
     if payload["worktree_path"]:
-        lines.append(f"[blackdog-worktree] worktree: {payload['worktree_path']}")
-    lines.append(f"[blackdog-worktree] worktree dirty: {'yes' if payload['worktree_dirty'] else 'no'}")
-    lines.append(f"[blackdog-worktree] branch ahead of target: {'yes' if payload['branch_ahead_of_target'] else 'no'}")
-    lines.append(f"[blackdog-worktree] primary dirty: {'yes' if payload['primary_dirty'] else 'no'}")
+        lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
+    lines.append(f"{prefix} {workspace_label} dirty: {'yes' if payload['worktree_dirty'] else 'no'}")
+    lines.append(f"{prefix} branch ahead of target: {'yes' if payload['branch_ahead_of_target'] else 'no'}")
+    lines.append(f"{prefix} primary dirty: {'yes' if payload['primary_dirty'] else 'no'}")
     if payload["worktree_dirty_paths"]:
-        lines.append(f"[blackdog-worktree] worktree dirty paths: {', '.join(payload['worktree_dirty_paths'])}")
+        lines.append(f"{prefix} {workspace_label} dirty paths: {', '.join(payload['worktree_dirty_paths'])}")
     if payload["changed_paths"]:
-        lines.append(f"[blackdog-worktree] attempt paths: {', '.join(payload['changed_paths'])}")
-    if payload["prompt_hash"]:
-        lines.append(f"[blackdog-worktree] prompt hash: {payload['prompt_hash']}")
+        lines.append(f"{prefix} attempt paths: {', '.join(payload['changed_paths'])}")
+    if payload["user_prompt_hash"]:
+        lines.append(f"{prefix} user prompt hash: {payload['user_prompt_hash']}")
+    if payload["user_prompt_source"]:
+        lines.append(f"{prefix} user prompt source: {payload['user_prompt_source']}")
+    if payload["user_prompt_mode"]:
+        lines.append(f"{prefix} user prompt mode: {payload['user_prompt_mode']}")
+    if payload["execution_prompt_hash"]:
+        lines.append(f"{prefix} execution prompt hash: {payload['execution_prompt_hash']}")
+    if payload["execution_prompt_source"]:
+        lines.append(f"{prefix} execution prompt source: {payload['execution_prompt_source']}")
+    if payload["execution_prompt_mode"]:
+        lines.append(f"{prefix} execution prompt mode: {payload['execution_prompt_mode']}")
     if payload["recommended_actions"]:
-        lines.append("[blackdog-worktree] recommended actions:")
+        lines.append(f"{prefix} recommended actions:")
         lines.extend(f"  - {item}" for item in payload["recommended_actions"])
     return "\n".join(lines) + "\n"
 
 
-def render_close_text(payload: dict[str, Any]) -> str:
+def render_close_text(payload: dict[str, Any], *, surface: str = "worktree") -> str:
+    prefix = f"[blackdog-{surface}]"
+    workspace_label = "task workspace" if surface == "task" else "worktree"
     lines = [
-        f"[blackdog-worktree] closed: {payload['task_id']} attempt={payload['attempt_id']} status={payload['status']}",
-        f"[blackdog-worktree] summary: {payload['summary']}",
+        f"{prefix} closed: {payload['task_id']} attempt={payload['attempt_id']} status={payload['status']}",
+        f"{prefix} summary: {payload['summary']}",
     ]
     if payload.get("branch"):
-        lines.append(f"[blackdog-worktree] branch: {payload['branch']}")
+        lines.append(f"{prefix} branch: {payload['branch']}")
     if payload.get("target_branch"):
-        lines.append(f"[blackdog-worktree] target branch: {payload['target_branch']}")
+        lines.append(f"{prefix} target branch: {payload['target_branch']}")
     if payload.get("worktree_path"):
-        lines.append(f"[blackdog-worktree] worktree: {payload['worktree_path']}")
+        lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
     if payload.get("changed_paths"):
-        lines.append(f"[blackdog-worktree] changed paths: {', '.join(payload['changed_paths'])}")
+        lines.append(f"{prefix} changed paths: {', '.join(payload['changed_paths'])}")
     if payload.get("cleanup_performed") and payload.get("cleanup"):
-        lines.append(f"[blackdog-worktree] removed: {payload['cleanup']['worktree_path']}")
+        lines.append(f"{prefix} removed: {payload['cleanup']['worktree_path']}")
     elif payload.get("cleanup_reason"):
-        lines.append(f"[blackdog-worktree] cleanup: {payload['cleanup_reason']}")
+        lines.append(f"{prefix} cleanup: {payload['cleanup_reason']}")
     if payload.get("error"):
-        lines.append(f"[blackdog-worktree] error: {payload['error']}")
+        lines.append(f"{prefix} error: {payload['error']}")
     return "\n".join(lines) + "\n"
 
 
-def render_cleanup_text(payload: dict[str, Any]) -> str:
-    lines = [f"[blackdog-worktree] removed: {payload['worktree_path']}"]
+def render_cleanup_text(payload: dict[str, Any], *, surface: str = "worktree") -> str:
+    prefix = f"[blackdog-{surface}]"
+    lines = [f"{prefix} removed: {payload['worktree_path']}"]
     if payload["branch"]:
         action = "deleted" if payload["deleted_branch"] else "kept"
-        lines.append(f"[blackdog-worktree] branch: {payload['branch']} ({action})")
+        lines.append(f"{prefix} branch: {payload['branch']} ({action})")
     return "\n".join(lines) + "\n"
 
 
@@ -1867,6 +1967,7 @@ __all__ = [
     "branch_ahead_of_target",
     "branch_changed_paths",
     "begin_task_worktree",
+    "cleanup_task",
     "cleanup_task_worktree",
     "close_task",
     "close_task_worktree",

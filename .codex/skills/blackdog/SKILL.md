@@ -16,7 +16,7 @@ The repo-local blackdog.toml handler blocks own env/runtime setup.
 
 - repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
 - workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`
-- same-thread task execution: `task begin`, `task show`, `task land`, `task close`
+- same-thread task execution: `task begin`, `task show`, `task land`, `task close`, `task cleanup`
 - WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`
 
 ## Repo Lifecycle Flow
@@ -33,7 +33,7 @@ The repo-local blackdog.toml handler blocks own env/runtime setup.
 2. make kept changes only inside the returned task worktree
 3. `./.VE/bin/blackdog task land --project-root . --summary "..."`
 4. if recovery is needed from that task worktree, use `./.VE/bin/blackdog task show --project-root .` or `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary "..."`
-5. use `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK` only for retained or leftover task worktrees
+5. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`
 
 ## Explicit Planned-Task Flow
 
