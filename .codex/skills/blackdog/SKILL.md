@@ -6,7 +6,8 @@ description: "Use the repo-local Blackdog CLI and contract for Blackdog."
 # Repo Skill: Blackdog
 
 Use the repo-local Blackdog CLI instead of mutating control-root files by hand.
-The repo-local blackdog.toml handler blocks own env/runtime setup.
+`blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.
+Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the generated Blackdog summary.
 
 ## CLI Entry Point
 
@@ -16,6 +17,7 @@ The repo-local blackdog.toml handler blocks own env/runtime setup.
 
 - repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
 - workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`
+- supervisor execution: `supervisor start`, `supervisor show`, `supervisor checkpoint`, `supervisor release`
 - same-thread task execution: `task begin`, `task show`, `task land`, `task close`, `task cleanup`
 - WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`
 
@@ -26,6 +28,14 @@ The repo-local blackdog.toml handler blocks own env/runtime setup.
 3. `./.VE/bin/blackdog prompt preview --project-root . --prompt "..."`
 4. `./.VE/bin/blackdog prompt tune --project-root . --prompt "..."`
 5. review the routed docs below before editing
+
+## Supervisor Flow
+
+1. `./.VE/bin/blackdog supervisor start --project-root . --workset WORKSET --actor SUPERVISOR`
+2. launch worker tasks from the emitted dispatch set through `task begin`
+3. `./.VE/bin/blackdog supervisor show --project-root . --workset WORKSET`
+4. `./.VE/bin/blackdog supervisor checkpoint --project-root . --workset WORKSET --actor SUPERVISOR --note "..."`
+5. after the workset is reviewed or complete, run `./.VE/bin/blackdog supervisor release --project-root . --workset WORKSET --actor SUPERVISOR --summary "..."`
 
 ## Same-Thread Task Flow
 

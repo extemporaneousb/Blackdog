@@ -17,6 +17,7 @@ from .state import (
     ATTEMPT_STATUS_SUCCESS,
     EXECUTION_MODELS,
     EXECUTION_MODEL_DIRECT_WTAM,
+    EXECUTION_MODEL_WORKSET_MANAGER,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_DONE,
     TASK_STATUS_IN_PROGRESS,
@@ -359,6 +360,116 @@ def _require_workset_and_task(
     raise BacklogError(f"Unknown task {task_id!r} in workset {workset_id!r}")
 
 
+def claim_workset_manager(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    actor: str,
+    note: str | None = None,
+    planning_store: PlanningStore | None = None,
+    runtime_store: RuntimeStore | None = None,
+) -> WorksetClaimRecord:
+    planning_state = load_planning_state(profile.paths, planning_store)
+    workset = find_workset(planning_state, workset_id)
+    if workset is None:
+        raise BacklogError(f"Unknown workset {workset_id!r}")
+    runtime_state = load_runtime_state(profile.paths, runtime_store)
+    current_workset_claim = workset_claim(runtime_state, workset_id)
+    if current_workset_claim is not None:
+        if current_workset_claim.execution_model != EXECUTION_MODEL_WORKSET_MANAGER:
+            raise BacklogError(
+                f"Workset {workset_id!r} is already claimed for execution_model "
+                f"{current_workset_claim.execution_model!r}"
+            )
+        if current_workset_claim.actor != actor:
+            raise BacklogError(f"Workset {workset_id!r} is already claimed by {current_workset_claim.actor}")
+        return current_workset_claim
+
+    claimed_at = now_iso()
+    next_workset_claim = WorksetClaimRecord(
+        actor=actor,
+        execution_model=EXECUTION_MODEL_WORKSET_MANAGER,
+        claimed_at=claimed_at,
+        note=note,
+    )
+    next_runtime_state = merge_workset_runtime(
+        runtime_state,
+        workset_id=workset_id,
+        task_ids={item.task_id for item in workset.tasks},
+        incoming_records=None,
+        incoming_workset_claim=next_workset_claim,
+    )
+    save_runtime_state(profile.paths, next_runtime_state, runtime_store)
+    append_event(
+        profile.paths.events_file,
+        event_type="workset.claim",
+        actor=actor,
+        payload={
+            "workset_id": workset_id,
+            "execution_model": EXECUTION_MODEL_WORKSET_MANAGER,
+            "claimed_at": claimed_at,
+            "note": note,
+        },
+    )
+    return next_workset_claim
+
+
+def release_workset_manager(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    actor: str,
+    summary: str | None = None,
+    note: str | None = None,
+    planning_store: PlanningStore | None = None,
+    runtime_store: RuntimeStore | None = None,
+) -> WorksetClaimRecord:
+    planning_state = load_planning_state(profile.paths, planning_store)
+    workset = find_workset(planning_state, workset_id)
+    if workset is None:
+        raise BacklogError(f"Unknown workset {workset_id!r}")
+    runtime_state = load_runtime_state(profile.paths, runtime_store)
+    current_workset_claim = workset_claim(runtime_state, workset_id)
+    if current_workset_claim is None:
+        raise BacklogError(f"Workset {workset_id!r} is not currently claimed")
+    if current_workset_claim.execution_model != EXECUTION_MODEL_WORKSET_MANAGER:
+        raise BacklogError(
+            f"Workset {workset_id!r} is claimed for execution_model "
+            f"{current_workset_claim.execution_model!r}, not {EXECUTION_MODEL_WORKSET_MANAGER!r}"
+        )
+    if current_workset_claim.actor != actor:
+        raise BacklogError(f"Workset {workset_id!r} is owned by {current_workset_claim.actor}, not {actor}")
+    current_task_claims = task_claim_index(runtime_state, workset_id)
+    if current_task_claims:
+        active_task_list = ", ".join(sorted(current_task_claims))
+        raise BacklogError(
+            f"Workset {workset_id!r} still has active task claims: {active_task_list}"
+        )
+    next_runtime_state = merge_workset_runtime(
+        runtime_state,
+        workset_id=workset_id,
+        task_ids={item.task_id for item in workset.tasks},
+        incoming_records=None,
+        incoming_workset_claim=None,
+    )
+    save_runtime_state(profile.paths, next_runtime_state, runtime_store)
+    released_at = now_iso()
+    append_event(
+        profile.paths.events_file,
+        event_type="workset.release",
+        actor=actor,
+        payload={
+            "workset_id": workset_id,
+            "released_at": released_at,
+            "status": "released",
+            "execution_model": EXECUTION_MODEL_WORKSET_MANAGER,
+            "summary": summary,
+            "note": note,
+        },
+    )
+    return current_workset_claim
+
+
 def start_task(
     profile: RepoProfile,
     *,
@@ -403,12 +514,21 @@ def start_task(
     if current_task_claim is not None:
         raise BacklogError(f"Task {task_id!r} is already claimed by {current_task_claim.actor}")
     current_workset_claim = workset_claim(runtime_state, workset_id)
-    if current_workset_claim is not None and current_workset_claim.actor != actor:
-        raise BacklogError(f"Workset {workset_id!r} is already claimed by {current_workset_claim.actor}")
-    if current_workset_claim is not None and current_workset_claim.execution_model != execution_model:
-        raise BacklogError(
-            f"Workset {workset_id!r} is already claimed for execution_model {current_workset_claim.execution_model!r}"
-        )
+    if current_workset_claim is not None:
+        if current_workset_claim.execution_model == EXECUTION_MODEL_WORKSET_MANAGER:
+            if execution_model != EXECUTION_MODEL_DIRECT_WTAM:
+                raise BacklogError(
+                    f"Workset {workset_id!r} is supervisor-claimed; child tasks must use "
+                    f"{EXECUTION_MODEL_DIRECT_WTAM!r}"
+                )
+        else:
+            if current_workset_claim.actor != actor:
+                raise BacklogError(f"Workset {workset_id!r} is already claimed by {current_workset_claim.actor}")
+            if current_workset_claim.execution_model != execution_model:
+                raise BacklogError(
+                    f"Workset {workset_id!r} is already claimed for execution_model "
+                    f"{current_workset_claim.execution_model!r}"
+                )
     dependencies_ready, blocked_by = task_dependencies_ready(workset, task_id=task_id, runtime_index=runtime_index)
     if not dependencies_ready:
         raise BacklogError(f"Task {task_id!r} is blocked by {', '.join(blocked_by)}")
@@ -631,7 +751,11 @@ def finish_task(
         if claim_task_id != task_id
     )
     current_workset_claim = workset_claim(runtime_state, workset_id)
-    release_workset_claim = current_workset_claim is not None and not remaining_task_claims
+    release_workset_claim = (
+        current_workset_claim is not None
+        and current_workset_claim.execution_model != EXECUTION_MODEL_WORKSET_MANAGER
+        and not remaining_task_claims
+    )
     next_runtime_state = merge_workset_runtime(
         runtime_state,
         workset_id=workset_id,
@@ -763,12 +887,14 @@ __all__ = [
     "PlanningStore",
     "TaskSpec",
     "Workset",
+    "claim_workset_manager",
     "default_planning_state",
     "find_workset",
     "finish_task",
     "load_planning_state",
     "next_ready_tasks",
     "planning_state_to_payload",
+    "release_workset_manager",
     "save_planning_state",
     "start_task",
     "task_dependencies_ready",

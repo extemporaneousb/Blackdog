@@ -99,6 +99,10 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
+- `blackdog supervisor start`
+- `blackdog supervisor show`
+- `blackdog supervisor checkpoint`
+- `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task land`
@@ -145,29 +149,32 @@ These commands exercise one end-to-end vertical slice:
 1. create or update planning and runtime state
 2. start one same-thread task envelope in one command while optionally tuning
    the recorded execution prompt
-3. inspect the WTAM contract before kept changes when the operator needs an
+3. claim one workset for `workset_manager`, compute dispatch candidates up to a
+   parallelism cap, and checkpoint supervisor review without mutating worker
+   attempts directly
+4. inspect the WTAM contract before kept changes when the operator needs an
    explicit planned-task flow
-4. preview one branch-backed task execution plan, including prompt receipt
+5. preview one branch-backed task execution plan, including prompt receipt
    metadata, repo contract inputs, and the ordered handler plan for the task
    worktree
-5. start one branch-backed task worktree with a prompt receipt, a provisioned
+6. start one branch-backed task worktree with a prompt receipt, a provisioned
    worktree-local `.VE`, repo-root overlay wiring, root-bin fallback links, a
    worktree-local launcher, and real git execution identity while claiming both
    the workset and the task
-6. inspect one active or latest task attempt for recovery-oriented worktree and
+7. inspect one active or latest task attempt for recovery-oriented worktree and
    claim state
-7. land one successful task attempt through a canonical landed commit while
+8. land one successful task attempt through a canonical landed commit while
    recording structured result, validation, commit lineage, releasing claims,
    and cleaning up the task worktree by default
-8. close one blocked, failed, or abandoned task attempt without landing code
-9. clean up any retained or leftover task worktree
-10. read summary/status
-11. identify the next runnable tasks
-12. emit a machine-readable runtime snapshot
+9. close one blocked, failed, or abandoned task attempt without landing code
+10. clean up any retained or leftover task worktree
+11. read summary/status
+12. identify the next runnable tasks
+13. emit a machine-readable runtime snapshot
 
 ## Deferred Or Removed Product Code
 
 This repo no longer keeps legacy backlog, board, inbox, bootstrap, or
-compatibility-plan code as dormant historical baggage. Supervisor/workset-manager
-mode is still a first-class product target, but any rebuilt supervisor surface
-must target the new claim/runtime contract directly.
+compatibility-plan code as dormant historical baggage. The rebuilt supervisor
+surface now targets the new claim/runtime contract directly; legacy
+backlog-era supervisor code remains removed.

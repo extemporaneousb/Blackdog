@@ -17,6 +17,14 @@ from blackdog.repo_lifecycle import (
     render_repo_lifecycle_text,
     update_repo,
 )
+from blackdog.workset_manager import (
+    SupervisorError,
+    checkpoint_supervisor,
+    release_supervisor,
+    render_supervisor_text,
+    show_supervisor,
+    start_supervisor,
+)
 from blackdog.wtam import (
     WorktreeError,
     begin_task_worktree,
@@ -208,6 +216,40 @@ def _build_parser() -> argparse.ArgumentParser:
     p_workset_put.add_argument("--project-root", default=".")
     p_workset_put.add_argument("--json")
     p_workset_put.add_argument("--file")
+
+    p_supervisor = subparsers.add_parser("supervisor", help="Checkpoint and coordinate one workset-manager flow")
+    supervisor_subparsers = p_supervisor.add_subparsers(dest="supervisor_command", required=True)
+
+    p_supervisor_start = supervisor_subparsers.add_parser("start", help="Claim one workset for supervisor-managed execution")
+    p_supervisor_start.add_argument("--project-root", default=".")
+    p_supervisor_start.add_argument("--workset", required=True)
+    p_supervisor_start.add_argument("--actor", required=True)
+    p_supervisor_start.add_argument("--parallelism", type=int, default=1)
+    p_supervisor_start.add_argument("--note")
+    p_supervisor_start.add_argument("--json", action="store_true")
+
+    p_supervisor_show = supervisor_subparsers.add_parser("show", help="Inspect the current supervisor view for one workset")
+    p_supervisor_show.add_argument("--project-root", default=".")
+    p_supervisor_show.add_argument("--workset", required=True)
+    p_supervisor_show.add_argument("--parallelism", type=int, default=1)
+    p_supervisor_show.add_argument("--json", action="store_true")
+
+    p_supervisor_checkpoint = supervisor_subparsers.add_parser("checkpoint", help="Record a supervisor checkpoint and emit the current dispatch view")
+    p_supervisor_checkpoint.add_argument("--project-root", default=".")
+    p_supervisor_checkpoint.add_argument("--workset", required=True)
+    p_supervisor_checkpoint.add_argument("--actor", required=True)
+    p_supervisor_checkpoint.add_argument("--parallelism", type=int, default=1)
+    p_supervisor_checkpoint.add_argument("--note")
+    p_supervisor_checkpoint.add_argument("--json", action="store_true")
+
+    p_supervisor_release = supervisor_subparsers.add_parser("release", help="Release the supervisor claim after review or completion")
+    p_supervisor_release.add_argument("--project-root", default=".")
+    p_supervisor_release.add_argument("--workset", required=True)
+    p_supervisor_release.add_argument("--actor", required=True)
+    p_supervisor_release.add_argument("--parallelism", type=int, default=1)
+    p_supervisor_release.add_argument("--summary")
+    p_supervisor_release.add_argument("--note")
+    p_supervisor_release.add_argument("--json", action="store_true")
 
     p_task = subparsers.add_parser("task", help="Composed single-agent task workflow")
     task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
@@ -503,6 +545,65 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json({"workset": workset_to_payload(workset)})
             return 0
 
+        if args.command == "supervisor" and args.supervisor_command == "start":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = start_supervisor(
+                profile,
+                workset_id=args.workset,
+                actor=args.actor,
+                parallelism=args.parallelism,
+                note=args.note,
+            )
+            if args.json:
+                _emit_json({"supervisor": payload.to_dict()})
+            else:
+                print(render_supervisor_text(payload), end="")
+            return 0
+
+        if args.command == "supervisor" and args.supervisor_command == "show":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = show_supervisor(
+                profile,
+                workset_id=args.workset,
+                parallelism=args.parallelism,
+            )
+            if args.json:
+                _emit_json({"supervisor": payload.to_dict()})
+            else:
+                print(render_supervisor_text(payload), end="")
+            return 0
+
+        if args.command == "supervisor" and args.supervisor_command == "checkpoint":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = checkpoint_supervisor(
+                profile,
+                workset_id=args.workset,
+                actor=args.actor,
+                parallelism=args.parallelism,
+                note=args.note,
+            )
+            if args.json:
+                _emit_json({"supervisor": payload.to_dict()})
+            else:
+                print(render_supervisor_text(payload), end="")
+            return 0
+
+        if args.command == "supervisor" and args.supervisor_command == "release":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = release_supervisor(
+                profile,
+                workset_id=args.workset,
+                actor=args.actor,
+                summary=args.summary,
+                parallelism=args.parallelism,
+                note=args.note,
+            )
+            if args.json:
+                _emit_json({"supervisor": payload.to_dict()})
+            else:
+                print(render_supervisor_text(payload), end="")
+            return 0
+
         if args.command == "task" and args.task_command == "begin":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
@@ -748,6 +849,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         raise BacklogError(f"Unsupported command: {args.command}")
-    except (BacklogError, ConfigError, HandlerError, RepoLifecycleError, StoreError, WorktreeError, OSError, ValueError) as exc:
+    except (
+        BacklogError,
+        ConfigError,
+        HandlerError,
+        RepoLifecycleError,
+        StoreError,
+        SupervisorError,
+        WorktreeError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(str(exc), file=sys.stderr)
         return 1

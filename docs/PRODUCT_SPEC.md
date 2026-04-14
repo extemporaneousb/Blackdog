@@ -74,8 +74,8 @@ pick work, and record results.
 
 ### Coordinating Agent
 
-Optional higher-level agent that supervises or steers more than one task
-attempt.
+Optional higher-level agent that supervises a workset DAG, checkpoints worker
+results, and dispatches follow-on tasks or parallel branches.
 
 ## Desired Blackdog Functionality
 
@@ -91,6 +91,8 @@ Blackdog is usable when it reliably supports these jobs:
 7. Let a human redirect or reshape work without losing history.
 8. Recover after interruption without forcing the user to reconstruct state
    from chat logs.
+9. Coordinate one workset through supervisor checkpoints while child workers
+   execute tasks through the same WTAM lifecycle.
 
 It is also usable when it supports these repo lifecycle jobs without pretending
 they are task execution:
@@ -309,6 +311,7 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
+- supervisor start/show/checkpoint/release for `workset_manager`
 - same-thread task begin/show/land/close/cleanup
 - worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
 - raw user-prompt and execution-prompt capture
@@ -335,6 +338,10 @@ This is the decision frame for the rest of the repo.
 - `events.jsonl`
 - workset/task typed model
 - workset/task claim model
+- `supervisor start`
+- `supervisor show`
+- `supervisor checkpoint`
+- `supervisor release`
 - `task begin`
 - `task show`
 - `task land`
@@ -459,5 +466,5 @@ direct-agent workflow:
 6. ask for status after one or more tasks
 7. survive at least one interruption and continue from durable state
 
-Supervisor-led multi-agent execution is valuable, but it should not block that
-direct-mode usability target.
+Supervisor-led workset execution is now part of the shipped surface, but it
+must continue to build on the direct-mode worker path rather than replacing it.

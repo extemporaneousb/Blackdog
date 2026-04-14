@@ -198,6 +198,106 @@ Payload shape:
 - `tasks`
 - optional `task_states`
 
+### `blackdog supervisor start`
+
+Claim one workset for supervisor-managed execution and emit the current
+dispatch view.
+
+```bash
+blackdog supervisor start \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --actor codex \
+  --parallelism 2
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- `--actor`
+- optional `--parallelism`
+- optional `--note`
+
+`supervisor start` claims the workset for `workset_manager`. It does not start
+worker attempts by itself. Instead it returns the current active tasks, ready
+tasks, and a bounded dispatch set for the requested parallelism so a
+coordinating agent can launch worker conversations intentionally.
+
+### `blackdog supervisor show`
+
+Inspect the current supervisor view for one workset without mutating runtime
+state.
+
+```bash
+blackdog supervisor show --project-root /path/to/repo --workset kernel
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- optional `--parallelism`
+
+`supervisor show` reports:
+
+- the current workset claim
+- the current phase such as `dispatch`, `monitor`, `blocked`, or `complete`
+- active worker tasks
+- ready tasks and dispatch candidates up to the parallelism cap
+- recent attempts and recommended next actions
+
+### `blackdog supervisor checkpoint`
+
+Record a supervisor review checkpoint and emit the current dispatch view.
+
+```bash
+blackdog supervisor checkpoint \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --actor codex \
+  --parallelism 2 \
+  --note "reviewed task KERN-1"
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- `--actor`
+- optional `--parallelism`
+- optional `--note`
+
+`supervisor checkpoint` requires an active `workset_manager` claim owned by the
+given actor. It appends one `supervisor.checkpoint` event and returns the same
+dispatch/monitor view as `supervisor show`.
+
+### `blackdog supervisor release`
+
+Release the supervisor claim after review or completion.
+
+```bash
+blackdog supervisor release \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --actor codex \
+  --summary "kernel workset complete"
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- `--actor`
+- optional `--parallelism`
+- optional `--summary`
+- optional `--note`
+
+`supervisor release` refuses to release the workset while task claims are still
+active. Child worker attempts must finish or close first. Once released, the
+command returns the post-release workset view so the coordinating agent can
+summarize or replan.
+
 ### `blackdog task begin`
 
 Create or reuse one task envelope and start the WTAM attempt.
@@ -664,12 +764,13 @@ columns plus row dictionaries. Current columns are:
 ## Removed Or Deferred Commands
 
 The old backlog-centric commands are not part of the vNext shipped surface.
-That includes the markdown planning, board, supervisor, inbox, and compatibility
-plan commands.
+That includes the markdown planning, board, inbox, and compatibility plan
+commands. The rebuilt `blackdog supervisor` surface is part of the shipped
+vNext CLI; the removed part is the old backlog-era supervisor tree.
 
-Any later supervisor/workset-manager surface must target the same workset/task
-claim model and runtime snapshot foundation instead of reviving legacy backlog
-flows.
+Any future expansion of the supervisor/workset-manager surface must target the
+same workset/task claim model and runtime snapshot foundation instead of
+reviving legacy backlog flows.
 
 If they are rebuilt later, they must target the new workset/runtime foundation
 instead of reviving `backlog.md`.

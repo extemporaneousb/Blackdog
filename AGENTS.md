@@ -73,3 +73,31 @@ development.
 
 - Run `make test` after meaningful Python changes.
 - Run targeted CLI smoke checks when changing workset or WTAM behavior.
+
+<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->
+## Blackdog Contract
+
+This section is managed by `blackdog repo install` and `blackdog repo refresh`.
+Keep repo-specific requirements outside this block.
+
+- Use the repo-local `./.VE/bin/blackdog` when it exists instead of mutating Blackdog control files by hand.
+- `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.
+- Before any repo edit you intend to keep, run `./.VE/bin/blackdog worktree preflight --project-root .`.
+- If preflight reports `primary worktree: yes`, do not keep implementation edits in that checkout; start or enter a branch-backed task worktree first.
+- Analysis-only work may stay in the current checkout.
+- `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.
+- Prefer `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt "..." --prompt-mode raw` for the normal same-thread path.
+- Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.
+
+Review these routed docs before editing when they apply:
+- `docs/INDEX.md`
+- `docs/PRODUCT_SPEC.md`
+- `docs/ARCHITECTURE.md`
+- `docs/TARGET_MODEL.md`
+- `docs/CLI.md`
+- `docs/FILE_FORMATS.md`
+
+Run the narrowest relevant validation after changes. Repo defaults:
+- `PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'`
+
+<!-- BLACKDOG MANAGED CONTRACT:END -->

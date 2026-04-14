@@ -54,12 +54,13 @@ Use this prompt to continue the rewrite:
 > 3. the same-thread kept-change lifecycle:
 >    `task begin -> execute -> task land`
 > 4. durable accumulation of completed/landed work and attempt history
-> 5. a clear execution model for direct work and any later delegated work
+> 5. a clear execution model for direct work and supervisor-led delegated work
 >
 > Treat `task show`, `task close`, `task cleanup`, `worktree show`, and
 > `worktree close` as the recovery and fallback surfaces around that
 > canonical success path. Keep `worktree preflight|preview|start` as the
-> explicit operator surfaces for planned workset/task execution.
+> explicit operator surfaces for planned workset/task execution, and build
+> supervisor orchestration on the same claim/runtime contract.
 >
 > Treat WTAM as the normative kept-change workflow. Do not preserve a
 > non-worktree execution mode in Blackdog.

@@ -151,6 +151,240 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["workspace"]["identity"], "vertical-slice-workspace")
         self.assertEqual(snapshot["runtime_model"]["counts"]["attempts"], 0)
 
+    def test_supervisor_start_and_checkpoint_surface_parallel_dispatch_candidates(self) -> None:
+        payload = {
+            "id": "parallel-supervision",
+            "title": "Parallel supervision",
+            "tasks": [
+                {"id": "PS-1", "title": "Slice one", "intent": "run the first independent slice"},
+                {"id": "PS-2", "title": "Slice two", "intent": "run the second independent slice"},
+                {
+                    "id": "PS-3",
+                    "title": "Join slice",
+                    "intent": "run after the parallel slices land",
+                    "depends_on": ["PS-1", "PS-2"],
+                },
+            ],
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "parallel-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "2",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        supervisor = json.loads(stdout)["supervisor"]
+        self.assertTrue(supervisor["supervisor_active"])
+        self.assertEqual(supervisor["claim"]["actor"], "lead")
+        self.assertEqual(supervisor["claim"]["execution_model"], "workset_manager")
+        self.assertEqual(supervisor["phase"], "dispatch")
+        self.assertEqual(supervisor["available_slots"], 2)
+        self.assertEqual([item["task_id"] for item in supervisor["ready_tasks"]], ["PS-1", "PS-2"])
+        self.assertEqual([item["task_id"] for item in supervisor["dispatches"]], ["PS-1", "PS-2"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "checkpoint",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "parallel-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "2",
+            "--note",
+            "initial dispatch review",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        checkpoint = json.loads(stdout)["supervisor"]
+        self.assertEqual(checkpoint["phase"], "dispatch")
+        self.assertEqual([item["task_id"] for item in checkpoint["dispatches"]], ["PS-1", "PS-2"])
+
+    def test_supervisor_serial_flow_advances_after_worker_lands(self) -> None:
+        payload = {
+            "id": "serial-supervision",
+            "title": "Serial supervision",
+            "tasks": [
+                {"id": "SS-1", "title": "First serial slice", "intent": "land the first supervised task"},
+                {
+                    "id": "SS-2",
+                    "title": "Second serial slice",
+                    "intent": "land the follow-on supervised task",
+                    "depends_on": ["SS-1"],
+                },
+            ],
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        started = json.loads(stdout)["supervisor"]
+        self.assertEqual(started["phase"], "dispatch")
+        self.assertEqual([item["task_id"] for item in started["dispatches"]], ["SS-1"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--task",
+            "SS-1",
+            "--actor",
+            "worker-a",
+            "--prompt",
+            "Execute the first serial slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "serial-one.txt").write_text("first\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--parallelism",
+            "1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        active = json.loads(stdout)["supervisor"]
+        self.assertEqual(active["phase"], "monitor")
+        self.assertEqual(active["available_slots"], 0)
+        self.assertEqual([item["task_id"] for item in active["active_tasks"]], ["SS-1"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "finished serial task one",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "checkpoint",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "1",
+            "--note",
+            "reviewed task one",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        checkpoint = json.loads(stdout)["supervisor"]
+        self.assertEqual(checkpoint["phase"], "dispatch")
+        self.assertEqual([item["task_id"] for item in checkpoint["dispatches"]], ["SS-2"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--task",
+            "SS-2",
+            "--actor",
+            "worker-b",
+            "--prompt",
+            "Execute the second serial slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "serial-two.txt").write_text("second\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "finished serial task two",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "release",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "1",
+            "--summary",
+            "serial supervision complete",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        released = json.loads(stdout)["supervisor"]
+        self.assertFalse(released["supervisor_active"])
+        self.assertEqual(released["phase"], "complete")
+        self.assertEqual(released["counts"]["done"], 2)
+
     def test_workset_put_rejects_non_object_payload(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
             "workset",

@@ -220,6 +220,9 @@ Current shipped execution-context values:
 - `workspace_mode = "git-worktree"`
 - `worktree_role = "primary" | "task" | "linked"`
 
+A `workset_manager` workset claim may remain active while child task attempts
+run and finish under `direct_wtam`.
+
 ## `events.jsonl`
 
 Append-only audit log for semantic mutations.
@@ -237,6 +240,7 @@ Current shipped write path:
 - `workset.put`
 - `workset.claim`
 - `workset.release`
+- `supervisor.checkpoint`
 - `task.claim`
 - `task.release`
 - `task.start`

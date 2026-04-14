@@ -7,10 +7,12 @@ from blackdog_core.backlog import (
     PlanningState,
     TaskSpec,
     Workset,
+    claim_workset_manager,
     default_planning_state,
     finish_task,
     load_planning_state,
     next_ready_tasks,
+    release_workset_manager,
     save_planning_state,
     start_task,
     upsert_workset,
@@ -293,3 +295,84 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(runtime_state.worksets[0].task_states[0].status, "planned")
         self.assertIsNone(runtime_state.worksets[0].workset_claim)
         self.assertEqual(runtime_state.worksets[0].task_claims, ())
+
+    def test_workset_manager_claim_can_host_serial_worker_attempts_until_release(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "managed",
+                "title": "Managed",
+                "tasks": [
+                    {"id": "MG-1", "title": "First slice", "intent": "land the first serial task"},
+                    {
+                        "id": "MG-2",
+                        "title": "Second slice",
+                        "intent": "land the second serial task",
+                        "depends_on": ["MG-1"],
+                    },
+                ],
+            },
+        )
+
+        claim = claim_workset_manager(self.profile, workset_id="managed", actor="supervisor", note="serial run")
+        self.assertEqual(claim.execution_model, "workset_manager")
+
+        attempt_one = start_task(
+            self.profile,
+            workset_id="managed",
+            task_id="MG-1",
+            actor="worker-a",
+            prompt_receipt=create_prompt_receipt("Execute the first managed slice.", source="unit-test"),
+        )
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "supervisor")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.execution_model, "workset_manager")
+        self.assertEqual(runtime_state.worksets[0].task_claims[0].actor, "worker-a")
+        self.assertEqual(runtime_state.worksets[0].task_claims[0].execution_model, "direct_wtam")
+
+        finish_task(
+            self.profile,
+            workset_id="managed",
+            task_id="MG-1",
+            attempt_id=attempt_one.attempt_id,
+            actor="worker-a",
+            status="success",
+            summary="first slice landed",
+        )
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "done")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "supervisor")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.execution_model, "workset_manager")
+        self.assertEqual(runtime_state.worksets[0].task_claims, ())
+
+        attempt_two = start_task(
+            self.profile,
+            workset_id="managed",
+            task_id="MG-2",
+            actor="worker-b",
+            prompt_receipt=create_prompt_receipt("Execute the second managed slice.", source="unit-test"),
+        )
+        self.assertEqual(attempt_two.execution_model, "direct_wtam")
+
+        finish_task(
+            self.profile,
+            workset_id="managed",
+            task_id="MG-2",
+            attempt_id=attempt_two.attempt_id,
+            actor="worker-b",
+            status="success",
+            summary="second slice landed",
+        )
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].task_states[1].status, "done")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "supervisor")
+        self.assertEqual(runtime_state.worksets[0].task_claims, ())
+
+        release_workset_manager(
+            self.profile,
+            workset_id="managed",
+            actor="supervisor",
+            summary="serial run complete",
+        )
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertIsNone(runtime_state.worksets[0].workset_claim)

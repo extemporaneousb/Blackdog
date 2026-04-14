@@ -19,7 +19,8 @@ CLI surfaces.
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
   `planning.json`, `runtime.json`, and `events.jsonl`
 - [docs/SINGLE_AGENT_AUDIT.md](docs/SINGLE_AGENT_AUDIT.md): single-agent WTAM
-  flow, recovery surfaces, and current gaps before supervisor work
+  worker flow, recovery surfaces, and the base contract used by supervisor-led
+  execution
 
 ## Current Product Surface
 
@@ -33,6 +34,10 @@ CLI surfaces.
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
+- `blackdog supervisor start`
+- `blackdog supervisor show`
+- `blackdog supervisor checkpoint`
+- `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task land`
