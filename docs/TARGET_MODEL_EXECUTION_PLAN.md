@@ -12,6 +12,7 @@ This repo now treats the vNext sweep as the active plan:
 The current shipped surface is:
 
 - `blackdog repo install`
+- `blackdog repo analyze`
 - `blackdog repo update`
 - `blackdog repo refresh`
 - `blackdog prompt preview`

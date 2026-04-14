@@ -10,8 +10,10 @@ from blackdog.handlers import HandlerError
 from blackdog.prompting import preview_prompt, render_prompt_preview_text, tune_prompt
 from blackdog.repo_lifecycle import (
     RepoLifecycleError,
+    analyze_repo,
     install_repo,
     refresh_repo,
+    render_repo_analysis_text,
     render_repo_lifecycle_text,
     update_repo,
 )
@@ -186,6 +188,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_install.add_argument("--project-name")
     p_repo_install.add_argument("--source-root")
     p_repo_install.add_argument("--json", action="store_true")
+
+    p_repo_analyze = repo_subparsers.add_parser("analyze", help="Inspect a target repo and propose a Blackdog conversion plan")
+    p_repo_analyze.add_argument("--project-root", default=".")
+    p_repo_analyze.add_argument("--json", action="store_true")
 
     p_repo_update = repo_subparsers.add_parser("update", help="Refresh the repo-local Blackdog launcher from a source checkout")
     p_repo_update.add_argument("--project-root", default=".")
@@ -461,6 +467,14 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"repo": result.to_dict()})
             else:
                 print(render_repo_lifecycle_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "analyze":
+            result = analyze_repo(Path(args.project_root).resolve())
+            if args.json:
+                _emit_json({"repo_analysis": result.to_dict()})
+            else:
+                print(render_repo_analysis_text(result), end="")
             return 0
 
         if args.command == "repo" and args.repo_command == "update":

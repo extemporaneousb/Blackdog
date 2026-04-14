@@ -25,6 +25,33 @@ that already exist in that repo.
 blackdog init --project-root /path/to/repo --project-name "Repo Name"
 ```
 
+### `blackdog repo analyze`
+
+Inspect a target repo and emit a proposed Blackdog conversion plan without
+mutating that repo.
+
+The analysis inventories:
+
+- agent entrypoint docs and package-level `AGENTS.md` files
+- repo-local Codex skills under `.codex/skills/`
+- repo-local `.VE` and `blackdog` launcher state
+- `blackdog.toml` presence, routed docs, and load errors
+- likely ambiguity sources where docs or skills bypass the Blackdog contract
+
+```bash
+blackdog repo analyze --project-root /path/to/repo
+blackdog repo analyze --project-root /path/to/repo --json
+```
+
+Important flags:
+
+- `--project-root`
+
+`repo analyze` is the read-only first step for converting an existing repo. It
+does not install or refresh anything. Instead it reports findings plus a
+proposed sequence of repo-owned and Blackdog-managed changes so the user can
+review the conversion plan before `repo install`.
+
 ### `blackdog repo install`
 
 Create or repair the minimum repo-local Blackdog contract:

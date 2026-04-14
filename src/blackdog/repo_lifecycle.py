@@ -3,14 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import shlex
 import shutil
 import subprocess
+import tomllib
 
 from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_name, managed_skill_relative_path
 from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
 from blackdog_core.profile import (
     RepoProfile,
     ConfigError,
+    suggest_default_doc_routing,
     ensure_default_handlers_in_profile,
     load_profile,
     write_default_profile,
@@ -31,10 +34,151 @@ LEGACY_CONTROL_ARTIFACTS = (
 AGENTS_FILE_NAME = "AGENTS.md"
 AGENTS_MANAGED_BEGIN = "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->"
 AGENTS_MANAGED_END = "<!-- BLACKDOG MANAGED CONTRACT:END -->"
+_ENTRYPOINT_DOCS = (
+    AGENTS_FILE_NAME,
+    "docs/AGENT_START.md",
+    "docs/AGENT_WORKFLOW.md",
+    "README.md",
+)
+_SKIPPED_SCAN_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".VE",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    "dist",
+    "build",
+    "coverage",
+}
 
 
 class RepoLifecycleError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class RepoConversionFinding:
+    code: str
+    severity: str
+    message: str
+    paths: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "severity": self.severity,
+            "message": self.message,
+            "paths": list(self.paths),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RepoConversionStep:
+    phase: str
+    summary: str
+    details: str | None = None
+    paths: tuple[str, ...] = ()
+    command: str | None = None
+    managed_by_blackdog: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "phase": self.phase,
+            "summary": self.summary,
+            "details": self.details,
+            "paths": list(self.paths),
+            "command": self.command,
+            "managed_by_blackdog": self.managed_by_blackdog,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RepoSkillSurface:
+    name: str
+    skill_path: str
+    discovery_path: str | None
+    managed: bool
+    delegates_to_managed: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "skill_path": self.skill_path,
+            "discovery_path": self.discovery_path,
+            "managed": self.managed,
+            "delegates_to_managed": self.delegates_to_managed,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RepoConversionAnalysis:
+    action: str
+    project_root: str
+    repo_root: str
+    project_name: str
+    in_git_repo: bool
+    conversion_status: str
+    profile_exists: bool
+    profile_path: str | None
+    profile_error: str | None
+    current_doc_routing: tuple[str, ...]
+    suggested_doc_routing: tuple[str, ...]
+    agents_path: str
+    managed_agents_block_present: bool
+    ve_path: str
+    ve_exists: bool
+    blackdog_path: str
+    blackdog_launcher_exists: bool
+    managed_skill_path: str
+    managed_skill_exists: bool
+    legacy_skill_path: str
+    legacy_skill_exists: bool
+    entrypoint_docs: tuple[str, ...]
+    agent_docs: tuple[str, ...]
+    package_agent_docs: tuple[str, ...]
+    skills: tuple[RepoSkillSurface, ...]
+    findings: tuple[RepoConversionFinding, ...]
+    proposed_steps: tuple[RepoConversionStep, ...]
+    notes: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action,
+            "project_root": self.project_root,
+            "repo_root": self.repo_root,
+            "project_name": self.project_name,
+            "in_git_repo": self.in_git_repo,
+            "conversion_status": self.conversion_status,
+            "profile_exists": self.profile_exists,
+            "profile_path": self.profile_path,
+            "profile_error": self.profile_error,
+            "current_doc_routing": list(self.current_doc_routing),
+            "suggested_doc_routing": list(self.suggested_doc_routing),
+            "agents_path": self.agents_path,
+            "managed_agents_block_present": self.managed_agents_block_present,
+            "ve_path": self.ve_path,
+            "ve_exists": self.ve_exists,
+            "blackdog_path": self.blackdog_path,
+            "blackdog_launcher_exists": self.blackdog_launcher_exists,
+            "managed_skill_path": self.managed_skill_path,
+            "managed_skill_exists": self.managed_skill_exists,
+            "legacy_skill_path": self.legacy_skill_path,
+            "legacy_skill_exists": self.legacy_skill_exists,
+            "entrypoint_docs": list(self.entrypoint_docs),
+            "agent_docs": list(self.agent_docs),
+            "package_agent_docs": list(self.package_agent_docs),
+            "skills": [item.to_dict() for item in self.skills],
+            "findings": [item.to_dict() for item in self.findings],
+            "proposed_steps": [item.to_dict() for item in self.proposed_steps],
+            "notes": list(self.notes),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +247,134 @@ def _resolve_repo_root(project_root: Path) -> Path:
         return Path(_run_git(project_root.resolve(), "rev-parse", "--show-toplevel")).resolve()
     except RepoLifecycleError as exc:
         raise RepoLifecycleError(f"{project_root.resolve()} is not inside a git repo") from exc
+
+
+def _resolve_repo_root_or_none(project_root: Path) -> Path | None:
+    try:
+        return _resolve_repo_root(project_root)
+    except RepoLifecycleError:
+        return None
+
+
+def _looks_like_blackdog_source_checkout(root: Path) -> bool:
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    if not (root / "src" / "blackdog_cli" / "main.py").is_file():
+        return False
+    try:
+        payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    return str((payload.get("project") or {}).get("name") or "") == "blackdog"
+
+
+def _current_blackdog_source_root() -> Path | None:
+    candidate = Path(__file__).resolve().parents[2]
+    if _looks_like_blackdog_source_checkout(candidate):
+        return candidate
+    return None
+
+
+def _stable_blackdog_source_root() -> Path | None:
+    candidate = _current_blackdog_source_root()
+    if candidate is None:
+        return None
+    if (candidate / ".git").is_dir():
+        return candidate
+    try:
+        output = _run_git(candidate, "worktree", "list", "--porcelain")
+    except RepoLifecycleError:
+        return None
+    for line in output.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = Path(line.split(" ", 1)[1]).resolve()
+        if _looks_like_blackdog_source_checkout(path) and (path / ".git").is_dir():
+            return path
+    return None
+
+
+def _iter_repo_relative_files(repo_root: Path) -> tuple[str, ...]:
+    discovered: list[str] = []
+    for current_root, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = sorted(name for name in dirnames if name not in _SKIPPED_SCAN_DIRS)
+        root_path = Path(current_root)
+        for filename in sorted(filenames):
+            candidate = root_path / filename
+            discovered.append(candidate.relative_to(repo_root).as_posix())
+    return tuple(discovered)
+
+
+def _find_agent_docs(repo_root: Path) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    agent_docs = [
+        relative_path
+        for relative_path in _iter_repo_relative_files(repo_root)
+        if Path(relative_path).name == AGENTS_FILE_NAME
+        or (Path(relative_path).name.startswith("AGENT") and Path(relative_path).suffix == ".md")
+    ]
+    entrypoint_docs = tuple(path for path in _ENTRYPOINT_DOCS if (repo_root / path).is_file())
+    package_agent_docs = tuple(
+        path
+        for path in agent_docs
+        if Path(path).name == AGENTS_FILE_NAME and path != AGENTS_FILE_NAME
+    )
+    return tuple(agent_docs), entrypoint_docs, package_agent_docs
+
+
+def _merge_suggested_doc_routing(repo_root: Path, current: tuple[str, ...]) -> tuple[str, ...]:
+    merged: list[str] = []
+    for candidate in ("AGENTS.md", *current, *suggest_default_doc_routing(repo_root)):
+        if candidate != "AGENTS.md" and not (repo_root / candidate).is_file():
+            continue
+        if candidate not in merged:
+            merged.append(candidate)
+    return tuple(merged)
+
+
+def _find_skill_surfaces(
+    repo_root: Path,
+    *,
+    managed_name: str,
+) -> tuple[RepoSkillSurface, ...]:
+    skills_root = repo_root / ".codex" / "skills"
+    if not skills_root.is_dir():
+        return ()
+    managed_token = f"${managed_name}"
+    surfaces: list[RepoSkillSurface] = []
+    for child in sorted(item for item in skills_root.iterdir() if item.is_dir()):
+        skill_path = child / "SKILL.md"
+        if not skill_path.is_file():
+            continue
+        discovery_path = child / "agents" / "openai.yaml"
+        skill_text = skill_path.read_text(encoding="utf-8")
+        discovery_text = discovery_path.read_text(encoding="utf-8") if discovery_path.is_file() else ""
+        surfaces.append(
+            RepoSkillSurface(
+                name=child.name,
+                skill_path=str(skill_path.resolve()),
+                discovery_path=str(discovery_path.resolve()) if discovery_path.is_file() else None,
+                managed=child.name == managed_name,
+                delegates_to_managed=managed_token in skill_text or managed_token in discovery_text,
+            )
+        )
+    return tuple(surfaces)
+
+
+def _shell_command(*parts: str) -> str:
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _recommended_install_command(repo_root: Path) -> str:
+    parts = ["./.VE/bin/blackdog", "repo", "install", "--project-root", str(repo_root)]
+    source_root = _stable_blackdog_source_root()
+    if source_root is not None and source_root != repo_root:
+        parts.extend(["--source-root", str(source_root)])
+    return _shell_command(*parts)
+
+
+def _recommended_refresh_command(repo_root: Path) -> str:
+    return _shell_command("./.VE/bin/blackdog", "repo", "refresh", "--project-root", str(repo_root))
 
 
 def _managed_skill_path(profile: RepoProfile) -> Path:
@@ -301,6 +573,261 @@ def _apply_handler_actions(
             notes.append(action.message)
     if summary.remediation:
         notes.append(summary.remediation)
+
+
+def analyze_repo(project_root: Path) -> RepoConversionAnalysis:
+    root = project_root.resolve()
+    repo_root = _resolve_repo_root_or_none(root) or root
+    in_git_repo = _resolve_repo_root_or_none(root) is not None
+    profile_path = (repo_root / "blackdog.toml").resolve()
+    profile_exists = profile_path.is_file()
+    profile: RepoProfile | None = None
+    profile_error: str | None = None
+    if profile_exists:
+        try:
+            profile = load_profile(repo_root)
+        except ConfigError as exc:
+            profile_error = str(exc)
+
+    project_name = profile.project_name if profile is not None else repo_root.name
+    managed_name = managed_skill_name(profile or repo_root)
+    current_doc_routing = profile.doc_routing_defaults if profile is not None else ()
+    suggested_doc_routing = _merge_suggested_doc_routing(repo_root, current_doc_routing)
+    agents_path = (repo_root / AGENTS_FILE_NAME).resolve()
+    agents_text = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
+    managed_agents_block_present = AGENTS_MANAGED_BEGIN in agents_text and AGENTS_MANAGED_END in agents_text
+    ve_path = (repo_root / ".VE").resolve()
+    blackdog_path = (ve_path / "bin" / "blackdog").resolve()
+    managed_skill_path = (repo_root / managed_skill_relative_path(profile or repo_root)).resolve()
+    legacy_skill_path = (repo_root / legacy_managed_skill_relative_path()).resolve()
+    agent_docs, entrypoint_docs, package_agent_docs = _find_agent_docs(repo_root)
+    skills = _find_skill_surfaces(repo_root, managed_name=managed_name)
+
+    findings: list[RepoConversionFinding] = []
+    notes: list[str] = []
+
+    if not in_git_repo:
+        findings.append(
+            RepoConversionFinding(
+                code="missing-git-repo",
+                severity="high",
+                message="The target path is not inside a git repo, so Blackdog install cannot run yet.",
+                paths=(str(repo_root),),
+            )
+        )
+    if not profile_exists:
+        findings.append(
+            RepoConversionFinding(
+                code="missing-blackdog-profile",
+                severity="high",
+                message="The repo does not have `blackdog.toml`, so there is no shared Blackdog operating contract yet.",
+                paths=(str(profile_path),),
+            )
+        )
+    if profile_error is not None:
+        findings.append(
+            RepoConversionFinding(
+                code="invalid-blackdog-profile",
+                severity="high",
+                message=f"`blackdog.toml` exists but did not load cleanly: {profile_error}",
+                paths=(str(profile_path),),
+            )
+        )
+    missing_routed_docs = tuple(path for path in current_doc_routing if not (repo_root / path).is_file())
+    if missing_routed_docs:
+        findings.append(
+            RepoConversionFinding(
+                code="missing-routed-docs",
+                severity="high",
+                message="`blackdog.toml` routes docs that do not exist in the repo, which creates contract ambiguity.",
+                paths=tuple(str((repo_root / path).resolve()) for path in missing_routed_docs),
+            )
+        )
+    if not managed_agents_block_present:
+        findings.append(
+            RepoConversionFinding(
+                code="missing-managed-agents-contract",
+                severity="medium",
+                message="`AGENTS.md` does not yet carry the managed Blackdog contract block, so hard workflow rules are not anchored in repo docs.",
+                paths=(str(agents_path),),
+            )
+        )
+    if profile_exists and not managed_skill_path.is_file():
+        findings.append(
+            RepoConversionFinding(
+                code="missing-managed-skill",
+                severity="medium",
+                message="The repo profile exists, but the managed Blackdog skill is missing.",
+                paths=(str(managed_skill_path),),
+            )
+        )
+    if profile_exists and not ve_path.is_dir():
+        findings.append(
+            RepoConversionFinding(
+                code="missing-root-venv",
+                severity="medium",
+                message="The repo is missing the repo-local `.VE`, so the Blackdog runtime is not bootstrapped here.",
+                paths=(str(ve_path),),
+            )
+        )
+    if profile_exists and ve_path.is_dir() and not blackdog_path.is_file():
+        findings.append(
+            RepoConversionFinding(
+                code="missing-blackdog-launcher",
+                severity="medium",
+                message="The repo-local `.VE` exists, but the `blackdog` launcher is missing from it.",
+                paths=(str(blackdog_path),),
+            )
+        )
+    unrouted_entrypoint_docs = tuple(
+        path for path in entrypoint_docs if path != "README.md" and path not in current_doc_routing
+    )
+    if unrouted_entrypoint_docs:
+        findings.append(
+            RepoConversionFinding(
+                code="unrouted-agent-entrypoints",
+                severity="medium",
+                message="The repo has agent entrypoint docs that are not part of the current Blackdog routed-doc contract.",
+                paths=tuple(str((repo_root / path).resolve()) for path in unrouted_entrypoint_docs),
+            )
+        )
+    custom_skills = tuple(skill for skill in skills if not skill.managed)
+    delegated_custom_skills = tuple(skill for skill in custom_skills if skill.delegates_to_managed)
+    if custom_skills and not delegated_custom_skills:
+        findings.append(
+            RepoConversionFinding(
+                code="custom-skills-bypass-blackdog",
+                severity="medium",
+                message="The repo has custom Codex skills, but none currently delegate workflow to the managed Blackdog skill.",
+                paths=tuple(skill.skill_path for skill in custom_skills),
+            )
+        )
+    if legacy_skill_path.is_file():
+        findings.append(
+            RepoConversionFinding(
+                code="legacy-managed-skill-path",
+                severity="low",
+                message="A legacy `.codex/skills/blackdog/` skill path still exists and should be migrated during refresh.",
+                paths=(str(legacy_skill_path),),
+            )
+        )
+    if not agents_path.is_file() and package_agent_docs:
+        findings.append(
+            RepoConversionFinding(
+                code="missing-root-agents-doc",
+                severity="medium",
+                message="The repo has package-level `AGENTS.md` files but no root `AGENTS.md`, so the top-level agent entrypoint is ambiguous.",
+                paths=tuple(str((repo_root / path).resolve()) for path in package_agent_docs),
+            )
+        )
+
+    conversion_status = "not-installed"
+    if profile_exists or managed_agents_block_present or managed_skill_path.is_file() or blackdog_path.is_file():
+        conversion_status = "partial"
+    if profile_exists and managed_agents_block_present and managed_skill_path.is_file() and blackdog_path.is_file():
+        conversion_status = "blackdog-backed"
+
+    steps: list[RepoConversionStep] = []
+    if not in_git_repo:
+        steps.append(
+            RepoConversionStep(
+                phase="precondition",
+                summary="Initialize the target repo in git before attempting Blackdog conversion.",
+                details="`repo install` requires the target path to be inside a git repo.",
+                paths=(str(repo_root),),
+                command=_shell_command("git", "-C", str(repo_root), "init"),
+                managed_by_blackdog=False,
+            )
+        )
+    steps.append(
+        RepoConversionStep(
+            phase="repo-owned",
+            summary="Review the proposed routed docs and decide which files should be the canonical agent entrypoints.",
+            details=(
+                "Suggested routed docs: " + ", ".join(suggested_doc_routing)
+                if suggested_doc_routing
+                else "No routed docs were discovered automatically beyond AGENTS.md."
+            ),
+            paths=tuple(str((repo_root / path).resolve()) for path in suggested_doc_routing),
+            managed_by_blackdog=False,
+        )
+    )
+    steps.append(
+        RepoConversionStep(
+            phase="blackdog-managed",
+            summary="Install or repair the repo-local Blackdog runtime and managed scaffold in the target repo.",
+            details="This creates or repairs `blackdog.toml`, the repo-local `.VE`, the managed AGENTS contract block, and the managed skill.",
+            paths=(str(profile_path), str(agents_path), str(managed_skill_path), str(blackdog_path)),
+            command=_recommended_install_command(repo_root),
+            managed_by_blackdog=True,
+        )
+    )
+    if package_agent_docs or unrouted_entrypoint_docs:
+        steps.append(
+            RepoConversionStep(
+                phase="repo-owned",
+                summary="Harmonize repo-owned agent docs so repo-specific rules live outside the managed AGENTS block and no duplicate workflow docs conflict with Blackdog.",
+                details="Collapse or clarify duplicate entrypoints before relying on the converted repo as a shared agent environment.",
+                paths=tuple(str((repo_root / path).resolve()) for path in (*entrypoint_docs, *package_agent_docs)),
+                managed_by_blackdog=False,
+            )
+        )
+    if custom_skills:
+        steps.append(
+            RepoConversionStep(
+                phase="repo-owned",
+                summary="Review custom repo skills and update wrapper skills to delegate workflow through the managed Blackdog skill where appropriate.",
+                details=f"Managed skill token: `${managed_name}`.",
+                paths=tuple(skill.skill_path for skill in custom_skills),
+                managed_by_blackdog=False,
+            )
+        )
+    steps.append(
+        RepoConversionStep(
+            phase="blackdog-managed",
+            summary="After approving repo-owned doc or skill changes, rerun refresh so the managed scaffold matches the final repo contract.",
+            details="`repo refresh` regenerates the managed AGENTS block and managed skill from the profile's routed-doc contract.",
+            paths=(str(profile_path), str(agents_path), str(managed_skill_path)),
+            command=_recommended_refresh_command(repo_root),
+            managed_by_blackdog=True,
+        )
+    )
+
+    if current_doc_routing != suggested_doc_routing and suggested_doc_routing:
+        notes.append("Suggested routed docs differ from the current profile and should be reviewed during conversion.")
+    if custom_skills and delegated_custom_skills:
+        notes.append("Some custom skills already mention the managed Blackdog skill; keep that delegation pattern when harmonizing the skill set.")
+
+    return RepoConversionAnalysis(
+        action="analyze",
+        project_root=str(root),
+        repo_root=str(repo_root),
+        project_name=project_name,
+        in_git_repo=in_git_repo,
+        conversion_status=conversion_status,
+        profile_exists=profile_exists,
+        profile_path=str(profile_path) if profile_exists else None,
+        profile_error=profile_error,
+        current_doc_routing=current_doc_routing,
+        suggested_doc_routing=suggested_doc_routing,
+        agents_path=str(agents_path),
+        managed_agents_block_present=managed_agents_block_present,
+        ve_path=str(ve_path),
+        ve_exists=ve_path.is_dir(),
+        blackdog_path=str(blackdog_path),
+        blackdog_launcher_exists=blackdog_path.is_file(),
+        managed_skill_path=str(managed_skill_path),
+        managed_skill_exists=managed_skill_path.is_file(),
+        legacy_skill_path=str(legacy_skill_path),
+        legacy_skill_exists=legacy_skill_path.is_file(),
+        entrypoint_docs=entrypoint_docs,
+        agent_docs=agent_docs,
+        package_agent_docs=package_agent_docs,
+        skills=skills,
+        findings=tuple(findings),
+        proposed_steps=tuple(steps),
+        notes=tuple(notes),
+    )
 
 
 def install_repo(
@@ -518,11 +1045,62 @@ def render_repo_lifecycle_text(result: RepoLifecycleResult) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_repo_analysis_text(result: RepoConversionAnalysis) -> str:
+    lines = [
+        f"[blackdog-repo] action: {result.action}",
+        f"[blackdog-repo] project root: {result.project_root}",
+        f"[blackdog-repo] repo root: {result.repo_root}",
+        f"[blackdog-repo] project: {result.project_name}",
+        f"[blackdog-repo] conversion status: {result.conversion_status}",
+        f"[blackdog-repo] in git repo: {'yes' if result.in_git_repo else 'no'}",
+        f"[blackdog-repo] profile: {result.profile_path or 'missing'}",
+        f"[blackdog-repo] AGENTS contract block: {'present' if result.managed_agents_block_present else 'missing'}",
+        f"[blackdog-repo] repo .VE: {'present' if result.ve_exists else 'missing'}",
+        f"[blackdog-repo] launcher: {'present' if result.blackdog_launcher_exists else 'missing'} ({result.blackdog_path})",
+        f"[blackdog-repo] managed skill: {'present' if result.managed_skill_exists else 'missing'} ({result.managed_skill_path})",
+    ]
+    if result.profile_error:
+        lines.append(f"[blackdog-repo] profile error: {result.profile_error}")
+    if result.current_doc_routing:
+        lines.append(f"[blackdog-repo] current doc routing: {', '.join(result.current_doc_routing)}")
+    if result.suggested_doc_routing:
+        lines.append(f"[blackdog-repo] suggested doc routing: {', '.join(result.suggested_doc_routing)}")
+    if result.entrypoint_docs:
+        lines.append(f"[blackdog-repo] entrypoint docs: {', '.join(result.entrypoint_docs)}")
+    if result.skills:
+        skill_rows = ", ".join(
+            f"{item.name}{' [managed]' if item.managed else ''}{' [delegates]' if item.delegates_to_managed else ''}"
+            for item in result.skills
+        )
+        lines.append(f"[blackdog-repo] skills: {skill_rows}")
+    if result.findings:
+        lines.append("[blackdog-repo] findings:")
+        for finding in result.findings:
+            path_suffix = "" if not finding.paths else f" ({', '.join(finding.paths)})"
+            lines.append(f"  - [{finding.severity}] {finding.code}: {finding.message}{path_suffix}")
+    if result.proposed_steps:
+        lines.append("[blackdog-repo] proposed steps:")
+        for index, step in enumerate(result.proposed_steps, start=1):
+            detail = "" if step.details is None else f" {step.details}"
+            managed = " managed" if step.managed_by_blackdog else ""
+            lines.append(f"  {index}. [{step.phase}{managed}] {step.summary}{detail}")
+            if step.command:
+                lines.append(f"     command: {step.command}")
+    for note in result.notes:
+        lines.append(f"[blackdog-repo] note: {note}")
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
+    "RepoConversionAnalysis",
+    "RepoConversionFinding",
+    "RepoConversionStep",
     "RepoLifecycleError",
     "RepoLifecycleResult",
+    "analyze_repo",
     "install_repo",
     "refresh_repo",
+    "render_repo_analysis_text",
     "render_repo_lifecycle_text",
     "render_repo_skill",
     "update_repo",

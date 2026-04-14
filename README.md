@@ -13,6 +13,7 @@ CLI and typed runtime operations.
 The current shipped CLI is deliberately narrow:
 
 - `blackdog init`
+- `blackdog repo analyze`
 - `blackdog repo install`
 - `blackdog repo update`
 - `blackdog repo refresh`
@@ -80,12 +81,15 @@ selection inside one workset; explicit planned-task flows can still go through
 
 Blackdog has no non-WTAM implementation mode.
 
-Blackdog also has a separate repo lifecycle concern set. Install/update/refresh,
+Blackdog also has a separate repo lifecycle concern set. Analyze/install/update/refresh,
 prompt composition, and attempt inspection now ship as explicit product-layer
 workflows, not workset/task operations.
 
-For non-Blackdog repos, `blackdog repo install` defaults to a managed Blackdog
-source checkout under the control root, sourced from GitHub. Use
+For non-Blackdog repos, `blackdog repo analyze` is the read-only conversion
+entrypoint: it inventories agent docs, skills, `.VE`, launcher/profile state,
+and ambiguity sources, then emits a proposed conversion plan before anything is
+installed. `blackdog repo install` defaults to a managed Blackdog source
+checkout under the control root, sourced from GitHub. Use
 `--source-root /path/to/blackdog` to override that with a local checkout. When
 the target repo is Blackdog itself, install/update reuse that repo as the
 source checkout. The shipped Python handler keeps repo-root `.VE` as the

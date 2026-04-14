@@ -27,6 +27,9 @@ The MVP should ship one coherent repo lifecycle family with these surfaces:
 
 ### Repo Setup
 
+- `blackdog repo analyze`
+  Inspect a target repo, identify agent-instruction ambiguity, and propose a
+  conversion plan before mutation.
 - `blackdog repo install`
   Create or repair a repo-local `.VE`, install Blackdog into it, and write the
   minimum managed repo contract files when missing.
@@ -108,12 +111,14 @@ Blackdog reaches repo lifecycle MVP when:
 
 1. A repo without Blackdog can be installed or refreshed through one explicit
    repo workflow.
-2. The repo-local `$blackdog` skill can be regenerated through product code.
-3. A human can preview and tune prompt/skill composition without starting task
+2. A human can inspect a target repo and receive a conversion plan before
+   install.
+3. The repo-local `$blackdog` skill can be regenerated through product code.
+4. A human can preview and tune prompt/skill composition without starting task
    execution.
-4. A human can inspect completed work through both summary and table surfaces.
-5. The Blackdog repo can dogfood those flows on itself.
-6. At least one other repo can dogfood those flows successfully.
+5. A human can inspect completed work through both summary and table surfaces.
+6. The Blackdog repo can dogfood those flows on itself.
+7. At least one other repo can dogfood those flows successfully.
 
 ## Continuation Prompt
 
@@ -122,7 +127,7 @@ Use this prompt to continue the repo lifecycle MVP work:
 ```text
 Blackdog has two first-class workflow families:
 1. workset/task execution over the typed planning/runtime model
-2. repo lifecycle workflows for install/update/refresh, prompt/skill composition, and completed-work inspection
+2. repo lifecycle workflows for analyze/install/update/refresh, prompt/skill composition, and completed-work inspection
 
 Continue Blackdog from that model.
 
@@ -135,13 +140,14 @@ Important constraints:
 - keep the repo-local skill thin and generated from product behavior where appropriate
 
 Target the repo lifecycle MVP in this order:
-1. `blackdog repo install`
-2. `blackdog repo update`
-3. `blackdog repo refresh`
-4. `blackdog prompt preview`
-5. `blackdog prompt tune`
-6. `blackdog attempts summary`
-7. `blackdog attempts table`
+1. `blackdog repo analyze`
+2. `blackdog repo install`
+3. `blackdog repo update`
+4. `blackdog repo refresh`
+5. `blackdog prompt preview`
+6. `blackdog prompt tune`
+7. `blackdog attempts summary`
+8. `blackdog attempts table`
 
 Inspection requirements:
 - summary and table views must be driven by typed attempt history
@@ -150,7 +156,7 @@ Inspection requirements:
 
 Proof requirements:
 - tests use fresh isolated git repos
-- tests cover repo install/update/refresh flows
+- tests cover repo analyze/install/update/refresh flows
 - tests cover prompt preview/tune behavior
 - tests cover attempts summary/table output
 - `make test` passes

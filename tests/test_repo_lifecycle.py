@@ -20,6 +20,86 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
 
+    def test_repo_analyze_reports_unconverted_repo_and_conversion_plan(self) -> None:
+        docs_dir = self.root / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "AGENT_START.md").write_text("start here\n", encoding="utf-8")
+        (docs_dir / "INDEX.md").write_text("index\n", encoding="utf-8")
+        skill_dir = self.root / ".codex" / "skills" / "cmg-platform"
+        (skill_dir / "agents").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("custom repo skill\n", encoding="utf-8")
+        (skill_dir / "agents" / "openai.yaml").write_text(
+            "interface:\n  default_prompt: \"Use $cmg-platform.\"\n",
+            encoding="utf-8",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "analyze",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["repo_analysis"]
+
+        self.assertEqual(payload["action"], "analyze")
+        self.assertEqual(payload["conversion_status"], "not-installed")
+        self.assertFalse(payload["profile_exists"])
+        self.assertEqual(payload["suggested_doc_routing"], ["AGENTS.md", "docs/AGENT_START.md", "docs/INDEX.md"])
+        finding_codes = {item["code"] for item in payload["findings"]}
+        self.assertIn("missing-blackdog-profile", finding_codes)
+        self.assertIn("custom-skills-bypass-blackdog", finding_codes)
+        install_commands = [step["command"] for step in payload["proposed_steps"] if step["command"]]
+        self.assertTrue(any("repo install" in command for command in install_commands))
+        self.assertTrue(any("--project-root" in command for command in install_commands))
+
+    def test_repo_analyze_reports_partial_conversion_and_ambiguity_sources(self) -> None:
+        docs_dir = self.root / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "AGENT_START.md").write_text("start here\n", encoding="utf-8")
+
+        exit_code, _, stderr = self.run_cli(
+            "repo",
+            "install",
+            "--project-root",
+            str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        (docs_dir / "AGENT_WORKFLOW.md").write_text("workflow here\n", encoding="utf-8")
+        (self.root / "AGENTS.md").write_text("# AGENTS\n\nRepo-specific rule only.\n", encoding="utf-8")
+        skill_dir = self.root / ".codex" / "skills" / "cmg-platform"
+        (skill_dir / "agents").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("custom repo skill\n", encoding="utf-8")
+        (skill_dir / "agents" / "openai.yaml").write_text(
+            "interface:\n  default_prompt: \"Use $cmg-platform.\"\n",
+            encoding="utf-8",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "analyze",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["repo_analysis"]
+
+        self.assertEqual(payload["conversion_status"], "partial")
+        finding_codes = {item["code"] for item in payload["findings"]}
+        self.assertIn("missing-managed-agents-contract", finding_codes)
+        self.assertIn("unrouted-agent-entrypoints", finding_codes)
+        self.assertIn("custom-skills-bypass-blackdog", finding_codes)
+        self.assertEqual(payload["current_doc_routing"], ["AGENTS.md", "docs/AGENT_START.md"])
+        self.assertEqual(
+            payload["suggested_doc_routing"],
+            ["AGENTS.md", "docs/AGENT_START.md", "docs/AGENT_WORKFLOW.md"],
+        )
+
     def test_repo_install_bootstraps_profile_skill_and_launcher(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
             "repo",

@@ -91,6 +91,7 @@ tasks, or attempts.
 The minimum coherent product surface rebuilt on top of the new core is:
 
 - `blackdog repo install`
+- `blackdog repo analyze`
 - `blackdog repo update`
 - `blackdog repo refresh`
 - `blackdog prompt preview`
@@ -115,11 +116,14 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog snapshot`
 
 The repo lifecycle family now has a shipped base in `blackdog` for
-install/update/refresh, prompt preview/tune, and attempt inspection.
+analyze/install/update/refresh, prompt preview/tune, and attempt inspection.
 
-For repos other than Blackdog itself, `repo install` and `repo update` default
-to a managed Blackdog source checkout under the control root, sourced from
-GitHub. `--source-root` is the explicit local override.
+For repos other than Blackdog itself, `repo analyze` is the read-only
+conversion entrypoint. It inventories agent docs, skills, `.VE`, launcher and
+profile state, then emits findings plus a proposed conversion plan before any
+repo files are mutated. `repo install` and `repo update` default to a managed
+Blackdog source checkout under the control root, sourced from GitHub.
+`--source-root` is the explicit local override.
 When install has to create a fresh profile, it seeds routed docs from
 `AGENTS.md` plus common host-repo docs that already exist, and it writes a
 managed Blackdog contract block into `AGENTS.md` so WTAM rules live in repo
