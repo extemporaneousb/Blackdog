@@ -18,6 +18,10 @@ REPO_LIFECYCLE_COMMANDS = (
     "blackdog attempts table",
 )
 WTAM_COMMANDS = (
+    "blackdog task begin",
+    "blackdog task show",
+    "blackdog task land",
+    "blackdog task close",
     "blackdog worktree preflight",
     "blackdog worktree preview",
     "blackdog worktree start",
@@ -88,7 +92,7 @@ def _compose_prompt(
         "Repo lifecycle commands available in this repo:",
     ]
     lines.extend(f"- `{command}`" for command in REPO_LIFECYCLE_COMMANDS)
-    lines.append("WTAM kept-change commands remain available when implementation work begins:")
+    lines.append("Single-agent task commands and WTAM operator commands remain available when implementation work begins:")
     lines.extend(f"- `{command}`" for command in WTAM_COMMANDS)
     if profile.validation_commands:
         lines.append("Validation commands configured for this repo:")

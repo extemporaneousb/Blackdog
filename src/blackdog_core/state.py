@@ -67,6 +67,9 @@ VALIDATION_STATUSES = frozenset(
         VALIDATION_STATUS_SKIPPED,
     }
 )
+PROMPT_MODE_RAW = "raw"
+PROMPT_MODE_TUNED = "tuned"
+PROMPT_MODES = frozenset({PROMPT_MODE_RAW, PROMPT_MODE_TUNED})
 
 
 class StoreError(RuntimeError):
@@ -111,6 +114,7 @@ class PromptReceiptRecord:
     prompt_hash: str
     recorded_at: str
     source: str | None = None
+    mode: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,15 +181,20 @@ def create_prompt_receipt(
     *,
     recorded_at: str | None = None,
     source: str | None = None,
+    mode: str | None = PROMPT_MODE_RAW,
 ) -> PromptReceiptRecord:
     normalized = str(text).strip()
     if not normalized:
         raise ValueError("prompt receipt text is required")
+    resolved_mode = _optional_text(mode)
+    if resolved_mode is not None and resolved_mode not in PROMPT_MODES:
+        raise ValueError(f"prompt receipt mode must be one of {', '.join(sorted(PROMPT_MODES))}")
     return PromptReceiptRecord(
         text=normalized,
         prompt_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
         recorded_at=recorded_at or now_iso(),
         source=_optional_text(source),
+        mode=resolved_mode,
     )
 
 
@@ -292,11 +301,15 @@ def _prompt_receipt_from_payload(payload: Any, *, field: str, source: Path) -> P
     recorded_at = _optional_text(payload.get("recorded_at"))
     if recorded_at is None:
         raise StoreError(f"{field}.recorded_at is required in {source}")
+    mode = _optional_text(payload.get("mode"))
+    if mode is not None and mode not in PROMPT_MODES:
+        raise StoreError(f"{field}.mode must be one of {sorted(PROMPT_MODES)} in {source}")
     return PromptReceiptRecord(
         text=text,
         prompt_hash=prompt_hash,
         recorded_at=recorded_at,
         source=_optional_text(payload.get("source")),
+        mode=mode,
     )
 
 
@@ -543,6 +556,7 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                                 "prompt_hash": attempt.prompt_receipt.prompt_hash,
                                 "recorded_at": attempt.prompt_receipt.recorded_at,
                                 "source": attempt.prompt_receipt.source,
+                                "mode": attempt.prompt_receipt.mode,
                             }
                             if attempt.prompt_receipt is not None
                             else None
@@ -803,6 +817,7 @@ def append_event(path: Path, *, event_type: str, payload: Mapping[str, Any], act
 __all__ = [
     "ATTEMPT_ACTIVE_STATUSES",
     "ATTEMPT_STATUSES",
+    "ATTEMPT_STATUS_ABANDONED",
     "ATTEMPT_STATUS_BLOCKED",
     "ATTEMPT_STATUS_FAILED",
     "ATTEMPT_STATUS_IN_PROGRESS",
@@ -810,6 +825,9 @@ __all__ = [
     "EXECUTION_MODELS",
     "EXECUTION_MODEL_DIRECT_WTAM",
     "EXECUTION_MODEL_WORKSET_MANAGER",
+    "PROMPT_MODES",
+    "PROMPT_MODE_RAW",
+    "PROMPT_MODE_TUNED",
     "RUNTIME_SCHEMA_VERSION",
     "RUNTIME_STORE_VERSION",
     "TASK_STATUSES",
@@ -834,6 +852,7 @@ __all__ = [
     "append_event",
     "atomic_write_text",
     "coerce_task_runtime_records",
+    "create_prompt_receipt",
     "default_runtime_state",
     "find_task_attempt",
     "load_events",

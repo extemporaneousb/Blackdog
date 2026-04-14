@@ -6,21 +6,35 @@ from typing import Any
 import os
 import subprocess
 import time
+import uuid
 
 from blackdog.contract import ContractDocument, contract_documents
 from blackdog.handlers import HandlerPlanSummary, execute_worktree_handlers, plan_worktree_handlers
-from blackdog_core.backlog import BacklogError, TaskSpec, Workset, find_workset, finish_task, load_planning_state, start_task
+from blackdog.prompting import tune_prompt
+from blackdog_core.backlog import (
+    BacklogError,
+    TaskSpec,
+    Workset,
+    find_workset,
+    finish_task,
+    load_planning_state,
+    start_task,
+    upsert_workset,
+)
 from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
     ATTEMPT_STATUS_BLOCKED,
     ATTEMPT_STATUS_FAILED,
+    PROMPT_MODE_RAW,
+    PROMPT_MODE_TUNED,
     ValidationRecord,
     active_task_attempt,
     append_event,
     create_prompt_receipt,
     latest_task_attempt,
     load_runtime_state,
+    parse_iso,
 )
 
 
@@ -76,6 +90,7 @@ class WorktreeSpec:
     attempt_id: str
     prompt_hash: str
     prompt_source: str | None
+    prompt_mode: str | None
     workspace_ve: str | None
     workspace_blackdog_path: str | None
     runtime_mode: str | None
@@ -112,6 +127,7 @@ class WorktreePreview:
     note: str | None
     prompt_hash: str
     prompt_source: str | None
+    prompt_mode: str | None
     prompt_text: str | None
     task_paths: tuple[str, ...]
     task_docs: tuple[str, ...]
@@ -129,6 +145,27 @@ class WorktreePreview:
         payload = asdict(self)
         payload["contract_documents"] = [item.to_dict() for item in self.contract_documents]
         payload["handlers"] = self.handlers.to_dict()
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBeginSpec:
+    workset_id: str
+    task_id: str
+    task_title: str
+    actor: str
+    created_workset: bool
+    prompt_mode: str
+    user_prompt_hash: str
+    user_prompt_source: str | None
+    execution_prompt_hash: str
+    execution_prompt_source: str | None
+    execution_prompt_text: str | None
+    worktree: WorktreeSpec
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["worktree"] = self.worktree.to_dict()
         return payload
 
 
@@ -294,6 +331,152 @@ def _task_slug(workset_id: str, task: TaskSpec) -> str:
     return slugify(f"{workset_id}-{task.task_id}-{task.title}")
 
 
+def _derive_task_title(prompt: str) -> str:
+    normalized = " ".join(str(prompt).split())
+    if not normalized:
+        return "Task"
+    title = normalized[:72].rstrip()
+    if len(normalized) > 72 and " " in title:
+        title = title.rsplit(" ", 1)[0]
+    return title.rstrip(" .") or "Task"
+
+
+def _auto_task_workset_payload(profile: RepoProfile, *, prompt: str, title: str | None = None) -> dict[str, Any]:
+    resolved_title = str(title or "").strip() or _derive_task_title(prompt)
+    title_slug = slugify(resolved_title) or "task"
+    workset_id = f"task-{title_slug}-{uuid.uuid4().hex[:8]}"
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    target_branch = _current_branch(primary_root)
+    return {
+        "id": workset_id,
+        "title": resolved_title,
+        "scope": {"kind": "repo", "paths": []},
+        "visibility": {"kind": "workset"},
+        "policies": {"validation": list(profile.validation_commands)},
+        "workspace": {
+            "identity": workset_id,
+            "exported_root": str(profile.paths.project_root),
+        },
+        "branch_intent": {
+            "target_branch": target_branch,
+            "integration_branch": target_branch,
+        },
+        "tasks": [
+            {
+                "id": "TASK-1",
+                "title": resolved_title,
+                "intent": resolved_title,
+                "description": prompt,
+                "docs": list(profile.doc_routing_defaults),
+                "checks": list(profile.validation_commands),
+                "metadata": {
+                    "created_by": "task.begin",
+                    "prompt_mode": PROMPT_MODE_RAW,
+                },
+            }
+        ],
+        "metadata": {
+            "created_by": "task.begin",
+        },
+    }
+
+
+def _resolve_task_begin_prompts(
+    profile: RepoProfile,
+    *,
+    prompt: str,
+    prompt_source: str | None,
+    prompt_mode: str,
+) -> tuple[Any, Any]:
+    user_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=PROMPT_MODE_RAW)
+    if prompt_mode == PROMPT_MODE_TUNED:
+        tuned = tune_prompt(
+            profile,
+            request=user_receipt.text,
+            prompt_source=user_receipt.source,
+        )
+        execution_receipt = create_prompt_receipt(
+            tuned.tuned_prompt,
+            source=user_receipt.source,
+            mode=PROMPT_MODE_TUNED,
+        )
+        return user_receipt, execution_receipt
+    return user_receipt, user_receipt
+
+
+def _attempt_matches_workspace(profile: RepoProfile, *, workspace_root: Path, attempt: Any) -> bool:
+    if attempt.worktree_path and Path(attempt.worktree_path).resolve() == workspace_root:
+        return True
+    if attempt.branch:
+        existing = find_worktree_for_branch(profile, attempt.branch)
+        if existing and Path(existing).resolve() == workspace_root:
+            return True
+    return False
+
+
+def _attempt_sort_key(attempt: Any) -> float:
+    ended = parse_iso(attempt.ended_at)
+    if ended is not None:
+        return ended.timestamp()
+    started = parse_iso(attempt.started_at)
+    if started is not None:
+        return started.timestamp()
+    return 0.0
+
+
+def _resolve_task_command_target(
+    profile: RepoProfile,
+    *,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    cwd: Path | None = None,
+    allow_latest: bool = False,
+) -> tuple[str, str, Any | None]:
+    resolved_workset = str(workset_id or "").strip() or None
+    resolved_task = str(task_id or "").strip() or None
+    runtime_state = load_runtime_state(profile.paths)
+    if (resolved_workset is None) != (resolved_task is None):
+        raise BacklogError("provide both --workset and --task, or neither when running inside a task worktree")
+    if resolved_workset is not None and resolved_task is not None:
+        attempt = active_task_attempt(runtime_state, resolved_workset, resolved_task)
+        if attempt is None and allow_latest:
+            attempt = latest_task_attempt(runtime_state, resolved_workset, resolved_task)
+        if attempt is None and not allow_latest:
+            raise BacklogError(f"No active WTAM attempt for task {resolved_task!r} in workset {resolved_workset!r}")
+        return resolved_workset, resolved_task, attempt
+
+    workspace_root = _repo_root((cwd or Path.cwd()).resolve())
+    active_matches: list[tuple[str, Any]] = []
+    latest_matches: list[tuple[str, Any]] = []
+    for workset in runtime_state.worksets:
+        for attempt in workset.attempts:
+            if _attempt_matches_workspace(profile, workspace_root=workspace_root, attempt=attempt):
+                latest_matches.append((workset.workset_id, attempt))
+                if attempt.status == "in_progress":
+                    active_matches.append((workset.workset_id, attempt))
+    if len(active_matches) > 1:
+        raise WorktreeError(f"multiple active task attempts are associated with {workspace_root}; specify --workset and --task")
+    if active_matches:
+        workset, attempt = active_matches[0]
+        return workset, attempt.task_id, attempt
+    if allow_latest and latest_matches:
+        workset, attempt = max(latest_matches, key=lambda item: _attempt_sort_key(item[1]))
+        return workset, attempt.task_id, attempt
+    raise WorktreeError(f"could not infer a Blackdog task from {workspace_root}; specify --workset and --task")
+
+
+def _task_surface_actions(actions: list[str]) -> list[str]:
+    rewritten: list[str] = []
+    for action in actions:
+        text = action.replace("blackdog worktree land", "blackdog task land")
+        text = text.replace(
+            "blackdog worktree close --status blocked|failed|abandoned",
+            "blackdog task close --status blocked|failed|abandoned",
+        )
+        rewritten.append(text)
+    return rewritten
+
+
 def _run_command(*args: str, cwd: Path | None = None) -> None:
     completed = subprocess.run(
         list(args),
@@ -316,6 +499,7 @@ def preview_task_worktree(
     actor: str,
     prompt: str,
     prompt_source: str | None = None,
+    prompt_mode: str = PROMPT_MODE_RAW,
     model: str | None = None,
     reasoning_effort: str | None = None,
     branch: str | None = None,
@@ -337,7 +521,7 @@ def preview_task_worktree(
     )
     worktree_path = Path(path).resolve() if path else default_task_worktree_path(profile, workset_id=workset_id, task=task).resolve()
     existing_worktree = _find_worktree_for_branch(primary_root, f"refs/heads/{resolved_branch}")
-    prompt_receipt = create_prompt_receipt(prompt, source=prompt_source)
+    prompt_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=prompt_mode)
     conflicts: list[str] = []
     if existing_worktree is not None:
         conflicts.append(f"branch already has a worktree: {existing_worktree}")
@@ -372,6 +556,7 @@ def preview_task_worktree(
         note=note,
         prompt_hash=prompt_receipt.prompt_hash,
         prompt_source=prompt_receipt.source,
+        prompt_mode=prompt_receipt.mode,
         prompt_text=prompt_receipt.text if include_prompt else None,
         task_paths=task.paths,
         task_docs=task.docs,
@@ -678,6 +863,7 @@ def start_task_worktree(
     actor: str,
     prompt: str,
     prompt_source: str | None = None,
+    prompt_mode: str = PROMPT_MODE_RAW,
     model: str | None = None,
     reasoning_effort: str | None = None,
     branch: str | None = None,
@@ -692,6 +878,7 @@ def start_task_worktree(
         actor=actor,
         prompt=prompt,
         prompt_source=prompt_source,
+        prompt_mode=prompt_mode,
         model=model,
         reasoning_effort=reasoning_effort,
         branch=branch,
@@ -731,7 +918,7 @@ def start_task_worktree(
             workset_id=workset_id,
             task_id=task_id,
             actor=actor,
-            prompt_receipt=create_prompt_receipt(prompt, source=prompt_source),
+            prompt_receipt=create_prompt_receipt(prompt, source=prompt_source, mode=prompt_mode),
             workspace_identity=preview.workspace_identity,
             workspace_mode=WORKSPACE_MODE_GIT_WORKTREE,
             worktree_role=WORKTREE_ROLE_TASK,
@@ -763,6 +950,7 @@ def start_task_worktree(
         attempt_id=attempt.attempt_id,
         prompt_hash=preview.prompt_hash,
         prompt_source=preview.prompt_source,
+        prompt_mode=preview.prompt_mode,
         workspace_ve=handlers.worktree_ve_path,
         workspace_blackdog_path=handlers.blackdog_path,
         runtime_mode=handlers.runtime_mode,
@@ -786,6 +974,7 @@ def start_task_worktree(
             "worktree_path": str(worktree_path),
             "prompt_hash": preview.prompt_hash,
             "prompt_source": preview.prompt_source,
+            "prompt_mode": preview.prompt_mode,
             "workspace_blackdog_path": handlers.blackdog_path,
             "runtime_mode": handlers.runtime_mode,
             "source_mode": handlers.source_mode,
@@ -794,6 +983,174 @@ def start_task_worktree(
         },
     )
     return spec
+
+
+def begin_task_worktree(
+    profile: RepoProfile,
+    *,
+    actor: str,
+    prompt: str,
+    prompt_source: str | None = None,
+    prompt_mode: str = PROMPT_MODE_RAW,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    title: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    branch: str | None = None,
+    from_ref: str | None = None,
+    path: str | None = None,
+    note: str | None = None,
+    include_prompt: bool = False,
+) -> TaskBeginSpec:
+    resolved_workset = str(workset_id or "").strip() or None
+    resolved_task = str(task_id or "").strip() or None
+    if prompt_mode not in {PROMPT_MODE_RAW, PROMPT_MODE_TUNED}:
+        raise BacklogError(f"prompt mode must be one of {PROMPT_MODE_RAW}, {PROMPT_MODE_TUNED}")
+    if (resolved_workset is None) != (resolved_task is None):
+        raise BacklogError("task begin requires both --workset and --task when targeting existing planning state")
+
+    user_receipt, execution_receipt = _resolve_task_begin_prompts(
+        profile,
+        prompt=prompt,
+        prompt_source=prompt_source,
+        prompt_mode=prompt_mode,
+    )
+    created_workset = False
+    if resolved_workset is None:
+        payload = _auto_task_workset_payload(profile, prompt=user_receipt.text, title=title)
+        payload["tasks"][0]["metadata"]["prompt_mode"] = prompt_mode
+        workset = upsert_workset(profile, payload)
+        resolved_workset = workset.workset_id
+        resolved_task = workset.tasks[0].task_id
+        created_workset = True
+
+    spec = start_task_worktree(
+        profile,
+        workset_id=resolved_workset,
+        task_id=resolved_task,
+        actor=actor,
+        prompt=execution_receipt.text,
+        prompt_source=execution_receipt.source,
+        prompt_mode=prompt_mode,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        branch=branch,
+        from_ref=from_ref,
+        path=path,
+        note=note,
+    )
+    return TaskBeginSpec(
+        workset_id=resolved_workset,
+        task_id=resolved_task,
+        task_title=spec.task_title,
+        actor=actor,
+        created_workset=created_workset,
+        prompt_mode=prompt_mode,
+        user_prompt_hash=user_receipt.prompt_hash,
+        user_prompt_source=user_receipt.source,
+        execution_prompt_hash=execution_receipt.prompt_hash,
+        execution_prompt_source=execution_receipt.source,
+        execution_prompt_text=execution_receipt.text if include_prompt else None,
+        worktree=spec,
+    )
+
+
+def show_task(
+    profile: RepoProfile,
+    *,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    resolved_workset, resolved_task, _attempt = _resolve_task_command_target(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        cwd=cwd,
+        allow_latest=True,
+    )
+    payload = inspect_task_worktree(profile, workset_id=resolved_workset, task_id=resolved_task)
+    payload["recommended_actions"] = _task_surface_actions(list(payload["recommended_actions"]))
+    return payload
+
+
+def land_task(
+    profile: RepoProfile,
+    *,
+    summary: str,
+    actor: str | None = None,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    validations: tuple[ValidationRecord, ...] = (),
+    residuals: tuple[str, ...] = (),
+    followup_candidates: tuple[str, ...] = (),
+    note: str | None = None,
+    cleanup: bool = True,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    resolved_workset, resolved_task, attempt = _resolve_task_command_target(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        cwd=cwd,
+        allow_latest=False,
+    )
+    resolved_actor = str(actor or getattr(attempt, "actor", "")).strip() or None
+    if resolved_actor is None:
+        raise BacklogError("task land requires an active attempt actor")
+    return land_task_worktree(
+        profile,
+        workset_id=resolved_workset,
+        task_id=resolved_task,
+        actor=resolved_actor,
+        summary=summary,
+        validations=validations,
+        residuals=residuals,
+        followup_candidates=followup_candidates,
+        note=note,
+        cleanup=cleanup,
+    )
+
+
+def close_task(
+    profile: RepoProfile,
+    *,
+    status: str,
+    summary: str,
+    actor: str | None = None,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    validations: tuple[ValidationRecord, ...] = (),
+    residuals: tuple[str, ...] = (),
+    followup_candidates: tuple[str, ...] = (),
+    note: str | None = None,
+    cleanup: bool = False,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    resolved_workset, resolved_task, attempt = _resolve_task_command_target(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        cwd=cwd,
+        allow_latest=False,
+    )
+    resolved_actor = str(actor or getattr(attempt, "actor", "")).strip() or None
+    if resolved_actor is None:
+        raise BacklogError("task close requires an active attempt actor")
+    return close_task_worktree(
+        profile,
+        workset_id=resolved_workset,
+        task_id=resolved_task,
+        actor=resolved_actor,
+        status=status,
+        summary=summary,
+        validations=validations,
+        residuals=residuals,
+        followup_candidates=followup_candidates,
+        note=note,
+        cleanup=cleanup,
+    )
 
 
 def land_branch(
@@ -1326,6 +1683,7 @@ def render_preview_text(
         f"[blackdog-worktree] workspace identity: {preview.workspace_identity or 'unset'}",
         f"[blackdog-worktree] prompt hash: {preview.prompt_hash}",
         f"[blackdog-worktree] prompt source: {preview.prompt_source or 'unspecified'}",
+        f"[blackdog-worktree] prompt mode: {preview.prompt_mode or 'unset'}",
         f"[blackdog-worktree] runtime mode: {preview.handlers.runtime_mode or 'unset'}",
         f"[blackdog-worktree] workspace CLI: {preview.handlers.blackdog_path or 'missing'}",
         f"[blackdog-worktree] start ready: {'yes' if preview.start_ready else 'no'}",
@@ -1381,6 +1739,7 @@ def render_start_text(spec: WorktreeSpec) -> str:
         f"[blackdog-worktree] attempt: {spec.attempt_id}",
         f"[blackdog-worktree] prompt hash: {spec.prompt_hash}",
         f"[blackdog-worktree] prompt source: {spec.prompt_source or 'unspecified'}",
+        f"[blackdog-worktree] prompt mode: {spec.prompt_mode or 'unset'}",
         f"[blackdog-worktree] workspace CLI: {spec.workspace_blackdog_path or 'missing'}",
         f"[blackdog-worktree] runtime mode: {spec.runtime_mode or 'unset'}",
     ]
@@ -1415,6 +1774,21 @@ def render_land_text(payload: dict[str, Any]) -> str:
         lines.append(f"[blackdog-worktree] removed task worktree: {payload['cleaned_worktree']}")
     if payload.get("deleted_branch"):
         lines.append(f"[blackdog-worktree] deleted branch: {payload['branch']}")
+    return "\n".join(lines) + "\n"
+
+
+def render_task_begin_text(spec: TaskBeginSpec, *, show_prompt: bool = False) -> str:
+    lines = [
+        f"[blackdog-task] begin: {spec.workset_id}/{spec.task_id} actor={spec.actor}",
+        f"[blackdog-task] created workset: {'yes' if spec.created_workset else 'no'}",
+        f"[blackdog-task] prompt mode: {spec.prompt_mode}",
+        f"[blackdog-task] user prompt hash: {spec.user_prompt_hash}",
+        f"[blackdog-task] execution prompt hash: {spec.execution_prompt_hash}",
+    ]
+    if show_prompt and spec.execution_prompt_text is not None:
+        lines.append("[blackdog-task] execution prompt:")
+        lines.extend(f"  {line}" for line in spec.execution_prompt_text.splitlines())
+    lines.append(render_start_text(spec.worktree).rstrip())
     return "\n".join(lines) + "\n"
 
 
@@ -1482,6 +1856,7 @@ def render_cleanup_text(payload: dict[str, Any]) -> str:
 
 __all__ = [
     "DirtyPrimaryWorktreeError",
+    "TaskBeginSpec",
     "WORKSPACE_MODE_GIT_WORKTREE",
     "WORKTREE_ROLE_LINKED",
     "WORKTREE_ROLE_PRIMARY",
@@ -1491,7 +1866,9 @@ __all__ = [
     "WorktreeSpec",
     "branch_ahead_of_target",
     "branch_changed_paths",
+    "begin_task_worktree",
     "cleanup_task_worktree",
+    "close_task",
     "close_task_worktree",
     "default_task_branch",
     "default_task_worktree_path",
@@ -1500,6 +1877,7 @@ __all__ = [
     "find_primary_worktree",
     "find_worktree_for_branch",
     "inspect_task_worktree",
+    "land_task",
     "land_branch",
     "land_task_worktree",
     "primary_worktree_dirty_paths",
@@ -1512,6 +1890,8 @@ __all__ = [
     "render_preview_text",
     "render_show_text",
     "render_start_text",
+    "render_task_begin_text",
+    "show_task",
     "start_task_worktree",
     "worktree_contract",
     "worktree_preflight",

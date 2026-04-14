@@ -8,6 +8,20 @@ workset/task flow before Blackdog grows a multi-agent `workset_manager` mode.
 
 ## Normative Single-Agent Flow
 
+1. `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt "..." --prompt-mode raw`
+2. make kept changes only inside that task worktree
+3. `./.VE/bin/blackdog task land --project-root . --summary "..."`
+4. if recovery is needed from that task worktree, inspect `./.VE/bin/blackdog task show --project-root .`
+5. if the work should not land, close it with `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary "..."`
+6. use `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK` only for retained or leftover task worktrees
+7. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
+
+The default direct-agent hot path is now `task begin -> land`. `task show`,
+`task close`, `worktree show`, `worktree close`, and `worktree cleanup` are the
+recovery/fallback surfaces around that canonical path.
+
+## Explicit Planned-Task Operator Flow
+
 1. `./.VE/bin/blackdog summary --project-root .`
 2. `./.VE/bin/blackdog next --project-root . --workset WORKSET`
 3. `./.VE/bin/blackdog worktree preflight --project-root .`
@@ -15,18 +29,16 @@ workset/task flow before Blackdog grows a multi-agent `workset_manager` mode.
 5. `./.VE/bin/blackdog worktree start --project-root . --workset WORKSET --task TASK --actor AGENT --prompt "..."`
 6. make kept changes only inside that task worktree
 7. `./.VE/bin/blackdog worktree land --project-root . --workset WORKSET --task TASK --actor AGENT --summary "..."`
-8. if recovery is needed, inspect `./.VE/bin/blackdog worktree show --project-root . --workset WORKSET --task TASK`
-9. if the work should not land, close it with `./.VE/bin/blackdog worktree close --project-root . --workset WORKSET --task TASK --actor AGENT --status blocked|failed|abandoned --summary "..."`
-10. use `./.VE/bin/blackdog worktree cleanup --project-root . --workset WORKSET --task TASK` only for retained or leftover task worktrees
-11. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
-
-The direct-agent hot path is workset-scoped and task-specific. Once the agent
-already knows the workset and task, `next` is no longer the critical path; the
-critical path is `preflight -> preview -> start -> land`. `show`, `close`, and
-`cleanup` are the recovery/fallback surfaces around that canonical path.
 
 ## What The Current CLI Assesses Well
 
+- `task begin`
+  Starts the normal same-thread flow in one command. It can auto-create a
+  one-task workset, claim it for the caller, optionally tune the recorded
+  execution prompt, and provision the task worktree.
+- `task show`
+  Inspects the current or latest task associated with the task worktree
+  without requiring repeated workset/task ids on the hot path.
 - `worktree preflight`
   Shows whether the current checkout is the primary worktree, whether the
   primary worktree is dirty, which worktrees exist, and whether the current
@@ -81,9 +93,9 @@ That is sufficient for prompt tuning, git audit, and coarse runtime review.
 
 The canonical kept-change success path is now:
 
-- start one WTAM attempt through `blackdog worktree start`
+- start one WTAM attempt through `blackdog task begin`
 - do the kept work only inside that task worktree
-- finish with `blackdog worktree land`
+- finish with `blackdog task land`
 
 `worktree land` owns the success closure contract. For a successful task
 attempt it:

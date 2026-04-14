@@ -164,6 +164,10 @@ code, but they are removed from the vNext contract.
 The minimum coherent shipped slice after the sweep is:
 
 - one write surface for workset/task state: `blackdog workset put`
+- one same-thread task-begin surface: `blackdog task begin`
+- one same-thread task inspection surface: `blackdog task show`
+- one same-thread task success-closure surface: `blackdog task land`
+- one same-thread task non-success closure surface: `blackdog task close`
 - one WTAM contract/readiness surface: `blackdog worktree preflight`
 - one WTAM execution start surface: `blackdog worktree start`
 - one WTAM inspection/recovery read surface: `blackdog worktree show`

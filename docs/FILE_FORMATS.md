@@ -193,6 +193,12 @@ Allowed validation statuses:
 - `prompt_hash`
 - `recorded_at`
 - optional `source`
+- optional `mode`
+
+Allowed prompt modes:
+
+- `raw`
+- `tuned`
 
 Current shipped execution-context values:
 
@@ -238,6 +244,7 @@ Current `worktree.start` payloads record:
 - `worktree_path`
 - `prompt_hash`
 - optional `prompt_source`
+- optional `prompt_mode`
 - `workspace_blackdog_path`
 - optional `runtime_mode`
 - optional `source_mode`

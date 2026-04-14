@@ -160,6 +160,121 @@ Payload shape:
 - `tasks`
 - optional `task_states`
 
+### `blackdog task begin`
+
+Create or reuse one task envelope and start the WTAM attempt.
+
+```bash
+blackdog task begin \
+  --project-root /path/to/repo \
+  --actor codex \
+  --prompt "Implement the same-thread slice." \
+  --prompt-mode raw
+```
+
+Important flags:
+
+- `--project-root`
+- `--actor`
+- exactly one of `--prompt` or `--prompt-file`
+- optional `--prompt-mode raw|tuned`
+- optional `--workset`
+- optional `--task`
+- optional `--title`
+- optional `--branch`
+- optional `--from`
+- optional `--path`
+- optional `--model`
+- optional `--reasoning-effort`
+- optional `--note`
+- optional `--show-prompt`
+
+`task begin` is the default same-thread agent entrypoint. When `--workset` and
+`--task` are omitted, it creates a one-task workset automatically, claims it
+for the caller, records the prompt receipt, provisions the task worktree, and
+starts the WTAM attempt in one command.
+
+`--prompt-mode raw` records the supplied prompt directly. `--prompt-mode tuned`
+runs the user request through `blackdog prompt tune` first and records the
+tuned execution prompt as the attempt prompt receipt. The prompt receipt stores
+its `mode` as `raw` or `tuned`.
+
+### `blackdog task show`
+
+Inspect the current active task, or the latest task if none is active, for the
+task worktree you are in.
+
+```bash
+blackdog task show --project-root /path/to/repo
+blackdog task show --project-root /path/to/repo --workset kernel --task KERN-1
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+
+When `--workset` and `--task` are omitted, `task show` infers the task from the
+current task worktree. This is the same-thread recovery read surface that
+avoids repeating ids on every follow-on command.
+
+### `blackdog task land`
+
+Land the current task and close it.
+
+```bash
+blackdog task land \
+  --project-root /path/to/repo \
+  --summary "finished the same-thread slice"
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+- optional `--actor`
+- required `--summary`
+- repeatable `--validation NAME=STATUS`
+- repeatable `--residual`
+- repeatable `--followup`
+- optional `--note`
+- optional `--keep-worktree`
+
+When `--workset` and `--task` are omitted, `task land` infers the active task
+from the current task worktree and reuses the active attempt actor. It then
+delegates to the canonical `worktree land` success-closure path.
+
+### `blackdog task close`
+
+Close the current task without landing code.
+
+```bash
+blackdog task close \
+  --project-root /path/to/repo \
+  --status blocked \
+  --summary "blocked on fixture mismatch"
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+- optional `--actor`
+- required `--status blocked|failed|abandoned`
+- required `--summary`
+- repeatable `--validation NAME=STATUS`
+- repeatable `--residual`
+- repeatable `--followup`
+- optional `--note`
+- optional `--cleanup`
+
+When `--workset` and `--task` are omitted, `task close` infers the active task
+from the current task worktree and reuses the active attempt actor. It then
+delegates to the canonical non-success closure path.
+
 ### `blackdog worktree preflight`
 
 Show the current WTAM contract for the checkout and primary worktree.

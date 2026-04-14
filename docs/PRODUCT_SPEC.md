@@ -184,19 +184,27 @@ Blackdog must support:
 `blackdog worktree start` is both the operator-facing claim action and the
 execution start action for `direct_wtam`.
 
-For v1, the kept-change path should be one operator workflow:
+For v1, the default same-thread kept-change path should be:
+
+- `blackdog task begin`
+- do the work inside that task worktree
+- `blackdog task land`
+
+`task begin` should create, claim, and start the task envelope in one action.
+It may create a one-task workset automatically when the caller does not target
+existing planning state. `task land` is the normative success-closure action.
+It should create one canonical landed commit per successful task attempt,
+record runtime, release claims, and clean up by default. Recovery-oriented
+flows use `task show`, `task close`, `worktree show`, `worktree close`, and
+`worktree cleanup` when the canonical success path cannot finish.
+
+The explicit planned-task operator path remains:
 
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
 - `blackdog worktree start`
 - do the work inside that task worktree
 - `blackdog worktree land`
-
-`worktree land` is the normative success-closure action. It should create one
-canonical landed commit per successful task attempt, record runtime, release
-claims, and clean up by default. Recovery-oriented flows use `worktree show`,
-`worktree close`, and `worktree cleanup` when the canonical success path cannot
-finish.
 
 ### Story 4: Record Results And Stats
 
@@ -301,6 +309,7 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
+- same-thread task begin/show/land/close
 - worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
 - prompt receipt capture
 - prompt/contract preview before execution start
@@ -326,6 +335,10 @@ This is the decision frame for the rest of the repo.
 - `events.jsonl`
 - workset/task typed model
 - workset/task claim model
+- `task begin`
+- `task show`
+- `task land`
+- `task close`
 - `worktree preflight`
 - `worktree preview`
 - `worktree start`
@@ -358,7 +371,8 @@ This is the decision frame for the rest of the repo.
 
 ### Combine
 
-- claim + execution start are one operator-facing action in `direct_wtam`
+- create + claim + execution start are one operator-facing action in the
+  default same-thread direct flow
 - success record + canonical landed commit + default cleanup are one
   finish/report action in `direct_wtam`
 - summary + next may remain separate commands but should read from one status
@@ -415,8 +429,10 @@ The exact names can change, but the product should expose capabilities in this
 shape:
 
 - one planning write surface for workset/task updates
-- one WTAM lifecycle surface for `direct_wtam`, with explicit recovery reads
-  and non-success closure
+- one same-thread task lifecycle surface for `direct_wtam`, with explicit
+  recovery reads and non-success closure
+- one lower-level WTAM operator surface for planned-task execution when the
+  caller needs explicit preflight/preview/start control
 - one supervisor/workset-manager surface for multi-agent workset execution
 - one repo lifecycle surface family for install/update/refresh/tune and skill
   composition

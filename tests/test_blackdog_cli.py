@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
@@ -26,10 +26,10 @@ class BlackdogCliTests(CoreAuditTestCase):
             text=True,
         )
 
-    def run_cli(self, *args: str) -> tuple[int, str, str]:
+    def run_cli(self, *args: str, cwd: Path | None = None) -> tuple[int, str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
+        with chdir(cwd or Path.cwd()), redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
 
@@ -368,6 +368,154 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["worktree_role"], "task")
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["landed_commit"], land_payload["landed_commit"])
         self.assertEqual((self.root / "notes.txt").read_text(encoding="utf-8"), "WTAM kept change\n")
+
+    def test_task_begin_creates_a_single_task_envelope_and_lands_from_the_task_worktree(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Implement the same-thread task flow and capture the lineage.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        workset_id = task_payload["workset_id"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        self.assertTrue(task_payload["created_workset"])
+        self.assertEqual(task_payload["task_id"], "TASK-1")
+        self.assertEqual(task_payload["prompt_mode"], "raw")
+        self.assertEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+        self.assertTrue(workset_id.startswith("task-"))
+        self.assertTrue(worktree_path.exists())
+
+        (worktree_path / "task-begin.txt").write_text("task begin\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        show_payload = json.loads(stdout)["task_show"]
+        self.assertTrue(show_payload["active_attempt"])
+        self.assertEqual(show_payload["workset_id"], workset_id)
+        self.assertEqual(show_payload["task_id"], "TASK-1")
+        self.assertIn("task-begin.txt", show_payload["changed_paths"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "finished the same-thread task flow",
+            "--validation",
+            "unit=passed",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        land_payload = json.loads(stdout)["landing"]
+        self.assertEqual(land_payload["status"], "success")
+        self.assertEqual(land_payload["task_id"], "TASK-1")
+        self.assertIn("task-begin.txt", land_payload["changed_paths"])
+        self.assertFalse(worktree_path.exists())
+        landed_message = self.git_output("show", "-s", "--format=%B", land_payload["landed_commit"])
+        self.assertIn(f"blackdog({workset_id}/TASK-1)", landed_message)
+        self.assertIn("Blackdog-Validation: unit=passed", landed_message)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary_payload = json.loads(stdout)
+        self.assertEqual(summary_payload["counts"]["active_attempts"], 0)
+        self.assertEqual(summary_payload["counts"]["claimed_tasks"], 0)
+        self.assertEqual((self.root / "task-begin.txt").read_text(encoding="utf-8"), "task begin\n")
+
+    def test_task_begin_can_tune_the_prompt_and_task_close_can_infer_the_current_attempt(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Make a tuned execution prompt for this slice.",
+            "--prompt-mode",
+            "tuned",
+            "--show-prompt",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        workset_id = task_payload["workset_id"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        self.assertEqual(task_payload["prompt_mode"], "tuned")
+        self.assertNotEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+        self.assertIn("You are working in the repo", task_payload["execution_prompt_text"])
+
+        (worktree_path / "tuned.txt").write_text("tuned\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "abandoned the tuned slice",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        close_payload = json.loads(stdout)["closure"]
+        self.assertEqual(close_payload["status"], "abandoned")
+        self.assertIn("tuned.txt", close_payload["changed_paths"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "next",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        next_payload = json.loads(stdout)
+        self.assertEqual(next_payload["selection_mode"], "start")
+        self.assertEqual(next_payload["selected_task"]["task_id"], "TASK-1")
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", task_payload["worktree"]["branch"]],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_worktree_show_and_close_surface_active_attempt_recovery(self) -> None:
         payload = {

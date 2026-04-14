@@ -17,10 +17,14 @@ from blackdog.repo_lifecycle import (
 )
 from blackdog.wtam import (
     WorktreeError,
+    begin_task_worktree,
     cleanup_task_worktree,
+    close_task,
     close_task_worktree,
     inspect_task_worktree,
+    land_task,
     land_task_worktree,
+    render_task_begin_text,
     render_cleanup_text,
     render_close_text,
     render_land_text,
@@ -28,6 +32,7 @@ from blackdog.wtam import (
     render_preview_text,
     render_show_text,
     render_start_text,
+    show_task,
     preview_task_worktree,
     start_task_worktree,
     worktree_preflight,
@@ -47,7 +52,7 @@ from blackdog_core.snapshot import (
     render_next_text,
     render_summary_text,
 )
-from blackdog_core.state import StoreError, VALIDATION_STATUSES, ValidationRecord
+from blackdog_core.state import PROMPT_MODES, StoreError, VALIDATION_STATUSES, ValidationRecord
 
 
 def _emit_json(payload: Any) -> None:
@@ -197,6 +202,64 @@ def _build_parser() -> argparse.ArgumentParser:
     p_workset_put.add_argument("--json")
     p_workset_put.add_argument("--file")
 
+    p_task = subparsers.add_parser("task", help="Composed single-agent task workflow")
+    task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
+
+    p_task_begin = task_subparsers.add_parser(
+        "begin",
+        help="Create or reuse a task envelope and start the WTAM attempt",
+    )
+    p_task_begin.add_argument("--project-root", default=".")
+    p_task_begin.add_argument("--actor", required=True)
+    task_begin_prompt_group = p_task_begin.add_mutually_exclusive_group(required=True)
+    task_begin_prompt_group.add_argument("--prompt")
+    task_begin_prompt_group.add_argument("--prompt-file")
+    p_task_begin.add_argument("--prompt-mode", choices=sorted(PROMPT_MODES), default="raw")
+    p_task_begin.add_argument("--workset")
+    p_task_begin.add_argument("--task")
+    p_task_begin.add_argument("--title")
+    p_task_begin.add_argument("--branch")
+    p_task_begin.add_argument("--from", dest="from_ref")
+    p_task_begin.add_argument("--path")
+    p_task_begin.add_argument("--model")
+    p_task_begin.add_argument("--reasoning-effort")
+    p_task_begin.add_argument("--note")
+    p_task_begin.add_argument("--show-prompt", action="store_true")
+    p_task_begin.add_argument("--json", action="store_true")
+
+    p_task_show = task_subparsers.add_parser("show", help="Inspect the current or latest task for this worktree")
+    p_task_show.add_argument("--project-root", default=".")
+    p_task_show.add_argument("--workset")
+    p_task_show.add_argument("--task")
+    p_task_show.add_argument("--json", action="store_true")
+
+    p_task_land = task_subparsers.add_parser("land", help="Land the current task and close it")
+    p_task_land.add_argument("--project-root", default=".")
+    p_task_land.add_argument("--workset")
+    p_task_land.add_argument("--task")
+    p_task_land.add_argument("--actor")
+    p_task_land.add_argument("--summary", required=True)
+    p_task_land.add_argument("--validation", action="append", default=[])
+    p_task_land.add_argument("--residual", action="append", default=[])
+    p_task_land.add_argument("--followup", action="append", default=[])
+    p_task_land.add_argument("--note")
+    p_task_land.add_argument("--keep-worktree", action="store_true")
+    p_task_land.add_argument("--json", action="store_true")
+
+    p_task_close = task_subparsers.add_parser("close", help="Close the current task without landing code")
+    p_task_close.add_argument("--project-root", default=".")
+    p_task_close.add_argument("--workset")
+    p_task_close.add_argument("--task")
+    p_task_close.add_argument("--actor")
+    p_task_close.add_argument("--status", required=True, choices=["blocked", "failed", "abandoned"])
+    p_task_close.add_argument("--summary", required=True)
+    p_task_close.add_argument("--validation", action="append", default=[])
+    p_task_close.add_argument("--residual", action="append", default=[])
+    p_task_close.add_argument("--followup", action="append", default=[])
+    p_task_close.add_argument("--note")
+    p_task_close.add_argument("--cleanup", action="store_true")
+    p_task_close.add_argument("--json", action="store_true")
+
     p_worktree = subparsers.add_parser("worktree", help="WTAM branch-backed implementation workflow")
     worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
 
@@ -271,7 +334,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_close.add_argument("--cleanup", action="store_true")
     p_worktree_close.add_argument("--json", action="store_true")
 
-    p_worktree_cleanup = worktree_subparsers.add_parser("cleanup", help="Remove the landed WTAM worktree and delete its branch")
+    p_worktree_cleanup = worktree_subparsers.add_parser("cleanup", help="Remove a retained or leftover WTAM worktree and delete its branch")
     p_worktree_cleanup.add_argument("--project-root", default=".")
     p_worktree_cleanup.add_argument("--workset", required=True)
     p_worktree_cleanup.add_argument("--task", required=True)
@@ -415,6 +478,93 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             workset = upsert_workset(profile, payload)
             _emit_json({"workset": workset_to_payload(workset)})
+            return 0
+
+        if args.command == "task" and args.task_command == "begin":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            prompt_text, prompt_source = _load_text_input(
+                label="task begin prompt",
+                raw_text=args.prompt,
+                file_path=args.prompt_file,
+            )
+            spec = begin_task_worktree(
+                profile,
+                actor=args.actor,
+                prompt=prompt_text,
+                prompt_source=prompt_source,
+                prompt_mode=args.prompt_mode,
+                workset_id=args.workset,
+                task_id=args.task,
+                title=args.title,
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+                branch=args.branch,
+                from_ref=args.from_ref,
+                path=args.path,
+                note=args.note,
+                include_prompt=args.show_prompt,
+            )
+            if args.json:
+                _emit_json({"task": spec.to_dict()})
+            else:
+                print(render_task_begin_text(spec, show_prompt=args.show_prompt), end="")
+            return 0
+
+        if args.command == "task" and args.task_command == "show":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = show_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                cwd=Path.cwd(),
+            )
+            if args.json:
+                _emit_json({"task_show": payload})
+            else:
+                print(render_show_text(payload), end="")
+            return 0
+
+        if args.command == "task" and args.task_command == "land":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = land_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                summary=args.summary,
+                validations=_parse_validation_flags(args.validation),
+                residuals=tuple(args.residual),
+                followup_candidates=tuple(args.followup),
+                note=args.note,
+                cleanup=not args.keep_worktree,
+                cwd=Path.cwd(),
+            )
+            if args.json:
+                _emit_json({"landing": payload})
+            else:
+                print(render_land_text(payload), end="")
+            return 0 if payload.get("status") == "success" else 1
+
+        if args.command == "task" and args.task_command == "close":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = close_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                status=args.status,
+                summary=args.summary,
+                validations=_parse_validation_flags(args.validation),
+                residuals=tuple(args.residual),
+                followup_candidates=tuple(args.followup),
+                note=args.note,
+                cleanup=args.cleanup,
+                cwd=Path.cwd(),
+            )
+            if args.json:
+                _emit_json({"closure": payload})
+            else:
+                print(render_close_text(payload), end="")
             return 0
 
         if args.command == "worktree" and args.worktree_command == "preflight":

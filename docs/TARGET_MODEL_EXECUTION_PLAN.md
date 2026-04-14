@@ -19,6 +19,10 @@ The current shipped surface is:
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
+- `blackdog task begin`
+- `blackdog task show`
+- `blackdog task land`
+- `blackdog task close`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
 - `blackdog worktree start`
@@ -45,13 +49,15 @@ Use this prompt to continue the rewrite:
 > The base layer must be locked before breadth returns. Prioritize:
 > 1. a rock-solid workset/task model
 > 2. explicit workset/task claim semantics
-> 3. the kept-change WTAM lifecycle:
->    `worktree preflight -> worktree preview -> worktree start -> execute -> worktree land`
+> 3. the same-thread kept-change lifecycle:
+>    `task begin -> execute -> task land`
 > 4. durable accumulation of completed/landed work and attempt history
 > 5. a clear execution model for direct work and any later delegated work
 >
-> Treat `worktree show`, `worktree close`, and `worktree cleanup` as the
-> recovery and fallback surfaces around that canonical success path.
+> Treat `task show`, `task close`, `worktree show`, `worktree close`, and
+> `worktree cleanup` as the recovery and fallback surfaces around that
+> canonical success path. Keep `worktree preflight|preview|start` as the
+> explicit operator surfaces for planned workset/task execution.
 >
 > Treat WTAM as the normative kept-change workflow. Do not preserve a
 > non-worktree execution mode in Blackdog.

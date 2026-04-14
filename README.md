@@ -21,6 +21,10 @@ The current shipped CLI is deliberately narrow:
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
+- `blackdog task begin`
+- `blackdog task show`
+- `blackdog task land`
+- `blackdog task close`
 - `blackdog summary`
 - `blackdog next --workset`
 - `blackdog snapshot`
@@ -49,6 +53,8 @@ In this repo, use `./.VE/bin/blackdog` when the worktree has a local `.VE`.
 Do not keep implementation edits in the primary worktree. Run
 `./.VE/bin/blackdog worktree preflight` first; if it reports the primary
 worktree, move into a branch-backed task worktree before editing files.
+For the normal same-thread agent path, prefer `./.VE/bin/blackdog task begin`
+to create, claim, and start one task envelope in a single step.
 Use `./.VE/bin/blackdog worktree preview` when you want to inspect the WTAM
 start plan, prompt receipt, repo contract inputs, and handler actions before a
 claim/start.
@@ -60,12 +66,15 @@ writing the worktree-local launcher when needed.
 `blackdog worktree land` is the canonical success closure surface: it creates
 one landed commit per successful task attempt, records runtime, releases
 claims, and cleans up the task worktree by default.
+`blackdog task begin` accepts `--prompt-mode raw|tuned` so the same-thread
+entrypoint can either record the user prompt directly or run it through the
+repo-local prompt tuning flow before starting the attempt.
 Use `blackdog worktree show` to inspect an active or latest attempt, and
 `blackdog worktree close --status blocked|failed|abandoned` to close an
 in-progress attempt without landing code.
 Use `blackdog next --workset WORKSET` for human or recovery-oriented task
-selection inside one workset; direct-agent WTAM flows that already know the
-task id can go straight to `worktree preview` or `worktree start`.
+selection inside one workset; explicit planned-task flows can still go through
+`worktree preview` and `worktree start` when they need that control.
 
 Blackdog has no non-WTAM implementation mode.
 
