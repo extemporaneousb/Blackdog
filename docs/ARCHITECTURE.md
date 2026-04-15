@@ -86,6 +86,13 @@ The second family is intentionally not part of the workset/task durable model.
 Install/update/refresh/tune are product workflows, but they are not claims,
 tasks, or attempts.
 
+The same boundary should hold for the next supervisor rebuild. Plan
+compilation, worker-binding transport, review queues, and transient
+supervisor-run artifacts belong in `blackdog`, not in `blackdog_core`.
+The core model should stay small while the product layer owns the richer
+supervised-execution policy described in
+[docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
+
 ## Shipped Surface After The Sweep
 
 The minimum coherent product surface rebuilt on top of the new core is:

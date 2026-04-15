@@ -43,6 +43,12 @@ The vNext audience split is:
 Humans may inspect the machine files directly, but those files are not intended
 to be hand-edited as the primary workflow.
 
+For the target supervised workflow that compiles repo docs and operator goals
+into task-scoped worker envelopes, see
+[docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
+That target should extend product-layer run state and review policy without
+turning the core workset/task model into a chat-session mirror.
+
 ## Core Objects
 
 ### `Workset`

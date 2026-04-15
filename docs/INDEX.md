@@ -13,6 +13,8 @@ CLI surfaces.
   ownership, and the current shipped product surface
 - [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md): the vNext object model and the
   deliberate breaking changes that define it
+- [docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md):
+  target workflow for compiling repo goals into supervised multi-agent runs
 - [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md):
   the rewrite note that records the compatibility-first plan as superseded
 - [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`

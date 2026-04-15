@@ -77,6 +77,11 @@ pick work, and record results.
 Optional higher-level agent that supervises a workset DAG, checkpoints worker
 results, and dispatches follow-on tasks or parallel branches.
 
+For the target model where the coordinating agent compiles repo goals into
+task-scoped worker envelopes, launches fresh worker contexts, and gates landing
+through review, see
+[docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
+
 ## Desired Blackdog Functionality
 
 Blackdog is usable when it reliably supports these jobs:
@@ -303,6 +308,26 @@ Blackdog must support:
 This is a first-class operator workflow. It should not be forced through task
 claims or attempt history unless execution actually starts.
 
+### Story 10: Run A Large Goal Through A Supervised Worker Pool
+
+Human:
+"Take this repo-level goal, keep the guardrails aligned, and push through the
+full plan without losing the thread."
+
+Blackdog must eventually support:
+
+- compiling high-level repo goals and guardrail docs into one workset DAG
+- generating task-scoped worker envelopes instead of handing every worker the
+  full plan
+- launching fresh worker contexts under one supervising agent
+- explicit review-ready checkpoints before landing
+- downstream task-envelope refresh after each landed task
+- prompt-tuning telemetry that covers compile-time and worker-time prompts
+
+This is the model Blackdog needs for sustained multi-task delivery. The current
+shipped `supervisor start|show|checkpoint|release` surface is the base, not the
+full target.
+
 ## V1 Feature Set
 
 V1 should include these product capabilities:
@@ -376,6 +401,10 @@ This is the decision frame for the rest of the repo.
 - supervisor/status:
   keep only if it reads and writes the new typed runtime state directly and
   uses `workset_manager` claim/execution semantics
+- large-goal supervised execution:
+  keep the direction, but rebuild it as a compiled workset-plus-run model with
+  fresh worker contexts, supervisor review gates, and downstream envelope
+  realignment instead of restoring the old process-runner wholesale
 
 ### Combine
 
@@ -393,6 +422,8 @@ This is the decision frame for the rest of the repo.
 - tracked installs and multi-repo observation
 - browser write UI
 - richer multi-agent steering if it delays direct-mode usability
+- Codex-specific child-agent transport until the workset compiler, run-state,
+  and review-gate model are explicit
 
 ### Remove
 
