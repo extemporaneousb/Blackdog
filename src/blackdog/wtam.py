@@ -780,6 +780,7 @@ def _canonical_commit_message(
     *,
     attempt_id: str,
     actor: str,
+    changed_paths: tuple[str, ...],
     prompt_hash: str | None,
     target_branch: str | None,
     status: str,
@@ -804,6 +805,8 @@ def _canonical_commit_message(
         lines.append(f"Blackdog-Target-Branch: {target_branch}")
     if prompt_hash:
         lines.append(f"Blackdog-Prompt-Hash: {prompt_hash}")
+    for path in changed_paths:
+        lines.append(f"Blackdog-Changed-Path: {path}")
     for validation in validations:
         lines.append(f"Blackdog-Validation: {validation.name}={validation.status}")
     for residual in residuals:
@@ -1335,6 +1338,14 @@ def land_task_worktree(
         branch=attempt.branch,
         worktree_path=attempt.worktree_path,
     )
+    changed_paths = tuple(
+        _attempt_changed_paths(
+            profile,
+            branch=attempt.branch,
+            target_branch=attempt.target_branch,
+            worktree_path=task_worktree,
+        )
+    )
     prompt_hash = attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt is not None else None
     branch_head_commit: str | None = None
     commit_message = _canonical_commit_message(
@@ -1342,6 +1353,7 @@ def land_task_worktree(
         task,
         attempt_id=attempt.attempt_id,
         actor=actor,
+        changed_paths=changed_paths,
         prompt_hash=prompt_hash,
         target_branch=attempt.target_branch,
         status="success",

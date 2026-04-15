@@ -591,6 +591,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("Blackdog-Workset: direct-mode", landed_message)
         self.assertIn("Blackdog-Task: DM-1", landed_message)
         self.assertIn("Blackdog-Status: success", landed_message)
+        self.assertIn("Blackdog-Changed-Path: notes.txt", landed_message)
 
         exit_code, stdout, stderr = self.run_cli("summary", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
@@ -680,6 +681,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse(worktree_path.exists())
         landed_message = self.git_output("show", "-s", "--format=%B", land_payload["landed_commit"])
         self.assertIn(f"blackdog({workset_id}/TASK-1)", landed_message)
+        self.assertIn("Blackdog-Changed-Path: task-begin.txt", landed_message)
         self.assertIn("Blackdog-Validation: unit=passed", landed_message)
 
         exit_code, stdout, stderr = self.run_cli(

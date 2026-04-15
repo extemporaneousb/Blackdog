@@ -604,6 +604,8 @@ It:
 - auto-stages dirty task-worktree changes and creates an internal prep commit
   on the task branch when needed
 - creates one canonical landed commit for the successful task attempt
+- includes one `Blackdog-Changed-Path:` trailer per changed path in that
+  canonical landed commit
 - records `changed_paths`, branch-head `commit`, `landed_commit`, validation
   results, and closure timing
 - releases the active task/workset claims
