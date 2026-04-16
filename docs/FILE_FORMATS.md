@@ -242,6 +242,8 @@ Current shipped write path:
 - `workset.release`
 - `supervisor.checkpoint`
 - `supervisor.bind`
+- `supervisor.submit`
+- `supervisor.decide`
 - `task.claim`
 - `task.release`
 - `task.start`
@@ -325,6 +327,32 @@ Current `supervisor.bind` payloads record:
 - `attempt_id`
 - optional `note`
 
+Current `supervisor.submit` payloads record:
+
+- `run_id`
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `worker_actor`
+- `submitted_at`
+- `summary`
+- `changed_paths`
+- `validations`
+- `residuals`
+- `followup_candidates`
+- optional `note`
+
+Current `supervisor.decide` payloads record:
+
+- `run_id`
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `action`
+- `status`
+- `summary`
+- optional `note`
+
 ## `supervisor-runs/<run_id>/status.json`
 
 Product-layer durable state for one supervisor-managed execution run.
@@ -345,6 +373,8 @@ Each run status JSON object contains:
 - optional `note`
 - `bindings`
 - `checkpoints`
+- `submissions`
+- `decisions`
 
 Each binding row contains:
 
@@ -364,6 +394,33 @@ Each checkpoint row contains:
 - `ready_task_ids`
 - `dispatch_task_ids`
 - `binding_task_ids`
+- optional `note`
+
+Each submission row contains:
+
+- `task_id`
+- `attempt_id`
+- `worker_actor`
+- `submitted_at`
+- `summary`
+- optional `branch`
+- optional `target_branch`
+- optional `worktree_path`
+- `changed_paths`
+- `validations`
+- `residuals`
+- `followup_candidates`
+- optional `note`
+
+Each decision row contains:
+
+- `task_id`
+- `attempt_id`
+- `actor`
+- `decided_at`
+- `action = "land" | "revise" | "restart" | "close"`
+- `status`
+- `summary`
 - optional `note`
 
 ## Semantic Boundary

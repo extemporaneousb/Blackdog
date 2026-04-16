@@ -246,10 +246,31 @@ Important flags:
 
 - the current workset claim
 - the current supervisor run and any active worker bindings
+- whether the primary landing target is currently clean
+- the current review queue
 - the current phase such as `dispatch`, `monitor`, `blocked`, or `complete`
 - active worker tasks
 - ready tasks and dispatch candidates up to the parallelism cap
 - recent attempts and recommended next actions
+
+### `blackdog supervisor reconcile`
+
+Poll the machine-facing supervisor state for one workset.
+
+```bash
+blackdog supervisor reconcile --project-root /path/to/repo --workset kernel
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- optional `--parallelism`
+
+`supervisor reconcile` is the intended polling surface for a coordinating
+agent. It returns the same supervisor status model as `supervisor show`, but
+it resolves the active run's stored parallelism by default and is intended to
+drive dispatch, review, and release decisions programmatically.
 
 ### `blackdog supervisor checkpoint`
 
@@ -307,6 +328,71 @@ Important flags:
 task is already active under the given `--worker-actor`, records the current
 attempt id into the durable supervisor run, appends one `supervisor.bind`
 event, and returns the current supervisor view.
+
+### `blackdog supervisor submit`
+
+Record one review-ready worker submission for the active attempt.
+
+```bash
+blackdog supervisor submit \
+  --project-root /path/to/repo \
+  --summary "ready for review" \
+  --validation unit=passed
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+- `--summary`
+- optional `--validation NAME=STATUS`
+- optional `--residual`
+- optional `--followup`
+- optional `--note`
+
+`supervisor submit` is intended to run from the worker task worktree. It
+infers the active task when possible, validates that the task is currently
+bound to the active supervisor run, records one durable review packet in that
+run, appends one `supervisor.submit` event, and returns the updated supervisor
+view.
+
+### `blackdog supervisor decide`
+
+Resolve one submitted worker result through `land`, `revise`, `restart`, or
+`close`.
+
+```bash
+blackdog supervisor decide \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1 \
+  --actor codex \
+  --action land \
+  --summary "approved result"
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+- `--actor`
+- `--action land|revise|restart|close`
+- optional `--summary`
+- optional `--close-status blocked|failed|abandoned`
+- optional `--validation NAME=STATUS`
+- optional `--residual`
+- optional `--followup`
+- optional `--note`
+- optional `--keep-worktree`
+- optional `--cleanup`
+
+`supervisor decide` requires a pending submission for the target task. It
+records one `supervisor.decide` event and one durable decision row in the
+active supervisor run. For `land`, `restart`, and `close`, it then delegates
+to the existing WTAM `task land` or `task close` behavior instead of inventing
+a second closure model.
 
 ### `blackdog supervisor release`
 

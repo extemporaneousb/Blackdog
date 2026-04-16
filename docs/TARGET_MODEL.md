@@ -170,7 +170,7 @@ code, but they are removed from the vNext contract.
 The minimum coherent shipped slice after the sweep is:
 
 - one write surface for workset/task state: `blackdog workset put`
-- one supervisor/workset-manager surface family: `blackdog supervisor start|show|checkpoint|bind|release`
+- one supervisor/workset-manager surface family: `blackdog supervisor start|show|reconcile|checkpoint|bind|submit|decide|release`
 - one same-thread task-begin surface: `blackdog task begin`
 - one same-thread task inspection surface: `blackdog task show`
 - one same-thread task success-closure surface: `blackdog task land`

@@ -8,8 +8,11 @@ surface is still:
 
 - `blackdog supervisor start`
 - `blackdog supervisor show`
+- `blackdog supervisor reconcile`
 - `blackdog supervisor checkpoint`
 - `blackdog supervisor bind`
+- `blackdog supervisor submit`
+- `blackdog supervisor decide`
 - `blackdog supervisor release`
 
 Those commands claim one workset and expose a dispatch view. The target in this

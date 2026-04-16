@@ -108,8 +108,11 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog workset put`
 - `blackdog supervisor start`
 - `blackdog supervisor show`
+- `blackdog supervisor reconcile`
 - `blackdog supervisor checkpoint`
 - `blackdog supervisor bind`
+- `blackdog supervisor submit`
+- `blackdog supervisor decide`
 - `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`

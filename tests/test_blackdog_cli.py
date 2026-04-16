@@ -445,6 +445,330 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(released["supervisor_run"]["summary"], "serial supervision complete")
         self.assertEqual(released["supervisor_run"]["bindings"], [])
 
+    def test_supervisor_reconcile_submit_and_decide_land_review_gate(self) -> None:
+        payload = {
+            "id": "review-supervision",
+            "title": "Review supervision",
+            "tasks": [
+                {"id": "RV-1", "title": "Review slice", "intent": "submit one worker result for supervisor review"},
+            ],
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "review-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "reconcile",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "review-supervision",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        reconcile = json.loads(stdout)["supervisor"]
+        self.assertTrue(reconcile["landing_ready"])
+        self.assertEqual(reconcile["phase"], "dispatch")
+        self.assertEqual([item["task_id"] for item in reconcile["dispatches"]], ["RV-1"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "review-supervision",
+            "--task",
+            "RV-1",
+            "--actor",
+            "lead/rv-1",
+            "--prompt",
+            "Execute the review slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "review.txt").write_text("ready for review\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "bind",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "review-supervision",
+            "--task",
+            "RV-1",
+            "--actor",
+            "lead",
+            "--worker-actor",
+            "lead/rv-1",
+            "--binding-id",
+            "agent:rv-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "submit",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "ready for supervisor review",
+            "--validation",
+            "unit=passed",
+            "--residual",
+            "none",
+            "--followup",
+            "announce",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        submission_payload = json.loads(stdout)
+        self.assertEqual(submission_payload["submission"]["task_id"], "RV-1")
+        self.assertEqual(submission_payload["submission"]["worker_actor"], "lead/rv-1")
+        self.assertEqual(submission_payload["submission"]["changed_paths"], ["review.txt"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "reconcile",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "review-supervision",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        review = json.loads(stdout)["supervisor"]
+        self.assertEqual(review["phase"], "review")
+        self.assertEqual([item["task_id"] for item in review["review_queue"]], ["RV-1"])
+        self.assertEqual(review["review_queue"][0]["summary"], "ready for supervisor review")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "decide",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "review-supervision",
+            "--task",
+            "RV-1",
+            "--actor",
+            "lead",
+            "--action",
+            "land",
+            "--summary",
+            "approved review slice",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        decision_payload = json.loads(stdout)
+        self.assertEqual(decision_payload["decision"]["action"], "land")
+        self.assertEqual(decision_payload["decision"]["status"], "success")
+        self.assertEqual(decision_payload["result"]["status"], "success")
+        self.assertFalse(worktree_path.exists())
+        self.assertEqual((self.root / "review.txt").read_text(encoding="utf-8"), "ready for review\n")
+        self.assertEqual(decision_payload["supervisor"]["review_queue"], [])
+        self.assertEqual(decision_payload["supervisor"]["counts"]["done"], 1)
+
+    def test_supervisor_decide_revise_then_restart_reopens_dispatch(self) -> None:
+        payload = {
+            "id": "restart-supervision",
+            "title": "Restart supervision",
+            "tasks": [
+                {"id": "RS-1", "title": "Restartable slice", "intent": "exercise revise and restart decisions"},
+            ],
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--actor",
+            "lead",
+            "--parallelism",
+            "1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--task",
+            "RS-1",
+            "--actor",
+            "lead/rs-1",
+            "--prompt",
+            "Execute the restartable slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "bind",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--task",
+            "RS-1",
+            "--actor",
+            "lead",
+            "--worker-actor",
+            "lead/rs-1",
+            "--binding-id",
+            "agent:rs-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "submit",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "first submission",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "decide",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--task",
+            "RS-1",
+            "--actor",
+            "lead",
+            "--action",
+            "revise",
+            "--summary",
+            "tighten the scope and resubmit",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        revise_payload = json.loads(stdout)
+        self.assertEqual(revise_payload["decision"]["action"], "revise")
+        self.assertEqual(revise_payload["decision"]["status"], "active")
+        self.assertEqual(revise_payload["result"], None)
+        self.assertEqual(revise_payload["supervisor"]["review_queue"], [])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "submit",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "resubmitted after revision",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "reconcile",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        resubmitted = json.loads(stdout)["supervisor"]
+        self.assertEqual([item["task_id"] for item in resubmitted["review_queue"]], ["RS-1"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "decide",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--task",
+            "RS-1",
+            "--actor",
+            "lead",
+            "--action",
+            "restart",
+            "--summary",
+            "restart in a fresh worker context",
+            "--cleanup",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        restart_payload = json.loads(stdout)
+        self.assertEqual(restart_payload["decision"]["action"], "restart")
+        self.assertEqual(restart_payload["decision"]["status"], "abandoned")
+        self.assertEqual(restart_payload["result"]["status"], "abandoned")
+        self.assertFalse(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "reconcile",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "restart-supervision",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        restarted = json.loads(stdout)["supervisor"]
+        self.assertEqual(restarted["phase"], "dispatch")
+        self.assertEqual([item["task_id"] for item in restarted["dispatches"]], ["RS-1"])
+
     def test_workset_put_rejects_non_object_payload(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
             "workset",

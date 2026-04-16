@@ -325,8 +325,8 @@ Blackdog must eventually support:
 - prompt-tuning telemetry that covers compile-time and worker-time prompts
 
 This is the model Blackdog needs for sustained multi-task delivery. The current
-shipped `supervisor start|show|checkpoint|bind|release` surface is the base,
-not the full target.
+shipped `supervisor start|show|reconcile|checkpoint|bind|submit|decide|release`
+surface is the base, not the full target.
 
 ## V1 Feature Set
 
@@ -336,7 +336,7 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
-- supervisor start/show/checkpoint/bind/release for `workset_manager`
+- supervisor start/show/reconcile/checkpoint/bind/submit/decide/release for `workset_manager`
 - same-thread task begin/show/land/close/cleanup
 - worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
 - raw user-prompt and execution-prompt capture
@@ -365,8 +365,11 @@ This is the decision frame for the rest of the repo.
 - workset/task claim model
 - `supervisor start`
 - `supervisor show`
+- `supervisor reconcile`
 - `supervisor checkpoint`
 - `supervisor bind`
+- `supervisor submit`
+- `supervisor decide`
 - `supervisor release`
 - `task begin`
 - `task show`
