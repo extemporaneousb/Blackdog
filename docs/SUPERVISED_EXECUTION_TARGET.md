@@ -9,6 +9,7 @@ surface is still:
 - `blackdog supervisor start`
 - `blackdog supervisor show`
 - `blackdog supervisor checkpoint`
+- `blackdog supervisor bind`
 - `blackdog supervisor release`
 
 Those commands claim one workset and expose a dispatch view. The target in this

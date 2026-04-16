@@ -19,6 +19,7 @@ from blackdog.repo_lifecycle import (
 )
 from blackdog.workset_manager import (
     SupervisorError,
+    bind_supervisor_worker,
     checkpoint_supervisor,
     release_supervisor,
     render_supervisor_text,
@@ -241,6 +242,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_supervisor_checkpoint.add_argument("--parallelism", type=int, default=1)
     p_supervisor_checkpoint.add_argument("--note")
     p_supervisor_checkpoint.add_argument("--json", action="store_true")
+
+    p_supervisor_bind = supervisor_subparsers.add_parser("bind", help="Bind one active worker attempt to the supervisor run")
+    p_supervisor_bind.add_argument("--project-root", default=".")
+    p_supervisor_bind.add_argument("--workset", required=True)
+    p_supervisor_bind.add_argument("--task", required=True)
+    p_supervisor_bind.add_argument("--actor", required=True)
+    p_supervisor_bind.add_argument("--worker-actor", required=True)
+    p_supervisor_bind.add_argument("--binding-id", required=True)
+    p_supervisor_bind.add_argument("--binding-kind", default="generic")
+    p_supervisor_bind.add_argument("--note")
+    p_supervisor_bind.add_argument("--json", action="store_true")
 
     p_supervisor_release = supervisor_subparsers.add_parser("release", help="Release the supervisor claim after review or completion")
     p_supervisor_release.add_argument("--project-root", default=".")
@@ -580,6 +592,24 @@ def main(argv: list[str] | None = None) -> int:
                 workset_id=args.workset,
                 actor=args.actor,
                 parallelism=args.parallelism,
+                note=args.note,
+            )
+            if args.json:
+                _emit_json({"supervisor": payload.to_dict()})
+            else:
+                print(render_supervisor_text(payload), end="")
+            return 0
+
+        if args.command == "supervisor" and args.supervisor_command == "bind":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = bind_supervisor_worker(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                worker_actor=args.worker_actor,
+                binding_id=args.binding_id,
+                binding_kind=args.binding_kind,
                 note=args.note,
             )
             if args.json:

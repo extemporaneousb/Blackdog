@@ -194,10 +194,16 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(supervisor["supervisor_active"])
         self.assertEqual(supervisor["claim"]["actor"], "lead")
         self.assertEqual(supervisor["claim"]["execution_model"], "workset_manager")
+        self.assertEqual(supervisor["supervisor_run"]["status"], "active")
+        self.assertEqual(supervisor["supervisor_run"]["actor"], "lead")
         self.assertEqual(supervisor["phase"], "dispatch")
         self.assertEqual(supervisor["available_slots"], 2)
         self.assertEqual([item["task_id"] for item in supervisor["ready_tasks"]], ["PS-1", "PS-2"])
         self.assertEqual([item["task_id"] for item in supervisor["dispatches"]], ["PS-1", "PS-2"])
+        self.assertEqual(
+            [item["worker_actor_suggestion"] for item in supervisor["dispatches"]],
+            ["lead/ps-1", "lead/ps-2"],
+        )
 
         exit_code, stdout, stderr = self.run_cli(
             "supervisor",
@@ -218,6 +224,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         checkpoint = json.loads(stdout)["supervisor"]
         self.assertEqual(checkpoint["phase"], "dispatch")
         self.assertEqual([item["task_id"] for item in checkpoint["dispatches"]], ["PS-1", "PS-2"])
+        self.assertEqual(len(checkpoint["supervisor_run"]["checkpoints"]), 1)
+        self.assertEqual(checkpoint["supervisor_run"]["checkpoints"][0]["binding_task_ids"], [])
 
     def test_supervisor_serial_flow_advances_after_worker_lands(self) -> None:
         payload = {
@@ -261,6 +269,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         started = json.loads(stdout)["supervisor"]
         self.assertEqual(started["phase"], "dispatch")
         self.assertEqual([item["task_id"] for item in started["dispatches"]], ["SS-1"])
+        self.assertEqual(started["supervisor_run"]["status"], "active")
+        self.assertEqual(started["dispatches"][0]["worker_actor_suggestion"], "lead/ss-1")
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -272,7 +282,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--task",
             "SS-1",
             "--actor",
-            "worker-a",
+            "lead/ss-1",
             "--prompt",
             "Execute the first serial slice.",
             "--json",
@@ -281,6 +291,29 @@ class BlackdogCliTests(CoreAuditTestCase):
         task_payload = json.loads(stdout)["task"]
         worktree_path = Path(task_payload["worktree"]["worktree_path"])
         (worktree_path / "serial-one.txt").write_text("first\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "bind",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--task",
+            "SS-1",
+            "--actor",
+            "lead",
+            "--worker-actor",
+            "lead/ss-1",
+            "--binding-id",
+            "agent:ss-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        bound = json.loads(stdout)["supervisor"]
+        self.assertEqual(bound["supervisor_run"]["bindings"][0]["task_id"], "SS-1")
+        self.assertEqual(bound["supervisor_run"]["bindings"][0]["worker_actor"], "lead/ss-1")
+        self.assertEqual(bound["supervisor_run"]["bindings"][0]["binding_id"], "agent:ss-1")
 
         exit_code, stdout, stderr = self.run_cli(
             "supervisor",
@@ -298,6 +331,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(active["phase"], "monitor")
         self.assertEqual(active["available_slots"], 0)
         self.assertEqual([item["task_id"] for item in active["active_tasks"]], ["SS-1"])
+        self.assertEqual([item["task_id"] for item in active["supervisor_run"]["bindings"]], ["SS-1"])
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -331,6 +365,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         checkpoint = json.loads(stdout)["supervisor"]
         self.assertEqual(checkpoint["phase"], "dispatch")
         self.assertEqual([item["task_id"] for item in checkpoint["dispatches"]], ["SS-2"])
+        self.assertEqual(checkpoint["supervisor_run"]["bindings"], [])
+        self.assertEqual(checkpoint["dispatches"][0]["worker_actor_suggestion"], "lead/ss-2")
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -342,7 +378,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--task",
             "SS-2",
             "--actor",
-            "worker-b",
+            "lead/ss-2",
             "--prompt",
             "Execute the second serial slice.",
             "--json",
@@ -351,6 +387,27 @@ class BlackdogCliTests(CoreAuditTestCase):
         task_payload = json.loads(stdout)["task"]
         worktree_path = Path(task_payload["worktree"]["worktree_path"])
         (worktree_path / "serial-two.txt").write_text("second\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "supervisor",
+            "bind",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "serial-supervision",
+            "--task",
+            "SS-2",
+            "--actor",
+            "lead",
+            "--worker-actor",
+            "lead/ss-2",
+            "--binding-id",
+            "agent:ss-2",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        rebound = json.loads(stdout)["supervisor"]
+        self.assertEqual([item["task_id"] for item in rebound["supervisor_run"]["bindings"]], ["SS-2"])
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -384,6 +441,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse(released["supervisor_active"])
         self.assertEqual(released["phase"], "complete")
         self.assertEqual(released["counts"]["done"], 2)
+        self.assertEqual(released["supervisor_run"]["status"], "released")
+        self.assertEqual(released["supervisor_run"]["summary"], "serial supervision complete")
+        self.assertEqual(released["supervisor_run"]["bindings"], [])
 
     def test_workset_put_rejects_non_object_payload(self) -> None:
         exit_code, stdout, stderr = self.run_cli(

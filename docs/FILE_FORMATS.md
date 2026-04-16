@@ -241,6 +241,7 @@ Current shipped write path:
 - `workset.claim`
 - `workset.release`
 - `supervisor.checkpoint`
+- `supervisor.bind`
 - `task.claim`
 - `task.release`
 - `task.start`
@@ -300,6 +301,71 @@ Current `worktree.close` payloads record:
 - `cleanup_performed`
 - optional `cleanup_reason`
 
+Current `supervisor.checkpoint` payloads record:
+
+- `run_id`
+- `workset_id`
+- `parallelism`
+- `phase`
+- `available_slots`
+- `ready_task_ids`
+- `active_task_ids`
+- `dispatch_task_ids`
+- `binding_task_ids`
+- optional `note`
+
+Current `supervisor.bind` payloads record:
+
+- `run_id`
+- `workset_id`
+- `task_id`
+- `worker_actor`
+- `binding_kind`
+- `binding_id`
+- `attempt_id`
+- optional `note`
+
+## `supervisor-runs/<run_id>/status.json`
+
+Product-layer durable state for one supervisor-managed execution run.
+
+Each run status JSON object contains:
+
+- `schema_version = 1`
+- `store_version = "blackdog.supervisor-run/v1"`
+- `run_id`
+- `workset_id`
+- `actor`
+- `parallelism`
+- `status = "active" | "released"`
+- `started_at`
+- `updated_at`
+- optional `released_at`
+- optional `summary`
+- optional `note`
+- `bindings`
+- `checkpoints`
+
+Each binding row contains:
+
+- `task_id`
+- `worker_actor`
+- `binding_kind`
+- `binding_id`
+- `bound_at`
+- `attempt_id`
+- optional `note`
+
+Each checkpoint row contains:
+
+- `checkpointed_at`
+- `phase`
+- `active_task_ids`
+- `ready_task_ids`
+- `dispatch_task_ids`
+- `binding_task_ids`
+- optional `note`
+
 ## Semantic Boundary
 
 `blackdog_core.backlog` works on typed `Workset` and `TaskSpec` objects plus a
@@ -325,4 +391,5 @@ Blackdog vNext behavior.
 
 Legacy backlog-era artifacts such as `backlog.md`, `backlog-state.json`,
 `inbox.jsonl`, `tracked-installs.json`, rendered backlog HTML, and old
-supervisor/task-result folders are not part of the vNext control-root contract.
+backlog-era supervisor/task-result folders are not part of the vNext
+control-root contract.

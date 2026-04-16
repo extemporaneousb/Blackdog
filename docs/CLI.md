@@ -219,10 +219,13 @@ Important flags:
 - optional `--parallelism`
 - optional `--note`
 
-`supervisor start` claims the workset for `workset_manager`. It does not start
-worker attempts by itself. Instead it returns the current active tasks, ready
-tasks, and a bounded dispatch set for the requested parallelism so a
-coordinating agent can launch worker conversations intentionally.
+`supervisor start` claims the workset for `workset_manager` and creates or
+reuses one durable supervisor-run record under
+`.git/blackdog/supervisor-runs/<run_id>/status.json`. It does not start worker
+attempts by itself. Instead it returns the current active tasks, ready tasks,
+the active run metadata, and a bounded dispatch set for the requested
+parallelism so a coordinating agent can launch worker conversations
+intentionally.
 
 ### `blackdog supervisor show`
 
@@ -242,6 +245,7 @@ Important flags:
 `supervisor show` reports:
 
 - the current workset claim
+- the current supervisor run and any active worker bindings
 - the current phase such as `dispatch`, `monitor`, `blocked`, or `complete`
 - active worker tasks
 - ready tasks and dispatch candidates up to the parallelism cap
@@ -269,8 +273,40 @@ Important flags:
 - optional `--note`
 
 `supervisor checkpoint` requires an active `workset_manager` claim owned by the
-given actor. It appends one `supervisor.checkpoint` event and returns the same
+given actor. It appends one `supervisor.checkpoint` event, records one durable
+checkpoint row in the active supervisor run, and returns the same
 dispatch/monitor view as `supervisor show`.
+
+### `blackdog supervisor bind`
+
+Bind one active worker attempt to the current supervisor run after the worker
+has started.
+
+```bash
+blackdog supervisor bind \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1 \
+  --actor codex \
+  --worker-actor codex/kern-1 \
+  --binding-id agent:kern-1
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- `--task`
+- `--actor`
+- `--worker-actor`
+- `--binding-id`
+- optional `--binding-kind`
+- optional `--note`
+
+`supervisor bind` does not start or stop work. It validates that the target
+task is already active under the given `--worker-actor`, records the current
+attempt id into the durable supervisor run, appends one `supervisor.bind`
+event, and returns the current supervisor view.
 
 ### `blackdog supervisor release`
 
@@ -295,8 +331,9 @@ Important flags:
 
 `supervisor release` refuses to release the workset while task claims are still
 active. Child worker attempts must finish or close first. Once released, the
-command returns the post-release workset view so the coordinating agent can
-summarize or replan.
+command marks the active supervisor run as `released`, stores any final
+summary, and returns the post-release workset view so the coordinating agent
+can summarize or replan.
 
 ### `blackdog task begin`
 

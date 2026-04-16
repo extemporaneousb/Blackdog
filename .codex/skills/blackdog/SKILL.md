@@ -17,7 +17,7 @@ Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the
 
 - repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
 - workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`
-- supervisor execution: `supervisor start`, `supervisor show`, `supervisor checkpoint`, `supervisor release`
+- supervisor execution: `supervisor start`, `supervisor show`, `supervisor checkpoint`, `supervisor bind`, `supervisor release`
 - same-thread task execution: `task begin`, `task show`, `task land`, `task close`, `task cleanup`
 - WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`
 
@@ -33,9 +33,10 @@ Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the
 
 1. `./.VE/bin/blackdog supervisor start --project-root . --workset WORKSET --actor SUPERVISOR`
 2. launch worker tasks from the emitted dispatch set through `task begin`
-3. `./.VE/bin/blackdog supervisor show --project-root . --workset WORKSET`
-4. `./.VE/bin/blackdog supervisor checkpoint --project-root . --workset WORKSET --actor SUPERVISOR --note "..."`
-5. after the workset is reviewed or complete, run `./.VE/bin/blackdog supervisor release --project-root . --workset WORKSET --actor SUPERVISOR --summary "..."`
+3. bind active workers with `./.VE/bin/blackdog supervisor bind --project-root . --workset WORKSET --task TASK --actor SUPERVISOR --worker-actor WORKER --binding-id ID`
+4. `./.VE/bin/blackdog supervisor show --project-root . --workset WORKSET`
+5. `./.VE/bin/blackdog supervisor checkpoint --project-root . --workset WORKSET --actor SUPERVISOR --note "..."`
+6. after the workset is reviewed or complete, run `./.VE/bin/blackdog supervisor release --project-root . --workset WORKSET --actor SUPERVISOR --summary "..."`
 
 ## Same-Thread Task Flow
 
