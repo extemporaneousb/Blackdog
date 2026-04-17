@@ -20,6 +20,8 @@ RUNTIME_STORE_VERSION = "blackdog.runtime/vnext2"
 _UNSET = object()
 
 EXECUTION_MODEL_DIRECT_WTAM = "direct_wtam"
+# Retained so older runtime state remains readable after supervisor removal
+# from the shipped mainline surface.
 EXECUTION_MODEL_WORKSET_MANAGER = "workset_manager"
 EXECUTION_MODELS = frozenset(
     {

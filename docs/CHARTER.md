@@ -38,6 +38,3 @@ The current release line intentionally focuses on a narrow base layer:
 - workset and task claims
 - WTAM direct execution
 - durable attempt history and snapshots
-
-`workset_manager` is now a first-class shipped execution model, rebuilt from
-this base instead of preserved from the old supervisor system.

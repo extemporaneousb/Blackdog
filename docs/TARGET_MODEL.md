@@ -23,7 +23,7 @@ These decisions are no longer provisional:
 - `runtime.json` is the canonical mutable runtime store
 - `events.jsonl` remains append-only audit history
 - claims attach to both worksets and tasks
-- the first-class execution models are `direct_wtam` and `workset_manager`
+- the shipped kept-change execution model is `direct_wtam`
 - each successful `direct_wtam` task attempt lands as one canonical Blackdog
   commit
 - non-worktree execution is not part of the product model
@@ -42,12 +42,6 @@ The vNext audience split is:
 
 Humans may inspect the machine files directly, but those files are not intended
 to be hand-edited as the primary workflow.
-
-For the target supervised workflow that compiles repo docs and operator goals
-into task-scoped worker envelopes, see
-[docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
-That target should extend product-layer run state and review policy without
-turning the core workset/task model into a chat-session mirror.
 
 ## Core Objects
 
@@ -170,13 +164,13 @@ code, but they are removed from the vNext contract.
 The minimum coherent shipped slice after the sweep is:
 
 - one write surface for workset/task state: `blackdog workset put`
-- one supervisor/workset-manager surface family: `blackdog supervisor start|show|reconcile|checkpoint|bind|submit|decide|release`
 - one same-thread task-begin surface: `blackdog task begin`
 - one same-thread task inspection surface: `blackdog task show`
 - one same-thread task success-closure surface: `blackdog task land`
 - one same-thread task non-success closure surface: `blackdog task close`
 - one same-thread task cleanup surface: `blackdog task cleanup`
 - one WTAM contract/readiness surface: `blackdog worktree preflight`
+- one WTAM plan-inspection surface: `blackdog worktree preview`
 - one WTAM execution start surface: `blackdog worktree start`
 - one WTAM inspection/recovery read surface: `blackdog worktree show`
 - one WTAM success-closure surface: `blackdog worktree land`

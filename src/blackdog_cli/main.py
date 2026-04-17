@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import json
 from pathlib import Path
 import sys
@@ -17,18 +16,6 @@ from blackdog.repo_lifecycle import (
     render_repo_analysis_text,
     render_repo_lifecycle_text,
     update_repo,
-)
-from blackdog.workset_manager import (
-    SupervisorError,
-    bind_supervisor_worker,
-    checkpoint_supervisor,
-    decide_supervisor,
-    reconcile_supervisor,
-    release_supervisor,
-    render_supervisor_text,
-    show_supervisor,
-    start_supervisor,
-    submit_supervisor,
 )
 from blackdog.wtam import (
     WorktreeError,
@@ -221,84 +208,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_workset_put.add_argument("--project-root", default=".")
     p_workset_put.add_argument("--json")
     p_workset_put.add_argument("--file")
-
-    p_supervisor = subparsers.add_parser("supervisor", help="Checkpoint and coordinate one workset-manager flow")
-    supervisor_subparsers = p_supervisor.add_subparsers(dest="supervisor_command", required=True)
-
-    p_supervisor_start = supervisor_subparsers.add_parser("start", help="Claim one workset for supervisor-managed execution")
-    p_supervisor_start.add_argument("--project-root", default=".")
-    p_supervisor_start.add_argument("--workset", required=True)
-    p_supervisor_start.add_argument("--actor", required=True)
-    p_supervisor_start.add_argument("--parallelism", type=int, default=1)
-    p_supervisor_start.add_argument("--note")
-    p_supervisor_start.add_argument("--json", action="store_true")
-
-    p_supervisor_show = supervisor_subparsers.add_parser("show", help="Inspect the current supervisor view for one workset")
-    p_supervisor_show.add_argument("--project-root", default=".")
-    p_supervisor_show.add_argument("--workset", required=True)
-    p_supervisor_show.add_argument("--parallelism", type=int, default=1)
-    p_supervisor_show.add_argument("--json", action="store_true")
-
-    p_supervisor_reconcile = supervisor_subparsers.add_parser("reconcile", help="Poll the machine-facing supervisor state for one workset")
-    p_supervisor_reconcile.add_argument("--project-root", default=".")
-    p_supervisor_reconcile.add_argument("--workset", required=True)
-    p_supervisor_reconcile.add_argument("--parallelism", type=int)
-    p_supervisor_reconcile.add_argument("--json", action="store_true")
-
-    p_supervisor_checkpoint = supervisor_subparsers.add_parser("checkpoint", help="Record a supervisor checkpoint and emit the current dispatch view")
-    p_supervisor_checkpoint.add_argument("--project-root", default=".")
-    p_supervisor_checkpoint.add_argument("--workset", required=True)
-    p_supervisor_checkpoint.add_argument("--actor", required=True)
-    p_supervisor_checkpoint.add_argument("--parallelism", type=int, default=1)
-    p_supervisor_checkpoint.add_argument("--note")
-    p_supervisor_checkpoint.add_argument("--json", action="store_true")
-
-    p_supervisor_bind = supervisor_subparsers.add_parser("bind", help="Bind one active worker attempt to the supervisor run")
-    p_supervisor_bind.add_argument("--project-root", default=".")
-    p_supervisor_bind.add_argument("--workset", required=True)
-    p_supervisor_bind.add_argument("--task", required=True)
-    p_supervisor_bind.add_argument("--actor", required=True)
-    p_supervisor_bind.add_argument("--worker-actor", required=True)
-    p_supervisor_bind.add_argument("--binding-id", required=True)
-    p_supervisor_bind.add_argument("--binding-kind", default="generic")
-    p_supervisor_bind.add_argument("--note")
-    p_supervisor_bind.add_argument("--json", action="store_true")
-
-    p_supervisor_submit = supervisor_subparsers.add_parser("submit", help="Record one review-ready worker submission for the active attempt")
-    p_supervisor_submit.add_argument("--project-root", default=".")
-    p_supervisor_submit.add_argument("--workset")
-    p_supervisor_submit.add_argument("--task")
-    p_supervisor_submit.add_argument("--summary", required=True)
-    p_supervisor_submit.add_argument("--validation", action="append", default=[])
-    p_supervisor_submit.add_argument("--residual", action="append", default=[])
-    p_supervisor_submit.add_argument("--followup", action="append", default=[])
-    p_supervisor_submit.add_argument("--note")
-    p_supervisor_submit.add_argument("--json", action="store_true")
-
-    p_supervisor_decide = supervisor_subparsers.add_parser("decide", help="Resolve one submitted worker result through land, revise, restart, or close")
-    p_supervisor_decide.add_argument("--project-root", default=".")
-    p_supervisor_decide.add_argument("--workset")
-    p_supervisor_decide.add_argument("--task")
-    p_supervisor_decide.add_argument("--actor", required=True)
-    p_supervisor_decide.add_argument("--action", required=True, choices=["land", "revise", "restart", "close"])
-    p_supervisor_decide.add_argument("--summary")
-    p_supervisor_decide.add_argument("--close-status", choices=["blocked", "failed", "abandoned"])
-    p_supervisor_decide.add_argument("--validation", action="append", default=[])
-    p_supervisor_decide.add_argument("--residual", action="append", default=[])
-    p_supervisor_decide.add_argument("--followup", action="append", default=[])
-    p_supervisor_decide.add_argument("--note")
-    p_supervisor_decide.add_argument("--keep-worktree", action="store_true")
-    p_supervisor_decide.add_argument("--cleanup", action="store_true")
-    p_supervisor_decide.add_argument("--json", action="store_true")
-
-    p_supervisor_release = supervisor_subparsers.add_parser("release", help="Release the supervisor claim after review or completion")
-    p_supervisor_release.add_argument("--project-root", default=".")
-    p_supervisor_release.add_argument("--workset", required=True)
-    p_supervisor_release.add_argument("--actor", required=True)
-    p_supervisor_release.add_argument("--parallelism", type=int, default=1)
-    p_supervisor_release.add_argument("--summary")
-    p_supervisor_release.add_argument("--note")
-    p_supervisor_release.add_argument("--json", action="store_true")
 
     p_task = subparsers.add_parser("task", help="Composed single-agent task workflow")
     task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
@@ -594,141 +503,6 @@ def main(argv: list[str] | None = None) -> int:
             _emit_json({"workset": workset_to_payload(workset)})
             return 0
 
-        if args.command == "supervisor" and args.supervisor_command == "start":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = start_supervisor(
-                profile,
-                workset_id=args.workset,
-                actor=args.actor,
-                parallelism=args.parallelism,
-                note=args.note,
-            )
-            if args.json:
-                _emit_json({"supervisor": payload.to_dict()})
-            else:
-                print(render_supervisor_text(payload), end="")
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "show":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = show_supervisor(
-                profile,
-                workset_id=args.workset,
-                parallelism=args.parallelism,
-            )
-            if args.json:
-                _emit_json({"supervisor": payload.to_dict()})
-            else:
-                print(render_supervisor_text(payload), end="")
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "reconcile":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = reconcile_supervisor(
-                profile,
-                workset_id=args.workset,
-                parallelism=args.parallelism,
-            )
-            if args.json:
-                _emit_json({"supervisor": payload.to_dict()})
-            else:
-                print(render_supervisor_text(payload), end="")
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "checkpoint":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = checkpoint_supervisor(
-                profile,
-                workset_id=args.workset,
-                actor=args.actor,
-                parallelism=args.parallelism,
-                note=args.note,
-            )
-            if args.json:
-                _emit_json({"supervisor": payload.to_dict()})
-            else:
-                print(render_supervisor_text(payload), end="")
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "bind":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = bind_supervisor_worker(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                actor=args.actor,
-                worker_actor=args.worker_actor,
-                binding_id=args.binding_id,
-                binding_kind=args.binding_kind,
-                note=args.note,
-            )
-            if args.json:
-                _emit_json({"supervisor": payload.to_dict()})
-            else:
-                print(render_supervisor_text(payload), end="")
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "submit":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            status, submission = submit_supervisor(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                summary=args.summary,
-                validations=_parse_validation_flags(args.validation),
-                residuals=tuple(args.residual),
-                followup_candidates=tuple(args.followup),
-                note=args.note,
-                cwd=Path.cwd(),
-            )
-            if args.json:
-                _emit_json({"supervisor": status.to_dict(), "submission": asdict(submission)})
-            else:
-                print(render_supervisor_text(status), end="")
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "decide":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            status, decision, result = decide_supervisor(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                actor=args.actor,
-                action=args.action,
-                summary=args.summary,
-                close_status=args.close_status,
-                validations=_parse_validation_flags(args.validation),
-                residuals=tuple(args.residual),
-                followup_candidates=tuple(args.followup),
-                note=args.note,
-                keep_worktree=args.keep_worktree,
-                cleanup=args.cleanup,
-                cwd=Path.cwd(),
-            )
-            if args.json:
-                _emit_json({"supervisor": status.to_dict(), "decision": asdict(decision), "result": result})
-            else:
-                print(render_supervisor_text(status), end="")
-            if result is not None and args.action == "land":
-                return 0 if result.get("status") == "success" else 1
-            return 0
-
-        if args.command == "supervisor" and args.supervisor_command == "release":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = release_supervisor(
-                profile,
-                workset_id=args.workset,
-                actor=args.actor,
-                summary=args.summary,
-                parallelism=args.parallelism,
-                note=args.note,
-            )
-            if args.json:
-                _emit_json({"supervisor": payload.to_dict()})
-            else:
-                print(render_supervisor_text(payload), end="")
-            return 0
-
         if args.command == "task" and args.task_command == "begin":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
@@ -980,7 +754,6 @@ def main(argv: list[str] | None = None) -> int:
         HandlerError,
         RepoLifecycleError,
         StoreError,
-        SupervisorError,
         WorktreeError,
         OSError,
         ValueError,

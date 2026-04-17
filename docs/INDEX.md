@@ -13,16 +13,14 @@ CLI surfaces.
   ownership, and the current shipped product surface
 - [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md): the vNext object model and the
   deliberate breaking changes that define it
-- [docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md):
-  target workflow for compiling repo goals into supervised multi-agent runs
 - [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md):
   the rewrite note that records the compatibility-first plan as superseded
 - [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
   `planning.json`, `runtime.json`, and `events.jsonl`
 - [docs/SINGLE_AGENT_AUDIT.md](docs/SINGLE_AGENT_AUDIT.md): single-agent WTAM
-  worker flow, recovery surfaces, and the base contract used by supervisor-led
-  execution
+  worker flow, recovery surfaces, and the current direct-agent operating
+  contract
 
 ## Current Product Surface
 
@@ -36,14 +34,6 @@ CLI surfaces.
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
-- `blackdog supervisor start`
-- `blackdog supervisor show`
-- `blackdog supervisor reconcile`
-- `blackdog supervisor checkpoint`
-- `blackdog supervisor bind`
-- `blackdog supervisor submit`
-- `blackdog supervisor decide`
-- `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task land`
@@ -62,9 +52,8 @@ CLI surfaces.
 
 The shipped surface is intentionally partitioned: repo lifecycle commands own
 installation and contract refresh, `workset`/`summary`/`next` own planning and
-inspection, `task` is the default same-thread WTAM path, `worktree` is the
-explicit planned-task WTAM path, and `supervisor` owns workset-manager
-coordination.
+inspection, `task` is the default same-thread WTAM path, and `worktree` is the
+explicit planned-task WTAM path.
 
 ## Direction
 
@@ -72,7 +61,5 @@ coordination.
 - Do not treat `epic`, `lane`, or `wave` as durable concepts.
 - Do not preserve deleted backlog/board/bootstrap/inbox/render surfaces on the
   new typed model.
-- Treat the rebuilt `supervisor` family listed above as the only shipped
-  supervisor surface; backlog-era supervisor flows remain removed.
 - Do not use architecture prose as the product workflow spec; use
   [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for that.

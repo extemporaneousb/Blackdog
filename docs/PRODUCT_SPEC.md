@@ -42,7 +42,7 @@ task mutations:
 These decisions are no longer open:
 
 - claims attach to both worksets and tasks
-- the first-class execution models are `direct_wtam` and `workset_manager`
+- the shipped kept-change execution model is `direct_wtam`
 - completed and landed work stays in durable history instead of being collapsed
   into only current status
 - non-worktree execution is not part of Blackdog's product model
@@ -72,16 +72,6 @@ Owns goals, approvals, redirects, and release judgment.
 Runs in the same thread/session as the user and uses Blackdog to shape work,
 pick work, and record results.
 
-### Coordinating Agent
-
-Optional higher-level agent that supervises a workset DAG, checkpoints worker
-results, and dispatches follow-on tasks or parallel branches.
-
-For the target model where the coordinating agent compiles repo goals into
-task-scoped worker envelopes, launches fresh worker contexts, and gates landing
-through review, see
-[docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
-
 ## Desired Blackdog Functionality
 
 Blackdog is usable when it reliably supports these jobs:
@@ -96,8 +86,6 @@ Blackdog is usable when it reliably supports these jobs:
 7. Let a human redirect or reshape work without losing history.
 8. Recover after interruption without forcing the user to reconstruct state
    from chat logs.
-9. Coordinate one workset through supervisor checkpoints while child workers
-   execute tasks through the same WTAM lifecycle.
 
 It is also usable when it supports these repo lifecycle jobs without pretending
 they are task execution:
@@ -308,26 +296,6 @@ Blackdog must support:
 This is a first-class operator workflow. It should not be forced through task
 claims or attempt history unless execution actually starts.
 
-### Story 10: Run A Large Goal Through A Supervised Worker Pool
-
-Human:
-"Take this repo-level goal, keep the guardrails aligned, and push through the
-full plan without losing the thread."
-
-Blackdog must eventually support:
-
-- compiling high-level repo goals and guardrail docs into one workset DAG
-- generating task-scoped worker envelopes instead of handing every worker the
-  full plan
-- launching fresh worker contexts under one supervising agent
-- explicit review-ready checkpoints before landing
-- downstream task-envelope refresh after each landed task
-- prompt-tuning telemetry that covers compile-time and worker-time prompts
-
-This is the model Blackdog needs for sustained multi-task delivery. The current
-shipped `supervisor start|show|reconcile|checkpoint|bind|submit|decide|release`
-surface is the base, not the full target.
-
 ## V1 Feature Set
 
 V1 should include these product capabilities:
@@ -336,7 +304,6 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
-- supervisor start/show/reconcile/checkpoint/bind/submit/decide/release for `workset_manager`
 - same-thread task begin/show/land/close/cleanup
 - worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
 - raw user-prompt and execution-prompt capture
@@ -363,14 +330,6 @@ This is the decision frame for the rest of the repo.
 - `events.jsonl`
 - workset/task typed model
 - workset/task claim model
-- `supervisor start`
-- `supervisor show`
-- `supervisor reconcile`
-- `supervisor checkpoint`
-- `supervisor bind`
-- `supervisor submit`
-- `supervisor decide`
-- `supervisor release`
 - `task begin`
 - `task show`
 - `task land`
@@ -402,13 +361,6 @@ This is the decision frame for the rest of the repo.
   keep install/update/refresh/tune as first-class workflows, but rebuild them
   as explicit repo lifecycle surfaces in the product layer rather than as task
   or workset operations
-- supervisor/status:
-  keep only if it reads and writes the new typed runtime state directly and
-  uses `workset_manager` claim/execution semantics
-- large-goal supervised execution:
-  keep the direction, but rebuild it as a compiled workset-plus-run model with
-  fresh worker contexts, supervisor review gates, and downstream envelope
-  realignment instead of restoring the old process-runner wholesale
 
 ### Combine
 
@@ -425,9 +377,8 @@ This is the decision frame for the rest of the repo.
 - threads/conversation management
 - tracked installs and multi-repo observation
 - browser write UI
-- richer multi-agent steering if it delays direct-mode usability
-- Codex-specific child-agent transport until the workset compiler, run-state,
-  and review-gate model are explicit
+- richer multi-agent steering
+- Codex-specific child-agent transport
 
 ### Remove
 
@@ -476,7 +427,6 @@ shape:
   recovery reads and non-success closure
 - one lower-level WTAM operator surface for planned-task execution when the
   caller needs explicit preflight/preview/start control
-- one supervisor/workset-manager surface for multi-agent workset execution
 - one repo lifecycle surface family for install/update/refresh/tune and skill
   composition
 - one human summary surface
@@ -500,6 +450,3 @@ direct-agent workflow:
 5. record result and stats
 6. ask for status after one or more tasks
 7. survive at least one interruption and continue from durable state
-
-Supervisor-led workset execution is now part of the shipped surface, but it
-must continue to build on the direct-mode worker path rather than replacing it.

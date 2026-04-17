@@ -42,13 +42,13 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("worktree-backed", product_spec)
         self.assertIn("claims attach to both worksets and tasks", product_spec)
         self.assertIn("direct_wtam", product_spec)
-        self.assertIn("workset_manager", product_spec)
         self.assertIn("repo lifecycle workflows", product_spec)
         self.assertIn("install or update Blackdog in a repo", product_spec)
         self.assertIn("worksets, tasks, claims, or attempts", product_spec)
+        self.assertNotIn("workset_manager", product_spec)
         self.assertIn("planning.json", architecture)
         self.assertIn("runtime.json", architecture)
-        self.assertIn("agents mutate planning and runtime state", architecture)
+        self.assertIn("Agents mutate planning and runtime state", architecture)
         self.assertIn("prompt receipts", architecture)
         self.assertIn("workset claims", architecture)
         self.assertIn("repo lifecycle workflows", architecture)
@@ -74,14 +74,6 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("attempts summary", cli_doc)
         self.assertIn("attempts table", cli_doc)
         self.assertIn("workset put", cli_doc)
-        self.assertIn("supervisor start", cli_doc)
-        self.assertIn("supervisor show", cli_doc)
-        self.assertIn("supervisor reconcile", cli_doc)
-        self.assertIn("supervisor checkpoint", cli_doc)
-        self.assertIn("supervisor bind", cli_doc)
-        self.assertIn("supervisor submit", cli_doc)
-        self.assertIn("supervisor decide", cli_doc)
-        self.assertIn("supervisor release", cli_doc)
         self.assertIn("task begin", cli_doc)
         self.assertIn("task show", cli_doc)
         self.assertIn("task land", cli_doc)
@@ -115,11 +107,6 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("workset_claim", file_formats)
         self.assertIn("task_claims", file_formats)
         self.assertIn("execution_model", file_formats)
-        self.assertIn("supervisor.checkpoint", file_formats)
-        self.assertIn("supervisor.bind", file_formats)
-        self.assertIn("supervisor.submit", file_formats)
-        self.assertIn("supervisor.decide", file_formats)
-        self.assertIn("blackdog.supervisor-run/v1", file_formats)
         self.assertIn("prompt_receipt", file_formats)
         self.assertIn("user_prompt_receipt", file_formats)
         self.assertIn("prompt modes", file_formats)
@@ -131,6 +118,9 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("abandoned", file_formats)
         self.assertIn("worktree.close", file_formats)
         self.assertIn("backlog.md is not part of the vNext contract", file_formats)
+        self.assertNotIn("supervisor", cli_doc)
+        self.assertNotIn("supervisor", file_formats)
+        self.assertNotIn("docs/SUPERVISED_EXECUTION_TARGET.md", index_doc)
 
     def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:
         removed_paths = [
@@ -144,6 +134,7 @@ class CoreContractTests(CoreAuditTestCase):
             "src/blackdog/supervisor_policy.py",
             "src/blackdog/tuning.py",
             "src/blackdog/ui.css",
+            "src/blackdog/workset_manager.py",
             "src/blackdog/worktree.py",
             "docs/ACCEPTANCE.md",
             "docs/BOUNDARIES.md",
@@ -154,6 +145,7 @@ class CoreContractTests(CoreAuditTestCase):
             "docs/MODULE_INVENTORY.md",
             "docs/OWNERSHIP_INVENTORY.md",
             "docs/RELEASE_NOTES.md",
+            "docs/SUPERVISED_EXECUTION_TARGET.md",
             "docs/architecture-diagrams.html",
         ]
         for relative_path in removed_paths:

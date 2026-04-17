@@ -22,14 +22,6 @@ The current shipped CLI is deliberately narrow:
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
-- `blackdog supervisor start`
-- `blackdog supervisor show`
-- `blackdog supervisor reconcile`
-- `blackdog supervisor checkpoint`
-- `blackdog supervisor bind`
-- `blackdog supervisor submit`
-- `blackdog supervisor decide`
-- `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task land`
@@ -47,8 +39,7 @@ The current shipped CLI is deliberately narrow:
 - `blackdog worktree cleanup`
 
 The shipped surface is split across repo lifecycle, workset shaping/inspection,
-same-thread `task` execution, explicit `worktree` control, and the rebuilt
-`supervisor` workset-manager flow.
+same-thread `task` execution, and explicit `worktree` control.
 
 Everything else from the legacy backlog/board/bootstrap era remains removed
 from the active repo surface and must be rebuilt explicitly on top of the
@@ -58,8 +49,8 @@ vNext model if it returns.
 
 - `blackdog_core`: durable profile, planning/runtime contracts, typed
   semantics, and derived read models
-- `blackdog`: product-layer WTAM orchestration, supervisor/workset-manager
-  flow, and repo lifecycle workflows on top of the core contract
+- `blackdog`: product-layer WTAM orchestration and repo lifecycle workflows on
+  top of the core contract
 - `blackdog_cli`: thin parser/help/dispatch layer
 
 ## Repo Use

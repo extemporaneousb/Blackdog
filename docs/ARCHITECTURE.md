@@ -16,8 +16,8 @@ For the supported human/agent stories and the v1 target, use
 
 | Package | Role | Must not absorb |
 | --- | --- | --- |
-| `blackdog_core` | Durable planning/runtime contracts, typed models, and derived read models. | CLI glue, supervisor policy, HTML/view composition, or prompt-only behavior. |
-| `blackdog` | Product-layer WTAM orchestration, supervisor/workset-manager policy, and repo lifecycle workflows on top of the core contract. | Canonical planning or runtime storage ownership. |
+| `blackdog_core` | Durable planning/runtime contracts, typed models, and derived read models. | CLI glue, orchestration policy, HTML/view composition, or prompt-only behavior. |
+| `blackdog` | Product-layer WTAM orchestration and repo lifecycle workflows on top of the core contract. | Canonical planning or runtime storage ownership. |
 | `blackdog_cli` | Thin parser/help/dispatch layer behind the `blackdog` executable. | Domain logic or storage semantics. |
 
 The hard rule is unchanged: `blackdog_core` defines the contract and every
@@ -59,10 +59,10 @@ wrong for the AI-first target model and were removed instead of preserved as
 aliases.
 
 Claims attach to both worksets and tasks. The base model supports two
-first-class execution modes:
+execution semantics, but the shipped mainline flow only exposes one kept-change
+mode:
 
 - `direct_wtam` for one kept-change task running through the WTAM lifecycle
-- `workset_manager` for supervisor-led work over one claimed workset
 
 ## Storage Boundary
 
@@ -79,7 +79,7 @@ plan editing.
 Blackdog has two product-layer workflow families:
 
 1. workset execution workflows over typed planning/runtime state
-   (`workset`, `summary`, `next`, `task`, `worktree`, and `supervisor`)
+   (`workset`, `summary`, `next`, `task`, and `worktree`)
 2. repo lifecycle workflows over installation, refresh, and prompt/skill
    composition
 
@@ -87,12 +87,9 @@ The second family is intentionally not part of the workset/task durable model.
 Install/update/refresh/tune are product workflows, but they are not claims,
 tasks, or attempts.
 
-That same boundary applies to the shipped supervisor surface and any future
-expansion. Plan compilation, worker-binding transport, review queues, and
-transient supervisor-run artifacts belong in `blackdog`, not in
-`blackdog_core`. The core model should stay small while the product layer owns
-the richer supervised-execution policy described in
-[docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
+Any future orchestration beyond the direct WTAM path still belongs in
+`blackdog`, not in `blackdog_core`. The core model should stay small while the
+product layer owns higher-level operator policy.
 
 ## Current Shipped Surface
 
@@ -107,14 +104,6 @@ The current coherent product surface on top of the new core is:
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
-- `blackdog supervisor start`
-- `blackdog supervisor show`
-- `blackdog supervisor reconcile`
-- `blackdog supervisor checkpoint`
-- `blackdog supervisor bind`
-- `blackdog supervisor submit`
-- `blackdog supervisor decide`
-- `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task land`
@@ -134,7 +123,6 @@ The current coherent product surface on top of the new core is:
 The `task` family is the default same-thread WTAM path.
 The `worktree` family remains the explicit planned-task path when an operator
 needs preflight, preview, or lower-level recovery control.
-The rebuilt `supervisor` family is the only shipped workset-manager surface.
 
 The repo lifecycle family ships in `blackdog` as
 analyze/install/update/refresh, prompt preview/tune, and attempt inspection.
@@ -166,32 +154,28 @@ These commands exercise one end-to-end vertical slice:
 1. create or update planning and runtime state
 2. start one same-thread task envelope in one command while optionally tuning
    the recorded execution prompt
-3. claim one workset for `workset_manager`, compute dispatch candidates up to a
-   parallelism cap, and checkpoint supervisor review without mutating worker
-   attempts directly
-4. inspect the WTAM contract before kept changes when the operator needs an
+3. inspect the WTAM contract before kept changes when the operator needs an
    explicit planned-task flow
-5. preview one branch-backed task execution plan, including prompt receipt
+4. preview one branch-backed task execution plan, including prompt receipt
    metadata, repo contract inputs, and the ordered handler plan for the task
    worktree
-6. start one branch-backed task worktree with a prompt receipt, a provisioned
+5. start one branch-backed task worktree with a prompt receipt, a provisioned
    worktree-local `.VE`, repo-root overlay wiring, root-bin fallback links, a
    worktree-local launcher, and real git execution identity while claiming both
    the workset and the task
-7. inspect one active or latest task attempt for recovery-oriented worktree and
+6. inspect one active or latest task attempt for recovery-oriented worktree and
    claim state
-8. land one successful task attempt through a canonical landed commit while
+7. land one successful task attempt through a canonical landed commit while
    recording structured result, validation, commit lineage, releasing claims,
    and cleaning up the task worktree by default
-9. close one blocked, failed, or abandoned task attempt without landing code
-10. clean up any retained or leftover task worktree
-11. read summary/status
-12. identify the next runnable tasks
-13. emit a machine-readable runtime snapshot
+8. close one blocked, failed, or abandoned task attempt without landing code
+9. clean up any retained or leftover task worktree
+10. read summary/status
+11. identify the next runnable tasks
+12. emit a machine-readable runtime snapshot
 
 ## Deferred Or Removed Product Code
 
 This repo no longer keeps legacy backlog, board, inbox, bootstrap, or
-compatibility-plan code as dormant historical baggage. The rebuilt supervisor
-surface now targets the new claim/runtime contract directly; legacy
-backlog-era supervisor code remains removed.
+compatibility-plan code as dormant historical baggage. Legacy backlog-era
+multi-agent orchestration code remains removed from the mainline repo surface.

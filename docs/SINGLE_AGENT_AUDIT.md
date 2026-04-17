@@ -4,8 +4,7 @@ This document records the current single-agent Blackdog workflow as exercised
 through the shipped CLI on April 13, 2026.
 
 The goal is to freeze the recovery and assessment contract for one claimed
-workset/task flow that the shipped `workset_manager` supervisor path now uses
-for worker execution.
+workset/task flow in the shipped direct-agent WTAM path.
 
 ## Normative Single-Agent Flow
 
@@ -210,7 +209,7 @@ Recovery:
 - update task runtime state through `workset put` runtime patching so the
   planning/runtime read model reflects reality
 
-## Gaps Before Multi-Agent Work
+## Gaps Before Broader Automation
 
 The single-agent base is much better, but it is not complete.
 
@@ -224,8 +223,6 @@ The biggest remaining gaps are:
 
 ## Current Recommendation
 
-Keep the supervisor path built on this worker contract.
-
 The next single-agent slices should focus on:
 
 1. clearer stale-claim and dirty-worktree remediation
@@ -233,5 +230,5 @@ The next single-agent slices should focus on:
 3. benchmark history persistence if the current file-based timing harness
    becomes a real operating dependency
 
-Those gaps still matter even though `workset_manager` is now a serious operator
-surface.
+Any future higher-level orchestration should build on this worker contract
+instead of bypassing it.

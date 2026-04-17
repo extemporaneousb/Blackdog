@@ -26,7 +26,6 @@ development.
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
   - `blackdog workset put`
-  - `blackdog supervisor start|show|reconcile|checkpoint|bind|submit|decide|release`
   - `blackdog task begin|show|land|close|cleanup`
   - `blackdog summary`
   - `blackdog next --workset`
@@ -61,12 +60,10 @@ development.
 - Keep `blackdog_core` limited to durable planning/runtime contracts:
   profile/path resolution, canonical planning/runtime/event formats, typed
   claim/attempt semantics, and derived read models.
-- `blackdog_core` explicitly excludes WTAM orchestration, supervisor policy,
-  bootstrap/refresh flows, skill generation, prompt tuning, and rendered UI
-  surfaces.
-- Keep `blackdog` limited to product-layer WTAM orchestration,
-  supervisor/workset-manager policy, and repo lifecycle workflows on top of the
-  typed core model.
+- `blackdog_core` explicitly excludes WTAM orchestration, bootstrap/refresh
+  flows, skill generation, prompt tuning, and rendered UI surfaces.
+- Keep `blackdog` limited to product-layer WTAM orchestration and repo
+  lifecycle workflows on top of the typed core model.
 - Keep `blackdog_cli` as a thin adapter over the shipped CLI surface. No
   domain logic belongs there.
 - If a change needs client-specific context to make sense, it does not belong
