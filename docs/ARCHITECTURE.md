@@ -4,7 +4,7 @@ Blackdog vNext is organized around one durable idea: the machine-owned workset
 store is the semantic source of truth.
 
 Humans author repository docs, design docs, approvals, and prompts.
-agents mutate planning and runtime state through typed Blackdog operations and
+Agents mutate planning and runtime state through typed Blackdog operations and
 CLI surfaces. Humans can inspect the resulting files, but they are not the
 preferred authoring plane.
 
@@ -17,7 +17,7 @@ For the supported human/agent stories and the v1 target, use
 | Package | Role | Must not absorb |
 | --- | --- | --- |
 | `blackdog_core` | Durable planning/runtime contracts, typed models, and derived read models. | CLI glue, supervisor policy, HTML/view composition, or prompt-only behavior. |
-| `blackdog` | Product-layer WTAM orchestration and repo lifecycle workflows on top of the core contract. | Canonical planning or runtime storage ownership. |
+| `blackdog` | Product-layer WTAM orchestration, supervisor/workset-manager policy, and repo lifecycle workflows on top of the core contract. | Canonical planning or runtime storage ownership. |
 | `blackdog_cli` | Thin parser/help/dispatch layer behind the `blackdog` executable. | Domain logic or storage semantics. |
 
 The hard rule is unchanged: `blackdog_core` defines the contract and every
@@ -79,6 +79,7 @@ plan editing.
 Blackdog has two product-layer workflow families:
 
 1. workset execution workflows over typed planning/runtime state
+   (`workset`, `summary`, `next`, `task`, `worktree`, and `supervisor`)
 2. repo lifecycle workflows over installation, refresh, and prompt/skill
    composition
 
@@ -86,16 +87,16 @@ The second family is intentionally not part of the workset/task durable model.
 Install/update/refresh/tune are product workflows, but they are not claims,
 tasks, or attempts.
 
-The same boundary should hold for the next supervisor rebuild. Plan
-compilation, worker-binding transport, review queues, and transient
-supervisor-run artifacts belong in `blackdog`, not in `blackdog_core`.
-The core model should stay small while the product layer owns the richer
-supervised-execution policy described in
+That same boundary applies to the shipped supervisor surface and any future
+expansion. Plan compilation, worker-binding transport, review queues, and
+transient supervisor-run artifacts belong in `blackdog`, not in
+`blackdog_core`. The core model should stay small while the product layer owns
+the richer supervised-execution policy described in
 [docs/SUPERVISED_EXECUTION_TARGET.md](docs/SUPERVISED_EXECUTION_TARGET.md).
 
-## Shipped Surface After The Sweep
+## Current Shipped Surface
 
-The minimum coherent product surface rebuilt on top of the new core is:
+The current coherent product surface on top of the new core is:
 
 - `blackdog repo install`
 - `blackdog repo analyze`
@@ -130,7 +131,12 @@ The minimum coherent product surface rebuilt on top of the new core is:
 - `blackdog next --workset`
 - `blackdog snapshot`
 
-The repo lifecycle family now has a shipped base in `blackdog` for
+The `task` family is the default same-thread WTAM path.
+The `worktree` family remains the explicit planned-task path when an operator
+needs preflight, preview, or lower-level recovery control.
+The rebuilt `supervisor` family is the only shipped workset-manager surface.
+
+The repo lifecycle family ships in `blackdog` as
 analyze/install/update/refresh, prompt preview/tune, and attempt inspection.
 
 For repos other than Blackdog itself, `repo analyze` is the read-only

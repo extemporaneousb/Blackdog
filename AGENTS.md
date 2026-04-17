@@ -22,14 +22,16 @@ development.
   implementation mode.
 - The active shipped CLI surface is:
   - `blackdog init`
-  - `blackdog repo install|update|refresh`
+  - `blackdog repo analyze|install|update|refresh`
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
   - `blackdog workset put`
+  - `blackdog supervisor start|show|reconcile|checkpoint|bind|submit|decide|release`
+  - `blackdog task begin|show|land|close|cleanup`
   - `blackdog summary`
   - `blackdog next --workset`
   - `blackdog snapshot`
-  - `blackdog worktree preflight|preview|start|land|cleanup`
+  - `blackdog worktree preflight|preview|start|show|land|close|cleanup`
 - Treat `blackdog next` as a workset-scoped operator/recovery surface. The
   direct-agent WTAM path usually already knows `--workset` and `--task`.
 - Use `blackdog worktree preview` before `start` when you need to inspect the
@@ -43,9 +45,9 @@ development.
 - Do not use or preserve deleted backlog/board/inbox/render flows or the old
   bootstrap/tune implementations unless they are explicitly rebuilt on top of
   the vNext core model.
-- Repo lifecycle workflows such as install/update/refresh/tune are distinct
-  from workset/task execution. If rebuilt, keep them in the product layer and
-  do not encode them as workset/task semantics.
+- Repo lifecycle workflows such as analyze/install/update/refresh/tune are
+  distinct from workset/task execution. Keep them in the product layer and do
+  not encode them as workset/task semantics.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents must review
   before editing.
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for
@@ -62,8 +64,9 @@ development.
 - `blackdog_core` explicitly excludes WTAM orchestration, supervisor policy,
   bootstrap/refresh flows, skill generation, prompt tuning, and rendered UI
   surfaces.
-- Keep `blackdog` limited to product-layer WTAM orchestration plus repo
-  lifecycle workflows on top of the typed core model.
+- Keep `blackdog` limited to product-layer WTAM orchestration,
+  supervisor/workset-manager policy, and repo lifecycle workflows on top of the
+  typed core model.
 - Keep `blackdog_cli` as a thin adapter over the shipped CLI surface. No
   domain logic belongs there.
 - If a change needs client-specific context to make sense, it does not belong

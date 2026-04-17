@@ -22,6 +22,14 @@ The current shipped CLI is deliberately narrow:
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog workset put`
+- `blackdog supervisor start`
+- `blackdog supervisor show`
+- `blackdog supervisor reconcile`
+- `blackdog supervisor checkpoint`
+- `blackdog supervisor bind`
+- `blackdog supervisor submit`
+- `blackdog supervisor decide`
+- `blackdog supervisor release`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task land`
@@ -38,15 +46,20 @@ The current shipped CLI is deliberately narrow:
 - `blackdog worktree close`
 - `blackdog worktree cleanup`
 
-Everything else from the legacy backlog/board/supervisor/bootstrap era has
-been removed from the active repo surface and must be rebuilt explicitly on
-top of the vNext model if it returns.
+The shipped surface is split across repo lifecycle, workset shaping/inspection,
+same-thread `task` execution, explicit `worktree` control, and the rebuilt
+`supervisor` workset-manager flow.
+
+Everything else from the legacy backlog/board/bootstrap era remains removed
+from the active repo surface and must be rebuilt explicitly on top of the
+vNext model if it returns.
 
 ## Packages
 
 - `blackdog_core`: durable profile, planning/runtime contracts, typed
   semantics, and derived read models
-- `blackdog`: WTAM orchestration on top of the core contract
+- `blackdog`: product-layer WTAM orchestration, supervisor/workset-manager
+  flow, and repo lifecycle workflows on top of the core contract
 - `blackdog_cli`: thin parser/help/dispatch layer
 
 ## Repo Use
@@ -81,9 +94,9 @@ selection inside one workset; explicit planned-task flows can still go through
 
 Blackdog has no non-WTAM implementation mode.
 
-Blackdog also has a separate repo lifecycle concern set. Analyze/install/update/refresh,
-prompt composition, and attempt inspection now ship as explicit product-layer
-workflows, not workset/task operations.
+Blackdog also has a separate repo lifecycle concern set.
+Analyze/install/update/refresh, prompt composition, and attempt inspection now
+ship as explicit product-layer workflows, not workset/task operations.
 
 For non-Blackdog repos, `blackdog repo analyze` is the read-only conversion
 entrypoint: it inventories agent docs, skills, `.VE`, launcher/profile state,
