@@ -167,6 +167,11 @@ Each attempt row contains:
 - optional `landed_commit`
 - optional `elapsed_seconds`
 
+`commit`, when present, is the task-branch head Blackdog landed or closed
+from. On successful `worktree land`, it may be an internal prep commit created
+after auto-staging dirty task-worktree changes. `landed_commit`, when present,
+is the canonical landed commit Blackdog created on the target branch.
+
 Allowed statuses:
 
 - `planned`
@@ -279,6 +284,14 @@ Current `worktree.land` payloads record:
 - `changed_paths`
 - `commit_message`
 - `cleanup`
+
+`commit_message` is the canonical landed-commit message Blackdog wrote. Today
+that message carries `Blackdog-Workset`, `Blackdog-Task`, `Blackdog-Attempt`,
+`Blackdog-Actor`, and `Blackdog-Status` trailers, optional
+`Blackdog-Target-Branch` and `Blackdog-Prompt-Hash`, one
+`Blackdog-Changed-Path` trailer per changed path, and any
+`Blackdog-Validation`/`Blackdog-Residual`/`Blackdog-Followup` trailers
+supplied at land time.
 
 Current `worktree.close` payloads record:
 

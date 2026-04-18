@@ -125,7 +125,7 @@ Blackdog section in `AGENTS.md` and the repo-local managed skill at
 surface and routed-doc contract. It also validates the configured handlers,
 migrates the legacy
 `.codex/skills/blackdog/SKILL.md` path when needed, and prunes known legacy
-backlog-era artifacts from the shared control root.
+backlog-era and removed-orchestration artifacts from the shared control root.
 
 ### `blackdog prompt preview`
 
@@ -365,6 +365,7 @@ blackdog worktree preview \
 
 Important flags:
 
+- `--project-root`
 - `--workset`
 - `--task`
 - `--actor`
@@ -407,6 +408,7 @@ blackdog worktree start \
 
 Important flags:
 
+- `--project-root`
 - `--workset`
 - `--task`
 - `--actor`
@@ -458,6 +460,7 @@ blackdog worktree show \
 
 Important flags:
 
+- `--project-root`
 - `--workset`
 - `--task`
 
@@ -488,6 +491,7 @@ blackdog worktree land \
 
 Important flags:
 
+- `--project-root`
 - `--workset`
 - `--task`
 - `--actor`
@@ -504,10 +508,16 @@ It:
 - auto-stages dirty task-worktree changes and creates an internal prep commit
   on the task branch when needed
 - creates one canonical landed commit for the successful task attempt
-- includes one `Blackdog-Changed-Path:` trailer per changed path in that
-  canonical landed commit
+- writes canonical landed-commit trailers for `Blackdog-Workset`,
+  `Blackdog-Task`, `Blackdog-Attempt`, `Blackdog-Actor`, `Blackdog-Status`,
+  optional `Blackdog-Target-Branch` and `Blackdog-Prompt-Hash`, one
+  `Blackdog-Changed-Path:` per changed path, and any
+  `Blackdog-Validation`/`Blackdog-Residual`/`Blackdog-Followup` trailers that
+  were supplied at land time
 - records `changed_paths`, branch-head `commit`, `landed_commit`, validation
-  results, and closure timing
+  results, and closure timing; `commit` is the task-branch head Blackdog
+  landed from, while `landed_commit` is the canonical commit created on the
+  target branch
 - releases the active task/workset claims
 - removes the task worktree and deletes its branch unless `--keep-worktree` is
   set
@@ -533,6 +543,7 @@ blackdog worktree close \
 
 Important flags:
 
+- `--project-root`
 - `--workset`
 - `--task`
 - `--actor`
@@ -563,6 +574,7 @@ blackdog worktree cleanup \
 
 Important flags:
 
+- `--project-root`
 - `--workset`
 - `--task`
 - optional `--path`
@@ -628,6 +640,10 @@ The summary centers on completed attempts and includes:
 - validation pass/fail/skipped totals
 - landed vs not-landed completion totals
 
+Here `commit` is the task-branch head Blackdog landed or closed from, while
+`landed_commit` is the canonical landed commit created on the target branch
+for successful WTAM closure.
+
 ### `blackdog attempts table`
 
 Emit a stable table over completed attempt history.
@@ -676,7 +692,8 @@ flows.
 If they are rebuilt later, they must target the new workset/runtime foundation
 instead of reviving `backlog.md`.
 
-Repo lifecycle workflows are different. Install/update/refresh/tune and
-skill-composition flows are still first-class product concerns, but they should
-live as a separate workflow family in `blackdog`, not forced into workset/task
-semantics and not revived from the old scaffold command tree unchanged.
+Repo lifecycle workflows are different. `repo analyze` plus
+Install/update/refresh/tune and attempt-inspection flows are still first-class
+product concerns, but they should live as a separate workflow family in
+`blackdog`, not forced into workset/task semantics and not revived from the
+old scaffold command tree unchanged.

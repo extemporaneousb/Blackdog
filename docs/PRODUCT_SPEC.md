@@ -33,9 +33,11 @@ Agents should use Blackdog to:
 Blackdog also needs repo lifecycle workflows that are not themselves workset or
 task mutations:
 
+- analyze a repo before installing or updating the managed contract
 - install or update Blackdog in a repo
 - refresh or regenerate repo-local skill/scaffold surfaces
 - tune or preview prompt/skill composition against the repo contract
+- inspect completed attempt history for tuning and audit
 
 ## Locked V1 Decisions
 
@@ -90,9 +92,11 @@ Blackdog is usable when it reliably supports these jobs:
 It is also usable when it supports these repo lifecycle jobs without pretending
 they are task execution:
 
-1. install or update Blackdog in a target repo
-2. refresh repo-local skill or scaffold surfaces after a package change
-3. preview or tune prompt/skill composition before execution
+1. analyze a target repo before install or update
+2. install or update Blackdog in a target repo
+3. refresh repo-local skill or scaffold surfaces after a package change
+4. preview or tune prompt/skill composition before execution
+5. inspect completed attempt history for tuning and audit
 
 ## Workflow Families
 
@@ -115,10 +119,12 @@ These belong to the typed workset/task model and are represented in
 These workflows operate on the repo's Blackdog installation, skill contract,
 and prompt-composition surface:
 
+- analyze conversion readiness
 - install
 - update
 - refresh/regenerate
 - tune/preview prompt composition
+- inspect completed attempt history
 
 These are first-class product workflows, but they are not themselves
 worksets, tasks, claims, or attempts. They belong in the product layer and
@@ -189,8 +195,10 @@ For v1, the default same-thread kept-change path should be:
 It may create a one-task workset automatically when the caller does not target
 existing planning state. `task land` is the normative success-closure action.
 It should create one canonical landed commit per successful task attempt,
-record runtime, release claims, and clean up by default. Recovery-oriented
-flows use `task show`, `task close`, `task cleanup`, `worktree show`, and
+record runtime, release claims, and clean up by default. That landed commit
+should carry canonical trailers for workset/task/attempt identity and changed
+paths so git history and runtime history stay aligned. Recovery-oriented flows
+use `task show`, `task close`, `task cleanup`, `worktree show`, and
 `worktree close` when the canonical success path cannot finish.
 
 The explicit planned-task operator path remains:
@@ -218,9 +226,11 @@ Blackdog must support recording:
 - changed paths
 - validation commands and outcomes
 - result status
+- canonical landed-commit trailers for workset/task/attempt identity
 - one canonical landed commit per successful task attempt
 - residual risks or follow-up candidates
-- commit or landed-commit linkage when present
+- branch-head `commit` linkage when present and canonical `landed_commit`
+  linkage when landing succeeds
 
 This story matters because Blackdog is not just task selection. It is also how
 you want to accumulate operating data from real repo work.
@@ -316,8 +326,9 @@ V1 should include these product capabilities:
 
 Blackdog should also keep a first-class repo lifecycle family in scope:
 
-- repo install/update/refresh workflows
+- repo analyze/install/update/refresh workflows
 - prompt/skill preview and tuning workflows
+- attempts summary/table as operator audit surfaces
 
 ## Keep / Change / Combine / Defer / Remove
 
@@ -358,9 +369,9 @@ This is the decision frame for the rest of the repo.
   keep the capability, but ground it in stored prompt receipts and attempt
   history instead of ad hoc chat memory
 - repo lifecycle workflows:
-  keep install/update/refresh/tune as first-class workflows, but rebuild them
-  as explicit repo lifecycle surfaces in the product layer rather than as task
-  or workset operations
+  keep analyze/install/update/refresh/tune plus attempt inspection as
+  first-class workflows, but rebuild them as explicit repo lifecycle/operator
+  surfaces in the product layer rather than as task or workset operations
 
 ### Combine
 
@@ -384,6 +395,7 @@ This is the decision frame for the rest of the repo.
 
 - markdown backlog parsing as canonical logic
 - durable `epic`, `lane`, and `wave`
+- legacy supervisor flow as a shipped execution surface
 - any surface preserved only for legacy compatibility
 
 ## Required Stats For Dogfooding
@@ -427,8 +439,8 @@ shape:
   recovery reads and non-success closure
 - one lower-level WTAM operator surface for planned-task execution when the
   caller needs explicit preflight/preview/start control
-- one repo lifecycle surface family for install/update/refresh/tune and skill
-  composition
+- one repo lifecycle/operator surface family for analyze/install/update/
+  refresh, prompt preview/tune, and attempt inspection
 - one human summary surface
 - one machine snapshot surface
 - one ready-task selection surface

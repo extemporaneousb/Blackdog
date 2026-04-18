@@ -50,16 +50,16 @@ CLI surfaces.
 - `blackdog worktree close`
 - `blackdog worktree cleanup`
 
-The shipped surface is intentionally partitioned: repo lifecycle commands own
-installation and contract refresh, `workset`/`summary`/`next` own planning and
-inspection, `task` is the default same-thread WTAM path, and `worktree` is the
-explicit planned-task WTAM path.
+The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
+own repo lifecycle and operator-read workflows, `workset`/`summary`/`next` own
+planning and inspection, `task` is the default same-thread WTAM path, and
+`worktree` is the explicit planned-task WTAM path.
 
 ## Direction
 
 - Do not author planning truth in markdown.
 - Do not treat `epic`, `lane`, or `wave` as durable concepts.
-- Do not preserve deleted backlog/board/bootstrap/inbox/render surfaces on the
-  new typed model.
+- Do not preserve deleted backlog/board/bootstrap/inbox/render/supervisor
+  surfaces on the new typed model.
 - Do not use architecture prose as the product workflow spec; use
   [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for that.

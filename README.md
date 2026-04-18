@@ -38,12 +38,13 @@ The current shipped CLI is deliberately narrow:
 - `blackdog worktree close`
 - `blackdog worktree cleanup`
 
-The shipped surface is split across repo lifecycle, workset shaping/inspection,
-same-thread `task` execution, and explicit `worktree` control.
+The shipped surface is split across repo lifecycle/operator-read surfaces
+(`repo`, `prompt`, and `attempts`), workset shaping/inspection, same-thread
+`task` execution, and explicit `worktree` control.
 
-Everything else from the legacy backlog/board/bootstrap era remains removed
-from the active repo surface and must be rebuilt explicitly on top of the
-vNext model if it returns.
+Everything else from the legacy backlog/board/bootstrap/supervisor era remains
+removed from the active repo surface and must be rebuilt explicitly on top of
+the vNext model if it returns.
 
 ## Packages
 
@@ -70,8 +71,14 @@ worktree-local env/runtime setup.
 `.VE`, wiring the repo-root package overlay, linking root-bin fallbacks, and
 writing the worktree-local launcher when needed.
 `blackdog worktree land` is the canonical success closure surface: it creates
-one landed commit per successful task attempt, records runtime, releases
-claims, and cleans up the task worktree by default.
+one landed commit per successful task attempt, records runtime and commit
+lineage, releases claims, and cleans up the task worktree by default. That
+canonical landed commit carries `Blackdog-Workset`, `Blackdog-Task`,
+`Blackdog-Attempt`, `Blackdog-Actor`, and `Blackdog-Status` trailers, plus one
+`Blackdog-Changed-Path` trailer per changed path and any validation/residual/
+follow-up trailers supplied at land time. Runtime `commit` is the task-branch
+head Blackdog landed from; `landed_commit` is the canonical commit created on
+the target branch.
 `blackdog task begin` accepts `--prompt-mode raw|tuned` so the same-thread
 entrypoint can either record the user prompt directly or run it through the
 repo-local prompt tuning flow before starting the attempt.
@@ -87,7 +94,8 @@ Blackdog has no non-WTAM implementation mode.
 
 Blackdog also has a separate repo lifecycle concern set.
 Analyze/install/update/refresh, prompt composition, and attempt inspection now
-ship as explicit product-layer workflows, not workset/task operations.
+ship as explicit product-layer workflows and operator read surfaces, not
+workset/task operations.
 
 For non-Blackdog repos, `blackdog repo analyze` is the read-only conversion
 entrypoint: it inventories agent docs, skills, `.VE`, launcher/profile state,
@@ -104,8 +112,8 @@ Blackdog-specific docs are present in the host repo. `repo install` also
 ensures `AGENTS.md` carries a managed Blackdog contract block so converted
 repos start with explicit WTAM rules in repo docs, not only in the generated
 skill. `blackdog repo refresh` rewrites that managed `AGENTS.md` block,
-regenerates the repo-local skill, and prunes known legacy backlog-era
-artifacts from the shared control root.
+regenerates the repo-local skill, and prunes known legacy backlog-era and
+removed-orchestration artifacts from the shared control root.
 
 ## Docs
 

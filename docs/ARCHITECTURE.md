@@ -80,12 +80,13 @@ Blackdog has two product-layer workflow families:
 
 1. workset execution workflows over typed planning/runtime state
    (`workset`, `summary`, `next`, `task`, and `worktree`)
-2. repo lifecycle workflows over installation, refresh, and prompt/skill
-   composition
+2. repo lifecycle/operator-read workflows over repo analyze/install/update/
+   refresh, prompt/skill composition, and attempt inspection
 
 The second family is intentionally not part of the workset/task durable model.
-Install/update/refresh/tune are product workflows, but they are not claims,
-tasks, or attempts.
+Analyze/install/update/refresh, prompt preview/tune, and attempts
+summary/table are product workflows, but they are not claims, tasks, or
+attempts.
 
 Any future orchestration beyond the direct WTAM path still belongs in
 `blackdog`, not in `blackdog_core`. The core model should stay small while the
@@ -138,7 +139,8 @@ When install has to create a fresh profile, it seeds routed docs from
 managed Blackdog contract block into `AGENTS.md` so WTAM rules live in repo
 docs instead of only in the generated skill. `repo refresh` rewrites that
 managed `AGENTS.md` block and is also the shipped cleanup path for removing
-known legacy backlog-era artifacts from the shared control root.
+known legacy backlog-era and removed-orchestration artifacts from the shared
+control root.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1
@@ -179,3 +181,5 @@ These commands exercise one end-to-end vertical slice:
 This repo no longer keeps legacy backlog, board, inbox, bootstrap, or
 compatibility-plan code as dormant historical baggage. Legacy backlog-era
 multi-agent orchestration code remains removed from the mainline repo surface.
+The old supervisor flow stays removed as well; the only shipped supervisor-era
+behavior is cleanup of leftover control-root artifacts during `repo refresh`.

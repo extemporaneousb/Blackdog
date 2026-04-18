@@ -41,12 +41,13 @@ development.
 - `blackdog worktree start` is responsible for executing the handler plan:
   creating the worktree-local `.VE`, wiring the repo-root overlay, linking
   fallback root-bin tools, and writing the worktree-local `blackdog` launcher.
-- Do not use or preserve deleted backlog/board/inbox/render flows or the old
-  bootstrap/tune implementations unless they are explicitly rebuilt on top of
-  the vNext core model.
-- Repo lifecycle workflows such as analyze/install/update/refresh/tune are
-  distinct from workset/task execution. Keep them in the product layer and do
-  not encode them as workset/task semantics.
+- Do not use or preserve deleted backlog/board/inbox/render flows, the removed
+  supervisor flow, or the old bootstrap/tune implementations unless they are
+  explicitly rebuilt on top of the vNext core model.
+- Repo lifecycle/operator surfaces such as `repo analyze|install|update|refresh`,
+  `prompt preview|tune`, and `attempts summary|table` are distinct from
+  workset/task execution. Keep them in the product layer and do not encode them
+  as workset/task semantics.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents must review
   before editing.
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for
