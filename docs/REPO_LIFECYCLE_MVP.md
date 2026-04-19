@@ -1,13 +1,17 @@
-# Repo Lifecycle MVP
+# Repo Lifecycle MVP Note
 
-This document covers the second Blackdog workflow family: repo lifecycle
-workflows.
+This historical note captures the plan for Blackdog's second workflow family:
+repo lifecycle workflows.
+
+The repo lifecycle surfaces described here now ship, so this document is
+background/reference only. Use `docs/PRODUCT_SPEC.md`,
+`docs/ARCHITECTURE.md`, and `docs/CLI.md` for the current contract.
 
 These workflows are first-class product behavior, but they are not workset or
 task semantics. They belong in `blackdog` and should be surfaced through
 explicit CLI and skill workflows.
 
-## Goal
+## Original Goal
 
 Make Blackdog usable in this repo and in other repos through a tight MVP around:
 
@@ -21,7 +25,7 @@ The implementation should stay close to the current vNext core:
 - `blackdog`: repo lifecycle and WTAM product workflows
 - `blackdog_cli`: thin adapter only
 
-## MVP Scope
+## Original Proposed Scope
 
 The MVP should ship one coherent repo lifecycle family with these surfaces:
 
@@ -60,7 +64,7 @@ text included.
 The table/summary layer should read from the typed runtime model and attempt
 history, not from ad hoc text artifacts.
 
-## MVP Read Model
+## Read Model Proposed For The MVP
 
 Inspection should center on completed attempts, not just current task state.
 
@@ -95,7 +99,7 @@ Minimum summary slices:
 - validation pass/fail totals
 - landed vs not-landed completion totals
 
-## MVP Rules
+## Constraints This Note Was Written Against
 
 - Do not encode repo lifecycle workflows as worksets, tasks, claims, or
   attempts.
@@ -105,7 +109,10 @@ Minimum summary slices:
 - Prefer a smaller correct lifecycle family over reviving the old scaffold tree
   wholesale.
 
-## Acceptance Criteria
+## Original Acceptance Criteria
+
+The CLI now ships the repo lifecycle family described here. Keep the checklist
+below as historical completion criteria rather than live scope.
 
 Blackdog reaches repo lifecycle MVP when:
 
@@ -120,47 +127,13 @@ Blackdog reaches repo lifecycle MVP when:
 6. The Blackdog repo can dogfood those flows on itself.
 7. At least one other repo can dogfood those flows successfully.
 
-## Continuation Prompt
+## Current Source Of Truth
 
-Use this prompt to continue the repo lifecycle MVP work:
+The repo lifecycle family described here is now part of the shipped v3 surface:
 
-```text
-Blackdog has two first-class workflow families:
-1. workset/task execution over the typed planning/runtime model
-2. repo lifecycle workflows for analyze/install/update/refresh, prompt/skill composition, and completed-work inspection
+- `blackdog repo analyze|install|update|refresh`
+- `blackdog prompt preview|tune`
+- `blackdog attempts summary|table`
 
-Continue Blackdog from that model.
-
-Important constraints:
-- keep `blackdog_core` limited to durable planning/runtime/event contracts and read models
-- put repo lifecycle behavior in `blackdog`
-- keep `blackdog_cli` thin
-- do not encode repo lifecycle workflows as worksets, tasks, claims, or attempts
-- do not revive the old scaffold/bootstrap/tune code tree unchanged
-- keep the repo-local skill thin and generated from product behavior where appropriate
-
-Target the repo lifecycle MVP in this order:
-1. `blackdog repo analyze`
-2. `blackdog repo install`
-3. `blackdog repo update`
-4. `blackdog repo refresh`
-5. `blackdog prompt preview`
-6. `blackdog prompt tune`
-7. `blackdog attempts summary`
-8. `blackdog attempts table`
-
-Inspection requirements:
-- summary and table views must be driven by typed attempt history
-- include completed-work visibility that is useful for dogfooding and export
-- prefer explicit columns and stable JSON over fancy rendering
-
-Proof requirements:
-- tests use fresh isolated git repos
-- tests cover repo analyze/install/update/refresh flows
-- tests cover prompt preview/tune behavior
-- tests cover attempts summary/table output
-- `make test` passes
-
-Do not preserve old compatibility behavior unless it is clearly the fastest path
-to the new lifecycle MVP.
-```
+Do not use this note as an implementation prompt or a second contract. For
+active behavior and next steps, use the routed docs instead.

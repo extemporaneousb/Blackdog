@@ -1,12 +1,16 @@
-# Single-Agent WTAM Audit
+# Single-Agent WTAM Audit Reference
 
-This document records the current single-agent Blackdog workflow as exercised
-through the shipped CLI on April 13, 2026.
+This document records a dated audit snapshot of the single-agent Blackdog
+workflow as exercised through the shipped CLI on April 13, 2026.
 
-The goal is to freeze the recovery and assessment contract for one claimed
-workset/task flow in the shipped direct-agent WTAM path.
+It is a non-routed reference note, not the current workflow contract. Use
+`docs/PRODUCT_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/CLI.md`, and
+`docs/FILE_FORMATS.md` for the shipped v3 contract.
 
-## Normative Single-Agent Flow
+The goal is to record the recovery and assessment behavior for one claimed
+workset/task flow in the direct-agent WTAM path at that time.
+
+## Audited Same-Thread Flow Snapshot
 
 1. `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt "..." --prompt-mode raw`
 2. make kept changes only inside that task worktree
@@ -16,11 +20,12 @@ workset/task flow in the shipped direct-agent WTAM path.
 6. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`
 7. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
 
-The default direct-agent hot path is now `task begin -> land`. `task show`,
+At audit time, the default direct-agent hot path was `task begin -> land`.
+`task show`,
 `task close`, `task cleanup`, `worktree show`, and `worktree close` are the
 recovery/fallback surfaces around that canonical path.
 
-## Explicit Planned-Task Operator Flow
+## Audited Planned-Task Operator Flow
 
 1. `./.VE/bin/blackdog summary --project-root .`
 2. `./.VE/bin/blackdog next --project-root . --workset WORKSET`
@@ -60,7 +65,7 @@ recovery/fallback surfaces around that canonical path.
   Surface landed/completed history for tuning and audit. This is the main
   stats surface today.
 
-## Current Attempt Stats Surface
+## Attempt Stats Surface Observed In The Audit
 
 The shipped attempt table currently exposes enough data to audit one kept
 change run:
@@ -89,7 +94,7 @@ change run:
 
 That is sufficient for prompt tuning, git audit, and coarse runtime review.
 
-## Current Landing Contract
+## Landing Behavior Observed In The Audit
 
 The canonical kept-change success path is now:
 
@@ -209,7 +214,7 @@ Recovery:
 - update task runtime state through `workset put` runtime patching so the
   planning/runtime read model reflects reality
 
-## Gaps Before Broader Automation
+## Gaps Identified During The Audit
 
 The single-agent base is much better, but it is not complete.
 
@@ -221,14 +226,15 @@ The biggest remaining gaps are:
 - no benchmark history persistence; the current timing harness is file-based
   and ad hoc
 
-## Current Recommendation
+## Historical Follow-Up From The Audit
 
-The next single-agent slices should focus on:
+At the time of the audit, the next single-agent slices were:
 
 1. clearer stale-claim and dirty-worktree remediation
 2. continued audit of landed attempt stats and prompt lineage
 3. benchmark history persistence if the current file-based timing harness
    becomes a real operating dependency
 
-Any future higher-level orchestration should build on this worker contract
-instead of bypassing it.
+Those follow-up items are preserved here as historical context only. Current
+workflow decisions should come from the routed docs and the shipped CLI/code,
+not from this audit note.

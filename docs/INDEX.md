@@ -13,14 +13,18 @@ CLI surfaces.
   ownership, and the current shipped product surface
 - [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md): the vNext object model and the
   deliberate breaking changes that define it
-- [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md):
-  the rewrite note that records the compatibility-first plan as superseded
 - [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
   `planning.json`, `runtime.json`, and `events.jsonl`
-- [docs/SINGLE_AGENT_AUDIT.md](docs/SINGLE_AGENT_AUDIT.md): single-agent WTAM
-  worker flow, recovery surfaces, and the current direct-agent operating
-  contract
+
+## Historical / Reference Notes
+
+- [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md):
+  superseded rewrite note retained for provenance
+- [docs/SINGLE_AGENT_AUDIT.md](docs/SINGLE_AGENT_AUDIT.md): dated April 2026
+  WTAM audit kept as non-routed operator reference, not as the live contract
+- [docs/REPO_LIFECYCLE_MVP.md](docs/REPO_LIFECYCLE_MVP.md): historical repo
+  lifecycle planning note retained as background for the shipped v3 surface
 
 ## Current Product Surface
 
