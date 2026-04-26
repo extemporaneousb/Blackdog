@@ -93,9 +93,12 @@ The current vNext runtime intentionally stays small:
 - `in_progress`
 - `blocked`
 - `done`
+- `canceled`
 
 Those statuses are enough to rebuild `summary`, `next`, and `snapshot` without
 dragging the old compatibility runtime forward.
+Canceled tasks remain in runtime history but are hidden from normal summary and
+next-task selection unless an operator asks to include them.
 
 ### `TaskClaimRecord`
 
@@ -137,6 +140,7 @@ It carries:
 - prompt hash
 - recorded timestamp
 - source identifier
+- mode (`raw`, `tuned`, or `skill`)
 
 ## Storage Model
 
@@ -169,6 +173,8 @@ The minimum coherent shipped slice after the sweep is:
 - one same-thread task recovery surface: `blackdog task recover`
 - one same-thread task success-closure surface: `blackdog task land`
 - one same-thread task non-success closure surface: `blackdog task close`
+- one same-thread task cancel surface: `blackdog task cancel`
+- one same-thread task reopen surface: `blackdog task reopen`
 - one same-thread task cleanup surface: `blackdog task cleanup`
 - one WTAM contract/readiness surface: `blackdog worktree preflight`
 - one WTAM plan-inspection surface: `blackdog worktree preview`

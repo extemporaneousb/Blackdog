@@ -13,6 +13,7 @@ from .runtime_model import (
     RuntimeModel,
     TaskView,
     WorksetView,
+    hide_canceled_runtime_model,
     load_runtime_model,
     scope_runtime_model,
 )
@@ -55,8 +56,15 @@ def build_runtime_snapshot(profile: RepoProfile, *, workset_id: str | None = Non
     }
 
 
-def build_runtime_summary(profile: RepoProfile, *, workset_id: str | None = None) -> dict[str, Any]:
+def build_runtime_summary(
+    profile: RepoProfile,
+    *,
+    workset_id: str | None = None,
+    include_canceled: bool = False,
+) -> dict[str, Any]:
     model = _scoped_model(profile, workset_id=workset_id)
+    if not include_canceled:
+        model = hide_canceled_runtime_model(model)
     return {
         "project_name": model.repository.project_name,
         "workset_scope": workset_id,
@@ -356,8 +364,11 @@ def build_next_payload(model: RuntimeModel, *, workset_id: str) -> dict[str, Any
     elif ready_tasks:
         selection_mode = "start"
         selected_task = ready_tasks[0]
-    else:
+    elif blocked_tasks:
         selection_mode = "blocked"
+        selected_task = None
+    else:
+        selection_mode = "none"
         selected_task = None
     return {
         "project_name": scoped.repository.project_name,
@@ -379,11 +390,12 @@ def _task_label(task: TaskView) -> str:
 
 
 def render_summary_text(model: RuntimeModel) -> str:
+    canceled_suffix = f" | Canceled: {model.counts.get('canceled', 0)}" if model.counts.get("canceled", 0) else ""
     lines = [
         f"Project: {model.repository.project_name}",
         f"Worksets: {model.counts['worksets']}",
         f"Tasks: {model.counts['tasks']}",
-        f"Ready: {model.counts['ready']} | In progress: {model.counts['in_progress']} | Blocked: {model.counts['blocked']} | Done: {model.counts['done']}",
+        f"Ready: {model.counts['ready']} | In progress: {model.counts['in_progress']} | Blocked: {model.counts['blocked']} | Done: {model.counts['done']}{canceled_suffix}",
         f"Claimed worksets: {model.counts['claimed_worksets']} | Claimed tasks: {model.counts['claimed_tasks']}",
         f"Attempts: {model.counts['attempts']} | Active attempts: {model.counts['active_attempts']}",
     ]
@@ -405,8 +417,9 @@ def render_summary_text(model: RuntimeModel) -> str:
         lines.append(
             f"  target_branch={target_branch} integration_branch={integration_branch} workspace={workspace_identity}{claim_detail}"
         )
+        canceled_detail = f" canceled={workset.counts.get('canceled', 0)}" if workset.counts.get("canceled", 0) else ""
         lines.append(
-            f"  ready={workset.counts['ready']} in_progress={workset.counts['in_progress']} blocked={workset.counts['blocked']} done={workset.counts['done']} claimed_tasks={workset.counts['claimed_tasks']} attempts={workset.counts['attempts']}"
+            f"  ready={workset.counts['ready']} in_progress={workset.counts['in_progress']} blocked={workset.counts['blocked']} done={workset.counts['done']}{canceled_detail} claimed_tasks={workset.counts['claimed_tasks']} attempts={workset.counts['attempts']}"
         )
         for task in workset.tasks:
             detail = ""

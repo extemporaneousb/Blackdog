@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ from .profile import RepoProfile
 from .state import (
     ATTEMPT_ACTIVE_STATUSES,
     TASK_STATUS_BLOCKED,
+    TASK_STATUS_CANCELED,
     TASK_STATUS_DONE,
     TASK_STATUS_IN_PROGRESS,
     TASK_STATUS_PLANNED,
@@ -280,6 +281,9 @@ def _task_view(
     if runtime.status == TASK_STATUS_DONE:
         readiness = "done"
         blocked_by: tuple[str, ...] = ()
+    elif runtime.status == TASK_STATUS_CANCELED:
+        readiness = "canceled"
+        blocked_by = ()
     elif runtime.status == TASK_STATUS_IN_PROGRESS:
         readiness = "in_progress"
         blocked_by = ()
@@ -329,6 +333,7 @@ def _count_workset(tasks: tuple[TaskView, ...], attempts: tuple[AttemptView, ...
         "in_progress": 0,
         "blocked": 0,
         "done": 0,
+        "canceled": 0,
         "claimed_tasks": 0,
         "attempts": len(attempts),
         "active_attempts": 0,
@@ -342,6 +347,8 @@ def _count_workset(tasks: tuple[TaskView, ...], attempts: tuple[AttemptView, ...
             counts["in_progress"] += 1
         elif task.readiness == "done":
             counts["done"] += 1
+        elif task.readiness == "canceled":
+            counts["canceled"] += 1
         else:
             counts["blocked"] += 1
     for attempt in attempts:
@@ -391,6 +398,28 @@ def _workset_view(workset: Workset, runtime_state: RuntimeState) -> WorksetView:
     )
 
 
+def _count_runtime_model(worksets: tuple[WorksetView, ...]) -> dict[str, int]:
+    counts = {
+        "worksets": len(worksets),
+        "claimed_worksets": 0,
+        "tasks": 0,
+        "ready": 0,
+        "in_progress": 0,
+        "blocked": 0,
+        "done": 0,
+        "canceled": 0,
+        "claimed_tasks": 0,
+        "attempts": 0,
+        "active_attempts": 0,
+    }
+    for workset in worksets:
+        if workset.claim is not None:
+            counts["claimed_worksets"] += 1
+        for key, value in workset.counts.items():
+            counts[key] = counts.get(key, 0) + value
+    return counts
+
+
 def project_runtime_model(
     profile: RepoProfile,
     planning_state: PlanningState,
@@ -414,28 +443,11 @@ def project_runtime_model(
         for attempt in workset.attempts
     )
     recent_attempts = tuple(sorted(recent_attempts, key=lambda item: (parse_iso(item.ended_at or item.started_at) or parse_iso("1970-01-01T00:00:00+00:00")).timestamp(), reverse=True))
-    counts = {
-        "worksets": len(worksets),
-        "claimed_worksets": 0,
-        "tasks": 0,
-        "ready": 0,
-        "in_progress": 0,
-        "blocked": 0,
-        "done": 0,
-        "claimed_tasks": 0,
-        "attempts": 0,
-        "active_attempts": 0,
-    }
-    for workset in worksets:
-        if workset.claim is not None:
-            counts["claimed_worksets"] += 1
-        for key, value in workset.counts.items():
-            counts[key] = counts.get(key, 0) + value
     return RuntimeModel(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         repository=project_repository(profile),
         worksets=worksets,
-        counts=counts,
+        counts=_count_runtime_model(worksets),
         next_tasks=next_tasks,
         recent_attempts=recent_attempts,
         events=events,
@@ -457,23 +469,6 @@ def scope_runtime_model(model: RuntimeModel, *, workset_id: str | None = None) -
             reverse=True,
         )
     )
-    counts = {
-        "worksets": len(scoped_worksets),
-        "claimed_worksets": 0,
-        "tasks": 0,
-        "ready": 0,
-        "in_progress": 0,
-        "blocked": 0,
-        "done": 0,
-        "claimed_tasks": 0,
-        "attempts": 0,
-        "active_attempts": 0,
-    }
-    for workset in scoped_worksets:
-        if workset.claim is not None:
-            counts["claimed_worksets"] += 1
-        for key, value in workset.counts.items():
-            counts[key] = counts.get(key, 0) + value
     scoped_events = tuple(
         event
         for event in model.events
@@ -483,10 +478,51 @@ def scope_runtime_model(model: RuntimeModel, *, workset_id: str | None = None) -
         schema_version=model.schema_version,
         repository=model.repository,
         worksets=scoped_worksets,
-        counts=counts,
+        counts=_count_runtime_model(scoped_worksets),
         next_tasks=tuple(task for task in model.next_tasks if task.workset_id == workset_id),
         recent_attempts=scoped_recent_attempts,
         events=scoped_events,
+    )
+
+
+def hide_canceled_runtime_model(model: RuntimeModel) -> RuntimeModel:
+    visible_worksets: list[WorksetView] = []
+    for workset in model.worksets:
+        visible_tasks = tuple(task for task in workset.tasks if task.runtime_status != TASK_STATUS_CANCELED)
+        if not visible_tasks:
+            continue
+        visible_task_ids = {task.task_id for task in visible_tasks}
+        visible_attempts = tuple(attempt for attempt in workset.attempts if attempt.task_id in visible_task_ids)
+        visible_claims = tuple(claim for claim in workset.task_claims if claim.task_id in visible_task_ids)
+        visible_worksets.append(
+            replace(
+                workset,
+                task_claims=visible_claims,
+                tasks=visible_tasks,
+                attempts=visible_attempts,
+                counts=_count_workset(visible_tasks, visible_attempts),
+                next_task_ids=tuple(task.task_id for task in visible_tasks if task.is_ready),
+            )
+        )
+    next_tasks = tuple(task for workset in visible_worksets for task in workset.tasks if task.is_ready)
+    recent_attempts = tuple(
+        sorted(
+            (attempt for workset in visible_worksets for attempt in workset.attempts),
+            key=lambda item: (
+                parse_iso(item.ended_at or item.started_at) or parse_iso("1970-01-01T00:00:00+00:00")
+            ).timestamp(),
+            reverse=True,
+        )
+    )
+    visible_tuple = tuple(visible_worksets)
+    return RuntimeModel(
+        schema_version=model.schema_version,
+        repository=model.repository,
+        worksets=visible_tuple,
+        counts=_count_runtime_model(visible_tuple),
+        next_tasks=next_tasks,
+        recent_attempts=recent_attempts,
+        events=model.events,
     )
 
 
@@ -507,6 +543,7 @@ __all__ = [
     "ValidationView",
     "WorksetClaimView",
     "WorksetView",
+    "hide_canceled_runtime_model",
     "load_runtime_model",
     "project_repository",
     "project_runtime_model",

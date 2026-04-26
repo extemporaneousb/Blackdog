@@ -209,6 +209,13 @@ blackdog task begin \
   --actor codex \
   --prompt "Implement the same-thread slice." \
   --prompt-mode raw
+
+blackdog task begin \
+  --project-root /path/to/repo \
+  --actor codex \
+  --prompt-file EXECUTION_PROMPT.txt \
+  --prompt-mode skill \
+  --user-prompt-file USER_PROMPT.txt
 ```
 
 Important flags:
@@ -216,7 +223,8 @@ Important flags:
 - `--project-root`
 - `--actor`
 - exactly one of `--prompt` or `--prompt-file`
-- optional `--prompt-mode raw|tuned`
+- optional `--prompt-mode raw|skill|tuned`
+- optional `--user-prompt` or `--user-prompt-file`
 - optional `--workset`
 - optional `--task`
 - optional `--title`
@@ -237,8 +245,11 @@ one command.
 `--prompt-mode raw` records the supplied prompt directly. `--prompt-mode tuned`
 runs the user request through `blackdog prompt tune` first and records the
 tuned execution prompt as the attempt prompt receipt. The prompt receipt stores
-its `mode` as `raw` or `tuned`. The separate `user_prompt_receipt` keeps the
-raw user request for later audit and prompt-tuning review.
+its `mode` as `raw` or `tuned`. `--prompt-mode skill` records the supplied
+prompt as a repo-skill-composed execution prompt without running prompt tuning.
+When `--user-prompt` or `--user-prompt-file` is present, Blackdog stores that
+raw user request separately from the execution prompt for later audit and
+repo-skill optimization.
 
 ### `blackdog task show`
 
@@ -300,7 +311,7 @@ that worktree. It reports:
 `--release-stale-claim` is intentionally narrow. It only applies when the task
 claim still exists but there is no active WTAM attempt to close. In that case
 Blackdog releases the lingering task/workset claim, repairs a still
-`in_progress` task runtime row to `planned` for `abandoned` or `blocked` for
+`in_progress` task runtime row to `canceled` for `abandoned` or `blocked` for
 `blocked`/`failed`, and leaves any retained task workspace untouched so cleanup
 remains an explicit follow-on decision.
 
@@ -362,6 +373,48 @@ Important flags:
 When `--workset` and `--task` are omitted, `task close` infers the active task
 from the current task worktree and reuses the active attempt actor. It then
 delegates to the canonical non-success closure path.
+Closing with `--status abandoned` cancels the task so normal `summary` and
+`next` views hide it.
+
+### `blackdog task cancel`
+
+Cancel a planned or blocked task so normal `summary` and `next` views hide it.
+
+```bash
+blackdog task cancel \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1 \
+  --summary "superseded by KERN-2"
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- `--task`
+- optional `--actor`
+- optional `--summary`
+
+### `blackdog task reopen`
+
+Move a canceled task back to `planned`.
+
+```bash
+blackdog task reopen \
+  --project-root /path/to/repo \
+  --workset kernel \
+  --task KERN-1 \
+  --summary "needed again"
+```
+
+Important flags:
+
+- `--project-root`
+- `--workset`
+- `--task`
+- optional `--actor`
+- optional `--summary`
 
 ### `blackdog task cleanup`
 
@@ -641,8 +694,12 @@ Read the typed runtime model and print a human-oriented status summary.
 ```bash
 blackdog summary --project-root /path/to/repo
 blackdog summary --project-root /path/to/repo --workset kernel
+blackdog summary --project-root /path/to/repo --include-canceled
 blackdog summary --project-root /path/to/repo --json
 ```
+
+Normal summary hides canceled tasks and canceled-only worksets. Use
+`--include-canceled` for operator/debug views.
 
 ### `blackdog next`
 
@@ -655,7 +712,7 @@ blackdog next --project-root /path/to/repo --workset kernel --json
 
 `next` is workset-scoped by design. It selects one task to continue or start,
 and it also reports blocked tasks for that workset so recovery does not require
-reading the raw snapshot by hand.
+reading the raw snapshot by hand. Canceled tasks are never selected.
 
 ### `blackdog snapshot`
 

@@ -13,6 +13,7 @@ from blackdog_core.backlog import (
     load_planning_state,
     next_ready_tasks,
     save_planning_state,
+    set_task_runtime_status,
     start_task,
     upsert_workset,
 )
@@ -422,7 +423,7 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(runtime_state.worksets[0].attempts[0].user_prompt_receipt.source, "user-test")
         self.assertEqual(runtime_state.worksets[0].attempts[0].user_prompt_receipt.mode, "raw")
 
-    def test_abandoned_attempt_releases_claims_and_returns_task_to_planned(self) -> None:
+    def test_abandoned_attempt_releases_claims_and_cancels_task(self) -> None:
         upsert_workset(
             self.profile,
             {
@@ -451,6 +452,43 @@ class CorePlanningTests(CoreAuditTestCase):
 
         self.assertEqual(finished.status, "abandoned")
         runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
-        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "planned")
+        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "canceled")
         self.assertIsNone(runtime_state.worksets[0].workset_claim)
         self.assertEqual(runtime_state.worksets[0].task_claims, ())
+
+    def test_canceled_tasks_are_not_ready_until_reopened(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "cancel",
+                "title": "Cancel",
+                "tasks": [{"id": "CAN-1", "title": "Cancel task", "intent": "hide this work"}],
+            },
+        )
+
+        set_task_runtime_status(
+            self.profile,
+            workset_id="cancel",
+            task_id="CAN-1",
+            actor="codex",
+            status="canceled",
+            summary="not needed",
+        )
+        planning_state = load_planning_state(self.profile.paths)
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(next_ready_tasks(planning_state, runtime_state=runtime_state), [])
+        self.assertEqual(runtime_state.worksets[0].task_states[0].status, "canceled")
+
+        set_task_runtime_status(
+            self.profile,
+            workset_id="cancel",
+            task_id="CAN-1",
+            actor="codex",
+            status="planned",
+            summary="needed again",
+        )
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(
+            [(workset.workset_id, task.task_id) for workset, task in next_ready_tasks(planning_state, runtime_state=runtime_state)],
+            [("cancel", "CAN-1")],
+        )

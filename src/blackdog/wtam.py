@@ -18,6 +18,7 @@ from blackdog_core.backlog import (
     find_workset,
     finish_task,
     load_planning_state,
+    set_task_runtime_status,
     start_task,
     upsert_workset,
 )
@@ -28,9 +29,11 @@ from blackdog_core.state import (
     ATTEMPT_STATUS_FAILED,
     ATTEMPT_STATUS_SUCCESS,
     PROMPT_MODE_RAW,
+    PROMPT_MODE_SKILL,
     PROMPT_MODE_TUNED,
     PromptReceiptRecord,
     TASK_STATUS_BLOCKED,
+    TASK_STATUS_CANCELED,
     TASK_STATUS_IN_PROGRESS,
     TASK_STATUS_PLANNED,
     TaskRuntimeRecord,
@@ -398,20 +401,30 @@ def _resolve_task_begin_prompts(
     *,
     prompt: str,
     prompt_source: str | None,
+    user_prompt: str | None = None,
+    user_prompt_source: str | None = None,
     prompt_mode: str,
 ) -> tuple[PromptReceiptRecord, PromptReceiptRecord]:
-    user_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=PROMPT_MODE_RAW)
+    resolved_user_prompt = user_prompt if user_prompt is not None else prompt
+    resolved_user_source = user_prompt_source if user_prompt is not None else prompt_source
+    user_receipt = create_prompt_receipt(resolved_user_prompt, source=resolved_user_source, mode=PROMPT_MODE_RAW)
     if prompt_mode == PROMPT_MODE_TUNED:
         tuned = tune_prompt(
             profile,
-            request=user_receipt.text,
-            prompt_source=user_receipt.source,
+            request=prompt,
+            prompt_source=prompt_source,
         )
         execution_receipt = create_prompt_receipt(
             tuned.tuned_prompt,
-            source=user_receipt.source,
+            source=prompt_source,
             mode=PROMPT_MODE_TUNED,
         )
+        return user_receipt, execution_receipt
+    if prompt_mode == PROMPT_MODE_SKILL:
+        execution_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=PROMPT_MODE_SKILL)
+        return user_receipt, execution_receipt
+    if user_prompt is not None:
+        execution_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=PROMPT_MODE_RAW)
         return user_receipt, execution_receipt
     return user_receipt, user_receipt
 
@@ -1054,6 +1067,8 @@ def begin_task_worktree(
     actor: str,
     prompt: str,
     prompt_source: str | None = None,
+    user_prompt: str | None = None,
+    user_prompt_source: str | None = None,
     prompt_mode: str = PROMPT_MODE_RAW,
     workset_id: str | None = None,
     task_id: str | None = None,
@@ -1068,8 +1083,8 @@ def begin_task_worktree(
 ) -> TaskBeginSpec:
     resolved_workset = str(workset_id or "").strip() or None
     resolved_task = str(task_id or "").strip() or None
-    if prompt_mode not in {PROMPT_MODE_RAW, PROMPT_MODE_TUNED}:
-        raise BacklogError(f"prompt mode must be one of {PROMPT_MODE_RAW}, {PROMPT_MODE_TUNED}")
+    if prompt_mode not in {PROMPT_MODE_RAW, PROMPT_MODE_SKILL, PROMPT_MODE_TUNED}:
+        raise BacklogError(f"prompt mode must be one of {PROMPT_MODE_RAW}, {PROMPT_MODE_SKILL}, {PROMPT_MODE_TUNED}")
     if (resolved_workset is None) != (resolved_task is None):
         raise BacklogError("task begin requires both --workset and --task when targeting existing planning state")
 
@@ -1077,6 +1092,8 @@ def begin_task_worktree(
         profile,
         prompt=prompt,
         prompt_source=prompt_source,
+        user_prompt=user_prompt,
+        user_prompt_source=user_prompt_source,
         prompt_mode=prompt_mode,
     )
     created_workset = False
@@ -1214,6 +1231,69 @@ def close_task(
         followup_candidates=followup_candidates,
         note=note,
         cleanup=cleanup,
+    )
+
+
+def _task_state_payload(
+    *,
+    profile: RepoProfile,
+    workset_id: str,
+    task_id: str,
+    actor: str,
+    status: str,
+    summary: str | None,
+) -> dict[str, Any]:
+    record = set_task_runtime_status(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        actor=actor,
+        status=status,
+        summary=summary,
+    )
+    return {
+        "workset_id": workset_id,
+        "task_id": task_id,
+        "actor": actor,
+        "status": record.status,
+        "updated_at": record.updated_at,
+        "summary": record.note,
+    }
+
+
+def cancel_task(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    actor: str,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    return _task_state_payload(
+        profile=profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        actor=actor,
+        status=TASK_STATUS_CANCELED,
+        summary=summary,
+    )
+
+
+def reopen_task(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    actor: str,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    return _task_state_payload(
+        profile=profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        actor=actor,
+        status=TASK_STATUS_PLANNED,
+        summary=summary,
     )
 
 
@@ -1452,7 +1532,7 @@ def _release_stale_task_claim(
     repaired_runtime_status: str | None = None
     incoming_records: tuple[TaskRuntimeRecord, ...] | None = None
     if current_task_state is not None and current_task_state.status == TASK_STATUS_IN_PROGRESS:
-        repaired_runtime_status = TASK_STATUS_PLANNED if status == ATTEMPT_STATUS_ABANDONED else TASK_STATUS_BLOCKED
+        repaired_runtime_status = TASK_STATUS_CANCELED if status == ATTEMPT_STATUS_ABANDONED else TASK_STATUS_BLOCKED
         incoming_records = (
             TaskRuntimeRecord(
                 task_id=task_id,
@@ -2143,6 +2223,18 @@ def render_land_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
     return "\n".join(lines) + "\n"
 
 
+def render_task_state_text(payload: dict[str, Any]) -> str:
+    lines = [
+        f"[blackdog-task] state: {payload['workset_id']}/{payload['task_id']} {payload['status']}",
+        f"[blackdog-task] actor: {payload['actor']}",
+    ]
+    if payload.get("updated_at"):
+        lines.append(f"[blackdog-task] updated at: {payload['updated_at']}")
+    if payload.get("summary"):
+        lines.append(f"[blackdog-task] summary: {payload['summary']}")
+    return "\n".join(lines) + "\n"
+
+
 def render_task_begin_text(spec: TaskBeginSpec, *, show_prompt: bool = False) -> str:
     lines = [
         f"[blackdog-task] begin: {spec.workset_id}/{spec.task_id} actor={spec.actor}",
@@ -2301,6 +2393,7 @@ __all__ = [
     "branch_ahead_of_target",
     "branch_changed_paths",
     "begin_task_worktree",
+    "cancel_task",
     "cleanup_task",
     "cleanup_task_worktree",
     "close_task",
@@ -2327,7 +2420,9 @@ __all__ = [
     "render_show_text",
     "render_start_text",
     "render_task_begin_text",
+    "render_task_state_text",
     "recover_task",
+    "reopen_task",
     "show_task",
     "start_task_worktree",
     "worktree_contract",

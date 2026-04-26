@@ -141,6 +141,10 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
         self.assertIn("Lifecycle Demo", skill_text)
         self.assertIn("repo install", skill_text)
+        self.assertIn("do <task-description>", skill_text)
+        self.assertIn("PM-mode", skill_text)
+        self.assertIn("--prompt-mode skill", skill_text)
+        self.assertNotIn("Shipped Workflow Families", skill_text)
         self.assertIn("AGENTS.md", skill_text)
         self.assertNotIn("docs/INDEX.md", skill_text)
 
@@ -261,6 +265,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertNotIn("stale skill", skill_text)
         self.assertIn("docs/CUSTOM.md", skill_text)
         self.assertIn("repo refresh", skill_text)
+        self.assertIn("task cancel", skill_text)
 
     def test_prompt_preview_and_tune_use_repo_contract_inputs(self) -> None:
         exit_code, _, stderr = self.run_cli(

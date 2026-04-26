@@ -17,6 +17,17 @@ Use [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for that.
 Blackdog is a repo-scoped planning and execution memory system for
 AI-assisted local development.
 
+In installed target repos, the user-facing product is the repo-local skill.
+The normal prompts are:
+
+- `$blackdog install or update in this repo` before the repo-local skill exists
+- `$<repo-name> do <task-description>` for current-thread implementation
+- `$<repo-name> PM-mode <outline>` for a guarded multi-step loop
+
+The explicit `blackdog` CLI remains the implementation surface behind that
+skill. Worksets, tasks, WTAM, and worktrees are the runtime contract; users do
+not need to name those concepts in ordinary repo work.
+
 Humans should use Blackdog to:
 
 - express goals
@@ -38,6 +49,8 @@ task mutations:
 - refresh or regenerate repo-local skill/scaffold surfaces
 - tune or preview prompt/skill composition against the repo contract
 - inspect completed attempt history for tuning and audit
+- cancel abandoned or superseded work so normal status and next-task views stay
+  focused
 
 ## Locked V1 Decisions
 
@@ -131,6 +144,16 @@ worksets, tasks, claims, or attempts. They belong in the product layer and
 should surface through explicit CLI and skill workflows rather than being
 encoded as planning state.
 
+### Repo Skill Overlay
+
+The generated repo skill is the user-facing overlay. Its `do` workflow turns a
+request into a skill-composed execution prompt, starts the normal same-thread
+task path with `prompt-mode=skill`, records the raw user prompt separately, and
+lands one canonical commit after validation. Its `PM-mode` workflow turns a
+larger outline into planned tasks with guardrails, executes ready slices one at
+a time, reviews summary/snapshot/attempt history after each slice, cancels
+superseded work, and stops when done, blocked, or user input is needed.
+
 ## V1 Stories
 
 These stories define the v1 target.
@@ -199,9 +222,12 @@ record runtime, release claims, and clean up by default. That landed commit
 should carry canonical trailers for workset/task/attempt identity, changed
 paths, and the prompt-lineage / execution-context fields Blackdog actually ran
 when that context is known and non-duplicative so git history and runtime
-history stay aligned. Recovery-oriented flows
-use `task show`, `task recover`, `task close`, `task cleanup`, `worktree show`, and
-`worktree close` when the canonical success path cannot finish.
+history stay aligned. Repo-local skills may provide a skill-composed execution
+prompt while separately recording the raw user request. Recovery-oriented flows
+use `task show`, `task recover`, `task close`, `task cancel`, `task reopen`,
+`task cleanup`, `worktree show`, and `worktree close` when the canonical
+success path cannot finish. Abandoned work cancels the task by default so it
+does not reappear in the normal next-task or summary views.
 
 The explicit planned-task operator path remains:
 
@@ -317,7 +343,7 @@ V1 should include these product capabilities:
 - ready-task selection
 - mutable task runtime state
 - explicit workset/task claims
-- same-thread task begin/show/land/close/cleanup
+- same-thread task begin/show/recover/land/close/cancel/reopen/cleanup
 - worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
 - raw user-prompt and execution-prompt capture
 - prompt/contract preview before execution start
@@ -349,6 +375,8 @@ This is the decision frame for the rest of the repo.
 - `task recover`
 - `task land`
 - `task close`
+- `task cancel`
+- `task reopen`
 - `task cleanup`
 - `worktree preflight`
 - `worktree preview`

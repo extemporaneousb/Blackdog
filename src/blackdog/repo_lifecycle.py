@@ -432,7 +432,8 @@ def _render_repo_agents_contract(profile: RepoProfile) -> str:
         "- If preflight reports `primary worktree: yes`, do not keep implementation edits in that checkout; start or enter a branch-backed task worktree first.",
         "- Analysis-only work may stay in the current checkout.",
         "- `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.",
-        "- Prefer `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt \"...\" --prompt-mode raw` for the normal same-thread path.",
+        "- Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.",
+        "- Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.",
         "- Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.",
     ]
     if routed_docs:
@@ -481,39 +482,20 @@ def render_repo_skill(profile: RepoProfile) -> str:
     return (
         "---\n"
         f"name: {skill_name}\n"
-        f'description: "Use the repo-local Blackdog CLI and contract for {profile.project_name}."\n'
+        f'description: "Repo-local AI development workflow for {profile.project_name}, backed by Blackdog."\n'
         "---\n\n"
         f"# Repo Skill: {profile.project_name}\n\n"
-        "Use the repo-local Blackdog CLI instead of mutating control-root files by hand.\n"
-        "`blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.\n"
-        "Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the generated Blackdog summary.\n\n"
-        "## CLI Entry Point\n\n"
-        "- `./.VE/bin/blackdog`\n\n"
-        "## Shipped Workflow Families\n\n"
-        "- repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`\n"
-        "- workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`\n"
-        "- same-thread task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cleanup`\n"
-        "- WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`\n\n"
-        "## Repo Lifecycle Flow\n\n"
-        "1. `./.VE/bin/blackdog repo update --project-root .`\n"
-        "2. `./.VE/bin/blackdog repo refresh --project-root .`\n"
-        "3. `./.VE/bin/blackdog prompt preview --project-root . --prompt \"...\"`\n"
-        "4. `./.VE/bin/blackdog prompt tune --project-root . --prompt \"...\"`\n"
-        "5. review the routed docs below before editing\n\n"
-        "## Same-Thread Task Flow\n\n"
-        "1. `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt \"...\" --prompt-mode raw`\n"
-        "2. make kept changes only inside the returned task worktree\n"
-        "3. `./.VE/bin/blackdog task land --project-root . --summary \"...\"`\n"
-        "4. if recovery is needed from that task worktree, use `./.VE/bin/blackdog task recover --project-root .` and then either `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary \"...\"` or `./.VE/bin/blackdog task recover --project-root . --release-stale-claim --status blocked|failed|abandoned --summary \"...\"`\n"
-        "5. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`\n\n"
-        "## Explicit Planned-Task Flow\n\n"
-        "1. `./.VE/bin/blackdog summary --project-root .`\n"
-        "2. `./.VE/bin/blackdog next --project-root . --workset WORKSET`\n"
-        "3. `./.VE/bin/blackdog worktree preflight --project-root .`\n"
-        "4. `./.VE/bin/blackdog worktree preview --project-root . --workset WORKSET --task TASK --actor AGENT --prompt \"...\"`\n"
-        "5. `./.VE/bin/blackdog worktree start --project-root . --workset WORKSET --task TASK --actor AGENT --prompt \"...\"`\n"
-        "6. make kept changes only inside that task worktree\n"
-        "7. `./.VE/bin/blackdog worktree land --project-root . --workset WORKSET --task TASK --actor AGENT --summary \"...\"`\n\n"
+        "Use this repo-local skill for normal development requests. The skill is backed by the repo-local Blackdog CLI, but users do not need to name Blackdog workflow primitives in ordinary requests.\n"
+        "`blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.\n\n"
+        "## User Workflows\n\n"
+        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed.\n"
+        f"- `${skill_name} do <task-description>`: build a concise execution prompt from the request and routed docs, run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`, make changes only in the returned task workspace, validate, then land with `./.VE/bin/blackdog task land --project-root . --summary \"...\"`.\n"
+        f"- `${skill_name} PM-mode <outline>`: turn the outline into planned tasks with guardrails, execute one ready slice at a time, review `summary`, `snapshot`, and `attempts summary` after each attempt, cancel superseded work, and stop when done, blocked, or user input is needed.\n\n"
+        "## Internal CLI Surface\n\n"
+        "- repo lifecycle: `repo analyze`, `repo install`, `repo update`, `repo refresh`, `attempts summary`, `attempts table`\n"
+        "- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
+        "- planned execution: `workset put`, `summary`, `next --workset`, `snapshot`, and the explicit `worktree` commands when low-level recovery is needed\n"
+        "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
         "## Docs To Review\n\n"
         f"{docs}\n"
     )

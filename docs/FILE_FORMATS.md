@@ -183,6 +183,7 @@ Allowed statuses:
 - `in_progress`
 - `blocked`
 - `done`
+- `canceled`
 
 Allowed attempt statuses:
 
@@ -192,8 +193,9 @@ Allowed attempt statuses:
 - `failed`
 - `abandoned`
 
-`abandoned` closes the active attempt and releases its claims while returning
-the task runtime state to `planned`.
+`abandoned` closes the active attempt and releases its claims while setting the
+task runtime state to `canceled`. Normal `summary` and `next` views hide
+canceled tasks; `snapshot` and attempt-history views retain the history.
 
 Allowed validation statuses:
 
@@ -222,6 +224,7 @@ request Blackdog received before any prompt tuning:
 Allowed prompt modes:
 
 - `raw`
+- `skill`
 - `tuned`
 
 Derived attempt-history read surfaces expose both `execution_prompt_*` and
@@ -252,6 +255,8 @@ Current shipped write path:
 - `workset.claim`
 - `workset.release`
 - `task.claim`
+- `task.cancel`
+- `task.reopen`
 - `task.release`
 - `task.start`
 - `task.finish`

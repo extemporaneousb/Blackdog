@@ -18,6 +18,7 @@ from .state import (
     EXECUTION_MODELS,
     EXECUTION_MODEL_DIRECT_WTAM,
     TASK_STATUS_BLOCKED,
+    TASK_STATUS_CANCELED,
     TASK_STATUS_DONE,
     TASK_STATUS_IN_PROGRESS,
     TASK_STATUS_PLANNED,
@@ -400,6 +401,8 @@ def start_task(
         raise BacklogError(f"Task {task_id!r} is already done")
     if current.status == TASK_STATUS_IN_PROGRESS:
         raise BacklogError(f"Task {task_id!r} is already in progress")
+    if current.status == TASK_STATUS_CANCELED:
+        raise BacklogError(f"Task {task_id!r} is canceled; reopen it before starting")
     current_task_claim = runtime_task_claims.get(task_id)
     if current_task_claim is not None:
         raise BacklogError(f"Task {task_id!r} is already claimed by {current_task_claim.actor}")
@@ -626,7 +629,7 @@ def finish_task(
     if status == ATTEMPT_STATUS_SUCCESS:
         task_runtime_status = TASK_STATUS_DONE
     elif status == ATTEMPT_STATUS_ABANDONED:
-        task_runtime_status = TASK_STATUS_PLANNED
+        task_runtime_status = TASK_STATUS_CANCELED
     else:
         task_runtime_status = TASK_STATUS_BLOCKED
     task_runtime = TaskRuntimeRecord(
@@ -733,6 +736,67 @@ def finish_task(
     return finished_attempt
 
 
+def set_task_runtime_status(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    status: str,
+    actor: str,
+    summary: str | None = None,
+    planning_store: PlanningStore | None = None,
+    runtime_store: RuntimeStore | None = None,
+) -> TaskRuntimeRecord:
+    if status not in {TASK_STATUS_CANCELED, TASK_STATUS_PLANNED}:
+        raise BacklogError("set_task_runtime_status only supports canceled or planned")
+    planning_state = load_planning_state(profile.paths, planning_store)
+    workset, _ = _require_workset_and_task(planning_state, workset_id=workset_id, task_id=task_id)
+    runtime_state = load_runtime_state(profile.paths, runtime_store)
+    runtime_task_claims = task_claim_index(runtime_state, workset_id)
+    if task_id in runtime_task_claims:
+        raise BacklogError(f"Task {task_id!r} is claimed; close or recover it before changing state")
+    current_status = {
+        task_state.task_id: task_state.status
+        for runtime_workset in runtime_state.worksets
+        if runtime_workset.workset_id == workset_id
+        for task_state in runtime_workset.task_states
+    }.get(task_id, TASK_STATUS_PLANNED)
+    if current_status == TASK_STATUS_IN_PROGRESS:
+        raise BacklogError(f"Task {task_id!r} is in progress; close it before changing state")
+    if current_status == TASK_STATUS_DONE and status == TASK_STATUS_CANCELED:
+        raise BacklogError(f"Task {task_id!r} is done and cannot be canceled")
+    if status == TASK_STATUS_PLANNED and current_status != TASK_STATUS_CANCELED:
+        raise BacklogError(f"Task {task_id!r} is not canceled")
+    updated_at = now_iso()
+    record = TaskRuntimeRecord(
+        task_id=task_id,
+        status=status,
+        updated_at=updated_at,
+        note=summary,
+    )
+    next_runtime_state = merge_workset_runtime(
+        runtime_state,
+        workset_id=workset_id,
+        task_ids={item.task_id for item in workset.tasks},
+        incoming_records=(record,),
+    )
+    save_runtime_state(profile.paths, next_runtime_state, runtime_store)
+    append_event(
+        profile.paths.events_file,
+        event_type="task.cancel" if status == TASK_STATUS_CANCELED else "task.reopen",
+        actor=actor,
+        payload={
+            "workset_id": workset_id,
+            "task_id": task_id,
+            "status": status,
+            "updated_at": updated_at,
+            "summary": summary,
+            "previous_status": current_status,
+        },
+    )
+    return record
+
+
 def next_ready_tasks(
     planning_state: PlanningState,
     *,
@@ -753,7 +817,7 @@ def next_ready_tasks(
         }
         for task in workset.tasks:
             current_status = runtime_index.get(task.task_id, TaskRuntimeRecord(task_id=task.task_id, status="planned")).status
-            if current_status in {"done", "in_progress", "blocked"}:
+            if current_status in {"done", "in_progress", "blocked", "canceled"}:
                 continue
             dependencies_ready, _ = task_dependencies_ready(
                 workset,
@@ -781,6 +845,7 @@ __all__ = [
     "next_ready_tasks",
     "planning_state_to_payload",
     "save_planning_state",
+    "set_task_runtime_status",
     "start_task",
     "task_dependencies_ready",
     "upsert_workset",

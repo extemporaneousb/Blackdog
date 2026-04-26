@@ -112,6 +112,8 @@ The current coherent product surface on top of the new core is:
 - `blackdog task recover`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cancel`
+- `blackdog task reopen`
 - `blackdog task cleanup`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
@@ -124,7 +126,10 @@ The current coherent product surface on top of the new core is:
 - `blackdog next --workset`
 - `blackdog snapshot`
 
-The `task` family is the default same-thread WTAM path.
+The `task` family is the default same-thread WTAM path and is what generated
+repo-local skills use for `$<repo-name> do ...` requests. The skill may compose
+an execution prompt and pass it with `prompt-mode=skill` while recording the raw
+user request as separate prompt lineage.
 The `worktree` family remains the explicit planned-task path when an operator
 needs preflight, preview, or lower-level recovery control.
 
@@ -173,11 +178,13 @@ These commands exercise one end-to-end vertical slice:
 7. land one successful task attempt through a canonical landed commit while
    recording structured result, validation, commit lineage, releasing claims,
    and cleaning up the task worktree by default
-8. close one blocked, failed, or abandoned task attempt without landing code
-9. clean up any retained or leftover task worktree
-10. read summary/status
-11. identify the next runnable tasks
-12. emit a machine-readable runtime snapshot
+8. close one blocked, failed, or abandoned task attempt without landing code;
+   abandoned attempts cancel the task by default
+9. cancel or reopen planned work so stale tasks do not pollute normal reads
+10. clean up any retained or leftover task worktree
+11. read summary/status, hiding canceled work unless explicitly requested
+12. identify the next runnable tasks
+13. emit a machine-readable runtime snapshot
 
 ## Deferred Or Removed Product Code
 

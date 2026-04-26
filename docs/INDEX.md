@@ -43,6 +43,8 @@ CLI surfaces.
 - `blackdog task recover`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cancel`
+- `blackdog task reopen`
 - `blackdog task cleanup`
 - `blackdog summary`
 - `blackdog next --workset`

@@ -20,6 +20,7 @@ from blackdog.repo_lifecycle import (
 from blackdog.wtam import (
     WorktreeError,
     begin_task_worktree,
+    cancel_task,
     cleanup_task,
     cleanup_task_worktree,
     close_task,
@@ -28,6 +29,7 @@ from blackdog.wtam import (
     land_task,
     land_task_worktree,
     recover_task,
+    reopen_task,
     render_task_begin_text,
     render_cleanup_text,
     render_close_text,
@@ -37,6 +39,7 @@ from blackdog.wtam import (
     render_recover_text,
     render_show_text,
     render_start_text,
+    render_task_state_text,
     show_task,
     preview_task_worktree,
     start_task_worktree,
@@ -44,7 +47,7 @@ from blackdog.wtam import (
 )
 from blackdog_core.backlog import BacklogError, upsert_workset, workset_to_payload
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
-from blackdog_core.runtime_model import scope_runtime_model
+from blackdog_core.runtime_model import hide_canceled_runtime_model, scope_runtime_model
 from blackdog_core.snapshot import (
     build_attempts_summary,
     build_attempts_table,
@@ -83,14 +86,20 @@ def _load_json_payload(*, raw_json: str | None, file_path: str | None) -> dict[s
     return payload
 
 
-def _load_text_input(*, label: str, raw_text: str | None, file_path: str | None) -> tuple[str, str]:
+def _load_text_input(
+    *,
+    label: str,
+    raw_text: str | None,
+    file_path: str | None,
+    inline_source: str = "inline:--prompt",
+) -> tuple[str, str]:
     if raw_text is None and file_path is None:
         raise BacklogError(f"{label} requires --prompt or --prompt-file")
     if raw_text is not None and file_path is not None:
         raise BacklogError(f"{label} accepts only one prompt source")
     if raw_text is not None:
         text = raw_text
-        source = "inline:--prompt"
+        source = inline_source
     else:
         candidate = Path(file_path or "")
         text = sys.stdin.read() if file_path == "-" else candidate.read_text(encoding="utf-8")
@@ -136,6 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_summary = subparsers.add_parser("summary", help="Summarize vNext workset and task runtime state")
     p_summary.add_argument("--project-root", default=".")
     p_summary.add_argument("--workset")
+    p_summary.add_argument("--include-canceled", action="store_true")
     p_summary.add_argument("--json", action="store_true")
 
     p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable vNext runtime snapshot")
@@ -224,6 +234,9 @@ def _build_parser() -> argparse.ArgumentParser:
     task_begin_prompt_group.add_argument("--prompt")
     task_begin_prompt_group.add_argument("--prompt-file")
     p_task_begin.add_argument("--prompt-mode", choices=sorted(PROMPT_MODES), default="raw")
+    task_begin_user_prompt_group = p_task_begin.add_mutually_exclusive_group()
+    task_begin_user_prompt_group.add_argument("--user-prompt")
+    task_begin_user_prompt_group.add_argument("--user-prompt-file")
     p_task_begin.add_argument("--workset")
     p_task_begin.add_argument("--task")
     p_task_begin.add_argument("--title")
@@ -251,6 +264,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_recover.add_argument("--summary")
     p_task_recover.add_argument("--note")
     p_task_recover.add_argument("--json", action="store_true")
+
+    p_task_cancel = task_subparsers.add_parser("cancel", help="Cancel a task so normal next and summary views hide it")
+    p_task_cancel.add_argument("--project-root", default=".")
+    p_task_cancel.add_argument("--workset", required=True)
+    p_task_cancel.add_argument("--task", required=True)
+    p_task_cancel.add_argument("--actor", default="codex")
+    p_task_cancel.add_argument("--summary")
+    p_task_cancel.add_argument("--json", action="store_true")
+
+    p_task_reopen = task_subparsers.add_parser("reopen", help="Reopen a canceled task")
+    p_task_reopen.add_argument("--project-root", default=".")
+    p_task_reopen.add_argument("--workset", required=True)
+    p_task_reopen.add_argument("--task", required=True)
+    p_task_reopen.add_argument("--actor", default="codex")
+    p_task_reopen.add_argument("--summary")
+    p_task_reopen.add_argument("--json", action="store_true")
 
     p_task_land = task_subparsers.add_parser("land", help="Land the current task and close it")
     p_task_land.add_argument("--project-root", default=".")
@@ -390,8 +419,16 @@ def main(argv: list[str] | None = None) -> int:
             profile, model = _load_model(args.project_root)
             if args.workset:
                 model = scope_runtime_model(model, workset_id=args.workset)
+            if not args.include_canceled:
+                model = hide_canceled_runtime_model(model)
             if args.json:
-                _emit_json(build_runtime_summary(profile, workset_id=args.workset))
+                _emit_json(
+                    build_runtime_summary(
+                        profile,
+                        workset_id=args.workset,
+                        include_canceled=args.include_canceled,
+                    )
+                )
             else:
                 print(render_summary_text(model))
             return 0
@@ -522,11 +559,22 @@ def main(argv: list[str] | None = None) -> int:
                 raw_text=args.prompt,
                 file_path=args.prompt_file,
             )
+            user_prompt_text = None
+            user_prompt_source = None
+            if args.user_prompt is not None or args.user_prompt_file is not None:
+                user_prompt_text, user_prompt_source = _load_text_input(
+                    label="task begin user prompt",
+                    raw_text=args.user_prompt,
+                    file_path=args.user_prompt_file,
+                    inline_source="inline:--user-prompt",
+                )
             spec = begin_task_worktree(
                 profile,
                 actor=args.actor,
                 prompt=prompt_text,
                 prompt_source=prompt_source,
+                user_prompt=user_prompt_text,
+                user_prompt_source=user_prompt_source,
                 prompt_mode=args.prompt_mode,
                 workset_id=args.workset,
                 task_id=args.task,
@@ -575,6 +623,36 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"recovery": payload})
             else:
                 print(render_recover_text(payload), end="")
+            return 0
+
+        if args.command == "task" and args.task_command == "cancel":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = cancel_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                summary=args.summary,
+            )
+            if args.json:
+                _emit_json({"task_state": payload})
+            else:
+                print(render_task_state_text(payload), end="")
+            return 0
+
+        if args.command == "task" and args.task_command == "reopen":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = reopen_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                actor=args.actor,
+                summary=args.summary,
+            )
+            if args.json:
+                _emit_json({"task_state": payload})
+            else:
+                print(render_task_state_text(payload), end="")
             return 0
 
         if args.command == "task" and args.task_command == "land":

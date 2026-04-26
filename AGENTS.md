@@ -26,7 +26,7 @@ development.
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
   - `blackdog workset put`
-  - `blackdog task begin|show|land|close|cleanup`
+  - `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
   - `blackdog summary`
   - `blackdog next --workset`
   - `blackdog snapshot`
@@ -87,7 +87,8 @@ Keep repo-specific requirements outside this block.
 - If preflight reports `primary worktree: yes`, do not keep implementation edits in that checkout; start or enter a branch-backed task worktree first.
 - Analysis-only work may stay in the current checkout.
 - `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.
-- Prefer `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt "..." --prompt-mode raw` for the normal same-thread path.
+- Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.
+- Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.
 - Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.
 
 Review these routed docs before editing when they apply:

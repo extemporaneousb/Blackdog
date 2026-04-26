@@ -172,6 +172,90 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(stdout, "")
         self.assertIn("JSON object payload", stderr)
 
+    def test_task_cancel_and_reopen_control_normal_visibility(self) -> None:
+        payload = {
+            "id": "manual-cancel",
+            "title": "Manual cancel",
+            "tasks": [{"id": "CAN-1", "title": "Cancel this", "intent": "hide stale work"}],
+        }
+        exit_code, _, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "cancel",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "manual-cancel",
+            "--task",
+            "CAN-1",
+            "--summary",
+            "stale",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["task_state"]["status"], "canceled")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "manual-cancel",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["counts"]["tasks"], 0)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "manual-cancel",
+            "--include-canceled",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["counts"]["canceled"], 1)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "reopen",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "manual-cancel",
+            "--task",
+            "CAN-1",
+            "--summary",
+            "needed",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["task_state"]["status"], "planned")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "next",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "manual-cancel",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        next_payload = json.loads(stdout)
+        self.assertEqual(next_payload["selection_mode"], "start")
+        self.assertEqual(next_payload["selected_task"]["task_id"], "CAN-1")
+
     def test_worktree_preview_shows_the_start_plan_and_contract_inputs(self) -> None:
         profile = load_profile(self.root)
         skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
@@ -549,8 +633,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         next_payload = json.loads(stdout)
-        self.assertEqual(next_payload["selection_mode"], "start")
-        self.assertEqual(next_payload["selected_task"]["task_id"], "TASK-1")
+        self.assertEqual(next_payload["selection_mode"], "none")
+        self.assertIsNone(next_payload["selected_task"])
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -562,12 +646,87 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         summary_payload = json.loads(stdout)
+        self.assertEqual(summary_payload["counts"]["tasks"], 0)
+        self.assertEqual(summary_payload["worksets"], [])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--include-canceled",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary_payload = json.loads(stdout)
+        self.assertEqual(summary_payload["counts"]["canceled"], 1)
         self.assertEqual(summary_payload["worksets"][0]["recent_attempts"][0]["user_prompt_hash"], task_payload["user_prompt_hash"])
         self.assertEqual(
             summary_payload["worksets"][0]["recent_attempts"][0]["execution_prompt_hash"],
             task_payload["execution_prompt_hash"],
         )
         self.assertIsNone(summary_payload["worksets"][0]["recent_attempts"][0]["prompt_hash"])
+
+    def test_task_begin_accepts_skill_execution_prompt_and_user_prompt(self) -> None:
+        self.install_repo_runtime()
+        user_prompt_path = self.root / "USER_PROMPT.txt"
+        execution_prompt_path = self.root / "EXECUTION_PROMPT.txt"
+        user_prompt_path.write_text("Add a repo-local feature.\n", encoding="utf-8")
+        execution_prompt_path.write_text("Implement the feature with the repo skill guardrails.\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt-file",
+            str(execution_prompt_path),
+            "--prompt-mode",
+            "skill",
+            "--user-prompt-file",
+            str(user_prompt_path),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        workset_id = task_payload["workset_id"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        self.assertEqual(task_payload["prompt_mode"], "skill")
+        self.assertNotEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        show_payload = json.loads(stdout)["task_show"]
+        self.assertEqual(show_payload["user_prompt_mode"], "raw")
+        self.assertEqual(show_payload["execution_prompt_mode"], "skill")
+        self.assertEqual(show_payload["user_prompt_hash"], task_payload["user_prompt_hash"])
+        self.assertEqual(show_payload["execution_prompt_hash"], task_payload["execution_prompt_hash"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "closed the skill prompt smoke",
+            "--cleanup",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(worktree_path.exists())
 
         exit_code, stdout, stderr = self.run_cli(
             "snapshot",
@@ -585,19 +744,6 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(
             snapshot_payload["runtime_model"]["recent_attempts"][0]["prompt_receipt"]["prompt_hash"],
             task_payload["execution_prompt_hash"],
-        )
-
-        subprocess.run(
-            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(self.root), "branch", "-D", task_payload["worktree"]["branch"]],
-            check=True,
-            capture_output=True,
-            text=True,
         )
 
     def test_task_land_records_user_and_execution_prompt_lineage_when_prompt_was_tuned(self) -> None:
@@ -824,8 +970,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse(released_payload["stale_claim"])
         self.assertIsNone(released_payload["task_claim"])
         self.assertIsNone(released_payload["workset_claim"])
-        self.assertEqual(released_payload["task_runtime_status"], "planned")
-        self.assertEqual(released_payload["repaired_runtime_status"], "planned")
+        self.assertEqual(released_payload["task_runtime_status"], "canceled")
+        self.assertEqual(released_payload["repaired_runtime_status"], "canceled")
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -938,8 +1084,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         next_payload = json.loads(stdout)
-        self.assertEqual(next_payload["selection_mode"], "start")
-        self.assertEqual(next_payload["selected_task"]["task_id"], "RC-1")
+        self.assertEqual(next_payload["selection_mode"], "none")
+        self.assertIsNone(next_payload["selected_task"])
 
         subprocess.run(
             ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
