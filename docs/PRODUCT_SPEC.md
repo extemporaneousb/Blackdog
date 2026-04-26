@@ -196,9 +196,11 @@ It may create a one-task workset automatically when the caller does not target
 existing planning state. `task land` is the normative success-closure action.
 It should create one canonical landed commit per successful task attempt,
 record runtime, release claims, and clean up by default. That landed commit
-should carry canonical trailers for workset/task/attempt identity and changed
-paths so git history and runtime history stay aligned. Recovery-oriented flows
-use `task show`, `task close`, `task cleanup`, `worktree show`, and
+should carry canonical trailers for workset/task/attempt identity, changed
+paths, and the prompt-lineage / execution-context fields Blackdog actually ran
+when that context is known and non-duplicative so git history and runtime
+history stay aligned. Recovery-oriented flows
+use `task show`, `task recover`, `task close`, `task cleanup`, `worktree show`, and
 `worktree close` when the canonical success path cannot finish.
 
 The explicit planned-task operator path remains:
@@ -226,7 +228,8 @@ Blackdog must support recording:
 - changed paths
 - validation commands and outcomes
 - result status
-- canonical landed-commit trailers for workset/task/attempt identity
+- canonical landed-commit trailers for workset/task/attempt identity, prompt
+  lineage, execution context, and changed paths
 - one canonical landed commit per successful task attempt
 - residual risks or follow-up candidates
 - branch-head `commit` linkage when present and canonical `landed_commit`
@@ -343,6 +346,7 @@ This is the decision frame for the rest of the repo.
 - workset/task claim model
 - `task begin`
 - `task show`
+- `task recover`
 - `task land`
 - `task close`
 - `task cleanup`
@@ -395,7 +399,7 @@ This is the decision frame for the rest of the repo.
 
 - markdown backlog parsing as canonical logic
 - durable `epic`, `lane`, and `wave`
-- legacy supervisor flow as a shipped execution surface
+- legacy multi-agent orchestration as a shipped execution surface
 - any surface preserved only for legacy compatibility
 
 ## Required Stats For Dogfooding
@@ -417,8 +421,9 @@ Minimum per-attempt stats:
 - branch / target branch / integration branch
 - start_commit
 - execution_model
-- prompt_source
-- prompt_hash
+- execution_prompt_source / execution_prompt_hash / execution_prompt_mode
+- user_prompt_source / user_prompt_hash / user_prompt_mode
+- shared prompt_source / prompt_hash / prompt_mode alias only when both lineages match
 - commit when applicable
 - changed_paths
 - validations and statuses

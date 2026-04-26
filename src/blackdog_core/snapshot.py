@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from .profile import RepoProfile
-from .runtime_model import AttemptView, RuntimeModel, TaskView, WorksetView, load_runtime_model, scope_runtime_model
+from .runtime_model import (
+    AttemptView,
+    PromptReceiptView,
+    RuntimeModel,
+    TaskView,
+    WorksetView,
+    load_runtime_model,
+    scope_runtime_model,
+)
 from .state import now_iso, parse_iso
 
 
@@ -136,6 +144,7 @@ ATTEMPTS_TABLE_COLUMNS = (
 def _prompt_lineage_payload(attempt: AttemptView) -> dict[str, Any]:
     execution_prompt = attempt.prompt_receipt
     user_prompt = attempt.user_prompt_receipt or execution_prompt
+    shared_prompt = execution_prompt if _same_prompt_lineage(execution_prompt, user_prompt) else None
     return {
         "execution_prompt_source": execution_prompt.source if execution_prompt else None,
         "execution_prompt_hash": execution_prompt.prompt_hash if execution_prompt else None,
@@ -143,9 +152,9 @@ def _prompt_lineage_payload(attempt: AttemptView) -> dict[str, Any]:
         "user_prompt_source": user_prompt.source if user_prompt else None,
         "user_prompt_hash": user_prompt.prompt_hash if user_prompt else None,
         "user_prompt_mode": user_prompt.mode if user_prompt else None,
-        "prompt_source": execution_prompt.source if execution_prompt else None,
-        "prompt_hash": execution_prompt.prompt_hash if execution_prompt else None,
-        "prompt_mode": execution_prompt.mode if execution_prompt else None,
+        "prompt_source": shared_prompt.source if shared_prompt else None,
+        "prompt_hash": shared_prompt.prompt_hash if shared_prompt else None,
+        "prompt_mode": shared_prompt.mode if shared_prompt else None,
     }
 
 
@@ -158,6 +167,16 @@ def _prompt_receipt_label(source: str | None, prompt_hash: str | None, mode: str
     if mode:
         label = f"{label}/{mode}"
     return label
+
+
+def _same_prompt_lineage(left: PromptReceiptView | None, right: PromptReceiptView | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return (
+        left.prompt_hash == right.prompt_hash
+        and left.source == right.source
+        and left.mode == right.mode
+    )
 
 
 def _attempt_prompt_lineage_text(attempt: AttemptView) -> str:
@@ -482,19 +501,31 @@ def render_attempts_summary_text(payload: dict[str, Any]) -> str:
                 if attempt["model"] or attempt["reasoning_effort"]
                 else ""
             )
-            if attempt["user_prompt_hash"] and attempt["user_prompt_hash"] != attempt["execution_prompt_hash"]:
-                prompt = (
-                    " "
-                    f"user_prompt={_prompt_receipt_label(attempt['user_prompt_source'], attempt['user_prompt_hash'], attempt['user_prompt_mode'])} "
-                    f"execution_prompt={_prompt_receipt_label(attempt['execution_prompt_source'], attempt['execution_prompt_hash'], attempt['execution_prompt_mode'])}"
-                )
+            shared_label = _prompt_receipt_label(
+                attempt["prompt_source"],
+                attempt["prompt_hash"],
+                attempt["prompt_mode"],
+            )
+            execution_label = _prompt_receipt_label(
+                attempt["execution_prompt_source"],
+                attempt["execution_prompt_hash"],
+                attempt["execution_prompt_mode"],
+            )
+            user_label = _prompt_receipt_label(
+                attempt["user_prompt_source"],
+                attempt["user_prompt_hash"],
+                attempt["user_prompt_mode"],
+            )
+            if shared_label:
+                prompt = f" prompt={shared_label}"
+            elif execution_label and user_label:
+                prompt = f" user_prompt={user_label} execution_prompt={execution_label}"
+            elif execution_label:
+                prompt = f" execution_prompt={execution_label}"
+            elif user_label:
+                prompt = f" user_prompt={user_label}"
             else:
-                label = _prompt_receipt_label(
-                    attempt["execution_prompt_source"],
-                    attempt["execution_prompt_hash"],
-                    attempt["execution_prompt_mode"],
-                )
-                prompt = f" prompt={label}" if label else ""
+                prompt = ""
             summary = f" {attempt['summary']}" if attempt["summary"] else ""
             lines.append(
                 (

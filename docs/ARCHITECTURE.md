@@ -58,11 +58,13 @@ grouped durably by `epic`, `lane`, or `wave`. Those concepts were structurally
 wrong for the AI-first target model and were removed instead of preserved as
 aliases.
 
-Claims attach to both worksets and tasks. The base model supports two
-execution semantics, but the shipped mainline flow only exposes one kept-change
-mode:
+Claims attach to both worksets and tasks. The shipped write path exposes one
+kept-change execution model:
 
 - `direct_wtam` for one kept-change task running through the WTAM lifecycle
+
+Older runtime files may still load one removed managed-claim token during
+migration, but that token is not part of the active runtime contract.
 
 ## Storage Boundary
 
@@ -107,6 +109,7 @@ The current coherent product surface on top of the new core is:
 - `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
+- `blackdog task recover`
 - `blackdog task land`
 - `blackdog task close`
 - `blackdog task cleanup`
@@ -139,8 +142,8 @@ When install has to create a fresh profile, it seeds routed docs from
 managed Blackdog contract block into `AGENTS.md` so WTAM rules live in repo
 docs instead of only in the generated skill. `repo refresh` rewrites that
 managed `AGENTS.md` block and is also the shipped cleanup path for removing
-known legacy backlog-era and removed-orchestration artifacts from the shared
-control root.
+known backlog-era artifacts plus the one stale removed-orchestration run
+directory from the shared control root.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1
@@ -181,5 +184,5 @@ These commands exercise one end-to-end vertical slice:
 This repo no longer keeps legacy backlog, board, inbox, bootstrap, or
 compatibility-plan code as dormant historical baggage. Legacy backlog-era
 multi-agent orchestration code remains removed from the mainline repo surface.
-The old supervisor flow stays removed as well; the only shipped supervisor-era
-behavior is cleanup of leftover control-root artifacts during `repo refresh`.
+The only remaining migration seam is cleanup of leftover removed-orchestration
+control-root artifacts during `repo refresh`.

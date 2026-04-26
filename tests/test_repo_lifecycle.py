@@ -230,6 +230,9 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         legacy_backlog = self.root / ".git" / "blackdog" / "backlog.md"
         legacy_backlog.parent.mkdir(parents=True, exist_ok=True)
         legacy_backlog.write_text("legacy backlog\n", encoding="utf-8")
+        removed_orchestration_dir = self.root / ".git" / "blackdog" / "supervisor-runs"
+        removed_orchestration_dir.mkdir(parents=True, exist_ok=True)
+        (removed_orchestration_dir / "run.json").write_text("{\"status\": \"legacy\"}\n", encoding="utf-8")
 
         exit_code, stdout, stderr = self.run_cli(
             "repo",
@@ -243,10 +246,12 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         self.assertEqual(payload["action"], "refresh")
         self.assertIn(str(legacy_backlog.resolve()), payload["removed"])
+        self.assertIn(str(removed_orchestration_dir.resolve()), payload["removed"])
         if legacy_skill_path != skill_path:
             self.assertIn(str(legacy_skill_path), payload["removed"])
             self.assertFalse(legacy_skill_path.exists())
         self.assertFalse(legacy_backlog.exists())
+        self.assertFalse(removed_orchestration_dir.exists())
         self.assertIsNotNone(payload["handlers"])
         agents_text = agents_path.read_text(encoding="utf-8")
         self.assertIn("Repo-specific rule.", agents_text)

@@ -27,12 +27,14 @@ from blackdog.wtam import (
     inspect_task_worktree,
     land_task,
     land_task_worktree,
+    recover_task,
     render_task_begin_text,
     render_cleanup_text,
     render_close_text,
     render_land_text,
     render_preflight_text,
     render_preview_text,
+    render_recover_text,
     render_show_text,
     render_start_text,
     show_task,
@@ -239,6 +241,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_show.add_argument("--workset")
     p_task_show.add_argument("--task")
     p_task_show.add_argument("--json", action="store_true")
+
+    p_task_recover = task_subparsers.add_parser("recover", help="Inspect recovery state for the current task and optionally release a stale claim")
+    p_task_recover.add_argument("--project-root", default=".")
+    p_task_recover.add_argument("--workset")
+    p_task_recover.add_argument("--task")
+    p_task_recover.add_argument("--release-stale-claim", action="store_true")
+    p_task_recover.add_argument("--status", choices=["blocked", "failed", "abandoned"])
+    p_task_recover.add_argument("--summary")
+    p_task_recover.add_argument("--note")
+    p_task_recover.add_argument("--json", action="store_true")
 
     p_task_land = task_subparsers.add_parser("land", help="Land the current task and close it")
     p_task_land.add_argument("--project-root", default=".")
@@ -545,6 +557,24 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"task_show": payload})
             else:
                 print(render_show_text(payload, surface="task"), end="")
+            return 0
+
+        if args.command == "task" and args.task_command == "recover":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = recover_task(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                release_stale_claim=args.release_stale_claim,
+                status=args.status,
+                summary=args.summary,
+                note=args.note,
+                cwd=Path.cwd(),
+            )
+            if args.json:
+                _emit_json({"recovery": payload})
+            else:
+                print(render_recover_text(payload), end="")
             return 0
 
         if args.command == "task" and args.task_command == "land":

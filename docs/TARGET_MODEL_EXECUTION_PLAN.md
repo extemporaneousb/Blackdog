@@ -22,6 +22,7 @@ The current shipped surface is:
 - `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
+- `blackdog task recover`
 - `blackdog task land`
 - `blackdog task close`
 - `blackdog task cleanup`
@@ -56,7 +57,7 @@ Use this prompt to continue the rewrite:
 > 4. durable accumulation of completed/landed work and attempt history
 > 5. a clear execution model for direct WTAM work
 >
-> Treat `task show`, `task close`, `task cleanup`, `worktree show`, and
+> Treat `task show`, `task recover`, `task close`, `task cleanup`, `worktree show`, and
 > `worktree close` as the recovery and fallback surfaces around that
 > canonical success path. Keep `worktree preflight|preview|start` as the
 > explicit operator surfaces for planned workset/task execution.

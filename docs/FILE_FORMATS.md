@@ -172,6 +172,11 @@ from. On successful `worktree land`, it may be an internal prep commit created
 after auto-staging dirty task-worktree changes. `landed_commit`, when present,
 is the canonical landed commit Blackdog created on the target branch.
 
+New runtime writes use only `direct_wtam` for `execution_model`. Older
+`runtime.json` files may still contain removed managed-claim values while
+Blackdog reads or migrates them, but those values are not part of the active
+contract.
+
 Allowed statuses:
 
 - `planned`
@@ -218,6 +223,10 @@ Allowed prompt modes:
 
 - `raw`
 - `tuned`
+
+Derived attempt-history read surfaces expose both `execution_prompt_*` and
+`user_prompt_*`. They only populate the shared `prompt_*` alias when those
+lineages match, so split raw-vs-execution lineage stays explicit.
 
 Current shipped execution-context values:
 
@@ -288,10 +297,14 @@ Current `worktree.land` payloads record:
 `commit_message` is the canonical landed-commit message Blackdog wrote. Today
 that message carries `Blackdog-Workset`, `Blackdog-Task`, `Blackdog-Attempt`,
 `Blackdog-Actor`, and `Blackdog-Status` trailers, optional
-`Blackdog-Target-Branch` and `Blackdog-Prompt-Hash`, one
-`Blackdog-Changed-Path` trailer per changed path, and any
-`Blackdog-Validation`/`Blackdog-Residual`/`Blackdog-Followup` trailers
-supplied at land time.
+`Blackdog-Target-Branch`, `Blackdog-Execution-Model`, `Blackdog-Model`,
+`Blackdog-Reasoning-Effort`, `Blackdog-Prompt-Hash`,
+`Blackdog-Prompt-Source`, and `Blackdog-Prompt-Mode`; when the raw user prompt
+lineage differs from the execution prompt lineage, it also carries
+`Blackdog-User-Prompt-Hash`, `Blackdog-User-Prompt-Source`, and
+`Blackdog-User-Prompt-Mode`; it always includes one `Blackdog-Changed-Path`
+trailer per changed path, plus any `Blackdog-Validation`/
+`Blackdog-Residual`/`Blackdog-Followup` trailers supplied at land time.
 
 Current `worktree.close` payloads record:
 
@@ -335,4 +348,5 @@ Blackdog vNext behavior.
 Legacy backlog-era artifacts such as `backlog.md`, `backlog-state.json`,
 `inbox.jsonl`, `tracked-installs.json`, rendered backlog HTML, and old
 backlog-era task-result folders are not part of the vNext control-root
-contract.
+contract. The stale removed-orchestration run directory is outside the active
+contract as well and only survives as a `repo refresh` cleanup target.

@@ -40,6 +40,7 @@ CLI surfaces.
 - `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
+- `blackdog task recover`
 - `blackdog task land`
 - `blackdog task close`
 - `blackdog task cleanup`
@@ -63,7 +64,7 @@ planning and inspection, `task` is the default same-thread WTAM path, and
 
 - Do not author planning truth in markdown.
 - Do not treat `epic`, `lane`, or `wave` as durable concepts.
-- Do not preserve deleted backlog/board/bootstrap/inbox/render/supervisor
+- Do not preserve deleted backlog/board/bootstrap/inbox/render/multi-agent
   surfaces on the new typed model.
 - Do not use architecture prose as the product workflow spec; use
   [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for that.

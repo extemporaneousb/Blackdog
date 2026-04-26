@@ -15,15 +15,16 @@ workset/task flow in the direct-agent WTAM path at that time.
 1. `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt "..." --prompt-mode raw`
 2. make kept changes only inside that task worktree
 3. `./.VE/bin/blackdog task land --project-root . --summary "..."`
-4. if recovery is needed from that task worktree, inspect `./.VE/bin/blackdog task show --project-root .`
+4. if recovery is needed from that task worktree, inspect `./.VE/bin/blackdog task recover --project-root .`
 5. if the work should not land, close it with `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary "..."`
 6. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`
 7. inspect `summary`, `snapshot`, `attempts summary`, and `attempts table`
 
 At audit time, the default direct-agent hot path was `task begin -> land`.
-`task show`,
-`task close`, `task cleanup`, `worktree show`, and `worktree close` are the
-recovery/fallback surfaces around that canonical path.
+`task show`, `task close`, `task cleanup`, `worktree show`, and
+`worktree close` were the recovery/fallback surfaces around that canonical
+path. A later v3 follow-up added `task recover` as the explicit single-agent
+recovery read and stale-claim release surface.
 
 ## Audited Planned-Task Operator Flow
 
@@ -44,6 +45,10 @@ recovery/fallback surfaces around that canonical path.
 - `task show`
   Inspects the current or latest task associated with the task worktree
   without requiring repeated workset/task ids on the hot path.
+- `task recover`
+  Adds one explicit single-agent recovery surface over the same task/worktree
+  model. It reports retained claims, stale-claim state, dirty-worktree state,
+  and the recommended next action without requiring raw snapshot reads.
 - `worktree preflight`
   Shows whether the current checkout is the primary worktree, whether the
   primary worktree is dirty, which worktrees exist, and whether the current
@@ -187,7 +192,7 @@ Symptoms:
 
 Assessment:
 
-- `blackdog worktree show --project-root . --workset WORKSET --task TASK`
+- `blackdog task recover --project-root . --workset WORKSET --task TASK`
 - `blackdog summary --project-root . --workset WORKSET`
 - `git status --short` in the task worktree
 
@@ -195,6 +200,7 @@ Recovery:
 
 - if the work is valid, run `worktree land`
 - if the work should not land, run `worktree close --status blocked|failed|abandoned`
+- if the claim is stale with no active attempt, run `task recover --release-stale-claim --status blocked|failed|abandoned`
 - if the worktree was retained or left dirty, run `task cleanup` after the
   branch is no longer needed
 
@@ -218,11 +224,12 @@ Recovery:
 
 The single-agent base is much better, but it is not complete.
 
+The explicit stale-claim and dirty-task-worktree read surface now exists
+through `task recover`, but broader operator automation is still incomplete.
+
 The biggest remaining gaps are:
 
-- no explicit stale-claim recovery command
-- no dedicated recovery command that answers "what should I do with this dirty
-  task worktree right now?" across multiple stale or conflicting attempts
+- richer arbitration across multiple retained or conflicting task worktrees
 - no benchmark history persistence; the current timing harness is file-based
   and ad hoc
 
@@ -230,8 +237,8 @@ The biggest remaining gaps are:
 
 At the time of the audit, the next single-agent slices were:
 
-1. clearer stale-claim and dirty-worktree remediation
-2. continued audit of landed attempt stats and prompt lineage
+1. continued audit of landed attempt stats and prompt lineage
+2. richer retained-worktree arbitration where multiple stale branches exist
 3. benchmark history persistence if the current file-based timing harness
    becomes a real operating dependency
 

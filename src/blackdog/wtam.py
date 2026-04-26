@@ -30,13 +30,23 @@ from blackdog_core.state import (
     PROMPT_MODE_RAW,
     PROMPT_MODE_TUNED,
     PromptReceiptRecord,
+    TASK_STATUS_BLOCKED,
+    TASK_STATUS_IN_PROGRESS,
+    TASK_STATUS_PLANNED,
+    TaskRuntimeRecord,
     ValidationRecord,
     active_task_attempt,
     append_event,
     create_prompt_receipt,
     latest_task_attempt,
     load_runtime_state,
+    merge_workset_runtime,
+    now_iso,
     parse_iso,
+    save_runtime_state,
+    task_claim_index,
+    task_state_index,
+    workset_claim,
 )
 
 
@@ -774,6 +784,35 @@ def _attempt_changed_paths(
     return sorted(changed)
 
 
+def _append_prompt_lineage_trailers(
+    lines: list[str],
+    *,
+    prompt_receipt: PromptReceiptRecord | None,
+    user_prompt_receipt: PromptReceiptRecord | None,
+) -> None:
+    if prompt_receipt is None:
+        return
+    lines.append(f"Blackdog-Prompt-Hash: {prompt_receipt.prompt_hash}")
+    if prompt_receipt.source:
+        lines.append(f"Blackdog-Prompt-Source: {prompt_receipt.source}")
+    if prompt_receipt.mode:
+        lines.append(f"Blackdog-Prompt-Mode: {prompt_receipt.mode}")
+    if user_prompt_receipt is None:
+        return
+    same_prompt_lineage = (
+        user_prompt_receipt.prompt_hash == prompt_receipt.prompt_hash
+        and user_prompt_receipt.source == prompt_receipt.source
+        and user_prompt_receipt.mode == prompt_receipt.mode
+    )
+    if same_prompt_lineage:
+        return
+    lines.append(f"Blackdog-User-Prompt-Hash: {user_prompt_receipt.prompt_hash}")
+    if user_prompt_receipt.source:
+        lines.append(f"Blackdog-User-Prompt-Source: {user_prompt_receipt.source}")
+    if user_prompt_receipt.mode:
+        lines.append(f"Blackdog-User-Prompt-Mode: {user_prompt_receipt.mode}")
+
+
 def _canonical_commit_message(
     workset: Workset,
     task: TaskSpec,
@@ -781,7 +820,11 @@ def _canonical_commit_message(
     attempt_id: str,
     actor: str,
     changed_paths: tuple[str, ...],
-    prompt_hash: str | None,
+    prompt_receipt: PromptReceiptRecord | None,
+    user_prompt_receipt: PromptReceiptRecord | None,
+    execution_model: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
     target_branch: str | None,
     status: str,
     summary: str,
@@ -803,8 +846,17 @@ def _canonical_commit_message(
     ]
     if target_branch:
         lines.append(f"Blackdog-Target-Branch: {target_branch}")
-    if prompt_hash:
-        lines.append(f"Blackdog-Prompt-Hash: {prompt_hash}")
+    if execution_model:
+        lines.append(f"Blackdog-Execution-Model: {execution_model}")
+    if model:
+        lines.append(f"Blackdog-Model: {model}")
+    if reasoning_effort:
+        lines.append(f"Blackdog-Reasoning-Effort: {reasoning_effort}")
+    _append_prompt_lineage_trailers(
+        lines,
+        prompt_receipt=prompt_receipt,
+        user_prompt_receipt=user_prompt_receipt,
+    )
     for path in changed_paths:
         lines.append(f"Blackdog-Changed-Path: {path}")
     for validation in validations:
@@ -1190,6 +1242,320 @@ def cleanup_task(
     )
 
 
+def _task_recovery_state(
+    *,
+    active_attempt: bool,
+    stale_claim: bool,
+    worktree_exists: bool,
+    worktree_dirty: bool,
+    branch_ahead_of_target: bool,
+) -> str:
+    if stale_claim:
+        return "stale_claim"
+    if active_attempt:
+        return "active_attempt"
+    if worktree_exists and (worktree_dirty or branch_ahead_of_target):
+        return "retained_dirty_worktree"
+    if worktree_exists:
+        return "cleanup_ready"
+    return "idle"
+
+
+def _task_recovery_payload(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+) -> dict[str, Any]:
+    _workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
+    runtime_state = load_runtime_state(profile.paths)
+    runtime_task_claims = task_claim_index(runtime_state, workset_id)
+    current_task_claim = runtime_task_claims.get(task_id)
+    current_workset_claim = workset_claim(runtime_state, workset_id)
+    runtime_task_state = task_state_index(runtime_state, workset_id).get(
+        task_id,
+        TaskRuntimeRecord(task_id=task_id, status=TASK_STATUS_PLANNED),
+    )
+    active_attempt = active_task_attempt(runtime_state, workset_id, task_id)
+    latest_attempt = latest_task_attempt(runtime_state, workset_id, task_id)
+    selected_attempt = active_attempt or latest_attempt
+    branch = selected_attempt.branch if selected_attempt is not None else None
+    target_branch = selected_attempt.target_branch if selected_attempt is not None else None
+    task_worktree = (
+        _resolve_attempt_worktree(
+            profile,
+            branch=branch,
+            worktree_path=selected_attempt.worktree_path if selected_attempt is not None else None,
+        )
+        if selected_attempt is not None
+        else None
+    )
+    worktree_exists = task_worktree is not None and task_worktree.exists()
+    worktree_dirty_paths = _worktree_changed_paths(profile, task_worktree) if task_worktree is not None else []
+    branch_ahead = (
+        branch_ahead_of_target(profile, branch=branch, target_branch=target_branch)
+        if branch and target_branch
+        else False
+    )
+    primary_dirty = primary_worktree_is_dirty(profile, ignore_runtime=True)
+    primary_dirty_paths = primary_worktree_dirty_paths(profile, ignore_runtime=True)
+    stale_claim = current_task_claim is not None and active_attempt is None
+    recovery_state = _task_recovery_state(
+        active_attempt=active_attempt is not None,
+        stale_claim=stale_claim,
+        worktree_exists=worktree_exists,
+        worktree_dirty=bool(worktree_dirty_paths),
+        branch_ahead_of_target=branch_ahead,
+    )
+    recommended_actions: list[str] = []
+    if stale_claim:
+        if task_worktree is not None and (worktree_dirty_paths or branch_ahead):
+            recommended_actions.append("inspect the retained task workspace before releasing the stale claim")
+        recommended_actions.append(
+            "run `blackdog task recover --release-stale-claim --status blocked|failed|abandoned --summary \"...\"` "
+            "to release the stale claim"
+        )
+    elif active_attempt is not None:
+        if primary_dirty:
+            recommended_actions.append("clean or land the primary worktree changes before `blackdog task land`")
+        if worktree_dirty_paths or branch_ahead:
+            recommended_actions.append("run `blackdog worktree land` to create the canonical landed commit")
+        recommended_actions.append("run `blackdog worktree close --status blocked|failed|abandoned` to close without landing")
+    elif task_worktree is None:
+        recommended_actions.append("start a new WTAM attempt for this task")
+    elif worktree_dirty_paths or branch_ahead:
+        recommended_actions.append("inspect the retained task workspace and clean or discard its changes before cleanup")
+    if task_worktree is not None and not worktree_dirty_paths:
+        recommended_actions.append("run `blackdog task cleanup` if the task workspace is no longer needed")
+    return {
+        "workset_id": workset_id,
+        "task_id": task_id,
+        "task_title": task.title,
+        "task_runtime_status": runtime_task_state.status,
+        "task_runtime_note": runtime_task_state.note,
+        "task_runtime_updated_at": runtime_task_state.updated_at,
+        "active_attempt": active_attempt is not None,
+        "attempt_id": selected_attempt.attempt_id if selected_attempt is not None else None,
+        "latest_attempt_id": latest_attempt.attempt_id if latest_attempt is not None else None,
+        "latest_attempt_status": latest_attempt.status if latest_attempt is not None else None,
+        "latest_attempt_summary": latest_attempt.summary if latest_attempt is not None else None,
+        "actor": selected_attempt.actor if selected_attempt is not None else None,
+        "branch": branch,
+        "target_branch": target_branch,
+        "worktree_path": str(task_worktree) if task_worktree is not None else None,
+        "worktree_exists": worktree_exists,
+        "worktree_dirty": bool(worktree_dirty_paths),
+        "worktree_dirty_paths": worktree_dirty_paths,
+        "branch_ahead_of_target": branch_ahead,
+        "changed_paths": _attempt_changed_paths(
+            profile,
+            branch=branch,
+            target_branch=target_branch,
+            worktree_path=task_worktree,
+        ),
+        "task_claim": (
+            {
+                "actor": current_task_claim.actor,
+                "execution_model": current_task_claim.execution_model,
+                "claimed_at": current_task_claim.claimed_at,
+                "attempt_id": current_task_claim.attempt_id,
+                "note": current_task_claim.note,
+            }
+            if current_task_claim is not None
+            else None
+        ),
+        "workset_claim": (
+            {
+                "actor": current_workset_claim.actor,
+                "execution_model": current_workset_claim.execution_model,
+                "claimed_at": current_workset_claim.claimed_at,
+                "note": current_workset_claim.note,
+            }
+            if current_workset_claim is not None
+            else None
+        ),
+        "stale_claim": stale_claim,
+        "recovery_state": recovery_state,
+        "execution_prompt_hash": (
+            selected_attempt.prompt_receipt.prompt_hash
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "execution_prompt_source": (
+            selected_attempt.prompt_receipt.source
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "execution_prompt_mode": (
+            selected_attempt.prompt_receipt.mode
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "user_prompt_hash": (
+            selected_attempt.user_prompt_receipt.prompt_hash
+            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
+            else None
+        ),
+        "user_prompt_source": (
+            selected_attempt.user_prompt_receipt.source
+            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
+            else None
+        ),
+        "user_prompt_mode": (
+            selected_attempt.user_prompt_receipt.mode
+            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
+            else None
+        ),
+        "prompt_hash": (
+            selected_attempt.prompt_receipt.prompt_hash
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "prompt_source": (
+            selected_attempt.prompt_receipt.source
+            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
+            else None
+        ),
+        "started_at": selected_attempt.started_at if selected_attempt is not None else None,
+        "ended_at": selected_attempt.ended_at if selected_attempt is not None else None,
+        "primary_worktree": str(find_primary_worktree(profile.paths.project_root)),
+        "primary_dirty": primary_dirty,
+        "primary_dirty_paths": primary_dirty_paths,
+        "recommended_actions": recommended_actions,
+    }
+
+
+def _release_stale_task_claim(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    status: str,
+    summary: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    workset, _task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
+    runtime_state = load_runtime_state(profile.paths)
+    if active_task_attempt(runtime_state, workset_id, task_id) is not None:
+        raise BacklogError("task recover can only release a stale claim when no active WTAM attempt exists")
+    runtime_task_claims = task_claim_index(runtime_state, workset_id)
+    stale_task_claim = runtime_task_claims.get(task_id)
+    if stale_task_claim is None:
+        raise BacklogError("task recover did not find a stale task claim to release")
+    if status not in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED, ATTEMPT_STATUS_ABANDONED}:
+        raise BacklogError("task recover stale-claim status must be one of blocked, failed, abandoned")
+    resolved_summary = str(summary or "").strip()
+    if not resolved_summary:
+        raise BacklogError("task recover --release-stale-claim requires --summary")
+    released_at = now_iso()
+    current_task_state = task_state_index(runtime_state, workset_id).get(task_id)
+    repaired_runtime_status: str | None = None
+    incoming_records: tuple[TaskRuntimeRecord, ...] | None = None
+    if current_task_state is not None and current_task_state.status == TASK_STATUS_IN_PROGRESS:
+        repaired_runtime_status = TASK_STATUS_PLANNED if status == ATTEMPT_STATUS_ABANDONED else TASK_STATUS_BLOCKED
+        incoming_records = (
+            TaskRuntimeRecord(
+                task_id=task_id,
+                status=repaired_runtime_status,
+                updated_at=released_at,
+                note=resolved_summary,
+            ),
+        )
+    current_workset_claim = workset_claim(runtime_state, workset_id)
+    remaining_task_claims = tuple(
+        claim
+        for claim_task_id, claim in runtime_task_claims.items()
+        if claim_task_id != task_id
+    )
+    release_workset_claim = current_workset_claim is not None and not remaining_task_claims
+    next_runtime_state = merge_workset_runtime(
+        runtime_state,
+        workset_id=workset_id,
+        task_ids={item.task_id for item in workset.tasks},
+        incoming_records=incoming_records,
+        incoming_workset_claim=None if release_workset_claim else current_workset_claim,
+        released_task_claim_ids=(task_id,),
+    )
+    save_runtime_state(profile.paths, next_runtime_state)
+    event_actor = str(stale_task_claim.actor or (current_workset_claim.actor if current_workset_claim is not None else "")).strip() or "blackdog"
+    append_event(
+        profile.paths.events_file,
+        event_type="task.release",
+        actor=event_actor,
+        payload={
+            "workset_id": workset_id,
+            "task_id": task_id,
+            "attempt_id": stale_task_claim.attempt_id,
+            "released_at": released_at,
+            "status": status,
+            "summary": resolved_summary,
+            "note": note,
+            "recovery": "stale_claim",
+            "repaired_runtime_status": repaired_runtime_status,
+        },
+    )
+    if release_workset_claim:
+        append_event(
+            profile.paths.events_file,
+            event_type="workset.release",
+            actor=event_actor,
+            payload={
+                "workset_id": workset_id,
+                "released_at": released_at,
+                "status": status,
+                "summary": resolved_summary,
+                "note": note,
+                "recovery": "stale_claim",
+            },
+        )
+    payload = _task_recovery_payload(profile, workset_id=workset_id, task_id=task_id)
+    payload["released_stale_claim"] = True
+    payload["released_attempt_id"] = stale_task_claim.attempt_id
+    payload["release_status"] = status
+    payload["release_summary"] = resolved_summary
+    payload["release_note"] = note
+    payload["released_workset_claim"] = release_workset_claim
+    payload["repaired_runtime_status"] = repaired_runtime_status
+    return payload
+
+
+def recover_task(
+    profile: RepoProfile,
+    *,
+    workset_id: str | None = None,
+    task_id: str | None = None,
+    release_stale_claim: bool = False,
+    status: str | None = None,
+    summary: str | None = None,
+    note: str | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    if not release_stale_claim and any(item is not None for item in (status, summary, note)):
+        raise BacklogError("task recover only accepts --status, --summary, and --note with --release-stale-claim")
+    resolved_workset, resolved_task, _attempt = _resolve_task_command_target(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        cwd=cwd,
+        allow_latest=True,
+    )
+    if not release_stale_claim:
+        payload = _task_recovery_payload(profile, workset_id=resolved_workset, task_id=resolved_task)
+        payload["recommended_actions"] = _task_surface_actions(list(payload["recommended_actions"]))
+        payload["released_stale_claim"] = False
+        return payload
+    payload = _release_stale_task_claim(
+        profile,
+        workset_id=resolved_workset,
+        task_id=resolved_task,
+        status=str(status or "").strip(),
+        summary=str(summary or "").strip(),
+        note=note,
+    )
+    payload["recommended_actions"] = _task_surface_actions(list(payload["recommended_actions"]))
+    return payload
+
+
 def land_branch(
     profile: RepoProfile,
     *,
@@ -1346,7 +1712,6 @@ def land_task_worktree(
             worktree_path=task_worktree,
         )
     )
-    prompt_hash = attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt is not None else None
     branch_head_commit: str | None = None
     commit_message = _canonical_commit_message(
         workset,
@@ -1354,7 +1719,11 @@ def land_task_worktree(
         attempt_id=attempt.attempt_id,
         actor=actor,
         changed_paths=changed_paths,
-        prompt_hash=prompt_hash,
+        prompt_receipt=attempt.prompt_receipt,
+        user_prompt_receipt=attempt.user_prompt_receipt,
+        execution_model=attempt.execution_model,
+        model=attempt.model,
+        reasoning_effort=attempt.reasoning_effort,
         target_branch=attempt.target_branch,
         status="success",
         summary=resolved_summary,
@@ -1447,107 +1816,7 @@ def inspect_task_worktree(
     workset_id: str,
     task_id: str,
 ) -> dict[str, Any]:
-    _workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
-    runtime_state = load_runtime_state(profile.paths)
-    active_attempt = active_task_attempt(runtime_state, workset_id, task_id)
-    latest_attempt = latest_task_attempt(runtime_state, workset_id, task_id)
-    selected_attempt = active_attempt or latest_attempt
-    branch = selected_attempt.branch if selected_attempt is not None else None
-    target_branch = selected_attempt.target_branch if selected_attempt is not None else None
-    task_worktree = (
-        _resolve_attempt_worktree(
-            profile,
-            branch=branch,
-            worktree_path=selected_attempt.worktree_path if selected_attempt is not None else None,
-        )
-        if selected_attempt is not None
-        else None
-    )
-    worktree_dirty_paths = _worktree_changed_paths(profile, task_worktree) if task_worktree is not None else []
-    branch_ahead = (
-        branch_ahead_of_target(profile, branch=branch, target_branch=target_branch)
-        if branch and target_branch
-        else False
-    )
-    recommended_actions: list[str] = []
-    if active_attempt is None:
-        recommended_actions.append("start a new WTAM attempt for this task")
-    else:
-        if worktree_dirty_paths or branch_ahead:
-            recommended_actions.append("run `blackdog task land` to create the canonical landed commit")
-        recommended_actions.append("run `blackdog task close --status blocked|failed|abandoned` to close without landing")
-    if task_worktree is not None and not worktree_dirty_paths:
-        recommended_actions.append("run `blackdog task cleanup` if the task workspace is no longer needed")
-    return {
-        "workset_id": workset_id,
-        "task_id": task_id,
-        "task_title": task.title,
-        "active_attempt": active_attempt is not None,
-        "attempt_id": selected_attempt.attempt_id if selected_attempt is not None else None,
-        "latest_attempt_id": latest_attempt.attempt_id if latest_attempt is not None else None,
-        "latest_attempt_status": latest_attempt.status if latest_attempt is not None else None,
-        "latest_attempt_summary": latest_attempt.summary if latest_attempt is not None else None,
-        "actor": selected_attempt.actor if selected_attempt is not None else None,
-        "branch": branch,
-        "target_branch": target_branch,
-        "worktree_path": str(task_worktree) if task_worktree is not None else None,
-        "worktree_exists": task_worktree is not None and task_worktree.exists(),
-        "worktree_dirty": bool(worktree_dirty_paths),
-        "worktree_dirty_paths": worktree_dirty_paths,
-        "branch_ahead_of_target": branch_ahead,
-        "changed_paths": _attempt_changed_paths(
-            profile,
-            branch=branch,
-            target_branch=target_branch,
-            worktree_path=task_worktree,
-        ),
-        "execution_prompt_hash": (
-            selected_attempt.prompt_receipt.prompt_hash
-            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
-            else None
-        ),
-        "execution_prompt_source": (
-            selected_attempt.prompt_receipt.source
-            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
-            else None
-        ),
-        "execution_prompt_mode": (
-            selected_attempt.prompt_receipt.mode
-            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
-            else None
-        ),
-        "user_prompt_hash": (
-            selected_attempt.user_prompt_receipt.prompt_hash
-            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
-            else None
-        ),
-        "user_prompt_source": (
-            selected_attempt.user_prompt_receipt.source
-            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
-            else None
-        ),
-        "user_prompt_mode": (
-            selected_attempt.user_prompt_receipt.mode
-            if selected_attempt is not None and selected_attempt.user_prompt_receipt is not None
-            else None
-        ),
-        "prompt_hash": (
-            selected_attempt.prompt_receipt.prompt_hash
-            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
-            else None
-        ),
-        "prompt_source": (
-            selected_attempt.prompt_receipt.source
-            if selected_attempt is not None and selected_attempt.prompt_receipt is not None
-            else None
-        ),
-        "started_at": selected_attempt.started_at if selected_attempt is not None else None,
-        "ended_at": selected_attempt.ended_at if selected_attempt is not None else None,
-        "primary_worktree": str(find_primary_worktree(profile.paths.project_root)),
-        "primary_dirty": primary_worktree_is_dirty(profile, ignore_runtime=True),
-        "primary_dirty_paths": primary_worktree_dirty_paths(profile, ignore_runtime=True),
-        "recommended_actions": recommended_actions,
-    }
+    return _task_recovery_payload(profile, workset_id=workset_id, task_id=task_id)
 
 
 def close_task_worktree(
@@ -1933,6 +2202,59 @@ def render_show_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
     return "\n".join(lines) + "\n"
 
 
+def render_recover_text(payload: dict[str, Any]) -> str:
+    prefix = "[blackdog-task]"
+    workspace_label = "task workspace"
+    lines = [
+        f"{prefix} recover: {payload['task_id']} {payload['task_title']}",
+        f"{prefix} recovery state: {payload['recovery_state']}",
+        f"{prefix} task runtime: {payload['task_runtime_status']}",
+        f"{prefix} active attempt: {'yes' if payload['active_attempt'] else 'no'}",
+        f"{prefix} stale claim: {'yes' if payload['stale_claim'] else 'no'}",
+    ]
+    if payload.get("released_stale_claim"):
+        lines.append(f"{prefix} released stale claim: yes")
+        lines.append(f"{prefix} release status: {payload['release_status']}")
+        lines.append(f"{prefix} release summary: {payload['release_summary']}")
+        if payload.get("repaired_runtime_status"):
+            lines.append(f"{prefix} repaired task runtime: {payload['repaired_runtime_status']}")
+    task_claim = payload.get("task_claim")
+    if task_claim is not None:
+        lines.append(
+            f"{prefix} task claim: {task_claim['actor']}/{task_claim['execution_model']} claimed_at={task_claim['claimed_at']}"
+        )
+        if task_claim.get("attempt_id"):
+            lines.append(f"{prefix} claimed attempt: {task_claim['attempt_id']}")
+    workset_claim = payload.get("workset_claim")
+    if workset_claim is not None:
+        lines.append(
+            f"{prefix} workset claim: {workset_claim['actor']}/{workset_claim['execution_model']} claimed_at={workset_claim['claimed_at']}"
+        )
+    if payload["latest_attempt_status"]:
+        lines.append(f"{prefix} latest attempt: {payload['latest_attempt_status']} {payload['latest_attempt_id']}")
+    if payload["latest_attempt_summary"]:
+        lines.append(f"{prefix} latest summary: {payload['latest_attempt_summary']}")
+    if payload["branch"]:
+        lines.append(f"{prefix} branch: {payload['branch']}")
+    if payload["target_branch"]:
+        lines.append(f"{prefix} target branch: {payload['target_branch']}")
+    if payload["worktree_path"]:
+        lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
+    lines.append(f"{prefix} {workspace_label} dirty: {'yes' if payload['worktree_dirty'] else 'no'}")
+    lines.append(f"{prefix} branch ahead of target: {'yes' if payload['branch_ahead_of_target'] else 'no'}")
+    lines.append(f"{prefix} primary dirty: {'yes' if payload['primary_dirty'] else 'no'}")
+    if payload["worktree_dirty_paths"]:
+        lines.append(f"{prefix} {workspace_label} dirty paths: {', '.join(payload['worktree_dirty_paths'])}")
+    if payload["changed_paths"]:
+        lines.append(f"{prefix} attempt paths: {', '.join(payload['changed_paths'])}")
+    if payload.get("task_runtime_note"):
+        lines.append(f"{prefix} task note: {payload['task_runtime_note']}")
+    if payload["recommended_actions"]:
+        lines.append(f"{prefix} recommended actions:")
+        lines.extend(f"  - {item}" for item in payload["recommended_actions"])
+    return "\n".join(lines) + "\n"
+
+
 def render_close_text(payload: dict[str, Any], *, surface: str = "worktree") -> str:
     prefix = f"[blackdog-{surface}]"
     workspace_label = "task workspace" if surface == "task" else "worktree"
@@ -2001,9 +2323,11 @@ __all__ = [
     "render_land_text",
     "render_preflight_text",
     "render_preview_text",
+    "render_recover_text",
     "render_show_text",
     "render_start_text",
     "render_task_begin_text",
+    "recover_task",
     "show_task",
     "start_task_worktree",
     "worktree_contract",

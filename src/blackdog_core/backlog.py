@@ -17,7 +17,6 @@ from .state import (
     ATTEMPT_STATUS_SUCCESS,
     EXECUTION_MODELS,
     EXECUTION_MODEL_DIRECT_WTAM,
-    EXECUTION_MODEL_WORKSET_MANAGER,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_DONE,
     TASK_STATUS_IN_PROGRESS,
@@ -35,6 +34,7 @@ from .state import (
     coerce_task_runtime_records,
     default_runtime_state,
     find_task_attempt,
+    is_legacy_managed_execution_model,
     load_runtime_state,
     merge_workset_runtime,
     now_iso,
@@ -404,21 +404,19 @@ def start_task(
     if current_task_claim is not None:
         raise BacklogError(f"Task {task_id!r} is already claimed by {current_task_claim.actor}")
     current_workset_claim = workset_claim(runtime_state, workset_id)
-    if current_workset_claim is not None:
-        if current_workset_claim.execution_model == EXECUTION_MODEL_WORKSET_MANAGER:
-            if execution_model != EXECUTION_MODEL_DIRECT_WTAM:
-                raise BacklogError(
-                    f"Workset {workset_id!r} carries a legacy managed claim; child tasks must use "
-                    f"{EXECUTION_MODEL_DIRECT_WTAM!r}"
-                )
-        else:
-            if current_workset_claim.actor != actor:
-                raise BacklogError(f"Workset {workset_id!r} is already claimed by {current_workset_claim.actor}")
-            if current_workset_claim.execution_model != execution_model:
-                raise BacklogError(
-                    f"Workset {workset_id!r} is already claimed for execution_model "
-                    f"{current_workset_claim.execution_model!r}"
-                )
+    migrate_legacy_workset_claim = (
+        current_workset_claim is not None
+        and is_legacy_managed_execution_model(current_workset_claim.execution_model)
+    )
+    reusable_workset_claim = None if migrate_legacy_workset_claim else current_workset_claim
+    if reusable_workset_claim is not None:
+        if reusable_workset_claim.actor != actor:
+            raise BacklogError(f"Workset {workset_id!r} is already claimed by {reusable_workset_claim.actor}")
+        if reusable_workset_claim.execution_model != execution_model:
+            raise BacklogError(
+                f"Workset {workset_id!r} is already claimed for execution_model "
+                f"{reusable_workset_claim.execution_model!r}"
+            )
     dependencies_ready, blocked_by = task_dependencies_ready(workset, task_id=task_id, runtime_index=runtime_index)
     if not dependencies_ready:
         raise BacklogError(f"Task {task_id!r} is blocked by {', '.join(blocked_by)}")
@@ -433,6 +431,9 @@ def start_task(
         resolved_branch = _optional_text(branch)
 
     started_at = now_iso()
+    next_workset_claim_note = note
+    if next_workset_claim_note is None and current_workset_claim is not None:
+        next_workset_claim_note = current_workset_claim.note
     attempt = TaskAttemptRecord(
         attempt_id=f"{task_id}-{uuid.uuid4().hex[:12]}",
         task_id=task_id,
@@ -454,11 +455,11 @@ def start_task(
         user_prompt_receipt=resolved_user_prompt_receipt,
         note=note,
     )
-    next_workset_claim = current_workset_claim or WorksetClaimRecord(
+    next_workset_claim = reusable_workset_claim or WorksetClaimRecord(
         actor=actor,
         execution_model=execution_model,
         claimed_at=started_at,
-        note=note,
+        note=next_workset_claim_note,
     )
     next_task_claim = TaskClaimRecord(
         task_id=task_id,
@@ -484,7 +485,7 @@ def start_task(
         incoming_attempts=(attempt,),
     )
     save_runtime_state(profile.paths, next_runtime_state, runtime_store)
-    if current_workset_claim is None:
+    if reusable_workset_claim is None:
         append_event(
             profile.paths.events_file,
             event_type="workset.claim",
@@ -493,7 +494,7 @@ def start_task(
                 "workset_id": workset_id,
                 "execution_model": execution_model,
                 "claimed_at": started_at,
-                "note": note,
+                "note": next_workset_claim.note,
             },
         )
     append_event(
@@ -641,11 +642,7 @@ def finish_task(
         if claim_task_id != task_id
     )
     current_workset_claim = workset_claim(runtime_state, workset_id)
-    release_workset_claim = (
-        current_workset_claim is not None
-        and current_workset_claim.execution_model != EXECUTION_MODEL_WORKSET_MANAGER
-        and not remaining_task_claims
-    )
+    release_workset_claim = current_workset_claim is not None and not remaining_task_claims
     next_runtime_state = merge_workset_runtime(
         runtime_state,
         workset_id=workset_id,

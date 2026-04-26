@@ -20,17 +20,17 @@ from blackdog_core.profile import (
 )
 
 
-LEGACY_CONTROL_ARTIFACTS = (
+LEGACY_BACKLOG_CONTROL_ARTIFACTS = (
     "backlog-index.html",
     "backlog-state.json",
     "backlog.md",
     "blackdog-backlog.html",
     "inbox.jsonl",
-    "supervisor-runs",
     "task-results",
     "threads",
     "tracked-installs.json",
 )
+REMOVED_ORCHESTRATION_CONTROL_ARTIFACTS = ("supervisor-runs",)
 AGENTS_FILE_NAME = "AGENTS.md"
 AGENTS_MANAGED_BEGIN = "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->"
 AGENTS_MANAGED_END = "<!-- BLACKDOG MANAGED CONTRACT:END -->"
@@ -492,7 +492,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "## Shipped Workflow Families\n\n"
         "- repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`\n"
         "- workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`\n"
-        "- same-thread task execution: `task begin`, `task show`, `task land`, `task close`, `task cleanup`\n"
+        "- same-thread task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cleanup`\n"
         "- WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`\n\n"
         "## Repo Lifecycle Flow\n\n"
         "1. `./.VE/bin/blackdog repo update --project-root .`\n"
@@ -504,7 +504,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "1. `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt \"...\" --prompt-mode raw`\n"
         "2. make kept changes only inside the returned task worktree\n"
         "3. `./.VE/bin/blackdog task land --project-root . --summary \"...\"`\n"
-        "4. if recovery is needed from that task worktree, use `./.VE/bin/blackdog task show --project-root .` or `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary \"...\"`\n"
+        "4. if recovery is needed from that task worktree, use `./.VE/bin/blackdog task recover --project-root .` and then either `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary \"...\"` or `./.VE/bin/blackdog task recover --project-root . --release-stale-claim --status blocked|failed|abandoned --summary \"...\"`\n"
         "5. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`\n\n"
         "## Explicit Planned-Task Flow\n\n"
         "1. `./.VE/bin/blackdog summary --project-root .`\n"
@@ -528,9 +528,9 @@ def _write_repo_skill(profile: RepoProfile, *, overwrite: bool) -> tuple[Path, b
     return skill_path, True
 
 
-def _prune_legacy_control_artifacts(profile: RepoProfile) -> tuple[str, ...]:
+def _prune_repo_refresh_cleanup_artifacts(profile: RepoProfile) -> tuple[str, ...]:
     removed: list[str] = []
-    for name in LEGACY_CONTROL_ARTIFACTS:
+    for name in (*LEGACY_BACKLOG_CONTROL_ARTIFACTS, *REMOVED_ORCHESTRATION_CONTROL_ARTIFACTS):
         path = (profile.paths.control_dir / name).resolve()
         if not path.exists():
             continue
@@ -968,7 +968,7 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
     handler_summary = plan_repo_handlers(profile, operation="repo-refresh")
     agents_path, agents_status = _write_repo_agents(profile)
     skill_path, skill_changed = _write_repo_skill(profile, overwrite=True)
-    removed = list(_prune_legacy_control_artifacts(profile))
+    removed = list(_prune_repo_refresh_cleanup_artifacts(profile))
     removed.extend(_migrate_legacy_skill_path(profile))
     preserved = [str(profile.paths.profile_file)]
     updated = []

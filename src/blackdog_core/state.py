@@ -20,15 +20,12 @@ RUNTIME_STORE_VERSION = "blackdog.runtime/vnext2"
 _UNSET = object()
 
 EXECUTION_MODEL_DIRECT_WTAM = "direct_wtam"
-# Retained so older runtime state remains readable after supervisor removal
-# from the shipped mainline surface.
-EXECUTION_MODEL_WORKSET_MANAGER = "workset_manager"
-EXECUTION_MODELS = frozenset(
-    {
-        EXECUTION_MODEL_DIRECT_WTAM,
-        EXECUTION_MODEL_WORKSET_MANAGER,
-    }
-)
+EXECUTION_MODELS = frozenset({EXECUTION_MODEL_DIRECT_WTAM})
+# Older runtime.json files may still carry the removed managed-claim token.
+# Keep it readable at the storage boundary, but do not expose it as part of
+# the writable runtime contract.
+_LEGACY_MANAGED_EXECUTION_MODEL = "workset_manager"
+_READABLE_EXECUTION_MODELS = frozenset({*EXECUTION_MODELS, _LEGACY_MANAGED_EXECUTION_MODEL})
 
 TASK_STATUS_PLANNED = "planned"
 TASK_STATUS_IN_PROGRESS = "in_progress"
@@ -263,12 +260,27 @@ def _normalize_string_list(value: Any, *, field: str, source: Path) -> tuple[str
 
 
 def _normalize_execution_model(value: Any, *, field: str, source: Path) -> str:
+    return _normalize_execution_model_for_runtime(value, field=field, source=source, allow_legacy=False)
+
+
+def _normalize_execution_model_for_runtime(
+    value: Any,
+    *,
+    field: str,
+    source: Path,
+    allow_legacy: bool,
+) -> str:
     execution_model = _optional_text(value)
     if execution_model is None:
         raise StoreError(f"{field} is required in {source}")
-    if execution_model not in EXECUTION_MODELS:
-        raise StoreError(f"{field} must be one of {sorted(EXECUTION_MODELS)} in {source}")
+    allowed = _READABLE_EXECUTION_MODELS if allow_legacy else EXECUTION_MODELS
+    if execution_model not in allowed:
+        raise StoreError(f"{field} must be one of {sorted(allowed)} in {source}")
     return execution_model
+
+
+def is_legacy_managed_execution_model(value: str | None) -> bool:
+    return value == _LEGACY_MANAGED_EXECUTION_MODEL
 
 
 def _validation_from_payload(payload: Mapping[str, Any], *, source: Path) -> ValidationRecord:
@@ -344,10 +356,11 @@ def _workset_claim_from_payload(payload: Any, *, field: str, source: Path) -> Wo
         raise StoreError(f"{field}.claimed_at is required in {source}")
     return WorksetClaimRecord(
         actor=actor,
-        execution_model=_normalize_execution_model(
+        execution_model=_normalize_execution_model_for_runtime(
             payload.get("execution_model"),
             field=f"{field}.execution_model",
             source=source,
+            allow_legacy=True,
         ),
         claimed_at=claimed_at,
         note=_optional_text(payload.get("note")),
@@ -369,10 +382,11 @@ def _task_claim_from_payload(payload: Any, *, field: str, source: Path) -> TaskC
     return TaskClaimRecord(
         task_id=task_id,
         actor=actor,
-        execution_model=_normalize_execution_model(
+        execution_model=_normalize_execution_model_for_runtime(
             payload.get("execution_model"),
             field=f"{field}.execution_model",
             source=source,
+            allow_legacy=True,
         ),
         claimed_at=claimed_at,
         attempt_id=_optional_text(payload.get("attempt_id")),
@@ -423,7 +437,12 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         integration_branch=_optional_text(payload.get("integration_branch")),
         start_commit=_optional_text(payload.get("start_commit")),
         execution_model=(
-            _normalize_execution_model(payload.get("execution_model"), field="attempt.execution_model", source=source)
+            _normalize_execution_model_for_runtime(
+                payload.get("execution_model"),
+                field="attempt.execution_model",
+                source=source,
+                allow_legacy=True,
+            )
             if payload.get("execution_model") is not None
             else None
         ),
@@ -849,7 +868,6 @@ __all__ = [
     "ATTEMPT_STATUS_SUCCESS",
     "EXECUTION_MODELS",
     "EXECUTION_MODEL_DIRECT_WTAM",
-    "EXECUTION_MODEL_WORKSET_MANAGER",
     "PROMPT_MODES",
     "PROMPT_MODE_RAW",
     "PROMPT_MODE_TUNED",

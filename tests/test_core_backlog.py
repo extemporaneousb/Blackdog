@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from blackdog_core.backlog import (
@@ -15,7 +16,13 @@ from blackdog_core.backlog import (
     start_task,
     upsert_workset,
 )
-from blackdog_core.state import JsonRuntimeStore, create_prompt_receipt, load_runtime_state
+from blackdog_core.state import (
+    JsonRuntimeStore,
+    RUNTIME_SCHEMA_VERSION,
+    RUNTIME_STORE_VERSION,
+    create_prompt_receipt,
+    load_runtime_state,
+)
 from tests.core_audit_support import CoreAuditTestCase
 
 
@@ -173,6 +180,160 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertIsNone(runtime_state.worksets[0].workset_claim)
         self.assertEqual(runtime_state.worksets[0].task_claims, ())
         self.assertEqual(runtime_state.worksets[0].attempts, ())
+
+    def test_runtime_loader_reads_legacy_managed_claims_and_start_task_migrates_them(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "legacy-runtime",
+                "title": "Legacy runtime",
+                "tasks": [{"id": "LEG-1", "title": "Migrate claim", "intent": "continue from old runtime state"}],
+            },
+        )
+        self.profile.paths.runtime_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": RUNTIME_SCHEMA_VERSION,
+                    "store_version": RUNTIME_STORE_VERSION,
+                    "worksets": [
+                        {
+                            "id": "legacy-runtime",
+                            "workset_claim": {
+                                "actor": "legacy-manager",
+                                "execution_model": "workset_manager",
+                                "claimed_at": "2026-04-17T10:00:00-07:00",
+                                "note": "legacy note",
+                            },
+                            "task_claims": [],
+                            "task_states": [],
+                            "attempts": [],
+                        }
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].workset_claim.execution_model, "workset_manager")
+
+        attempt = start_task(
+            self.profile,
+            workset_id="legacy-runtime",
+            task_id="LEG-1",
+            actor="codex",
+            prompt_receipt=create_prompt_receipt(
+                "Migrate the legacy managed claim into the direct WTAM flow.",
+                recorded_at="2026-04-17T10:05:00-07:00",
+                source="unit-test",
+                mode="raw",
+            ),
+        )
+
+        self.assertEqual(attempt.execution_model, "direct_wtam")
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "codex")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.execution_model, "direct_wtam")
+        self.assertEqual(runtime_state.worksets[0].workset_claim.note, "legacy note")
+        self.assertEqual(runtime_state.worksets[0].task_claims[0].execution_model, "direct_wtam")
+
+    def test_finish_task_releases_last_legacy_managed_workset_claim(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "legacy-finish",
+                "title": "Legacy finish",
+                "tasks": [{"id": "LEG-1", "title": "Finish task", "intent": "release the leftover legacy claim"}],
+            },
+        )
+        prompt_receipt = create_prompt_receipt(
+            "Finish the leftover legacy attempt.",
+            recorded_at="2026-04-17T11:00:00-07:00",
+            source="unit-test",
+            mode="raw",
+        )
+        self.profile.paths.runtime_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": RUNTIME_SCHEMA_VERSION,
+                    "store_version": RUNTIME_STORE_VERSION,
+                    "worksets": [
+                        {
+                            "id": "legacy-finish",
+                            "workset_claim": {
+                                "actor": "legacy-manager",
+                                "execution_model": "workset_manager",
+                                "claimed_at": "2026-04-17T10:55:00-07:00",
+                            },
+                            "task_claims": [
+                                {
+                                    "task_id": "LEG-1",
+                                    "actor": "codex",
+                                    "execution_model": "direct_wtam",
+                                    "claimed_at": "2026-04-17T11:00:00-07:00",
+                                    "attempt_id": "LEG-1-legacy",
+                                }
+                            ],
+                            "task_states": [
+                                {
+                                    "task_id": "LEG-1",
+                                    "status": "in_progress",
+                                    "updated_at": "2026-04-17T11:00:00-07:00",
+                                }
+                            ],
+                            "attempts": [
+                                {
+                                    "attempt_id": "LEG-1-legacy",
+                                    "task_id": "LEG-1",
+                                    "status": "in_progress",
+                                    "actor": "codex",
+                                    "started_at": "2026-04-17T11:00:00-07:00",
+                                    "execution_model": "direct_wtam",
+                                    "prompt_receipt": {
+                                        "text": prompt_receipt.text,
+                                        "prompt_hash": prompt_receipt.prompt_hash,
+                                        "recorded_at": prompt_receipt.recorded_at,
+                                        "source": prompt_receipt.source,
+                                        "mode": prompt_receipt.mode,
+                                    },
+                                    "user_prompt_receipt": {
+                                        "text": prompt_receipt.text,
+                                        "prompt_hash": prompt_receipt.prompt_hash,
+                                        "recorded_at": prompt_receipt.recorded_at,
+                                        "source": prompt_receipt.source,
+                                        "mode": prompt_receipt.mode,
+                                    },
+                                    "changed_paths": [],
+                                    "validations": [],
+                                    "residuals": [],
+                                    "followup_candidates": [],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        finished = finish_task(
+            self.profile,
+            workset_id="legacy-finish",
+            task_id="LEG-1",
+            attempt_id="LEG-1-legacy",
+            actor="codex",
+            status="success",
+            summary="finished the migrated legacy task",
+        )
+
+        self.assertEqual(finished.execution_model, "direct_wtam")
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        self.assertIsNone(runtime_state.worksets[0].workset_claim)
+        self.assertEqual(runtime_state.worksets[0].task_claims, ())
 
     def test_start_and_finish_task_record_attempt_stats(self) -> None:
         upsert_workset(

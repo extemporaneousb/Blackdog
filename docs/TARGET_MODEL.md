@@ -166,6 +166,7 @@ The minimum coherent shipped slice after the sweep is:
 - one write surface for workset/task state: `blackdog workset put`
 - one same-thread task-begin surface: `blackdog task begin`
 - one same-thread task inspection surface: `blackdog task show`
+- one same-thread task recovery surface: `blackdog task recover`
 - one same-thread task success-closure surface: `blackdog task land`
 - one same-thread task non-success closure surface: `blackdog task close`
 - one same-thread task cleanup surface: `blackdog task cleanup`

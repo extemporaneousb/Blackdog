@@ -20,6 +20,7 @@ REPO_LIFECYCLE_COMMANDS = (
 WTAM_COMMANDS = (
     "blackdog task begin",
     "blackdog task show",
+    "blackdog task recover",
     "blackdog task land",
     "blackdog task close",
     "blackdog task cleanup",

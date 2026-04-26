@@ -17,7 +17,7 @@ Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the
 
 - repo lifecycle: `repo install`, `repo update`, `repo refresh`, `prompt preview`, `prompt tune`, `attempts summary`, `attempts table`
 - workset/task runtime: `workset put`, `summary`, `next --workset`, `snapshot`
-- same-thread task execution: `task begin`, `task show`, `task land`, `task close`, `task cleanup`
+- same-thread task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cleanup`
 - WTAM kept-change execution: `worktree preflight`, `worktree preview`, `worktree start`, `worktree show`, `worktree land`, `worktree close`, `worktree cleanup`
 
 ## Repo Lifecycle Flow
@@ -33,7 +33,7 @@ Keep hard repo rules in `AGENTS.md` and the routed docs below; this skill is the
 1. `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt "..." --prompt-mode raw`
 2. make kept changes only inside the returned task worktree
 3. `./.VE/bin/blackdog task land --project-root . --summary "..."`
-4. if recovery is needed from that task worktree, use `./.VE/bin/blackdog task show --project-root .` or `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary "..."`
+4. if recovery is needed from that task worktree, use `./.VE/bin/blackdog task recover --project-root .` and then either `./.VE/bin/blackdog task close --project-root . --status blocked|failed|abandoned --summary "..."` or `./.VE/bin/blackdog task recover --project-root . --release-stale-claim --status blocked|failed|abandoned --summary "..."`
 5. if the task workspace was retained, use `./.VE/bin/blackdog task cleanup --project-root .`
 
 ## Explicit Planned-Task Flow

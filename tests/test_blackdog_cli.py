@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import chdir, redirect_stderr, redirect_stdout
+from dataclasses import replace
 import hashlib
 import io
 import json
@@ -10,7 +11,14 @@ import subprocess
 from blackdog.contract import managed_skill_relative_path
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.profile import load_profile
-from blackdog_core.state import ValidationRecord, create_prompt_receipt
+from blackdog_core.state import (
+    ValidationRecord,
+    create_prompt_receipt,
+    load_runtime_state,
+    merge_workset_runtime,
+    now_iso,
+    save_runtime_state,
+)
 from blackdog_cli.main import main as blackdog_main
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
@@ -357,7 +365,14 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("Blackdog-Workset: direct-mode", landed_message)
         self.assertIn("Blackdog-Task: DM-1", landed_message)
         self.assertIn("Blackdog-Status: success", landed_message)
+        self.assertIn("Blackdog-Execution-Model: direct_wtam", landed_message)
+        self.assertIn("Blackdog-Model: gpt-5.4", landed_message)
+        self.assertIn("Blackdog-Reasoning-Effort: high", landed_message)
+        self.assertIn(f"Blackdog-Prompt-Hash: {prompt_hash}", landed_message)
+        self.assertIn("Blackdog-Prompt-Source: inline:--prompt", landed_message)
+        self.assertIn("Blackdog-Prompt-Mode: raw", landed_message)
         self.assertIn("Blackdog-Changed-Path: notes.txt", landed_message)
+        self.assertNotIn("Blackdog-User-Prompt-Hash:", landed_message)
 
         exit_code, stdout, stderr = self.run_cli("summary", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
@@ -449,6 +464,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn(f"blackdog({workset_id}/TASK-1)", landed_message)
         self.assertIn("Blackdog-Changed-Path: task-begin.txt", landed_message)
         self.assertIn("Blackdog-Validation: unit=passed", landed_message)
+        self.assertNotIn("Blackdog-User-Prompt-Hash:", landed_message)
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -551,6 +567,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             summary_payload["worksets"][0]["recent_attempts"][0]["execution_prompt_hash"],
             task_payload["execution_prompt_hash"],
         )
+        self.assertIsNone(summary_payload["worksets"][0]["recent_attempts"][0]["prompt_hash"])
 
         exit_code, stdout, stderr = self.run_cli(
             "snapshot",
@@ -582,6 +599,51 @@ class BlackdogCliTests(CoreAuditTestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_task_land_records_user_and_execution_prompt_lineage_when_prompt_was_tuned(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Make a tuned execution prompt and then land it.",
+            "--prompt-mode",
+            "tuned",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        self.assertNotEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+
+        (worktree_path / "tuned-land.txt").write_text("tuned land\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "finished the tuned landing flow",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        land_payload = json.loads(stdout)["landing"]
+        self.assertEqual(land_payload["status"], "success")
+        landed_message = self.git_output("show", "-s", "--format=%B", land_payload["landed_commit"])
+        self.assertIn(f"Blackdog-Prompt-Hash: {task_payload['execution_prompt_hash']}", landed_message)
+        self.assertIn("Blackdog-Prompt-Source: inline:--prompt", landed_message)
+        self.assertIn("Blackdog-Prompt-Mode: tuned", landed_message)
+        self.assertIn(f"Blackdog-User-Prompt-Hash: {task_payload['user_prompt_hash']}", landed_message)
+        self.assertIn("Blackdog-User-Prompt-Source: inline:--prompt", landed_message)
+        self.assertIn("Blackdog-User-Prompt-Mode: raw", landed_message)
+        self.assertIn("Blackdog-Changed-Path: tuned-land.txt", landed_message)
 
     def test_task_cleanup_removes_a_retained_task_workspace(self) -> None:
         self.install_repo_runtime()
@@ -632,6 +694,165 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(cleanup_payload["worktree_path"], str(worktree_path))
         self.assertTrue(cleanup_payload["deleted_branch"])
         self.assertFalse(worktree_path.exists())
+
+    def test_task_recover_reports_dirty_same_thread_recovery_state(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Recover a dirty task worktree through the task surface.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        branch = task_payload["worktree"]["branch"]
+        (worktree_path / "recover-task.txt").write_text("recover\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "recover",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        recovery_payload = json.loads(stdout)["recovery"]
+        self.assertEqual(recovery_payload["recovery_state"], "active_attempt")
+        self.assertFalse(recovery_payload["stale_claim"])
+        self.assertEqual(recovery_payload["task_runtime_status"], "in_progress")
+        self.assertEqual(recovery_payload["task_claim"]["actor"], "codex")
+        self.assertTrue(recovery_payload["worktree_dirty"])
+        actions = "\n".join(recovery_payload["recommended_actions"])
+        self.assertIn("blackdog task land", actions)
+        self.assertIn("blackdog task close", actions)
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_task_recover_can_release_a_stale_claim(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Recover a stale claim without editing snapshots by hand.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        workset_id = task_payload["workset_id"]
+        task_id = task_payload["task_id"]
+        attempt_id = task_payload["worktree"]["attempt_id"]
+        branch = task_payload["worktree"]["branch"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+
+        profile = load_profile(self.root)
+        runtime_state = load_runtime_state(profile.paths)
+        runtime_workset = next(item for item in runtime_state.worksets if item.workset_id == workset_id)
+        active_attempt = next(item for item in runtime_workset.attempts if item.attempt_id == attempt_id)
+        stale_attempt = replace(
+            active_attempt,
+            status="blocked",
+            ended_at=now_iso(),
+            summary="agent interrupted before releasing claims",
+            elapsed_seconds=1,
+        )
+        stale_runtime_state = merge_workset_runtime(
+            runtime_state,
+            workset_id=workset_id,
+            task_ids={task_id},
+            incoming_records=None,
+            incoming_attempts=(stale_attempt,),
+        )
+        save_runtime_state(profile.paths, stale_runtime_state)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "recover",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        recovery_payload = json.loads(stdout)["recovery"]
+        self.assertEqual(recovery_payload["recovery_state"], "stale_claim")
+        self.assertTrue(recovery_payload["stale_claim"])
+        self.assertFalse(recovery_payload["active_attempt"])
+        self.assertEqual(recovery_payload["task_claim"]["attempt_id"], attempt_id)
+        self.assertIn("release-stale-claim", "\n".join(recovery_payload["recommended_actions"]))
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "recover",
+            "--project-root",
+            str(self.root),
+            "--release-stale-claim",
+            "--status",
+            "abandoned",
+            "--summary",
+            "released the stale claim after interruption",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        released_payload = json.loads(stdout)["recovery"]
+        self.assertTrue(released_payload["released_stale_claim"])
+        self.assertFalse(released_payload["stale_claim"])
+        self.assertIsNone(released_payload["task_claim"])
+        self.assertIsNone(released_payload["workset_claim"])
+        self.assertEqual(released_payload["task_runtime_status"], "planned")
+        self.assertEqual(released_payload["repaired_runtime_status"], "planned")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary_payload = json.loads(stdout)
+        self.assertEqual(summary_payload["counts"]["claimed_tasks"], 0)
+        self.assertEqual(summary_payload["counts"]["claimed_worksets"], 0)
+        self.assertEqual(summary_payload["counts"]["active_attempts"], 0)
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_worktree_show_and_close_surface_active_attempt_recovery(self) -> None:
         payload = {
@@ -844,7 +1065,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             branch="feature/attempt-audit-1",
             start_commit="abc123",
             prompt_receipt=create_prompt_receipt("Land the audit slice.", source="unit-test", mode="tuned"),
-            user_prompt_receipt=create_prompt_receipt("User requested the landed audit slice.", source="user-test", mode="raw"),
+            user_prompt_receipt=create_prompt_receipt("Land the audit slice.", source="user-test", mode="raw"),
         )
         finish_task(
             profile,
@@ -870,7 +1091,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             branch="feature/attempt-audit-2",
             start_commit="abc124",
             prompt_receipt=create_prompt_receipt("Block the audit slice.", source="unit-test", mode="tuned"),
-            user_prompt_receipt=create_prompt_receipt("User requested the blocked audit slice.", source="user-test", mode="raw"),
+            user_prompt_receipt=create_prompt_receipt("Block the audit slice.", source="user-test", mode="raw"),
         )
         finish_task(
             profile,
@@ -902,9 +1123,27 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary["counts"]["validation_failed"], 1)
         self.assertEqual(summary["workset_scope"], "attempt-audit")
         self.assertEqual(summary["worksets"][0]["workset_id"], "attempt-audit")
-        self.assertEqual(summary["recent_completed_attempts"][0]["prompt_source"], "unit-test")
+        self.assertIsNone(summary["recent_completed_attempts"][0]["prompt_source"])
+        self.assertIsNone(summary["recent_completed_attempts"][0]["prompt_hash"])
         self.assertEqual(summary["recent_completed_attempts"][0]["user_prompt_source"], "user-test")
         self.assertEqual(summary["recent_completed_attempts"][0]["execution_prompt_source"], "unit-test")
+        self.assertEqual(
+            summary["recent_completed_attempts"][0]["user_prompt_hash"],
+            summary["recent_completed_attempts"][0]["execution_prompt_hash"],
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "attempts",
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "attempt-audit",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertIn("user_prompt=user-test:", stdout)
+        self.assertIn("execution_prompt=unit-test:", stdout)
+        self.assertNotIn(" prompt=unit-test:", stdout)
 
         exit_code, stdout, stderr = self.run_cli(
             "attempts",
@@ -928,8 +1167,10 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(len(table["rows"]), 2)
         self.assertEqual(table["workset_scope"], "attempt-audit")
         self.assertEqual(table["rows"][0]["workset_id"], "attempt-audit")
-        self.assertEqual(table["rows"][0]["prompt_source"], "unit-test")
+        self.assertIsNone(table["rows"][0]["prompt_source"])
+        self.assertIsNone(table["rows"][0]["prompt_hash"])
         self.assertEqual(table["rows"][0]["user_prompt_source"], "user-test")
+        self.assertEqual(table["rows"][0]["user_prompt_hash"], table["rows"][0]["execution_prompt_hash"])
         self.assertIn(table["rows"][0]["validation_summary"], {"passed=1 failed=0 skipped=0", "passed=0 failed=1 skipped=0"})
         self.assertEqual(
             {row["landed_commit"] for row in table["rows"]},

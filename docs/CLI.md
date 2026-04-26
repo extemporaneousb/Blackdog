@@ -125,7 +125,8 @@ Blackdog section in `AGENTS.md` and the repo-local managed skill at
 surface and routed-doc contract. It also validates the configured handlers,
 migrates the legacy
 `.codex/skills/blackdog/SKILL.md` path when needed, and prunes known legacy
-backlog-era and removed-orchestration artifacts from the shared control root.
+backlog-era artifacts plus the stale removed-orchestration run directory from
+the shared control root.
 
 ### `blackdog prompt preview`
 
@@ -260,6 +261,49 @@ current task worktree. This is the same-thread recovery read surface that
 avoids repeating ids on every follow-on command. It reports both the raw user
 prompt lineage and the execution-prompt lineage when those differ.
 
+### `blackdog task recover`
+
+Inspect the explicit same-thread WTAM recovery state for the current task and,
+when needed, release a stale claim without reading raw snapshot state by hand.
+
+```bash
+blackdog task recover --project-root /path/to/repo
+blackdog task recover --project-root /path/to/repo --workset kernel --task KERN-1
+blackdog task recover \
+  --project-root /path/to/repo \
+  --release-stale-claim \
+  --status abandoned \
+  --summary "released the stale claim after an interrupted run"
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--workset`
+- optional `--task`
+- optional `--release-stale-claim`
+- optional `--status blocked|failed|abandoned`
+- optional `--summary`
+- optional `--note`
+
+When `--workset` and `--task` are omitted, `task recover` infers the task from
+the current task worktree and otherwise falls back to the latest attempt for
+that worktree. It reports:
+
+- the current task runtime status plus any retained task/workset claims
+- whether the task is carrying a stale claim with no active attempt
+- the retained task-worktree path, dirty paths, and branch-ahead state
+- primary-worktree dirtiness that would still block landing
+- recommended next actions such as `task land`, `task close`, `task cleanup`,
+  or stale-claim release
+
+`--release-stale-claim` is intentionally narrow. It only applies when the task
+claim still exists but there is no active WTAM attempt to close. In that case
+Blackdog releases the lingering task/workset claim, repairs a still
+`in_progress` task runtime row to `planned` for `abandoned` or `blocked` for
+`blocked`/`failed`, and leaves any retained task workspace untouched so cleanup
+remains an explicit follow-on decision.
+
 ### `blackdog task land`
 
 Land the current task and close it.
@@ -287,7 +331,8 @@ When `--workset` and `--task` are omitted, `task land` infers the active task
 from the current task worktree and reuses the active attempt actor. It then
 delegates to the canonical `worktree land` success-closure path. Use
 `--keep-worktree` when you want to retain the task workspace and close it later
-through `task cleanup`.
+through `task cleanup`. The canonical landed-commit trailers are the same ones
+documented under `worktree land`.
 
 ### `blackdog task close`
 
@@ -510,10 +555,14 @@ It:
 - creates one canonical landed commit for the successful task attempt
 - writes canonical landed-commit trailers for `Blackdog-Workset`,
   `Blackdog-Task`, `Blackdog-Attempt`, `Blackdog-Actor`, `Blackdog-Status`,
-  optional `Blackdog-Target-Branch` and `Blackdog-Prompt-Hash`, one
-  `Blackdog-Changed-Path:` per changed path, and any
-  `Blackdog-Validation`/`Blackdog-Residual`/`Blackdog-Followup` trailers that
-  were supplied at land time
+  optional `Blackdog-Target-Branch`, `Blackdog-Execution-Model`,
+  `Blackdog-Model`, `Blackdog-Reasoning-Effort`, `Blackdog-Prompt-Hash`,
+  `Blackdog-Prompt-Source`, and `Blackdog-Prompt-Mode`; when the raw user
+  prompt lineage differs from the execution prompt lineage, it also writes
+  `Blackdog-User-Prompt-Hash`, `Blackdog-User-Prompt-Source`, and
+  `Blackdog-User-Prompt-Mode`; it always writes one `Blackdog-Changed-Path:`
+  per changed path, plus any `Blackdog-Validation`/`Blackdog-Residual`/
+  `Blackdog-Followup` trailers that were supplied at land time
 - records `changed_paths`, branch-head `commit`, `landed_commit`, validation
   results, and closure timing; `commit` is the task-branch head Blackdog
   landed from, while `landed_commit` is the canonical commit created on the
@@ -635,7 +684,8 @@ The summary centers on completed attempts and includes:
 - recent completed attempts
 - completed counts by workset
 - model / reasoning-effort when present
-- prompt source plus prompt hash
+- user-prompt lineage and execution-prompt lineage when they differ
+- stable `prompt_*` aliases only when both lineages match
 - commit and landed-commit linkage
 - validation pass/fail/skipped totals
 - landed vs not-landed completion totals
@@ -668,16 +718,28 @@ columns plus row dictionaries. Current columns are:
 - `execution_model`
 - `model`
 - `reasoning_effort`
+- `execution_prompt_source`
+- `user_prompt_source`
 - `prompt_source`
+- `execution_prompt_mode`
+- `user_prompt_mode`
+- `prompt_mode`
 - `branch`
 - `target_branch`
 - `start_commit`
 - `commit`
 - `landed_commit`
+- `execution_prompt_hash`
+- `user_prompt_hash`
 - `prompt_hash`
 - `changed_paths_count`
 - `validation_summary`
 - `summary`
+
+`execution_prompt_*` records the prompt Blackdog actually ran.
+`user_prompt_*` records the raw user request Blackdog received.
+The stable `prompt_*` alias is populated only when those two lineages are the
+same; otherwise it is left empty so the split lineage stays explicit.
 
 ## Removed Or Deferred Commands
 
