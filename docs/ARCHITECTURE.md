@@ -146,9 +146,11 @@ When install has to create a fresh profile, it seeds routed docs from
 `AGENTS.md` plus common host-repo docs that already exist, and it writes a
 managed Blackdog contract block into `AGENTS.md` so WTAM rules live in repo
 docs instead of only in the generated skill. `repo refresh` rewrites that
-managed `AGENTS.md` block and is also the shipped cleanup path for removing
-known backlog-era artifacts plus the one stale removed-orchestration run
-directory from the shared control root.
+managed `AGENTS.md` block, regenerates the repo-local skill and Codex
+`agents/openai.yaml` metadata, and is also the shipped cleanup path for
+removing known backlog-era artifacts, obsolete Blackdog-managed skill
+directories, stale generated skill auxiliary files, and the one stale
+removed-orchestration run directory.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

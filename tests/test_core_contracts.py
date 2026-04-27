@@ -154,6 +154,7 @@ class CoreContractTests(CoreAuditTestCase):
             "src/blackdog/worktree.py",
             "docs/ACCEPTANCE.md",
             "docs/BOUNDARIES.md",
+            "docs/CHARTER.md",
             "docs/EMACS.md",
             "docs/EXTRACTION_AUDIT.md",
             "docs/INTEGRATION.md",
@@ -161,7 +162,10 @@ class CoreContractTests(CoreAuditTestCase):
             "docs/MODULE_INVENTORY.md",
             "docs/OWNERSHIP_INVENTORY.md",
             "docs/RELEASE_NOTES.md",
+            "docs/REPO_LIFECYCLE_MVP.md",
+            "docs/SINGLE_AGENT_AUDIT.md",
             "docs/SUPERVISED_EXECUTION_TARGET.md",
+            "docs/TARGET_MODEL_EXECUTION_PLAN.md",
             "docs/architecture-diagrams.html",
         ]
         for relative_path in removed_paths:

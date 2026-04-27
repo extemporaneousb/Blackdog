@@ -17,15 +17,6 @@ CLI surfaces.
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
   `planning.json`, `runtime.json`, and `events.jsonl`
 
-## Historical / Reference Notes
-
-- [docs/TARGET_MODEL_EXECUTION_PLAN.md](docs/TARGET_MODEL_EXECUTION_PLAN.md):
-  superseded rewrite note retained for provenance
-- [docs/SINGLE_AGENT_AUDIT.md](docs/SINGLE_AGENT_AUDIT.md): dated April 2026
-  WTAM audit kept as non-routed operator reference, not as the live contract
-- [docs/REPO_LIFECYCLE_MVP.md](docs/REPO_LIFECYCLE_MVP.md): historical repo
-  lifecycle planning note retained as background for the shipped v3 surface
-
 ## Current Product Surface
 
 - `blackdog init`

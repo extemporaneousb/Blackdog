@@ -1,4 +1,4 @@
 interface:
-  display_name: "Blackdog: Blackdog"
-  short_description: "Project-local backlog control via Blackdog"
-  default_prompt: "Use $blackdog to shape or execute repo-specific backlog work for Blackdog through the local Blackdog contract."
+  display_name: "Blackdog Development"
+  short_description: "Repo-local development overlay"
+  default_prompt: "Use $blackdog do <task-description> for repo work, or $blackdog PM-mode <outline> for guarded multi-step work."

@@ -53,16 +53,16 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         profile = load_profile(self.root)
+        skill_metadata_path = managed_skill_relative_path(profile).parent / "agents" / "openai.yaml"
+        tracked_paths = [
+            "blackdog.toml",
+            "AGENTS.md",
+            str(managed_skill_relative_path(profile)),
+        ]
+        if (self.root / skill_metadata_path).exists():
+            tracked_paths.append(str(skill_metadata_path))
         subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.root),
-                "add",
-                "blackdog.toml",
-                "AGENTS.md",
-                str(managed_skill_relative_path(profile)),
-            ],
+            ["git", "-C", str(self.root), "add", *tracked_paths],
             check=True,
             capture_output=True,
             text=True,

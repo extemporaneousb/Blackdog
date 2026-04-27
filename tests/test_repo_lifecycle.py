@@ -119,6 +119,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         profile = load_profile(self.root)
         agents_path = self.root / "AGENTS.md"
         skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
+        skill_metadata_path = skill_path.parent / "agents" / "openai.yaml"
         launcher_path = self.root / ".VE" / "bin" / "blackdog"
 
         self.assertEqual(payload["action"], "install")
@@ -128,6 +129,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertTrue(profile_path.is_file())
         self.assertTrue(agents_path.is_file())
         self.assertTrue(skill_path.is_file())
+        self.assertTrue(skill_metadata_path.is_file())
         self.assertTrue(launcher_path.is_file())
         self.assertIn("[[handlers]]", profile_path.read_text(encoding="utf-8"))
         self.assertEqual(profile.doc_routing_defaults, ("AGENTS.md",))
@@ -147,6 +149,10 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertNotIn("Shipped Workflow Families", skill_text)
         self.assertIn("AGENTS.md", skill_text)
         self.assertNotIn("docs/INDEX.md", skill_text)
+        skill_metadata = skill_metadata_path.read_text(encoding="utf-8")
+        self.assertIn("display_name: \"Lifecycle Demo Development\"", skill_metadata)
+        self.assertIn("default_prompt: \"Use $lifecycle-demo do <task-description>", skill_metadata)
+        self.assertFalse((skill_path.parent / "references").exists())
 
         launcher_text = launcher_path.read_text(encoding="utf-8")
         self.assertIn("blackdog_cli", launcher_text)
@@ -221,16 +227,34 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         profile = load_profile(self.root)
         agents_path = self.root / "AGENTS.md"
         skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
+        skill_metadata_path = skill_path.parent / "agents" / "openai.yaml"
         agents_path.write_text(
             "# AGENTS\n\nRepo-specific rule.\n\n"
             "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->\nold contract\n<!-- BLACKDOG MANAGED CONTRACT:END -->\n",
             encoding="utf-8",
         )
         skill_path.write_text("stale skill\n", encoding="utf-8")
+        skill_metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_metadata_path.write_text("stale metadata\n", encoding="utf-8")
+        stale_reference = skill_path.parent / "references" / "task-shaping.md"
+        stale_reference.parent.mkdir(parents=True, exist_ok=True)
+        stale_reference.write_text("stale reference\n", encoding="utf-8")
+        stale_marker = skill_path.parent / ".blackdog-managed.json"
+        stale_marker.write_text("{}\n", encoding="utf-8")
         legacy_skill_path = (self.root / legacy_managed_skill_relative_path()).resolve()
         if legacy_skill_path != skill_path:
             legacy_skill_path.parent.mkdir(parents=True, exist_ok=True)
             legacy_skill_path.write_text("legacy skill\n", encoding="utf-8")
+            (legacy_skill_path.parent / "agents").mkdir(parents=True, exist_ok=True)
+            (legacy_skill_path.parent / "agents" / "openai.yaml").write_text("legacy metadata\n", encoding="utf-8")
+        old_prefixed_skill_dir = self.root / ".codex" / "skills" / f"blackdog-{managed_skill_name(profile)}"
+        if old_prefixed_skill_dir != skill_path.parent:
+            old_prefixed_skill_dir.mkdir(parents=True, exist_ok=True)
+            (old_prefixed_skill_dir / ".blackdog-managed.json").write_text("{}\n", encoding="utf-8")
+            (old_prefixed_skill_dir / "SKILL.md").write_text("old prefixed skill\n", encoding="utf-8")
+        old_supervisor_skill_dir = self.root / ".codex" / "skills" / f"{managed_skill_name(profile)}-supervisor"
+        old_supervisor_skill_dir.mkdir(parents=True, exist_ok=True)
+        (old_supervisor_skill_dir / "SKILL.md").write_text("old supervisor skill\n", encoding="utf-8")
         legacy_backlog = self.root / ".git" / "blackdog" / "backlog.md"
         legacy_backlog.parent.mkdir(parents=True, exist_ok=True)
         legacy_backlog.write_text("legacy backlog\n", encoding="utf-8")
@@ -252,10 +276,19 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn(str(legacy_backlog.resolve()), payload["removed"])
         self.assertIn(str(removed_orchestration_dir.resolve()), payload["removed"])
         if legacy_skill_path != skill_path:
-            self.assertIn(str(legacy_skill_path), payload["removed"])
+            self.assertIn(str(legacy_skill_path.parent), payload["removed"])
             self.assertFalse(legacy_skill_path.exists())
+        if old_prefixed_skill_dir != skill_path.parent:
+            self.assertIn(str(old_prefixed_skill_dir.resolve()), payload["removed"])
+            self.assertFalse(old_prefixed_skill_dir.exists())
+        self.assertIn(str(old_supervisor_skill_dir.resolve()), payload["removed"])
+        self.assertIn(str(stale_reference.resolve()), payload["removed"])
+        self.assertIn(str(stale_marker.resolve()), payload["removed"])
         self.assertFalse(legacy_backlog.exists())
         self.assertFalse(removed_orchestration_dir.exists())
+        self.assertFalse(stale_reference.exists())
+        self.assertFalse(stale_marker.exists())
+        self.assertFalse(old_supervisor_skill_dir.exists())
         self.assertIsNotNone(payload["handlers"])
         agents_text = agents_path.read_text(encoding="utf-8")
         self.assertIn("Repo-specific rule.", agents_text)
@@ -266,6 +299,9 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("docs/CUSTOM.md", skill_text)
         self.assertIn("repo refresh", skill_text)
         self.assertIn("task cancel", skill_text)
+        skill_metadata = skill_metadata_path.read_text(encoding="utf-8")
+        self.assertNotIn("stale metadata", skill_metadata)
+        self.assertIn(f"default_prompt: \"Use ${managed_skill_name(profile)} do <task-description>", skill_metadata)
 
     def test_prompt_preview_and_tune_use_repo_contract_inputs(self) -> None:
         exit_code, _, stderr = self.run_cli(

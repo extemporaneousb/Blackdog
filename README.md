@@ -24,8 +24,11 @@ The current shipped CLI is deliberately narrow:
 - `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
+- `blackdog task recover`
 - `blackdog task land`
 - `blackdog task close`
+- `blackdog task cancel`
+- `blackdog task reopen`
 - `blackdog task cleanup`
 - `blackdog summary`
 - `blackdog next --workset`
@@ -42,7 +45,7 @@ The shipped surface is split across repo lifecycle/operator-read surfaces
 (`repo`, `prompt`, and `attempts`), workset shaping/inspection, same-thread
 `task` execution, and explicit `worktree` control.
 
-Everything else from the legacy backlog/board/bootstrap/supervisor era remains
+Everything else from the legacy backlog/board/bootstrap/orchestration era remains
 removed from the active repo surface and must be rebuilt explicitly on top of
 the vNext model if it returns.
 
@@ -79,13 +82,17 @@ canonical landed commit carries `Blackdog-Workset`, `Blackdog-Task`,
 follow-up trailers supplied at land time. Runtime `commit` is the task-branch
 head Blackdog landed from; `landed_commit` is the canonical commit created on
 the target branch.
-`blackdog task begin` accepts `--prompt-mode raw|tuned` so the same-thread
-entrypoint can either record the user prompt directly or run it through the
-repo-local prompt tuning flow before starting the attempt.
+`blackdog task begin` accepts `--prompt-mode raw|tuned|skill` so the
+same-thread entrypoint can record a direct user prompt, run the prompt through
+repo-local tuning, or record a skill-composed execution prompt with separate
+user-prompt lineage.
 Use `blackdog task show` to inspect an active or latest same-thread task,
 `blackdog task close --status blocked|failed|abandoned` to close an
-in-progress attempt without landing code, and `blackdog task cleanup` to
-remove a retained task workspace.
+in-progress attempt without landing code, `blackdog task cancel` and
+`blackdog task reopen` to hide or reactivate planned work, and
+`blackdog task cleanup` to remove a retained task workspace. Abandoned closes
+cancel the task by default, so normal `summary` and `next` stay focused on live
+work; use `summary --include-canceled` for audit views.
 Use `blackdog next --workset WORKSET` for human or recovery-oriented task
 selection inside one workset; explicit planned-task flows can still go through
 `worktree preview` and `worktree start` when they need that control.
@@ -112,8 +119,9 @@ Blackdog-specific docs are present in the host repo. `repo install` also
 ensures `AGENTS.md` carries a managed Blackdog contract block so converted
 repos start with explicit WTAM rules in repo docs, not only in the generated
 skill. `blackdog repo refresh` rewrites that managed `AGENTS.md` block,
-regenerates the repo-local skill, and prunes known legacy backlog-era and
-removed-orchestration artifacts from the shared control root.
+regenerates the repo-local skill plus Codex `agents/openai.yaml` metadata, and
+prunes known legacy backlog-era, removed-orchestration, and stale generated
+skill artifacts.
 
 ## Docs
 

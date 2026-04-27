@@ -8,7 +8,12 @@ import shutil
 import subprocess
 import tomllib
 
-from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_name, managed_skill_relative_path
+from blackdog.contract import (
+    LEGACY_MANAGED_SKILL_NAME,
+    legacy_managed_skill_relative_path,
+    managed_skill_name,
+    managed_skill_relative_path,
+)
 from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
 from blackdog_core.profile import (
     RepoProfile,
@@ -381,6 +386,10 @@ def _managed_skill_path(profile: RepoProfile) -> Path:
     return (profile.paths.project_root / managed_skill_relative_path(profile)).resolve()
 
 
+def _managed_skill_metadata_path(profile: RepoProfile) -> Path:
+    return _managed_skill_path(profile).parent / "agents" / "openai.yaml"
+
+
 def _legacy_managed_skill_path(profile: RepoProfile) -> Path:
     return (profile.paths.project_root / legacy_managed_skill_relative_path()).resolve()
 
@@ -400,20 +409,39 @@ def _remove_if_empty(path: Path, *, stop_at: Path) -> None:
         current = current.parent
 
 
-def _migrate_legacy_skill_path(profile: RepoProfile) -> tuple[str, ...]:
+def _yaml_quote(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+@dataclass(frozen=True, slots=True)
+class RepoSkillWriteResult:
+    skill_path: Path
+    metadata_path: Path
+    changed: tuple[Path, ...]
+    removed: tuple[Path, ...]
+
+
+def _prune_obsolete_managed_skill_dirs(profile: RepoProfile) -> tuple[str, ...]:
     managed_skill = _managed_skill_path(profile)
     skills_root = (profile.paths.project_root / ".codex" / "skills").resolve()
-    obsolete_paths = {
-        _legacy_managed_skill_path(profile),
-        (profile.paths.project_root / managed_skill_relative_path(profile.paths.project_root)).resolve(),
-    }
     removed: list[str] = []
-    for candidate in obsolete_paths:
-        if candidate == managed_skill or not candidate.exists():
+    if not skills_root.is_dir():
+        return ()
+    for child in sorted(item for item in skills_root.iterdir() if item.is_dir()):
+        if child.resolve() == managed_skill.parent.resolve():
             continue
-        candidate.unlink()
-        _remove_if_empty(candidate.parent, stop_at=skills_root)
-        removed.append(str(candidate))
+        marker = child / ".blackdog-managed.json"
+        skill_path = child / "SKILL.md"
+        should_remove = (
+            child.name == LEGACY_MANAGED_SKILL_NAME
+            or marker.exists()
+            or (child.name.endswith("-supervisor") and skill_path.is_file())
+        )
+        if not should_remove:
+            continue
+        shutil.rmtree(child)
+        removed.append(str(child))
+    _remove_if_empty(skills_root, stop_at=profile.paths.project_root)
     return tuple(sorted(removed))
 
 
@@ -501,13 +529,55 @@ def render_repo_skill(profile: RepoProfile) -> str:
     )
 
 
-def _write_repo_skill(profile: RepoProfile, *, overwrite: bool) -> tuple[Path, bool]:
+def render_repo_skill_metadata(profile: RepoProfile) -> str:
+    skill_name = managed_skill_name(profile)
+    return (
+        "interface:\n"
+        f"  display_name: {_yaml_quote(f'{profile.project_name} Development')}\n"
+        f"  short_description: {_yaml_quote('Repo-local development overlay')}\n"
+        f"  default_prompt: {_yaml_quote(f'Use ${skill_name} do <task-description> for repo work, or ${skill_name} PM-mode <outline> for guarded multi-step work.')}\n"
+    )
+
+
+def _prune_managed_skill_auxiliary_files(profile: RepoProfile) -> tuple[Path, ...]:
+    skill_dir = _managed_skill_path(profile).parent
+    if not skill_dir.is_dir():
+        return ()
+    allowed = {_managed_skill_path(profile).resolve(), _managed_skill_metadata_path(profile).resolve()}
+    removed: list[Path] = []
+    for path in sorted((item for item in skill_dir.rglob("*") if item.is_file()), reverse=True):
+        if path.resolve() in allowed:
+            continue
+        path.unlink()
+        removed.append(path)
+    for path in sorted((item for item in skill_dir.rglob("*") if item.is_dir()), reverse=True):
+        if path == skill_dir:
+            continue
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+    return tuple(removed)
+
+
+def _write_repo_skill(profile: RepoProfile, *, overwrite: bool) -> RepoSkillWriteResult:
     skill_path = _managed_skill_path(profile)
+    metadata_path = _managed_skill_metadata_path(profile)
     if skill_path.exists() and not overwrite:
-        return skill_path, False
+        return RepoSkillWriteResult(skill_path=skill_path, metadata_path=metadata_path, changed=(), removed=())
+    changed: list[Path] = []
+    rendered_skill = render_repo_skill(profile)
+    rendered_metadata = render_repo_skill_metadata(profile)
     skill_path.parent.mkdir(parents=True, exist_ok=True)
-    skill_path.write_text(render_repo_skill(profile), encoding="utf-8")
-    return skill_path, True
+    if not skill_path.exists() or skill_path.read_text(encoding="utf-8") != rendered_skill:
+        skill_path.write_text(rendered_skill, encoding="utf-8")
+        changed.append(skill_path)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    if not metadata_path.exists() or metadata_path.read_text(encoding="utf-8") != rendered_metadata:
+        metadata_path.write_text(rendered_metadata, encoding="utf-8")
+        changed.append(metadata_path)
+    removed = _prune_managed_skill_auxiliary_files(profile)
+    return RepoSkillWriteResult(skill_path=skill_path, metadata_path=metadata_path, changed=tuple(changed), removed=removed)
 
 
 def _prune_repo_refresh_cleanup_artifacts(profile: RepoProfile) -> tuple[str, ...]:
@@ -859,10 +929,13 @@ def install_repo(
     else:
         preserved.append(str(agents_path))
 
-    skill_path, skill_changed = _write_repo_skill(profile, overwrite=False)
-    if skill_changed:
-        created.append(str(skill_path))
-    else:
+    skill_result = _write_repo_skill(profile, overwrite=False)
+    skill_path = skill_result.skill_path
+    if skill_result.changed:
+        created.extend(str(path) for path in skill_result.changed)
+    if skill_result.removed:
+        removed.extend(str(path) for path in skill_result.removed)
+    if not skill_result.changed:
         preserved.append(str(skill_path))
     legacy_skill = _legacy_managed_skill_path(profile)
     if legacy_skill.exists() and legacy_skill != skill_path:
@@ -949,9 +1022,11 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
     profile = _require_profile(repo_root)
     handler_summary = plan_repo_handlers(profile, operation="repo-refresh")
     agents_path, agents_status = _write_repo_agents(profile)
-    skill_path, skill_changed = _write_repo_skill(profile, overwrite=True)
+    skill_result = _write_repo_skill(profile, overwrite=True)
+    skill_path = skill_result.skill_path
     removed = list(_prune_repo_refresh_cleanup_artifacts(profile))
-    removed.extend(_migrate_legacy_skill_path(profile))
+    removed.extend(str(path) for path in skill_result.removed)
+    removed.extend(_prune_obsolete_managed_skill_dirs(profile))
     preserved = [str(profile.paths.profile_file)]
     updated = []
     if agents_status == "created":
@@ -960,8 +1035,7 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
         updated.append(str(agents_path))
     else:
         preserved.append(str(agents_path))
-    if skill_changed:
-        updated.append(str(skill_path))
+    updated.extend(str(path) for path in skill_result.changed)
     notes: list[str] = []
     _apply_handler_actions(
         handler_summary,

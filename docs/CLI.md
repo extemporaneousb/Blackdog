@@ -121,12 +121,12 @@ Important flags:
 
 `repo refresh` requires an existing `blackdog.toml`. It rewrites the managed
 Blackdog section in `AGENTS.md` and the repo-local managed skill at
-`.codex/skills/<repo-slug>/SKILL.md` so both match the current shipped product
-surface and routed-doc contract. It also validates the configured handlers,
-migrates the legacy
-`.codex/skills/blackdog/SKILL.md` path when needed, and prunes known legacy
-backlog-era artifacts plus the stale removed-orchestration run directory from
-the shared control root.
+`.codex/skills/<repo-slug>/SKILL.md` plus its `agents/openai.yaml` metadata so
+both match the current shipped product surface and routed-doc contract. It
+also validates the configured handlers, removes stale generated skill
+auxiliary files and obsolete Blackdog-managed skill directories, and prunes
+known legacy backlog-era artifacts plus the stale removed-orchestration run
+directory from the shared control root.
 
 ### `blackdog prompt preview`
 
