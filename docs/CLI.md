@@ -52,6 +52,44 @@ does not install or refresh anything. Instead it reports findings plus a
 proposed sequence of repo-owned and Blackdog-managed changes so the user can
 review the conversion plan before `repo install`.
 
+### `blackdog repo scaffold`
+
+Create a new git repo with the Blackdog contract installed from the start.
+
+`repo scaffold` is for new project creation, not for converting an existing
+repo in place. It can optionally use another repo as an exemplar for starter
+agent docs and common routed docs, but it does not copy Blackdog runtime state
+such as `.VE/`, `.codex/skills/`, `.git/blackdog/`, or `blackdog.toml`.
+After creating or reusing the target git repo, it delegates to `repo install`
+so the target receives the normal managed `AGENTS.md` contract block,
+`blackdog.toml`, repo-local skill, and `./.VE/bin/blackdog` launcher.
+
+```bash
+blackdog repo scaffold \
+  --target-root /path/to/new-repo \
+  --project-name "New Repo" \
+  --like /path/to/exemplar-repo \
+  --dry-run
+
+blackdog repo scaffold \
+  --target-root /path/to/new-repo \
+  --project-name "New Repo" \
+  --like /path/to/exemplar-repo \
+  --source-root /path/to/blackdog
+```
+
+Important flags:
+
+- `--target-root`
+- optional `--project-name`
+- optional `--like`
+- optional `--source-root`
+- optional `--dry-run`
+
+When `--project-name` is omitted, the project name is inferred from the target
+directory name. `--dry-run` reports the planned target creation, git init,
+seed files, and install command without mutating the target.
+
 ### `blackdog repo install`
 
 Create or repair the minimum repo-local Blackdog contract:
@@ -812,7 +850,8 @@ If they are rebuilt later, they must target the new workset/runtime foundation
 instead of reviving `backlog.md`.
 
 Repo lifecycle workflows are different. `repo analyze` plus
-Install/update/refresh/tune and attempt-inspection flows are still first-class
-product concerns, but they should live as a separate workflow family in
-`blackdog`, not forced into workset/task semantics and not revived from the
-old scaffold command tree unchanged.
+scaffold/install/update/refresh/tune and attempt-inspection flows are still
+first-class product concerns, but they should live as a separate workflow
+family in `blackdog`, not forced into workset/task semantics. New scaffold
+workflows must create the current Blackdog repo contract instead of reviving
+the old scaffold command tree unchanged.

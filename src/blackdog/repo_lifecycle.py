@@ -222,6 +222,38 @@ class RepoLifecycleResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RepoScaffoldResult:
+    action: str
+    dry_run: bool
+    target_root: str
+    project_name: str
+    like_root: str | None
+    source_root: str | None
+    planned_seed_files: tuple[str, ...]
+    created: tuple[str, ...]
+    preserved: tuple[str, ...]
+    initialized_git: bool
+    install_result: RepoLifecycleResult | None
+    notes: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action,
+            "dry_run": self.dry_run,
+            "target_root": self.target_root,
+            "project_name": self.project_name,
+            "like_root": self.like_root,
+            "source_root": self.source_root,
+            "planned_seed_files": list(self.planned_seed_files),
+            "created": list(self.created),
+            "preserved": list(self.preserved),
+            "initialized_git": self.initialized_git,
+            "install_result": self.install_result.to_dict() if self.install_result is not None else None,
+            "notes": list(self.notes),
+        }
+
+
 def _run_command(*args: str) -> None:
     completed = subprocess.run(
         list(args),
@@ -259,6 +291,15 @@ def _resolve_repo_root_or_none(project_root: Path) -> Path | None:
         return _resolve_repo_root(project_root)
     except RepoLifecycleError:
         return None
+
+
+def _is_git_repo_root(project_root: Path) -> bool:
+    if not project_root.exists():
+        return False
+    try:
+        return _resolve_repo_root(project_root) == project_root.resolve()
+    except RepoLifecycleError:
+        return False
 
 
 def _looks_like_blackdog_source_checkout(root: Path) -> bool:
@@ -380,6 +421,17 @@ def _recommended_install_command(repo_root: Path) -> str:
 
 def _recommended_refresh_command(repo_root: Path) -> str:
     return _shell_command("./.VE/bin/blackdog", "repo", "refresh", "--project-root", str(repo_root))
+
+
+def _recommended_scaffold_install_command(repo_root: Path, *, source_root: str | None) -> str:
+    parts = ["./.VE/bin/blackdog", "repo", "install", "--project-root", str(repo_root)]
+    if source_root:
+        parts.extend(["--source-root", str(Path(source_root).resolve())])
+    else:
+        stable_source = _stable_blackdog_source_root()
+        if stable_source is not None and stable_source != repo_root:
+            parts.extend(["--source-root", str(stable_source)])
+    return _shell_command(*parts)
 
 
 def _managed_skill_path(profile: RepoProfile) -> Path:
@@ -625,6 +677,142 @@ def _apply_handler_actions(
             notes.append(action.message)
     if summary.remediation:
         notes.append(summary.remediation)
+
+
+def _scaffold_like_root(like_root: str | None) -> Path | None:
+    if not like_root:
+        return None
+    candidate = Path(like_root).resolve()
+    if not candidate.exists():
+        raise RepoLifecycleError(f"scaffold exemplar does not exist: {candidate}")
+    if not candidate.is_dir():
+        raise RepoLifecycleError(f"scaffold exemplar must be a directory: {candidate}")
+    return _resolve_repo_root_or_none(candidate) or candidate
+
+
+def _scaffold_seed_candidates(like_root: Path | None) -> tuple[str, ...]:
+    if like_root is None:
+        return ()
+    candidates: list[str] = []
+    for relative_path in ("AGENTS.md", "README.md", ".gitignore", *suggest_default_doc_routing(like_root)):
+        if relative_path in candidates:
+            continue
+        source_path = like_root / relative_path
+        if source_path.is_file():
+            candidates.append(relative_path)
+    return tuple(candidates)
+
+
+def _copy_scaffold_seed_files(
+    *,
+    like_root: Path | None,
+    target_root: Path,
+    relative_paths: tuple[str, ...],
+    created: list[str],
+    preserved: list[str],
+) -> None:
+    if like_root is None:
+        return
+    for relative_path in relative_paths:
+        source_path = like_root / relative_path
+        target_path = target_root / relative_path
+        if target_path.exists():
+            preserved.append(str(target_path.resolve()))
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        created.append(str(target_path.resolve()))
+
+
+def scaffold_repo(
+    *,
+    target_root: Path,
+    project_name: str | None = None,
+    like_root: str | None = None,
+    source_root: str | None = None,
+    dry_run: bool = False,
+) -> RepoScaffoldResult:
+    target = target_root.resolve()
+    if target.exists() and not target.is_dir():
+        raise RepoLifecycleError(f"scaffold target must be a directory: {target}")
+    if target.exists() and any(target.iterdir()) and not _is_git_repo_root(target):
+        raise RepoLifecycleError(
+            f"refusing to scaffold into non-empty non-repo directory: {target}; use `blackdog repo install` for existing repos"
+        )
+
+    exemplar = _scaffold_like_root(like_root)
+    seed_files = _scaffold_seed_candidates(exemplar)
+    resolved_project_name = project_name or target.name
+    created: list[str] = []
+    preserved: list[str] = []
+    notes: list[str] = []
+    initialized_git = False
+
+    if dry_run:
+        if not target.exists():
+            notes.append(f"would create target directory: {target}")
+        if not _is_git_repo_root(target):
+            notes.append(f"would initialize a new git repo at: {target}")
+        if seed_files:
+            notes.append("would seed starter files from exemplar: " + ", ".join(seed_files))
+        notes.append(
+            "would install the Blackdog repo contract with: "
+            + _recommended_scaffold_install_command(target, source_root=source_root)
+        )
+        return RepoScaffoldResult(
+            action="scaffold",
+            dry_run=True,
+            target_root=str(target),
+            project_name=resolved_project_name,
+            like_root=str(exemplar) if exemplar is not None else None,
+            source_root=str(Path(source_root).resolve()) if source_root else None,
+            planned_seed_files=seed_files,
+            created=(),
+            preserved=(),
+            initialized_git=False,
+            install_result=None,
+            notes=tuple(notes),
+        )
+
+    if not target.exists():
+        target.mkdir(parents=True)
+        created.append(str(target))
+    if not _is_git_repo_root(target):
+        _run_command("git", "init", "-b", "main", str(target))
+        initialized_git = True
+        created.append(str((target / ".git").resolve()))
+    else:
+        preserved.append(str((target / ".git").resolve()))
+
+    _copy_scaffold_seed_files(
+        like_root=exemplar,
+        target_root=target,
+        relative_paths=seed_files,
+        created=created,
+        preserved=preserved,
+    )
+    if exemplar is not None:
+        notes.append(f"seeded starter files from exemplar: {exemplar}")
+
+    install_result = install_repo(
+        target,
+        project_name=resolved_project_name,
+        source_root=source_root,
+    )
+    return RepoScaffoldResult(
+        action="scaffold",
+        dry_run=False,
+        target_root=str(target),
+        project_name=resolved_project_name,
+        like_root=str(exemplar) if exemplar is not None else None,
+        source_root=str(Path(source_root).resolve()) if source_root else None,
+        planned_seed_files=seed_files,
+        created=tuple(dict.fromkeys(created)),
+        preserved=tuple(dict.fromkeys(preserved)),
+        initialized_git=initialized_git,
+        install_result=install_result,
+        notes=tuple(notes),
+    )
 
 
 def analyze_repo(project_root: Path) -> RepoConversionAnalysis:
@@ -1147,17 +1335,48 @@ def render_repo_analysis_text(result: RepoConversionAnalysis) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_repo_scaffold_text(result: RepoScaffoldResult) -> str:
+    lines = [
+        f"[blackdog-repo] action: {result.action}",
+        f"[blackdog-repo] dry run: {'yes' if result.dry_run else 'no'}",
+        f"[blackdog-repo] target root: {result.target_root}",
+        f"[blackdog-repo] project: {result.project_name}",
+    ]
+    if result.like_root:
+        lines.append(f"[blackdog-repo] exemplar: {result.like_root}")
+    if result.source_root:
+        lines.append(f"[blackdog-repo] source root: {result.source_root}")
+    if result.planned_seed_files:
+        lines.append(f"[blackdog-repo] seed files: {', '.join(result.planned_seed_files)}")
+    if result.initialized_git:
+        lines.append("[blackdog-repo] initialized git: yes")
+    if result.install_result is not None:
+        lines.append(f"[blackdog-repo] installed profile: {result.install_result.profile_path}")
+        lines.append(f"[blackdog-repo] installed skill: {result.install_result.skill_path}")
+        lines.append(f"[blackdog-repo] installed launcher: {result.install_result.blackdog_path}")
+    if result.created:
+        lines.append(f"[blackdog-repo] created: {', '.join(result.created)}")
+    if result.preserved:
+        lines.append(f"[blackdog-repo] preserved: {', '.join(result.preserved)}")
+    for note in result.notes:
+        lines.append(f"[blackdog-repo] note: {note}")
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
     "RepoConversionAnalysis",
     "RepoConversionFinding",
     "RepoConversionStep",
     "RepoLifecycleError",
     "RepoLifecycleResult",
+    "RepoScaffoldResult",
     "analyze_repo",
     "install_repo",
     "refresh_repo",
     "render_repo_analysis_text",
     "render_repo_lifecycle_text",
+    "render_repo_scaffold_text",
     "render_repo_skill",
+    "scaffold_repo",
     "update_repo",
 ]

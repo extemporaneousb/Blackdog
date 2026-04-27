@@ -22,6 +22,7 @@ CLI surfaces.
 - `blackdog init`
 - `blackdog repo analyze`
 - `blackdog repo install`
+- `blackdog repo scaffold`
 - `blackdog repo update`
 - `blackdog repo refresh`
 - `blackdog prompt preview`

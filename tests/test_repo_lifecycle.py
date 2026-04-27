@@ -100,6 +100,93 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             ["AGENTS.md", "docs/AGENT_START.md", "docs/AGENT_WORKFLOW.md"],
         )
 
+    def test_repo_scaffold_dry_run_reports_plan_without_mutating_target(self) -> None:
+        (self.root / "AGENTS.md").write_text("# AGENTS\n\nUse repo rules.\n", encoding="utf-8")
+        (self.root / "README.md").write_text("# Exemplar\n", encoding="utf-8")
+        docs_dir = self.root / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "ARCHITECTURE.md").write_text("# Architecture\n", encoding="utf-8")
+        target = self.root / "new-project"
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "scaffold",
+            "--target-root",
+            str(target),
+            "--project-name",
+            "Scaffold Demo",
+            "--like",
+            str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
+            "--dry-run",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["repo_scaffold"]
+
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["project_name"], "Scaffold Demo")
+        self.assertEqual(payload["target_root"], str(target.resolve()))
+        self.assertIn("AGENTS.md", payload["planned_seed_files"])
+        self.assertIn("docs/ARCHITECTURE.md", payload["planned_seed_files"])
+        self.assertFalse(target.exists())
+        self.assertTrue(any("would initialize a new git repo" in note for note in payload["notes"]))
+        self.assertTrue(any("repo install" in note for note in payload["notes"]))
+
+    def test_repo_scaffold_creates_blackdog_backed_project_from_exemplar(self) -> None:
+        (self.root / "AGENTS.md").write_text(
+            "# AGENTS\n\nRepo-owned exemplar rule.\n\n"
+            "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->\nstale exemplar contract\n<!-- BLACKDOG MANAGED CONTRACT:END -->\n",
+            encoding="utf-8",
+        )
+        docs_dir = self.root / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "ARCHITECTURE.md").write_text("# Architecture\n", encoding="utf-8")
+        target = self.root / "new-project"
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "scaffold",
+            "--target-root",
+            str(target),
+            "--project-name",
+            "Scaffold Demo",
+            "--like",
+            str(self.root),
+            "--source-root",
+            str(REPO_ROOT),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["repo_scaffold"]
+
+        self.assertFalse(payload["dry_run"])
+        self.assertTrue(payload["initialized_git"])
+        self.assertEqual(payload["install_result"]["action"], "install")
+        self.assertEqual(payload["install_result"]["source_root"], str(REPO_ROOT))
+        self.assertTrue((target / ".git").exists())
+        self.assertTrue((target / ".VE" / "bin" / "blackdog").is_file())
+        profile = load_profile(target)
+        skill_path = (target / managed_skill_relative_path(profile)).resolve()
+        self.assertEqual(profile.project_name, "Scaffold Demo")
+        self.assertIn("docs/ARCHITECTURE.md", profile.doc_routing_defaults)
+        self.assertTrue(skill_path.is_file())
+        self.assertNotIn("repo scaffold", skill_path.read_text(encoding="utf-8"))
+
+        agents_text = (target / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("Repo-owned exemplar rule.", agents_text)
+        self.assertNotIn("stale exemplar contract", agents_text)
+        self.assertIn("BLACKDOG MANAGED CONTRACT:BEGIN", agents_text)
+
+        completed = subprocess.run(
+            [str(target / ".VE" / "bin" / "blackdog"), "summary", "--project-root", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("Project: Scaffold Demo", completed.stdout)
+
     def test_repo_install_bootstraps_profile_skill_and_launcher(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
             "repo",

@@ -15,6 +15,8 @@ from blackdog.repo_lifecycle import (
     refresh_repo,
     render_repo_analysis_text,
     render_repo_lifecycle_text,
+    render_repo_scaffold_text,
+    scaffold_repo,
     update_repo,
 )
 from blackdog.wtam import (
@@ -204,6 +206,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_analyze = repo_subparsers.add_parser("analyze", help="Inspect a target repo and propose a Blackdog conversion plan")
     p_repo_analyze.add_argument("--project-root", default=".")
     p_repo_analyze.add_argument("--json", action="store_true")
+
+    p_repo_scaffold = repo_subparsers.add_parser("scaffold", help="Scaffold a new Blackdog-backed project repo")
+    p_repo_scaffold.add_argument("--target-root", required=True)
+    p_repo_scaffold.add_argument("--project-name")
+    p_repo_scaffold.add_argument("--like")
+    p_repo_scaffold.add_argument("--source-root")
+    p_repo_scaffold.add_argument("--dry-run", action="store_true")
+    p_repo_scaffold.add_argument("--json", action="store_true")
 
     p_repo_update = repo_subparsers.add_parser("update", help="Refresh the repo-local Blackdog launcher from a source checkout")
     p_repo_update.add_argument("--project-root", default=".")
@@ -524,6 +534,20 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"repo_analysis": result.to_dict()})
             else:
                 print(render_repo_analysis_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "scaffold":
+            result = scaffold_repo(
+                target_root=Path(args.target_root),
+                project_name=args.project_name,
+                like_root=args.like,
+                source_root=args.source_root,
+                dry_run=args.dry_run,
+            )
+            if args.json:
+                _emit_json({"repo_scaffold": result.to_dict()})
+            else:
+                print(render_repo_scaffold_text(result), end="")
             return 0
 
         if args.command == "repo" and args.repo_command == "update":

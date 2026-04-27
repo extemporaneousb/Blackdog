@@ -82,11 +82,11 @@ Blackdog has two product-layer workflow families:
 
 1. workset execution workflows over typed planning/runtime state
    (`workset`, `summary`, `next`, `task`, and `worktree`)
-2. repo lifecycle/operator-read workflows over repo analyze/install/update/
-   refresh, prompt/skill composition, and attempt inspection
+2. repo lifecycle/operator-read workflows over repo analyze/scaffold/install/
+   update/refresh, prompt/skill composition, and attempt inspection
 
 The second family is intentionally not part of the workset/task durable model.
-Analyze/install/update/refresh, prompt preview/tune, and attempts
+Analyze/scaffold/install/update/refresh, prompt preview/tune, and attempts
 summary/table are product workflows, but they are not claims, tasks, or
 attempts.
 
@@ -100,6 +100,7 @@ The current coherent product surface on top of the new core is:
 
 - `blackdog repo install`
 - `blackdog repo analyze`
+- `blackdog repo scaffold`
 - `blackdog repo update`
 - `blackdog repo refresh`
 - `blackdog prompt preview`
@@ -134,7 +135,8 @@ The `worktree` family remains the explicit planned-task path when an operator
 needs preflight, preview, or lower-level recovery control.
 
 The repo lifecycle family ships in `blackdog` as
-analyze/install/update/refresh, prompt preview/tune, and attempt inspection.
+analyze/scaffold/install/update/refresh, prompt preview/tune, and attempt
+inspection.
 
 For repos other than Blackdog itself, `repo analyze` is the read-only
 conversion entrypoint. It inventories agent docs, skills, `.VE`, launcher and
@@ -142,6 +144,10 @@ profile state, then emits findings plus a proposed conversion plan before any
 repo files are mutated. `repo install` and `repo update` default to a managed
 Blackdog source checkout under the control root, sourced from GitHub.
 `--source-root` is the explicit local override.
+`repo scaffold` is the new-project entrypoint: it creates or reuses a target
+git repo, optionally seeds starter docs from an exemplar repo, and then
+delegates to `repo install` so generated project repos get the same minimal
+repo-local skill and managed contract as converted repos.
 When install has to create a fresh profile, it seeds routed docs from
 `AGENTS.md` plus common host-repo docs that already exist, and it writes a
 managed Blackdog contract block into `AGENTS.md` so WTAM rules live in repo
