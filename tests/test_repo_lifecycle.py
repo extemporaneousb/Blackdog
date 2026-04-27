@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 
 from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_relative_path, managed_skill_name
+from blackdog.repo_lifecycle import render_repo_skill
 from blackdog_cli.main import main as blackdog_main
 from blackdog_core.profile import load_profile
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
@@ -186,6 +187,18 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             text=True,
         )
         self.assertIn("Project: Scaffold Demo", completed.stdout)
+
+    def test_blackdog_source_skill_rendering_keeps_scaffold_workflow(self) -> None:
+        self.write_profile("Blackdog")
+        (self.root / "pyproject.toml").write_text('[project]\nname = "blackdog"\n', encoding="utf-8")
+        cli_dir = self.root / "src" / "blackdog_cli"
+        cli_dir.mkdir(parents=True)
+        (cli_dir / "main.py").write_text("# blackdog cli marker\n", encoding="utf-8")
+
+        skill_text = render_repo_skill(load_profile(self.root))
+
+        self.assertIn("$blackdog scaffold project <description>", skill_text)
+        self.assertIn("repo scaffold", skill_text)
 
     def test_repo_install_bootstraps_profile_skill_and_launcher(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
