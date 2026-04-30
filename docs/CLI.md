@@ -477,6 +477,14 @@ for that task when the attempt is already closed. This is the public same-thread
 cleanup surface after `task land --keep-worktree` or after `task close --cleanup`
 was skipped because the task workspace stayed dirty.
 
+Cleanup refuses to remove a workspace when the branch has uncommitted changes
+or commits that Blackdog cannot prove were landed. For successful task lands,
+the retained task branch may point at an internal `blackdog-wip(...)` commit
+that was squash-landed into the canonical target commit. In that case cleanup
+uses the recorded task-branch commit, `landed_commit`, target branch, and tree
+equivalence to force-delete the local disposable task branch without requiring
+operator intervention.
+
 ### `blackdog worktree preflight`
 
 Show the current WTAM contract for the checkout and primary worktree.

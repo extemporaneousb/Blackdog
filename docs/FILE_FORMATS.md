@@ -329,6 +329,21 @@ Current `worktree.close` payloads record:
 - `cleanup_performed`
 - optional `cleanup_reason`
 
+Current `worktree.cleanup` payloads record:
+
+- `workset_id`
+- `task_id`
+- optional `branch`
+- `worktree_path`
+- `deleted_branch`
+- `branch_cleanup_reason`
+- `force_deleted_branch`
+
+`force_deleted_branch` is true only for local disposable task branches that
+Blackdog can prove were already represented by the canonical `landed_commit`
+on the target branch. Ambiguous branches fail cleanup before the retained
+workspace is removed.
+
 ## Semantic Boundary
 
 `blackdog_core.backlog` works on typed `Workset` and `TaskSpec` objects plus a

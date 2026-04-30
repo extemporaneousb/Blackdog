@@ -839,7 +839,90 @@ class BlackdogCliTests(CoreAuditTestCase):
         cleanup_payload = json.loads(stdout)["cleanup"]
         self.assertEqual(cleanup_payload["worktree_path"], str(worktree_path))
         self.assertTrue(cleanup_payload["deleted_branch"])
+        self.assertTrue(cleanup_payload["force_deleted_branch"])
+        self.assertIn("canonical landed commit", cleanup_payload["branch_cleanup_reason"])
         self.assertFalse(worktree_path.exists())
+
+    def test_task_cleanup_refuses_unproven_branch_after_landing(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Keep the task workspace around, then add unlanded work after landing.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        branch = task_payload["worktree"]["branch"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "landed.txt").write_text("landed\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "landed but retained the workspace",
+            "--keep-worktree",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        (worktree_path / "unlanded.txt").write_text("unlanded\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "add", "unlanded.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "commit", "-m", "Add unlanded follow-up work"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("not proven landed", stderr)
+        self.assertIn("branch tip changed", stderr)
+        self.assertTrue(worktree_path.exists())
+        worktree_head = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(self.git_output("rev-parse", "--verify", branch), worktree_head)
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_task_recover_reports_dirty_same_thread_recovery_state(self) -> None:
         self.install_repo_runtime()

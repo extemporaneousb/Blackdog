@@ -184,6 +184,14 @@ class TaskBeginSpec:
         return payload
 
 
+@dataclass(frozen=True, slots=True)
+class _BranchCleanupPlan:
+    branch_exists: bool
+    force_delete: bool
+    branch_tip: str | None
+    reason: str
+
+
 def _run_git(repo_root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo_root), *args],
@@ -756,6 +764,108 @@ def branch_ahead_of_target(profile: RepoProfile, *, branch: str, target_branch: 
         detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
         raise WorktreeError(f"git rev-list --count {resolved_target}..{branch} failed: {detail}")
     return int(completed.stdout.strip() or "0") > 0
+
+
+def _resolve_commit(repo_root: Path, ref: str | None) -> str | None:
+    if not ref:
+        return None
+    completed = _run_git_no_check(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def _can_force_delete_landed_task_branch(
+    primary_root: Path,
+    *,
+    branch: str,
+    branch_tip: str,
+    latest_attempt: TaskRuntimeRecord | None,
+) -> tuple[bool, str]:
+    if latest_attempt is None:
+        return False, "no runtime attempt metadata"
+    if latest_attempt.branch != branch:
+        return False, "latest attempt branch does not match the cleanup branch"
+    if latest_attempt.status != ATTEMPT_STATUS_SUCCESS:
+        return False, f"latest attempt status is {latest_attempt.status!r}, not success"
+    if not latest_attempt.commit:
+        return False, "latest attempt is missing the recorded task-branch commit"
+    if not latest_attempt.landed_commit:
+        return False, "latest attempt is missing the canonical landed commit"
+    if not latest_attempt.target_branch:
+        return False, "latest attempt is missing the target branch"
+
+    recorded_commit = _resolve_commit(primary_root, latest_attempt.commit)
+    if recorded_commit is None:
+        return False, f"recorded task-branch commit {latest_attempt.commit} is missing"
+    if recorded_commit != branch_tip:
+        return False, "branch tip changed after the recorded landed attempt"
+
+    landed_commit = _resolve_commit(primary_root, latest_attempt.landed_commit)
+    if landed_commit is None:
+        return False, f"landed commit {latest_attempt.landed_commit} is missing"
+    if _resolve_commit(primary_root, latest_attempt.target_branch) is None:
+        return False, f"target branch {latest_attempt.target_branch} is missing"
+
+    landed_reachable = _run_git_no_check(
+        primary_root,
+        "merge-base",
+        "--is-ancestor",
+        landed_commit,
+        latest_attempt.target_branch,
+    )
+    if landed_reachable.returncode != 0:
+        return False, f"landed commit {landed_commit[:12]} is not reachable from {latest_attempt.target_branch}"
+
+    same_tree = _run_git_no_check(primary_root, "diff", "--quiet", branch_tip, landed_commit)
+    if same_tree.returncode != 0:
+        return False, "recorded task-branch tree differs from the landed commit"
+
+    return True, "recorded task branch matches the canonical landed commit"
+
+
+def _plan_task_branch_cleanup(
+    primary_root: Path,
+    *,
+    branch: str,
+    latest_attempt: TaskRuntimeRecord | None,
+) -> _BranchCleanupPlan:
+    branch_tip = _resolve_commit(primary_root, branch)
+    if branch_tip is None:
+        return _BranchCleanupPlan(
+            branch_exists=False,
+            force_delete=False,
+            branch_tip=None,
+            reason="branch already absent",
+        )
+
+    target_branch = latest_attempt.target_branch if latest_attempt and latest_attempt.target_branch else _current_branch(primary_root)
+    if _resolve_commit(primary_root, target_branch) is not None:
+        merged = _run_git_no_check(primary_root, "merge-base", "--is-ancestor", branch_tip, target_branch)
+        if merged.returncode == 0:
+            return _BranchCleanupPlan(
+                branch_exists=True,
+                force_delete=False,
+                branch_tip=branch_tip,
+                reason=f"branch is already merged into {target_branch}",
+            )
+
+    can_force_delete, reason = _can_force_delete_landed_task_branch(
+        primary_root,
+        branch=branch,
+        branch_tip=branch_tip,
+        latest_attempt=latest_attempt,
+    )
+    if can_force_delete:
+        return _BranchCleanupPlan(
+            branch_exists=True,
+            force_delete=True,
+            branch_tip=branch_tip,
+            reason=reason,
+        )
+    raise WorktreeError(
+        f"refusing cleanup: branch {branch} has commits not proven landed on {target_branch} ({reason})"
+    )
 
 
 def _resolve_attempt_worktree(profile: RepoProfile, *, branch: str | None, worktree_path: str | None) -> Path | None:
@@ -2031,32 +2141,35 @@ def cleanup_task_worktree(
         resolved_path = default_task_worktree_path(profile, workset_id=workset_id, task=task).resolve()
     if not resolved_path.exists():
         raise WorktreeError(f"worktree path not found: {resolved_path}")
+    if _status_dirty(resolved_path, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=resolved_path)):
+        raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {resolved_path}")
+    branch_cleanup = (
+        _plan_task_branch_cleanup(
+            primary_root,
+            branch=resolved_branch,
+            latest_attempt=latest_attempt,
+        )
+        if resolved_branch
+        else _BranchCleanupPlan(
+            branch_exists=False,
+            force_delete=False,
+            branch_tip=None,
+            reason="no branch recorded",
+        )
+    )
     _run_git(primary_root, "worktree", "remove", str(resolved_path))
     deleted_branch = False
-    if resolved_branch:
-        can_force_delete = (
-            latest_attempt is not None
-            and latest_attempt.branch == resolved_branch
-            and latest_attempt.status == ATTEMPT_STATUS_SUCCESS
-            and latest_attempt.landed_commit is not None
-        )
-        delete = _run_git_no_check(primary_root, "branch", "-d", resolved_branch)
+    if resolved_branch and branch_cleanup.branch_exists:
+        current_tip = _resolve_commit(primary_root, resolved_branch)
+        if current_tip != branch_cleanup.branch_tip:
+            raise WorktreeError(f"refusing cleanup: branch {resolved_branch} changed during cleanup")
+        delete_flag = "-D" if branch_cleanup.force_delete else "-d"
+        delete = _run_git_no_check(primary_root, "branch", delete_flag, resolved_branch)
         if delete.returncode == 0:
             deleted_branch = True
         else:
-            detail_text = "\n".join(item for item in [delete.stderr, delete.stdout] if item).lower()
-            if "not found" in detail_text:
-                pass
-            elif "not fully merged" in detail_text and can_force_delete:
-                forced = _run_git_no_check(primary_root, "branch", "-D", resolved_branch)
-                if forced.returncode == 0:
-                    deleted_branch = True
-                else:
-                    detail = forced.stderr.strip() or forced.stdout.strip() or f"exit code {forced.returncode}"
-                    raise WorktreeError(f"git branch -D {resolved_branch} failed: {detail}")
-            else:
-                detail = delete.stderr.strip() or delete.stdout.strip() or f"exit code {delete.returncode}"
-                raise WorktreeError(f"git branch -d {resolved_branch} failed: {detail}")
+            detail = delete.stderr.strip() or delete.stdout.strip() or f"exit code {delete.returncode}"
+            raise WorktreeError(f"git branch {delete_flag} {resolved_branch} failed: {detail}")
     append_event(
         profile.paths.events_file,
         event_type="worktree.cleanup",
@@ -2066,12 +2179,16 @@ def cleanup_task_worktree(
             "branch": resolved_branch,
             "worktree_path": str(resolved_path),
             "deleted_branch": deleted_branch,
+            "branch_cleanup_reason": branch_cleanup.reason,
+            "force_deleted_branch": bool(deleted_branch and branch_cleanup.force_delete),
         },
     )
     return {
         "worktree_path": str(resolved_path),
         "branch": resolved_branch,
         "deleted_branch": deleted_branch,
+        "branch_cleanup_reason": branch_cleanup.reason,
+        "force_deleted_branch": bool(deleted_branch and branch_cleanup.force_delete),
     }
 
 
