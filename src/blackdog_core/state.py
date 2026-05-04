@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -15,8 +15,14 @@ import uuid
 from .profile import BlackdogPaths
 
 
-RUNTIME_SCHEMA_VERSION = 2
-RUNTIME_STORE_VERSION = "blackdog.runtime/vnext2"
+RUNTIME_SCHEMA_VERSION = 3
+RUNTIME_STORE_VERSION = "blackdog.runtime/vnext3"
+_READABLE_RUNTIME_FORMATS = frozenset(
+    {
+        (2, "blackdog.runtime/vnext2"),
+        (RUNTIME_SCHEMA_VERSION, RUNTIME_STORE_VERSION),
+    }
+)
 _UNSET = object()
 
 EXECUTION_MODEL_DIRECT_WTAM = "direct_wtam"
@@ -112,11 +118,21 @@ class ValidationRecord:
 
 @dataclass(frozen=True, slots=True)
 class PromptReceiptRecord:
-    text: str
+    text: str | None
     prompt_hash: str
     recorded_at: str
     source: str | None = None
     mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CodexSessionRefRecord:
+    thread_id: str
+    session_path: str | None = None
+    turn_id: str | None = None
+    turn_started_at: str | None = None
+    user_prompt_hash: str | None = None
+    execution_prompt_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +155,7 @@ class TaskAttemptRecord:
     execution_model: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    codex_session: CodexSessionRefRecord | None = None
     prompt_receipt: PromptReceiptRecord | None = None
     user_prompt_receipt: PromptReceiptRecord | None = None
     changed_paths: tuple[str, ...] = ()
@@ -199,6 +216,12 @@ def create_prompt_receipt(
         source=_optional_text(source),
         mode=resolved_mode,
     )
+
+
+def prompt_receipt_reference(prompt_receipt: PromptReceiptRecord | None) -> PromptReceiptRecord | None:
+    if prompt_receipt is None or prompt_receipt.text is None:
+        return prompt_receipt
+    return replace(prompt_receipt, text=None)
 
 
 def parse_iso(value: str | None) -> datetime | None:
@@ -313,9 +336,11 @@ def _prompt_receipt_from_payload(payload: Any, *, field: str, source: Path) -> P
     if not isinstance(payload, Mapping):
         raise StoreError(f"{field} must be an object in {source}")
     text = _optional_text(payload.get("text"))
-    if text is None:
-        raise StoreError(f"{field}.text is required in {source}")
-    prompt_hash = _optional_text(payload.get("prompt_hash")) or hashlib.sha256(text.encode("utf-8")).hexdigest()
+    prompt_hash = _optional_text(payload.get("prompt_hash"))
+    if prompt_hash is None:
+        if text is None:
+            raise StoreError(f"{field}.text or {field}.prompt_hash is required in {source}")
+        prompt_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     recorded_at = _optional_text(payload.get("recorded_at"))
     if recorded_at is None:
         raise StoreError(f"{field}.recorded_at is required in {source}")
@@ -328,6 +353,24 @@ def _prompt_receipt_from_payload(payload: Any, *, field: str, source: Path) -> P
         recorded_at=recorded_at,
         source=_optional_text(payload.get("source")),
         mode=mode,
+    )
+
+
+def _codex_session_ref_from_payload(payload: Any, *, field: str, source: Path) -> CodexSessionRefRecord | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"{field} must be an object in {source}")
+    thread_id = _optional_text(payload.get("thread_id"))
+    if thread_id is None:
+        raise StoreError(f"{field}.thread_id is required in {source}")
+    return CodexSessionRefRecord(
+        thread_id=thread_id,
+        session_path=_optional_text(payload.get("session_path")),
+        turn_id=_optional_text(payload.get("turn_id")),
+        turn_started_at=_optional_text(payload.get("turn_started_at")),
+        user_prompt_hash=_optional_text(payload.get("user_prompt_hash")),
+        execution_prompt_hash=_optional_text(payload.get("execution_prompt_hash")),
     )
 
 
@@ -451,6 +494,11 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         ),
         model=_optional_text(payload.get("model")),
         reasoning_effort=_optional_text(payload.get("reasoning_effort")),
+        codex_session=_codex_session_ref_from_payload(
+            payload.get("codex_session"),
+            field="attempt.codex_session",
+            source=source,
+        ),
         prompt_receipt=prompt_receipt,
         user_prompt_receipt=user_prompt_receipt,
         changed_paths=_normalize_string_list(payload.get("changed_paths"), field="attempt.changed_paths", source=source),
@@ -530,9 +578,34 @@ def default_runtime_state() -> RuntimeState:
 
 
 def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
+    def prompt_payload(prompt_receipt: PromptReceiptRecord | None) -> dict[str, Any] | None:
+        if prompt_receipt is None:
+            return None
+        payload: dict[str, Any] = {
+            "prompt_hash": prompt_receipt.prompt_hash,
+            "recorded_at": prompt_receipt.recorded_at,
+            "source": prompt_receipt.source,
+            "mode": prompt_receipt.mode,
+        }
+        if prompt_receipt.text is not None:
+            payload["text"] = prompt_receipt.text
+        return payload
+
+    def codex_session_payload(codex_session: CodexSessionRefRecord | None) -> dict[str, Any] | None:
+        if codex_session is None:
+            return None
+        return {
+            "thread_id": codex_session.thread_id,
+            "session_path": codex_session.session_path,
+            "turn_id": codex_session.turn_id,
+            "turn_started_at": codex_session.turn_started_at,
+            "user_prompt_hash": codex_session.user_prompt_hash,
+            "execution_prompt_hash": codex_session.execution_prompt_hash,
+        }
+
     return {
-        "schema_version": state.schema_version,
-        "store_version": state.store_version,
+        "schema_version": RUNTIME_SCHEMA_VERSION,
+        "store_version": RUNTIME_STORE_VERSION,
         "worksets": [
             {
                 "id": workset.workset_id,
@@ -586,28 +659,9 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                         "execution_model": attempt.execution_model,
                         "model": attempt.model,
                         "reasoning_effort": attempt.reasoning_effort,
-                        "prompt_receipt": (
-                            {
-                                "text": attempt.prompt_receipt.text,
-                                "prompt_hash": attempt.prompt_receipt.prompt_hash,
-                                "recorded_at": attempt.prompt_receipt.recorded_at,
-                                "source": attempt.prompt_receipt.source,
-                                "mode": attempt.prompt_receipt.mode,
-                            }
-                            if attempt.prompt_receipt is not None
-                            else None
-                        ),
-                        "user_prompt_receipt": (
-                            {
-                                "text": attempt.user_prompt_receipt.text,
-                                "prompt_hash": attempt.user_prompt_receipt.prompt_hash,
-                                "recorded_at": attempt.user_prompt_receipt.recorded_at,
-                                "source": attempt.user_prompt_receipt.source,
-                                "mode": attempt.user_prompt_receipt.mode,
-                            }
-                            if attempt.user_prompt_receipt is not None
-                            else None
-                        ),
+                        "codex_session": codex_session_payload(attempt.codex_session),
+                        "prompt_receipt": prompt_payload(attempt.prompt_receipt),
+                        "user_prompt_receipt": prompt_payload(attempt.user_prompt_receipt),
                         "changed_paths": list(attempt.changed_paths),
                         "validations": [
                             {"name": validation.name, "status": validation.status}
@@ -636,10 +690,10 @@ class JsonRuntimeStore:
             return default_runtime_state()
         schema_version = int(payload.get("schema_version") or RUNTIME_SCHEMA_VERSION)
         store_version = _optional_text(payload.get("store_version")) or RUNTIME_STORE_VERSION
-        if schema_version != RUNTIME_SCHEMA_VERSION:
-            raise StoreError(f"Unsupported runtime schema_version {schema_version} in {path}")
-        if store_version != RUNTIME_STORE_VERSION:
-            raise StoreError(f"Unsupported runtime store_version {store_version!r} in {path}")
+        if (schema_version, store_version) not in _READABLE_RUNTIME_FORMATS:
+            raise StoreError(
+                f"Unsupported runtime format schema_version={schema_version} store_version={store_version!r} in {path}"
+            )
         raw_worksets = payload.get("worksets") or []
         if not isinstance(raw_worksets, list):
             raise StoreError(f"worksets must be a list in {path}")
@@ -652,8 +706,8 @@ class JsonRuntimeStore:
                 raise StoreError(f"duplicate runtime workset {workset.workset_id!r} in {path}")
             seen_workset_ids.add(workset.workset_id)
         return RuntimeState(
-            schema_version=schema_version,
-            store_version=store_version,
+            schema_version=RUNTIME_SCHEMA_VERSION,
+            store_version=RUNTIME_STORE_VERSION,
             worksets=worksets,
         )
 
@@ -888,6 +942,7 @@ __all__ = [
     "VALIDATION_STATUS_PASSED",
     "VALIDATION_STATUS_SKIPPED",
     "JsonRuntimeStore",
+    "CodexSessionRefRecord",
     "RuntimeState",
     "RuntimeStore",
     "StoreError",
@@ -908,6 +963,7 @@ __all__ = [
     "merge_workset_runtime",
     "now_iso",
     "parse_iso",
+    "prompt_receipt_reference",
     "save_runtime_state",
     "task_claim_index",
     "task_attempts_for_workset",

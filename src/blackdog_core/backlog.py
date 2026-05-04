@@ -22,6 +22,7 @@ from .state import (
     TASK_STATUS_DONE,
     TASK_STATUS_IN_PROGRESS,
     TASK_STATUS_PLANNED,
+    CodexSessionRefRecord,
     PromptReceiptRecord,
     RuntimeStore,
     StoreError,
@@ -378,6 +379,7 @@ def start_task(
     start_commit: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    codex_session: CodexSessionRefRecord | None = None,
     prompt_receipt: PromptReceiptRecord | None = None,
     user_prompt_receipt: PromptReceiptRecord | None = None,
     note: str | None = None,
@@ -454,6 +456,7 @@ def start_task(
         execution_model=execution_model,
         model=model,
         reasoning_effort=reasoning_effort,
+        codex_session=codex_session,
         prompt_receipt=prompt_receipt,
         user_prompt_receipt=resolved_user_prompt_receipt,
         note=note,
@@ -532,6 +535,9 @@ def start_task(
             "execution_model": attempt.execution_model,
             "model": attempt.model,
             "reasoning_effort": attempt.reasoning_effort,
+            "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session is not None else None,
+            "codex_session_path": attempt.codex_session.session_path if attempt.codex_session is not None else None,
+            "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session is not None else None,
             "prompt_hash": attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt is not None else None,
             "prompt_source": attempt.prompt_receipt.source if attempt.prompt_receipt is not None else None,
             "prompt_mode": attempt.prompt_receipt.mode if attempt.prompt_receipt is not None else None,
@@ -615,6 +621,7 @@ def finish_task(
         execution_model=existing_attempt.execution_model,
         model=existing_attempt.model,
         reasoning_effort=existing_attempt.reasoning_effort,
+        codex_session=existing_attempt.codex_session,
         prompt_receipt=existing_attempt.prompt_receipt,
         user_prompt_receipt=existing_attempt.user_prompt_receipt,
         changed_paths=tuple(changed_paths),
@@ -694,6 +701,17 @@ def finish_task(
             "branch": finished_attempt.branch,
             "start_commit": finished_attempt.start_commit,
             "execution_model": finished_attempt.execution_model,
+            "model": finished_attempt.model,
+            "reasoning_effort": finished_attempt.reasoning_effort,
+            "codex_thread_id": (
+                finished_attempt.codex_session.thread_id if finished_attempt.codex_session is not None else None
+            ),
+            "codex_session_path": (
+                finished_attempt.codex_session.session_path if finished_attempt.codex_session is not None else None
+            ),
+            "codex_turn_id": (
+                finished_attempt.codex_session.turn_id if finished_attempt.codex_session is not None else None
+            ),
             "prompt_hash": (
                 finished_attempt.prompt_receipt.prompt_hash
                 if finished_attempt.prompt_receipt is not None

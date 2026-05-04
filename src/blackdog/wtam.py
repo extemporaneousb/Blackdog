@@ -22,6 +22,7 @@ from blackdog_core.backlog import (
     start_task,
     upsert_workset,
 )
+from blackdog_core.codex_sessions import current_codex_runtime_context, current_codex_session_ref
 from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
@@ -31,6 +32,7 @@ from blackdog_core.state import (
     PROMPT_MODE_RAW,
     PROMPT_MODE_SKILL,
     PROMPT_MODE_TUNED,
+    CodexSessionRefRecord,
     PromptReceiptRecord,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_CANCELED,
@@ -46,6 +48,7 @@ from blackdog_core.state import (
     merge_workset_runtime,
     now_iso,
     parse_iso,
+    prompt_receipt_reference,
     save_runtime_state,
     task_claim_index,
     task_state_index,
@@ -936,6 +939,20 @@ def _append_prompt_lineage_trailers(
         lines.append(f"Blackdog-User-Prompt-Mode: {user_prompt_receipt.mode}")
 
 
+def _append_codex_session_trailers(
+    lines: list[str],
+    *,
+    codex_session: CodexSessionRefRecord | None,
+) -> None:
+    if codex_session is None:
+        return
+    lines.append(f"Blackdog-Codex-Thread: {codex_session.thread_id}")
+    if codex_session.session_path:
+        lines.append(f"Blackdog-Codex-Session: {codex_session.session_path}")
+    if codex_session.turn_id:
+        lines.append(f"Blackdog-Codex-Turn: {codex_session.turn_id}")
+
+
 def _canonical_commit_message(
     workset: Workset,
     task: TaskSpec,
@@ -945,6 +962,7 @@ def _canonical_commit_message(
     changed_paths: tuple[str, ...],
     prompt_receipt: PromptReceiptRecord | None,
     user_prompt_receipt: PromptReceiptRecord | None,
+    codex_session: CodexSessionRefRecord | None,
     execution_model: str | None,
     model: str | None,
     reasoning_effort: str | None,
@@ -980,6 +998,7 @@ def _canonical_commit_message(
         prompt_receipt=prompt_receipt,
         user_prompt_receipt=user_prompt_receipt,
     )
+    _append_codex_session_trailers(lines, codex_session=codex_session)
     for path in changed_paths:
         lines.append(f"Blackdog-Changed-Path: {path}")
     for validation in validations:
@@ -1053,6 +1072,9 @@ def start_task_worktree(
     path: str | None = None,
     note: str | None = None,
 ) -> WorktreeSpec:
+    codex_context = current_codex_runtime_context()
+    resolved_model = model or codex_context.model
+    resolved_reasoning_effort = reasoning_effort or codex_context.reasoning_effort
     preview = preview_task_worktree(
         profile,
         workset_id=workset_id,
@@ -1061,8 +1083,8 @@ def start_task_worktree(
         prompt=prompt,
         prompt_source=prompt_source,
         prompt_mode=prompt_mode,
-        model=model,
-        reasoning_effort=reasoning_effort,
+        model=resolved_model,
+        reasoning_effort=resolved_reasoning_effort,
         branch=branch,
         from_ref=from_ref,
         path=path,
@@ -1095,13 +1117,24 @@ def start_task_worktree(
             if handlers.remediation:
                 detail = "; ".join(item for item in [detail, handlers.remediation] if item)
             raise WorktreeError(detail or "worktree handler execution did not produce a ready workspace")
+        execution_receipt = create_prompt_receipt(prompt, source=prompt_source, mode=prompt_mode)
+        stored_execution_receipt = prompt_receipt_reference(execution_receipt)
+        stored_user_receipt = prompt_receipt_reference(user_prompt_receipt)
+        codex_session = current_codex_session_ref(
+            user_prompt_hash=(
+                stored_user_receipt.prompt_hash
+                if stored_user_receipt is not None
+                else stored_execution_receipt.prompt_hash
+            ),
+            execution_prompt_hash=stored_execution_receipt.prompt_hash,
+        )
         attempt = start_task(
             profile,
             workset_id=workset_id,
             task_id=task_id,
             actor=actor,
-            prompt_receipt=create_prompt_receipt(prompt, source=prompt_source, mode=prompt_mode),
-            user_prompt_receipt=user_prompt_receipt,
+            prompt_receipt=stored_execution_receipt,
+            user_prompt_receipt=stored_user_receipt,
             workspace_identity=preview.workspace_identity,
             workspace_mode=WORKSPACE_MODE_GIT_WORKTREE,
             worktree_role=WORKTREE_ROLE_TASK,
@@ -1110,8 +1143,9 @@ def start_task_worktree(
             target_branch=preview.target_branch,
             integration_branch=preview.integration_branch,
             start_commit=preview.base_commit,
-            model=model,
-            reasoning_effort=reasoning_effort,
+            model=resolved_model,
+            reasoning_effort=resolved_reasoning_effort,
+            codex_session=codex_session,
             note=note,
         )
     except Exception:
@@ -1165,6 +1199,10 @@ def start_task_worktree(
             "runtime_mode": handlers.runtime_mode,
             "source_mode": handlers.source_mode,
             "script_policy": handlers.script_policy,
+            "model": attempt.model,
+            "reasoning_effort": attempt.reasoning_effort,
+            "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session is not None else None,
+            "codex_session_path": attempt.codex_session.session_path if attempt.codex_session is not None else None,
             "handler_actions": [action.to_dict() for action in handlers.actions],
         },
     )
@@ -1911,6 +1949,7 @@ def land_task_worktree(
         changed_paths=changed_paths,
         prompt_receipt=attempt.prompt_receipt,
         user_prompt_receipt=attempt.user_prompt_receipt,
+        codex_session=attempt.codex_session,
         execution_model=attempt.execution_model,
         model=attempt.model,
         reasoning_effort=attempt.reasoning_effort,

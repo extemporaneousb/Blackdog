@@ -54,11 +54,21 @@ class ValidationView:
 
 @dataclass(frozen=True, slots=True)
 class PromptReceiptView:
-    text: str
+    text: str | None
     prompt_hash: str
     recorded_at: str
     source: str | None
     mode: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodexSessionRefView:
+    thread_id: str
+    session_path: str | None
+    turn_id: str | None
+    turn_started_at: str | None
+    user_prompt_hash: str | None
+    execution_prompt_hash: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +110,7 @@ class AttemptView:
     execution_model: str | None
     model: str | None
     reasoning_effort: str | None
+    codex_session: CodexSessionRefView | None
     prompt_receipt: PromptReceiptView | None
     user_prompt_receipt: PromptReceiptView | None
     changed_paths: tuple[str, ...]
@@ -210,6 +221,19 @@ def _prompt_receipt_view(prompt_receipt) -> PromptReceiptView | None:
     )
 
 
+def _codex_session_ref_view(codex_session) -> CodexSessionRefView | None:
+    if codex_session is None:
+        return None
+    return CodexSessionRefView(
+        thread_id=codex_session.thread_id,
+        session_path=codex_session.session_path,
+        turn_id=codex_session.turn_id,
+        turn_started_at=codex_session.turn_started_at,
+        user_prompt_hash=codex_session.user_prompt_hash,
+        execution_prompt_hash=codex_session.execution_prompt_hash,
+    )
+
+
 def _workset_claim_view(claim: WorksetClaimRecord | None) -> WorksetClaimView | None:
     if claim is None:
         return None
@@ -253,6 +277,7 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
         execution_model=attempt.execution_model,
         model=attempt.model,
         reasoning_effort=attempt.reasoning_effort,
+        codex_session=_codex_session_ref_view(attempt.codex_session),
         prompt_receipt=_prompt_receipt_view(attempt.prompt_receipt),
         user_prompt_receipt=_prompt_receipt_view(attempt.user_prompt_receipt),
         changed_paths=attempt.changed_paths,
@@ -535,6 +560,7 @@ def load_runtime_model(profile: RepoProfile) -> RuntimeModel:
 
 __all__ = [
     "AttemptView",
+    "CodexSessionRefView",
     "TaskClaimView",
     "Repository",
     "RuntimeModel",

@@ -91,8 +91,9 @@ class EnvHandlerTests(CoreAuditTestCase):
         self.assertTrue(tool_path.exists())
         launcher_text = launcher_path.read_text(encoding="utf-8")
         self.assertIn(str(worktree_path / ".VE" / "bin" / "python"), launcher_text)
-        self.assertIn(str((self.root / ".git" / "blackdog" / "source" / "blackdog" / "src").resolve()), launcher_text)
+        self.assertIn(str((REPO_ROOT / "src").resolve()), launcher_text)
         self.assertTrue(any(action["action"] == "root-bin-fallback" for action in payload["handlers"]["actions"]))
+        self.assertEqual(payload["source_mode"], "local-override")
 
     def test_self_repo_worktree_start_uses_editable_worktree_source_overlay(self) -> None:
         self_repo = self.root / "self-blackdog"

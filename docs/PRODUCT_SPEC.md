@@ -361,6 +361,7 @@ Blackdog should also keep a first-class repo lifecycle family in scope:
 - repo analyze/scaffold/install/update/refresh workflows
 - prompt/skill preview and tuning workflows
 - attempts summary/table as operator audit surfaces
+- Codex coverage/history indexing over `$CODEX_HOME/sessions`
 
 ## Keep / Change / Combine / Defer / Remove
 

@@ -107,6 +107,8 @@ The current coherent product surface on top of the new core is:
 - `blackdog prompt tune`
 - `blackdog attempts summary`
 - `blackdog attempts table`
+- `blackdog codex coverage`
+- `blackdog codex history`
 - `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`

@@ -16,6 +16,8 @@ REPO_LIFECYCLE_COMMANDS = (
     "blackdog prompt tune",
     "blackdog attempts summary",
     "blackdog attempts table",
+    "blackdog codex coverage",
+    "blackdog codex history",
 )
 WTAM_COMMANDS = (
     "blackdog task begin",

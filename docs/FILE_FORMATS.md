@@ -104,8 +104,11 @@ Top-level fields:
 
 Current version markers:
 
-- `schema_version = 2`
-- `store_version = "blackdog.runtime/vnext2"`
+- `schema_version = 3`
+- `store_version = "blackdog.runtime/vnext3"`
+
+Blackdog still reads v2 runtime files and migrates them to v3 on the next
+write.
 
 Each runtime workset row contains:
 
@@ -158,6 +161,7 @@ Each attempt row contains:
 - optional `execution_model`
 - optional `model`
 - optional `reasoning_effort`
+- optional `codex_session`
 - optional `prompt_receipt`
 - optional `user_prompt_receipt`
 - `changed_paths`
@@ -205,23 +209,39 @@ Allowed validation statuses:
 - `failed`
 - `skipped`
 
-`prompt_receipt`, when present, is one JSON object with the execution prompt
-Blackdog actually ran:
+`codex_session`, when present, is one JSON object linking the attempt to
+Codex's own dialogue/session storage:
 
-- `text`
+- `thread_id`
+- optional `session_path`
+- optional `turn_id`
+- optional `turn_started_at`
+- optional `user_prompt_hash`
+- optional `execution_prompt_hash`
+
+`session_path` is relative to `$CODEX_HOME` when Blackdog can resolve it.
+Blackdog does not copy Codex prompt/response transcripts into runtime state.
+
+`prompt_receipt`, when present, is one JSON object with the execution prompt
+lineage Blackdog actually ran:
+
 - `prompt_hash`
 - `recorded_at`
 - optional `source`
 - optional `mode`
+- optional `text`
 
 `user_prompt_receipt`, when present, is one JSON object with the raw user
-request Blackdog received before any prompt tuning:
+request lineage Blackdog received before any prompt tuning:
 
-- `text`
 - `prompt_hash`
 - `recorded_at`
 - optional `source`
 - optional `mode`
+- optional `text`
+
+New v3 attempt writes normally omit `text` and keep only hashes, sources, and
+Codex session refs. Legacy v2 rows with stored `text` remain readable.
 
 Allowed prompt modes:
 
@@ -238,6 +258,34 @@ Current shipped execution-context values:
 - `execution_model = "direct_wtam"`
 - `workspace_mode = "git-worktree"`
 - `worktree_role = "primary" | "task" | "linked"`
+
+## `history.jsonl`
+
+Optional compact history export written to the configured Blackdog control
+directory by `blackdog codex history --write`.
+
+`history.jsonl` is an audit/export bridge, not the live source of truth. Live
+truth remains `runtime.json`, `events.jsonl`, git history, and Codex's session
+files under `$CODEX_HOME/sessions`.
+
+Each row contains:
+
+- `schema_version = 1`
+- `kind = "attempt" | "codex_turn"`
+- stable `row_id`
+- `project_name`
+- `project_root`
+- `started_at`
+- Codex thread/session/turn refs when known
+- prompt hashes, never full prompt or response text
+
+`attempt` rows also include workset/task/attempt identity, status, actor,
+model, reasoning effort, execution model, changed paths, validations,
+residuals, follow-up candidates, commit, landed commit, and elapsed seconds.
+
+`codex_turn` rows cover unlinked Codex user turns, including analysis-only
+turns. They include classification, cwd, originator, model, reasoning effort,
+user-prompt hash, assistant-response presence, and tool-call count.
 
 ## `events.jsonl`
 

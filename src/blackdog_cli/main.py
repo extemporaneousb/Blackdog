@@ -48,6 +48,13 @@ from blackdog.wtam import (
     worktree_preflight,
 )
 from blackdog_core.backlog import BacklogError, upsert_workset, workset_to_payload
+from blackdog_core.codex_sessions import (
+    CodexSessionError,
+    build_codex_coverage,
+    build_codex_history,
+    render_codex_coverage_text,
+    render_codex_history_text,
+)
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
 from blackdog_core.runtime_model import hide_canceled_runtime_model, scope_runtime_model
 from blackdog_core.snapshot import (
@@ -193,6 +200,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_attempts_table.add_argument("--project-root", default=".")
     p_attempts_table.add_argument("--workset")
     p_attempts_table.add_argument("--json", action="store_true")
+
+    p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed session coverage and history")
+    codex_subparsers = p_codex.add_subparsers(dest="codex_command", required=True)
+
+    p_codex_coverage = codex_subparsers.add_parser("coverage", help="Compare Codex sessions to Blackdog attempts")
+    p_codex_coverage.add_argument("--project-root", default=".")
+    p_codex_coverage.add_argument("--since")
+    p_codex_coverage.add_argument("--json", action="store_true")
+
+    p_codex_history = codex_subparsers.add_parser("history", help="Emit compact Codex/attempt history rows")
+    p_codex_history.add_argument("--project-root", default=".")
+    p_codex_history.add_argument("--since")
+    p_codex_history.add_argument("--jsonl", action="store_true")
+    p_codex_history.add_argument("--write", action="store_true")
 
     p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
     repo_subparsers = p_repo.add_subparsers(dest="repo_command", required=True)
@@ -514,6 +535,25 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json(payload)
             else:
                 print(render_attempts_table_text(payload), end="")
+            return 0
+
+        if args.command == "codex" and args.codex_command == "coverage":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = build_codex_coverage(profile, since=args.since)
+            if args.json:
+                _emit_json({"codex_coverage": payload})
+            else:
+                print(render_codex_coverage_text(payload), end="")
+            return 0
+
+        if args.command == "codex" and args.codex_command == "history":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = build_codex_history(profile, since=args.since, write=args.write)
+            if args.jsonl:
+                for row in payload["rows"]:
+                    print(json.dumps(row, sort_keys=True))
+            else:
+                print(render_codex_history_text(payload), end="")
             return 0
 
         if args.command == "repo" and args.repo_command == "install":
@@ -882,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
         raise BacklogError(f"Unsupported command: {args.command}")
     except (
         BacklogError,
+        CodexSessionError,
         ConfigError,
         HandlerError,
         RepoLifecycleError,

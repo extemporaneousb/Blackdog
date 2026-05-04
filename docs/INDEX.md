@@ -29,6 +29,8 @@ CLI surfaces.
 - `blackdog prompt tune`
 - `blackdog attempts summary`
 - `blackdog attempts table`
+- `blackdog codex coverage`
+- `blackdog codex history`
 - `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
@@ -50,9 +52,10 @@ CLI surfaces.
 - `blackdog worktree cleanup`
 
 The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
-own repo lifecycle and operator-read workflows, `workset`/`summary`/`next` own
-planning and inspection, `task` is the default same-thread WTAM path, and
-`worktree` is the explicit planned-task WTAM path.
+own repo lifecycle and operator-read workflows, `codex` owns Codex-session
+coverage/history indexing, `workset`/`summary`/`next` own planning and
+inspection, `task` is the default same-thread WTAM path, and `worktree` is the
+explicit planned-task WTAM path.
 
 ## Direction
 

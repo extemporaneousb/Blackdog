@@ -283,10 +283,12 @@ one command.
 `--prompt-mode raw` records the supplied prompt directly. `--prompt-mode tuned`
 runs the user request through `blackdog prompt tune` first and records the
 tuned execution prompt as the attempt prompt receipt. The prompt receipt stores
-its `mode` as `raw` or `tuned`. `--prompt-mode skill` records the supplied
-prompt as a repo-skill-composed execution prompt without running prompt tuning.
-When `--user-prompt` or `--user-prompt-file` is present, Blackdog stores that
-raw user request separately from the execution prompt for later audit and
+its hash, source, and `mode` as `raw` or `tuned`. New v3 runtime rows do not
+store full prompt text; they link to Codex session storage when that context is
+available. `--prompt-mode skill` records the supplied prompt as a
+repo-skill-composed execution prompt without running prompt tuning. When
+`--user-prompt` or `--user-prompt-file` is present, Blackdog stores that raw
+user request lineage separately from the execution prompt for later audit and
 repo-skill optimization.
 
 ### `blackdog task show`
@@ -792,6 +794,7 @@ The summary centers on completed attempts and includes:
 - commit and landed-commit linkage
 - validation pass/fail/skipped totals
 - landed vs not-landed completion totals
+- Codex thread/session refs when present
 
 Here `commit` is the task-branch head Blackdog landed or closed from, while
 `landed_commit` is the canonical landed commit created on the target branch
@@ -821,6 +824,9 @@ columns plus row dictionaries. Current columns are:
 - `execution_model`
 - `model`
 - `reasoning_effort`
+- `codex_thread_id`
+- `codex_session_path`
+- `codex_turn_id`
 - `execution_prompt_source`
 - `user_prompt_source`
 - `prompt_source`
@@ -838,6 +844,49 @@ columns plus row dictionaries. Current columns are:
 - `changed_paths_count`
 - `validation_summary`
 - `summary`
+
+### `blackdog codex coverage`
+
+Compare Codex's own session/dialogue logs to Blackdog runtime attempts.
+
+```bash
+blackdog codex coverage --project-root /path/to/repo
+blackdog codex coverage --project-root /path/to/repo --since 2026-05-01
+blackdog codex coverage --project-root /path/to/repo --json
+```
+
+The command scans `$CODEX_HOME/sessions`, maps sessions to the repo and its git
+worktrees by cwd, classifies user turns, and joins turns to Blackdog attempts
+by prompt hashes and stored Codex session refs. It reports:
+
+- Codex sessions and user-turn counts
+- Blackdog attempt counts and active attempts
+- linked vs unlinked turns and attempts
+- analysis-only turns
+- unlinked implementation-like turns
+- model/reasoning observability
+
+Coverage output may show short prompt excerpts for operator diagnosis, but it
+does not persist transcript text.
+
+### `blackdog codex history`
+
+Emit compact history rows spanning Blackdog attempts and unlinked Codex turns.
+
+```bash
+blackdog codex history --project-root /path/to/repo --jsonl
+blackdog codex history --project-root /path/to/repo --since 2026-05-01 --jsonl
+blackdog codex history --project-root /path/to/repo --write
+```
+
+`--jsonl` prints stable JSONL rows to stdout. `--write` writes the same rows to
+`history.jsonl` in the configured Blackdog control directory. The file is a
+cleanup and migration bridge; it is not the live source of truth.
+
+Rows contain prompt hashes and Codex session refs, not full prompts or
+responses. Attempt rows carry task/result/git/validation metadata. Codex-turn
+rows cover unlinked user turns, including analysis-only work that never entered
+WTAM.
 
 `execution_prompt_*` records the prompt Blackdog actually ran.
 `user_prompt_*` records the raw user request Blackdog received.

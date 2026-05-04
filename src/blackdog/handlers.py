@@ -306,6 +306,18 @@ def _ensure_managed_source_checkout(
     context: _HandlerContext,
     config: BlackdogRuntimeHandlerConfig,
 ) -> tuple[Path | None, str | None, tuple[HandlerAction, ...], str | None]:
+    if _looks_like_blackdog_source_checkout(context.project_root):
+        source_root = context.worktree_path or context.project_root
+        action = HandlerAction(
+            handler_id=config.handler_id,
+            kind=config.kind,
+            action="resolve-source",
+            target_path=str(source_root),
+            status=HANDLER_STATUS_VALIDATED,
+            message="using the target repo checkout as the Blackdog source",
+        )
+        return source_root, HANDLER_SOURCE_MODE_TARGET_REPO, (action,), None
+
     if context.source_root_override is not None:
         if not _looks_like_blackdog_source_checkout(context.source_root_override):
             raise HandlerError(f"expected a Blackdog source checkout at {context.source_root_override}")
@@ -351,18 +363,6 @@ def _ensure_managed_source_checkout(
                     )
                 )
         return context.source_root_override, HANDLER_SOURCE_MODE_LOCAL_OVERRIDE, tuple(actions), None
-
-    if _looks_like_blackdog_source_checkout(context.project_root):
-        source_root = context.worktree_path or context.project_root
-        action = HandlerAction(
-            handler_id=config.handler_id,
-            kind=config.kind,
-            action="resolve-source",
-            target_path=str(source_root),
-            status=HANDLER_STATUS_VALIDATED,
-            message="using the target repo checkout as the Blackdog source",
-        )
-        return source_root, HANDLER_SOURCE_MODE_TARGET_REPO, (action,), None
 
     if config.source_mode == HANDLER_SOURCE_MODE_TARGET_REPO:
         return None, None, (
@@ -902,6 +902,7 @@ def plan_worktree_handlers(profile: RepoProfile, *, worktree_path: Path) -> Hand
         operation="worktree-preview",
         project_root=profile.paths.project_root.resolve(),
         worktree_path=worktree_path.resolve(),
+        source_root_override=_current_blackdog_source_root(),
     )
     return _run_handlers(context, execute=False)
 
@@ -912,6 +913,7 @@ def execute_worktree_handlers(profile: RepoProfile, *, worktree_path: Path) -> H
         operation="worktree-start",
         project_root=profile.paths.project_root.resolve(),
         worktree_path=worktree_path.resolve(),
+        source_root_override=_current_blackdog_source_root(),
     )
     return _run_handlers(context, execute=True)
 

@@ -5,8 +5,10 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+from unittest.mock import patch
 
 from blackdog.contract import managed_skill_relative_path
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
@@ -320,7 +322,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(preview["task_docs"], ["docs/CLI.md"])
         self.assertEqual(preview["task_checks"], ["make test"])
         self.assertEqual(preview["handlers"]["runtime_mode"], "launcher-shim")
-        self.assertEqual(preview["handlers"]["source_mode"], "managed-checkout")
+        self.assertEqual(preview["handlers"]["source_mode"], "local-override")
         self.assertTrue(any(action["action"] == "ensure-worktree-venv" for action in preview["handlers"]["actions"]))
         self.assertTrue(any(item["path"] == str(skill_path.resolve()) for item in preview["contract_documents"]))
         self.assertTrue(any(item["path"] == str(agents_path.resolve()) for item in preview["contract_documents"]))
@@ -385,7 +387,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         worktree_path = Path(start_payload["worktree_path"])
         self.assertTrue(worktree_path.exists())
         self.assertEqual(start_payload["runtime_mode"], "launcher-shim")
-        self.assertEqual(start_payload["source_mode"], "managed-checkout")
+        self.assertEqual(start_payload["source_mode"], "local-override")
         self.assertEqual(start_payload["script_policy"], "root-bin-fallback")
         self.assertEqual(start_payload["primary_worktree"], str(self.root.resolve()))
         self.assertTrue(start_payload["branch"].startswith("agent/"))
@@ -484,18 +486,30 @@ class BlackdogCliTests(CoreAuditTestCase):
 
     def test_task_begin_creates_a_single_task_envelope_and_lands_from_the_task_worktree(self) -> None:
         self.install_repo_runtime()
-
-        exit_code, stdout, stderr = self.run_cli(
-            "task",
-            "begin",
-            "--project-root",
-            str(self.root),
-            "--actor",
-            "codex",
-            "--prompt",
-            "Implement the same-thread task flow and capture the lineage.",
-            "--json",
+        codex_home = self.root / ".git" / "codex-home"
+        (codex_home / "sessions" / "2026" / "05" / "04").mkdir(parents=True)
+        session_path = codex_home / "sessions" / "2026" / "05" / "04" / "rollout-2026-05-04T12-00-00-thread-task-begin.jsonl"
+        session_path.write_text("", encoding="utf-8")
+        (codex_home / "config.toml").write_text(
+            'model = "gpt-5.5"\nmodel_reasoning_effort = "xhigh"\n',
+            encoding="utf-8",
         )
+        with patch.dict(
+            os.environ,
+            {"CODEX_HOME": str(codex_home), "CODEX_THREAD_ID": "thread-task-begin"},
+            clear=False,
+        ):
+            exit_code, stdout, stderr = self.run_cli(
+                "task",
+                "begin",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "codex",
+                "--prompt",
+                "Implement the same-thread task flow and capture the lineage.",
+                "--json",
+            )
         self.assertEqual(exit_code, 0, stderr)
         task_payload = json.loads(stdout)["task"]
         workset_id = task_payload["workset_id"]
@@ -506,6 +520,18 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
         self.assertTrue(workset_id.startswith("task-"))
         self.assertTrue(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
+        self.assertEqual(exit_code, 0, stderr)
+        started_attempt = json.loads(stdout)["runtime_model"]["recent_attempts"][0]
+        self.assertEqual(started_attempt["model"], "gpt-5.5")
+        self.assertEqual(started_attempt["reasoning_effort"], "xhigh")
+        self.assertEqual(started_attempt["codex_session"]["thread_id"], "thread-task-begin")
+        self.assertEqual(
+            started_attempt["codex_session"]["session_path"],
+            "sessions/2026/05/04/rollout-2026-05-04T12-00-00-thread-task-begin.jsonl",
+        )
+        self.assertIsNone(started_attempt["prompt_receipt"]["text"])
 
         (worktree_path / "task-begin.txt").write_text("task begin\n", encoding="utf-8")
 
@@ -548,6 +574,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn(f"blackdog({workset_id}/TASK-1)", landed_message)
         self.assertIn("Blackdog-Changed-Path: task-begin.txt", landed_message)
         self.assertIn("Blackdog-Validation: unit=passed", landed_message)
+        self.assertIn("Blackdog-Model: gpt-5.5", landed_message)
+        self.assertIn("Blackdog-Reasoning-Effort: xhigh", landed_message)
+        self.assertIn("Blackdog-Codex-Thread: thread-task-begin", landed_message)
         self.assertNotIn("Blackdog-User-Prompt-Hash:", landed_message)
 
         exit_code, stdout, stderr = self.run_cli(
@@ -563,6 +592,58 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary_payload["counts"]["active_attempts"], 0)
         self.assertEqual(summary_payload["counts"]["claimed_tasks"], 0)
         self.assertEqual((self.root / "task-begin.txt").read_text(encoding="utf-8"), "task begin\n")
+
+    def test_codex_coverage_and_history_cli_read_codex_sessions(self) -> None:
+        codex_home = self.root / ".codex-home"
+        session_path = codex_home / "sessions" / "2026" / "05" / "04" / "rollout-2026-05-04T12-00-00-thread-cli.jsonl"
+        session_path.parent.mkdir(parents=True)
+        session_path.write_text(
+            "\n".join(
+                json.dumps(row)
+                for row in [
+                    {
+                        "timestamp": "2026-05-04T19:00:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": "thread-cli", "timestamp": "2026-05-04T19:00:00Z", "cwd": str(self.root)},
+                    },
+                    {
+                        "timestamp": "2026-05-04T19:00:01Z",
+                        "type": "event_msg",
+                        "payload": {"type": "task_started", "turn_id": "turn-cli", "started_at": 1777921201},
+                    },
+                    {
+                        "timestamp": "2026-05-04T19:00:01Z",
+                        "type": "turn_context",
+                        "payload": {"turn_id": "turn-cli", "cwd": str(self.root), "model": "gpt-5.5", "effort": "xhigh"},
+                    },
+                    {
+                        "timestamp": "2026-05-04T19:00:02Z",
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "Implement a CLI-visible Codex history row."},
+                    },
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+            exit_code, stdout, stderr = self.run_cli("codex", "coverage", "--project-root", str(self.root), "--json")
+            self.assertEqual(exit_code, 0, stderr)
+            coverage = json.loads(stdout)["codex_coverage"]
+            self.assertEqual(coverage["counts"]["codex_user_turns"], 1)
+            self.assertEqual(coverage["counts"]["implementation_like_unlinked_turns"], 1)
+
+            exit_code, stdout, stderr = self.run_cli("codex", "history", "--project-root", str(self.root), "--jsonl")
+            self.assertEqual(exit_code, 0, stderr)
+            rows = [json.loads(line) for line in stdout.splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["kind"], "codex_turn")
+            self.assertNotIn("message_excerpt", rows[0])
+
+            exit_code, stdout, stderr = self.run_cli("codex", "history", "--project-root", str(self.root), "--write")
+            self.assertEqual(exit_code, 0, stderr)
+            self.assertTrue((load_profile(self.root).paths.control_dir / "history.jsonl").exists())
 
     def test_task_begin_can_tune_the_prompt_and_task_close_can_infer_the_current_attempt(self) -> None:
         self.install_repo_runtime()

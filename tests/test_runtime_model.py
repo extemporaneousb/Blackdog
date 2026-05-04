@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.runtime_model import load_runtime_model, scope_runtime_model
 from blackdog_core.snapshot import build_runtime_snapshot
-from blackdog_core.state import create_prompt_receipt
+from blackdog_core.state import create_prompt_receipt, load_runtime_state, save_runtime_state
 from tests.core_audit_support import CoreAuditTestCase
 
 
@@ -75,6 +77,68 @@ class RuntimeModelTests(CoreAuditTestCase):
         self.assertEqual(snapshot["runtime_model"]["repository"]["project_name"], "Blackdog")
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["workset_id"], "snapshot")
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["next_task_ids"], ["SNAP-1"])
+
+    def test_runtime_store_loads_v2_and_writes_v3_with_hash_only_receipts(self) -> None:
+        self.profile.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        self.profile.paths.runtime_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "store_version": "blackdog.runtime/vnext2",
+                    "worksets": [
+                        {
+                            "id": "legacy",
+                            "task_states": [],
+                            "task_claims": [],
+                            "attempts": [
+                                {
+                                    "attempt_id": "LEG-1-a",
+                                    "task_id": "LEG-1",
+                                    "status": "success",
+                                    "actor": "codex",
+                                    "started_at": "2026-05-04T10:00:00+00:00",
+                                    "prompt_receipt": {
+                                        "text": "legacy prompt",
+                                        "recorded_at": "2026-05-04T10:00:00+00:00",
+                                    },
+                                },
+                                {
+                                    "attempt_id": "LEG-2-a",
+                                    "task_id": "LEG-2",
+                                    "status": "success",
+                                    "actor": "codex",
+                                    "started_at": "2026-05-04T11:00:00+00:00",
+                                    "prompt_receipt": {
+                                        "prompt_hash": "f" * 64,
+                                        "recorded_at": "2026-05-04T11:00:00+00:00",
+                                    },
+                                    "codex_session": {
+                                        "thread_id": "thread-v3",
+                                        "session_path": "sessions/2026/05/04/rollout.jsonl",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        state = load_runtime_state(self.profile.paths)
+
+        self.assertEqual(state.schema_version, 3)
+        attempts = state.worksets[0].attempts
+        self.assertEqual(attempts[0].prompt_receipt.text, "legacy prompt")
+        self.assertIsNone(attempts[1].prompt_receipt.text)
+        self.assertEqual(attempts[1].codex_session.thread_id, "thread-v3")
+
+        save_runtime_state(self.profile.paths, state)
+        migrated = json.loads(self.profile.paths.runtime_file.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["store_version"], "blackdog.runtime/vnext3")
+        self.assertNotIn("text", migrated["worksets"][0]["attempts"][1]["prompt_receipt"])
 
     def test_runtime_model_surfaces_recent_attempts_and_latest_task_result(self) -> None:
         upsert_workset(
