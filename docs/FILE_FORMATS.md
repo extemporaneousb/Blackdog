@@ -261,8 +261,8 @@ Current shipped execution-context values:
 
 ## `history.jsonl`
 
-Optional compact history export written to the configured Blackdog control
-directory by `blackdog codex history --write`.
+Optional compact history export written to `.blackdog/history.jsonl` by
+`blackdog codex history --write`.
 
 `history.jsonl` is an audit/export bridge, not the live source of truth. Live
 truth remains `runtime.json`, `events.jsonl`, git history, and Codex's session

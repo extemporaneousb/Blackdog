@@ -168,6 +168,10 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertIn('"kind": "attempt"', rendered_rows)
         self.assertIn('"kind": "codex_turn"', rendered_rows)
         self.assertNotIn(analysis_message, rendered_rows)
+        self.assertEqual(
+            Path(history["history_path"]).resolve(),
+            (self.root / ".blackdog" / "history.jsonl").resolve(),
+        )
         self.assertTrue(Path(history["history_path"]).is_file())
 
     def test_repo_matching_includes_git_worktree_cwds(self) -> None:

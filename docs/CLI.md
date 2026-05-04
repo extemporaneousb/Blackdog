@@ -880,7 +880,7 @@ blackdog codex history --project-root /path/to/repo --write
 ```
 
 `--jsonl` prints stable JSONL rows to stdout. `--write` writes the same rows to
-`history.jsonl` in the configured Blackdog control directory. The file is a
+`.blackdog/history.jsonl` under the project root. The file is a
 cleanup and migration bridge; it is not the live source of truth.
 
 Rows contain prompt hashes and Codex session refs, not full prompts or

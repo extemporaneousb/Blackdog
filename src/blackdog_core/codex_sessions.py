@@ -19,6 +19,7 @@ from .state import CodexSessionRefRecord, atomic_write_text, now_iso, parse_iso
 
 
 CODEX_SESSION_HISTORY_SCHEMA_VERSION = 1
+HISTORY_DIR_NAME = ".blackdog"
 HISTORY_FILE_NAME = "history.jsonl"
 
 _IMPLEMENTATION_KEYWORDS = frozenset(
@@ -391,7 +392,7 @@ def build_codex_history(
         if turn.user_message_hash is not None and _turn_key(turn) not in linked_turn_keys
     )
     rows = sorted(rows, key=lambda row: (str(row.get("started_at") or ""), str(row.get("row_id") or "")))
-    history_path = profile.paths.control_dir / HISTORY_FILE_NAME
+    history_path = history_export_path(profile)
     if write:
         atomic_write_text(history_path, "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
     return {
@@ -408,6 +409,10 @@ def build_codex_history(
             "codex_turn_rows": len([row for row in rows if row.get("kind") == "codex_turn"]),
         },
     }
+
+
+def history_export_path(profile: RepoProfile) -> Path:
+    return profile.paths.project_root / HISTORY_DIR_NAME / HISTORY_FILE_NAME
 
 
 def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
@@ -764,6 +769,7 @@ def _optional_text(value: Any) -> str | None:
 
 __all__ = [
     "CODEX_SESSION_HISTORY_SCHEMA_VERSION",
+    "HISTORY_DIR_NAME",
     "HISTORY_FILE_NAME",
     "CodexRuntimeContext",
     "CodexSession",
@@ -775,6 +781,7 @@ __all__ = [
     "codex_home",
     "current_codex_runtime_context",
     "current_codex_session_ref",
+    "history_export_path",
     "read_codex_config",
     "read_codex_session",
     "render_codex_coverage_text",

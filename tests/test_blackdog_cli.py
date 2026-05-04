@@ -643,7 +643,7 @@ class BlackdogCliTests(CoreAuditTestCase):
 
             exit_code, stdout, stderr = self.run_cli("codex", "history", "--project-root", str(self.root), "--write")
             self.assertEqual(exit_code, 0, stderr)
-            self.assertTrue((load_profile(self.root).paths.control_dir / "history.jsonl").exists())
+            self.assertTrue((self.root / ".blackdog" / "history.jsonl").exists())
 
     def test_task_begin_can_tune_the_prompt_and_task_close_can_infer_the_current_attempt(self) -> None:
         self.install_repo_runtime()
