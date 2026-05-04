@@ -515,6 +515,8 @@ def _render_repo_agents_contract(profile: RepoProfile) -> str:
         "- Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.",
         "- Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.",
         "- Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.",
+        "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser. Prefer Codex in-app browser tools or headless evidence.",
+        "- Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.",
     ]
     if routed_docs:
         lines.extend(("", "Review these routed docs before editing when they apply:"))
@@ -585,6 +587,9 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
         "- planned execution: `workset put`, `summary`, `next --workset`, `snapshot`, and the explicit `worktree` commands when low-level recovery is needed\n"
         "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
+        "## Operator Guardrails\n\n"
+        "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser; prefer Codex in-app browser tools or headless evidence.\n"
+        "- Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.\n\n"
         "## Docs To Review\n\n"
         f"{docs}\n"
     )

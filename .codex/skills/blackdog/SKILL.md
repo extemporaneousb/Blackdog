@@ -22,6 +22,11 @@ Use this repo-local skill for normal development requests. The skill is backed b
 - planned execution: `workset put`, `summary`, `next --workset`, `snapshot`, and the explicit `worktree` commands when low-level recovery is needed
 - abandoned work is canceled by default; use `task reopen` only when it should return to normal execution
 
+## Operator Guardrails
+
+- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser; prefer Codex in-app browser tools or headless evidence.
+- Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.
+
 ## Docs To Review
 
 - `AGENTS.md`

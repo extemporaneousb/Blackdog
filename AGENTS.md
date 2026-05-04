@@ -90,6 +90,8 @@ Keep repo-specific requirements outside this block.
 - Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.
 - Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.
 - Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.
+- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser. Prefer Codex in-app browser tools or headless evidence.
+- Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.
 
 Review these routed docs before editing when they apply:
 - `docs/INDEX.md`

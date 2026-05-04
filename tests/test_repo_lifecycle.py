@@ -238,6 +238,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("BLACKDOG MANAGED CONTRACT:BEGIN", agents_text)
         self.assertIn("worktree preflight", agents_text)
         self.assertIn("primary worktree: yes", agents_text)
+        self.assertIn("Do not launch an external browser", agents_text)
+        self.assertIn("re-check branch and dirty state", agents_text)
 
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
@@ -246,6 +248,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("do <task-description>", skill_text)
         self.assertIn("PM-mode", skill_text)
         self.assertIn("--prompt-mode skill", skill_text)
+        self.assertIn("Operator Guardrails", skill_text)
+        self.assertIn("Do not launch an external browser", skill_text)
         self.assertNotIn("Shipped Workflow Families", skill_text)
         self.assertIn("AGENTS.md", skill_text)
         self.assertNotIn("docs/INDEX.md", skill_text)
