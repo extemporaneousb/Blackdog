@@ -1322,6 +1322,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(land_payload["status"], "blocked")
         self.assertEqual(land_payload["attempt_id"], attempt_id)
         self.assertTrue(land_payload["attempt_active"])
+        self.assertEqual(land_payload["land_failure_disposition"], "retryable")
         self.assertIn("dirty primary worktree", land_payload["error"])
 
         exit_code, stdout, stderr = self.run_cli(
@@ -1376,6 +1377,81 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary["counts"]["active_attempts"], 0)
         self.assertEqual(summary["counts"]["claimed_tasks"], 0)
         self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "success")
+
+    def test_worktree_land_closes_terminal_no_change_failure_without_extra_close_call(self) -> None:
+        payload = {
+            "id": "terminal-land",
+            "title": "Terminal land",
+            "tasks": [{"id": "TL-1", "title": "Close no-op land", "intent": "close terminal land failures"}],
+        }
+        self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps(payload),
+        )
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "terminal-land",
+            "--task",
+            "TL-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Attempt to land a no-op slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        attempt_id = start_payload["attempt_id"]
+        worktree_path = Path(start_payload["worktree_path"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "terminal-land",
+            "--task",
+            "TL-1",
+            "--actor",
+            "codex",
+            "--summary",
+            "attempted a no-op land",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        land_payload = json.loads(stdout)["landing"]
+        self.assertEqual(land_payload["status"], "blocked")
+        self.assertEqual(land_payload["attempt_id"], attempt_id)
+        self.assertFalse(land_payload["attempt_active"])
+        self.assertEqual(land_payload["land_failure_disposition"], "closed")
+        self.assertIn("has no changes relative to", land_payload["error"])
+        self.assertTrue(land_payload["cleanup_performed"])
+        self.assertFalse(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "terminal-land",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["counts"]["active_attempts"], 0)
+        self.assertEqual(summary["counts"]["claimed_tasks"], 0)
+        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "blocked")
 
     def test_attempts_summary_and_table_report_completed_history(self) -> None:
         profile = load_profile(self.root)

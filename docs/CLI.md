@@ -683,12 +683,17 @@ It:
 - removes the task worktree and deletes its branch unless `--keep-worktree` is
   set
 
-If the operational landing step cannot complete, `worktree land` returns a
-non-zero exit code but keeps the active attempt and claims intact. Fix the
-landing blocker, such as a dirty primary checkout or stale task branch base,
-then rerun `worktree land` or `task land` against the same attempt. Use
-`worktree close` or `task close` only when the work should be explicitly closed
-as `blocked`, `failed`, or `abandoned` without landing code.
+If the operational landing step cannot complete, `worktree land` classifies the
+failure before returning. Retryable landing blockers, such as a dirty primary
+checkout, stale task branch base, or merge conflict, return a non-zero exit
+code while keeping the active attempt and claims intact so the agent can fix
+the blocker and rerun `worktree land` or `task land` against the same attempt.
+Classified terminal failures, such as a task branch with no changes relative to
+the target branch, are closed internally through the same non-success finalizer
+used by `worktree close`; no separate close command is required. Use
+`worktree close` or `task close` directly only when the work should be
+explicitly closed as `blocked`, `failed`, or `abandoned` without attempting to
+land code first.
 
 ### `blackdog worktree close`
 
