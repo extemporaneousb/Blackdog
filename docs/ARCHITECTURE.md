@@ -159,6 +159,10 @@ managed `AGENTS.md` block, regenerates the repo-local skill and Codex
 removing known backlog-era artifacts, obsolete Blackdog-managed skill
 directories, stale generated skill auxiliary files, and the one stale
 removed-orchestration run directory.
+Repo lifecycle commands report when they changed repo-visible managed files.
+Those changes intentionally leave the primary checkout dirty until an operator
+commits, lands, reverts, or explicitly reports them, so generated skills and
+managed contracts require a closing `git status --short` check.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

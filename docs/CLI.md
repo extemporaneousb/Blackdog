@@ -124,6 +124,11 @@ artifacts through handler actions. When install has to create `blackdog.toml`,
 it seeds `doc_routing_defaults` from `AGENTS.md` plus common repo docs that
 already exist in the host repo so the initial contract matches the converted
 repo instead of Blackdog's own docs.
+If install creates or updates repo-visible managed files such as
+`blackdog.toml`, `AGENTS.md`, or `.codex/skills/...`, the result includes a
+note that the primary checkout remains dirty until those changes are committed,
+landed, reverted, or explicitly reported. Finish lifecycle runs with
+`git status --short`.
 
 ### `blackdog repo update`
 
@@ -144,6 +149,9 @@ repo-local launcher and preserves repo-owned contract files such as the skill.
 When using the managed source checkout path, it also fast-forwards that source
 checkout from GitHub. `repo update` does not silently rewrite custom handler
 config, but it does execute the configured handlers and report their actions.
+When update changes repo-visible managed files, it reports the same dirty
+primary checkout note; `.VE` and `.git` runtime repairs alone do not trigger
+that note.
 
 ### `blackdog repo refresh`
 
@@ -165,6 +173,9 @@ also validates the configured handlers, removes stale generated skill
 auxiliary files and obsolete Blackdog-managed skill directories, and prunes
 known legacy backlog-era artifacts plus the stale removed-orchestration run
 directory from the shared control root.
+Because refresh rewrites managed repo docs and skills, operators should expect
+`git status --short` to show those files until the lifecycle change is
+committed, landed, reverted, or explicitly reported.
 
 ### `blackdog prompt preview`
 

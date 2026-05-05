@@ -226,6 +226,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(payload["source_mode"], "local-override")
         self.assertEqual(payload["source_root"], str(REPO_ROOT))
         self.assertIsNotNone(payload["handlers"])
+        self.assertTrue(any("repo lifecycle changed managed worktree files" in note for note in payload["notes"]))
         self.assertTrue(profile_path.is_file())
         self.assertTrue(agents_path.is_file())
         self.assertTrue(skill_path.is_file())
@@ -239,12 +240,14 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("worktree preflight", agents_text)
         self.assertIn("primary worktree: yes", agents_text)
         self.assertIn("Do not launch an external browser", agents_text)
+        self.assertIn("repo install`, `repo update`, or `repo refresh", agents_text)
         self.assertIn("re-check branch and dirty state", agents_text)
 
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
         self.assertIn("Lifecycle Demo", skill_text)
         self.assertIn("repo install", skill_text)
+        self.assertIn("git status --short", skill_text)
         self.assertIn("do <task-description>", skill_text)
         self.assertIn("PM-mode", skill_text)
         self.assertIn("--prompt-mode skill", skill_text)
@@ -304,6 +307,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         self.assertEqual(payload["action"], "update")
         self.assertTrue(any(action["action"] == "write-blackdog-launcher" for action in payload["handlers"]["actions"]))
+        self.assertFalse(any("repo lifecycle changed managed worktree files" in note for note in payload["notes"]))
         self.assertEqual(skill_path.read_text(encoding="utf-8"), "custom skill\n")
         self.assertIn("blackdog_cli", launcher_path.read_text(encoding="utf-8"))
         self.assertIn(str((REPO_ROOT / "src").resolve()), launcher_path.read_text(encoding="utf-8"))
@@ -377,6 +381,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         payload = json.loads(stdout)["repo"]
 
         self.assertEqual(payload["action"], "refresh")
+        self.assertTrue(any("repo lifecycle changed managed worktree files" in note for note in payload["notes"]))
         self.assertIn(str(legacy_backlog.resolve()), payload["removed"])
         self.assertIn(str(removed_orchestration_dir.resolve()), payload["removed"])
         if legacy_skill_path != skill_path:

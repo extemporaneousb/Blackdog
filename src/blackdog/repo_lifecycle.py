@@ -315,6 +315,43 @@ def _looks_like_blackdog_source_checkout(root: Path) -> bool:
     return str((payload.get("project") or {}).get("name") or "") == "blackdog"
 
 
+def _repo_visible_lifecycle_paths(
+    project_root: Path,
+    *,
+    created: list[str],
+    updated: list[str],
+    removed: list[str],
+) -> tuple[str, ...]:
+    visible: list[str] = []
+    for raw_path in (*created, *updated, *removed):
+        path = Path(raw_path)
+        try:
+            relative = path.resolve().relative_to(project_root.resolve())
+        except ValueError:
+            continue
+        if not relative.parts or relative.parts[0] in {".VE", ".git"}:
+            continue
+        visible.append(str(path))
+    return tuple(dict.fromkeys(visible))
+
+
+def _append_repo_visible_dirty_note(
+    notes: list[str],
+    project_root: Path,
+    *,
+    created: list[str],
+    updated: list[str],
+    removed: list[str],
+) -> None:
+    changed = _repo_visible_lifecycle_paths(project_root, created=created, updated=updated, removed=removed)
+    if not changed:
+        return
+    notes.append(
+        "repo lifecycle changed managed worktree files; the primary checkout stays dirty until "
+        "these changes are committed, landed, reverted, or explicitly reported; run `git status --short` before finishing"
+    )
+
+
 def _current_blackdog_source_root() -> Path | None:
     candidate = Path(__file__).resolve().parents[2]
     if _looks_like_blackdog_source_checkout(candidate):
@@ -516,6 +553,7 @@ def _render_repo_agents_contract(profile: RepoProfile) -> str:
         "- Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.",
         "- Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.",
         "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser. Prefer Codex in-app browser tools or headless evidence.",
+        "- After `repo install`, `repo update`, or `repo refresh`, run `git status --short`; commit or land managed repo changes, or report the checkout as intentionally dirty before finishing.",
         "- Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.",
     ]
     if routed_docs:
@@ -578,7 +616,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "Use this repo-local skill for normal development requests. The skill is backed by the repo-local Blackdog CLI, but users do not need to name Blackdog workflow primitives in ordinary requests.\n"
         "`blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.\n\n"
         "## User Workflows\n\n"
-        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed.\n"
+        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
         f"- `${skill_name} do <task-description>`: build a concise execution prompt from the request and routed docs, run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`, make changes only in the returned task workspace, validate, then land with `./.VE/bin/blackdog task land --project-root . --summary \"...\"`.\n"
         f"- `${skill_name} PM-mode <outline>`: turn the outline into planned tasks with guardrails, execute one ready slice at a time, review `summary`, `snapshot`, and `attempts summary` after each attempt, cancel superseded work, and stop when done, blocked, or user input is needed.\n\n"
@@ -589,6 +627,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
         "## Operator Guardrails\n\n"
         "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser; prefer Codex in-app browser tools or headless evidence.\n"
+        "- After `repo install`, `repo update`, or `repo refresh`, run `git status --short`; commit or land managed repo changes, or report the checkout as intentionally dirty before finishing.\n"
         "- Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.\n\n"
         "## Docs To Review\n\n"
         f"{docs}\n"
@@ -1144,6 +1183,13 @@ def install_repo(
         preserved.append(str(legacy_skill))
         notes.append("legacy repo skill path still exists; run `blackdog repo refresh` to migrate it to the repo-slug skill path")
 
+    _append_repo_visible_dirty_note(
+        notes,
+        profile.paths.project_root,
+        created=created,
+        updated=updated,
+        removed=removed,
+    )
     return RepoLifecycleResult(
         action="install",
         project_root=str(profile.paths.project_root),
@@ -1201,6 +1247,13 @@ def update_repo(
         else:
             notes.append("repo skill is missing; run `blackdog repo refresh` to regenerate it")
 
+    _append_repo_visible_dirty_note(
+        notes,
+        profile.paths.project_root,
+        created=created,
+        updated=updated,
+        removed=removed,
+    )
     return RepoLifecycleResult(
         action="update",
         project_root=str(profile.paths.project_root),
@@ -1245,6 +1298,13 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
         updated=[],
         preserved=preserved,
         notes=notes,
+    )
+    _append_repo_visible_dirty_note(
+        notes,
+        profile.paths.project_root,
+        created=[],
+        updated=updated,
+        removed=removed,
     )
     return RepoLifecycleResult(
         action="refresh",

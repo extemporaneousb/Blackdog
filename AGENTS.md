@@ -91,6 +91,7 @@ Keep repo-specific requirements outside this block.
 - Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.
 - Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.
 - Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser. Prefer Codex in-app browser tools or headless evidence.
+- After `repo install`, `repo update`, or `repo refresh`, run `git status --short`; commit or land managed repo changes, or report the checkout as intentionally dirty before finishing.
 - Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.
 
 Review these routed docs before editing when they apply:
