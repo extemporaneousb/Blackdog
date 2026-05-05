@@ -229,8 +229,11 @@ history stay aligned. Repo-local skills may provide a skill-composed execution
 prompt while separately recording the raw user request. Recovery-oriented flows
 use `task show`, `task recover`, `task close`, `task cancel`, `task reopen`,
 `task cleanup`, `worktree show`, and `worktree close` when the canonical
-success path cannot finish. Abandoned work cancels the task by default so it
-does not reappear in the normal next-task or summary views.
+success path cannot finish. Operational landing blockers keep the active
+attempt retryable; the agent fixes the blocker and reruns `task land` or
+`worktree land` unless it explicitly closes the attempt as blocked, failed, or
+abandoned. Abandoned work cancels the task by default so it does not reappear
+in the normal next-task or summary views.
 
 The explicit planned-task operator path remains:
 

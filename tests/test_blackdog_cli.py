@@ -1264,11 +1264,11 @@ class BlackdogCliTests(CoreAuditTestCase):
             text=True,
         )
 
-    def test_worktree_land_closes_the_attempt_when_landing_is_blocked(self) -> None:
+    def test_worktree_land_keeps_attempt_active_when_landing_is_blocked_and_can_retry(self) -> None:
         payload = {
             "id": "blocked-land",
             "title": "Blocked land",
-            "tasks": [{"id": "BL-1", "title": "Block landing", "intent": "close the attempt when landing cannot proceed"}],
+            "tasks": [{"id": "BL-1", "title": "Block landing", "intent": "retry after landing cannot proceed"}],
         }
         self.run_cli(
             "workset",
@@ -1296,6 +1296,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         start_payload = json.loads(stdout)["worktree"]
+        attempt_id = start_payload["attempt_id"]
         worktree_path = Path(start_payload["worktree_path"])
         (worktree_path / "blocked.txt").write_text("blocked\n", encoding="utf-8")
         (self.root / "primary-dirty.txt").write_text("dirty\n", encoding="utf-8")
@@ -1319,7 +1320,48 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(stderr, "")
         land_payload = json.loads(stdout)["landing"]
         self.assertEqual(land_payload["status"], "blocked")
+        self.assertEqual(land_payload["attempt_id"], attempt_id)
+        self.assertTrue(land_payload["attempt_active"])
         self.assertIn("dirty primary worktree", land_payload["error"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "blocked-land",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["counts"]["active_attempts"], 1)
+        self.assertEqual(summary["counts"]["claimed_tasks"], 1)
+        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "in_progress")
+
+        (self.root / "primary-dirty.txt").unlink()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "blocked-land",
+            "--task",
+            "BL-1",
+            "--actor",
+            "codex",
+            "--summary",
+            "retried the blocked land slice",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        retry_payload = json.loads(stdout)["landing"]
+        self.assertEqual(retry_payload["status"], "success")
+        self.assertEqual(retry_payload["attempt_id"], attempt_id)
+        self.assertIn("blocked.txt", retry_payload["changed_paths"])
+        self.assertFalse(worktree_path.exists())
+        self.assertEqual((self.root / "blocked.txt").read_text(encoding="utf-8"), "blocked\n")
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -1333,21 +1375,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         summary = json.loads(stdout)
         self.assertEqual(summary["counts"]["active_attempts"], 0)
         self.assertEqual(summary["counts"]["claimed_tasks"], 0)
-        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "blocked")
-
-        subprocess.run(
-            ["git", "-C", str(self.root), "worktree", "remove", str(worktree_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(self.root), "branch", "-D", start_payload["branch"]],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        (self.root / "primary-dirty.txt").unlink()
+        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "success")
 
     def test_attempts_summary_and_table_report_completed_history(self) -> None:
         profile = load_profile(self.root)

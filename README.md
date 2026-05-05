@@ -82,6 +82,9 @@ canonical landed commit carries `Blackdog-Workset`, `Blackdog-Task`,
 follow-up trailers supplied at land time. Runtime `commit` is the task-branch
 head Blackdog landed from; `landed_commit` is the canonical commit created on
 the target branch.
+If an operational blocker prevents landing, such as a dirty primary checkout
+or stale branch base, the active attempt remains open so the agent can fix the
+blocker and rerun `task land` or `worktree land`.
 `blackdog task begin` accepts `--prompt-mode raw|tuned|skill` so the
 same-thread entrypoint can record a direct user prompt, run the prompt through
 repo-local tuning, or record a skill-composed execution prompt with separate

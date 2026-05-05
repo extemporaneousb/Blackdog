@@ -672,10 +672,12 @@ It:
 - removes the task worktree and deletes its branch unless `--keep-worktree` is
   set
 
-If the operational landing step cannot complete, `worktree land` closes the
-active attempt as `blocked`, records the end time and note, releases the
-claims, and returns a non-zero exit code. That prevents stale direct-WTAM
-claims from lingering after a failed landing.
+If the operational landing step cannot complete, `worktree land` returns a
+non-zero exit code but keeps the active attempt and claims intact. Fix the
+landing blocker, such as a dirty primary checkout or stale task branch base,
+then rerun `worktree land` or `task land` against the same attempt. Use
+`worktree close` or `task close` only when the work should be explicitly closed
+as `blocked`, `failed`, or `abandoned` without landing code.
 
 ### `blackdog worktree close`
 

@@ -1978,21 +1978,40 @@ def land_task_worktree(
             cleanup=cleanup,
         )
     except Exception as exc:
-        payload = close_task_worktree(
-            profile,
-            workset_id=workset_id,
-            task_id=task_id,
-            actor=actor,
-            status=ATTEMPT_STATUS_BLOCKED,
-            summary=f"Landing blocked: {exc}",
-            validations=validations,
-            residuals=residuals,
-            followup_candidates=followup_candidates,
-            note=note or str(exc),
-            cleanup=False,
-        )
-        payload["error"] = str(exc)
-        return payload
+        if branch_head_commit is None:
+            completed = _run_git_no_check(find_primary_worktree(profile.paths.project_root), "rev-parse", attempt.branch)
+            if completed.returncode == 0:
+                branch_head_commit = completed.stdout.strip() or None
+        return {
+            "branch": attempt.branch,
+            "target_branch": attempt.target_branch,
+            "primary_worktree": str(find_primary_worktree(profile.paths.project_root)),
+            "target_worktree": None,
+            "landing_worktree": None,
+            "landed_commit": None,
+            "diff_file": None,
+            "diffstat_file": None,
+            "changed_paths": list(changed_paths),
+            "cleanup": cleanup,
+            "cleaned_worktree": None,
+            "deleted_branch": False,
+            "removed_temporary_target": False,
+            "attempt_id": attempt.attempt_id,
+            "task_id": attempt.task_id,
+            "status": "blocked",
+            "summary": f"Landing blocked: {exc}",
+            "commit": branch_head_commit,
+            "commit_message": commit_message,
+            "worktree_path": str(task_worktree) if task_worktree is not None else None,
+            "error": str(exc),
+            "attempt_active": True,
+            "recommended_actions": [
+                "fix the landing blocker and rerun `blackdog task land` from the task worktree, "
+                "or `blackdog worktree land` with --workset/--task",
+                "run `blackdog task close --status blocked|failed|abandoned` from the task worktree, "
+                "or `blackdog worktree close --status blocked|failed|abandoned` with --workset/--task",
+            ],
+        }
 
     changed = tuple(landing["changed_paths"])
     finished = finish_task(
@@ -2364,7 +2383,24 @@ def render_land_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
     workspace_label = "task workspace" if surface == "task" else "worktree"
     target_label = "checkout" if surface == "task" else "worktree"
     if payload.get("status") and payload["status"] != "success":
-        return render_close_text(payload, surface=surface)
+        lines = [
+            f"{prefix} land blocked: {payload['branch']} -> {payload['target_branch']}",
+            f"{prefix} attempt: {payload['attempt_id']}",
+            f"{prefix} attempt remains active: {'yes' if payload.get('attempt_active') else 'no'}",
+        ]
+        if payload.get("worktree_path"):
+            lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
+        if payload.get("commit"):
+            lines.append(f"{prefix} branch commit: {payload['commit']}")
+        if payload.get("changed_paths"):
+            lines.append(f"{prefix} changed paths: {', '.join(payload['changed_paths'])}")
+        if payload.get("error"):
+            lines.append(f"{prefix} error: {payload['error']}")
+        if payload.get("recommended_actions"):
+            recommended_actions = list(payload["recommended_actions"])
+            lines.append(f"{prefix} recommended actions:")
+            lines.extend(f"  - {item}" for item in recommended_actions)
+        return "\n".join(lines) + "\n"
     lines = [
         f"{prefix} landed: {payload['branch']} -> {payload['target_branch']}",
         f"{prefix} target {target_label}: {payload['target_worktree']}",
