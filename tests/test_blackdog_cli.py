@@ -44,6 +44,17 @@ class BlackdogCliTests(CoreAuditTestCase):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
 
+    def put_workset(self, payload: dict[str, object]) -> tuple[int, str, str]:
+        with patch.dict(os.environ, {"BLACKDOG_ENABLE_WORKSET_COMMANDS": "1"}, clear=False):
+            return self.run_cli(
+                "workset",
+                "put",
+                "--project-root",
+                str(self.root),
+                "--json",
+                json.dumps(payload),
+            )
+
     def install_repo_runtime(self) -> None:
         exit_code, _, stderr = self.run_cli(
             "repo",
@@ -77,6 +88,33 @@ class BlackdogCliTests(CoreAuditTestCase):
                 text=True,
             )
 
+    def test_workset_put_is_disabled_without_explicit_opt_in(self) -> None:
+        exit_code, stdout, stderr = self.run_cli(
+            "workset",
+            "put",
+            "--project-root",
+            str(self.root),
+            "--json",
+            json.dumps({"id": "accidental", "title": "Accidental", "tasks": []}),
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("direct workset authoring is disabled by default", stderr)
+        self.assertIn("BLACKDOG_ENABLE_WORKSET_COMMANDS=1", stderr)
+
+    def test_default_help_hides_planned_workset_commands(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                blackdog_main(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        help_text = stdout.getvalue()
+        self.assertIn("task", help_text)
+        self.assertIn("summary", help_text)
+        self.assertNotIn("workset", help_text)
+        self.assertNotIn("next", help_text)
+
     def test_workset_put_summary_next_and_snapshot_form_one_vertical_slice(self) -> None:
         payload = {
             "id": "vertical-slice",
@@ -102,14 +140,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "task_states": [{"task_id": "VS-1", "status": "done"}],
         }
 
-        exit_code, stdout, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        exit_code, stdout, stderr = self.put_workset(payload)
         self.assertEqual(exit_code, 0, stderr)
         self.assertEqual(json.loads(stdout)["workset"]["id"], "vertical-slice")
 
@@ -162,14 +193,15 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(snapshot["runtime_model"]["counts"]["attempts"], 0)
 
     def test_workset_put_rejects_non_object_payload(self) -> None:
-        exit_code, stdout, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            '["not-an-object"]',
-        )
+        with patch.dict(os.environ, {"BLACKDOG_ENABLE_WORKSET_COMMANDS": "1"}, clear=False):
+            exit_code, stdout, stderr = self.run_cli(
+                "workset",
+                "put",
+                "--project-root",
+                str(self.root),
+                "--json",
+                '["not-an-object"]',
+            )
         self.assertEqual(exit_code, 1)
         self.assertEqual(stdout, "")
         self.assertIn("JSON object payload", stderr)
@@ -180,14 +212,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "title": "Manual cancel",
             "tasks": [{"id": "CAN-1", "title": "Cancel this", "intent": "hide stale work"}],
         }
-        exit_code, _, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        exit_code, _, stderr = self.put_workset(payload)
         self.assertEqual(exit_code, 0, stderr)
 
         exit_code, stdout, stderr = self.run_cli(
@@ -283,14 +308,7 @@ class BlackdogCliTests(CoreAuditTestCase):
                 }
             ],
         }
-        exit_code, stdout, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        exit_code, stdout, stderr = self.put_workset(payload)
         self.assertEqual(exit_code, 0, stderr)
         self.install_repo_runtime()
 
@@ -336,14 +354,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "branch_intent": {"target_branch": "main", "integration_branch": "feature/direct-mode"},
             "tasks": [{"id": "DM-1", "title": "Record stats", "intent": "exercise direct-agent mode"}],
         }
-        exit_code, stdout, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        exit_code, stdout, stderr = self.put_workset(payload)
         self.assertEqual(exit_code, 0, stderr)
         self.install_repo_runtime()
 
@@ -1170,14 +1181,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "title": "Recovery mode",
             "tasks": [{"id": "RC-1", "title": "Recover the slice", "intent": "inspect and close an active attempt"}],
         }
-        self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        self.put_workset(payload)
         self.install_repo_runtime()
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -1270,14 +1274,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "title": "Blocked land",
             "tasks": [{"id": "BL-1", "title": "Block landing", "intent": "retry after landing cannot proceed"}],
         }
-        self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        self.put_workset(payload)
         self.install_repo_runtime()
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -1384,14 +1381,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "title": "Terminal land",
             "tasks": [{"id": "TL-1", "title": "Close no-op land", "intent": "close terminal land failures"}],
         }
-        self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        self.put_workset(payload)
         self.install_repo_runtime()
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
@@ -1597,14 +1587,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "title": "Invalid validation",
             "tasks": [{"id": "IV-1", "title": "Reject invalid validation", "intent": "guard the CLI"}],
         }
-        self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        self.put_workset(payload)
         self.install_repo_runtime()
         exit_code, stdout, stderr = self.run_cli(
             "worktree",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -82,8 +83,31 @@ from blackdog_core.snapshot import (
 from blackdog_core.state import PROMPT_MODES, StoreError, VALIDATION_STATUSES, ValidationRecord
 
 
+WORKSET_COMMANDS_ENABLE_ENV = "BLACKDOG_ENABLE_WORKSET_COMMANDS"
+
+
 def _emit_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _workset_commands_enabled() -> bool:
+    return os.environ.get(WORKSET_COMMANDS_ENABLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_workset_commands_enabled() -> None:
+    if not _workset_commands_enabled():
+        raise BacklogError(
+            "direct workset authoring is disabled by default; set "
+            f"{WORKSET_COMMANDS_ENABLE_ENV}=1 only for deliberate planned-task migration or repair"
+        )
+
+
+def _hide_subparser_help(subparsers: argparse._SubParsersAction, command: str) -> None:
+    subparsers._choices_actions = [  # noqa: SLF001 - argparse has no public hook for hiding one legacy command.
+        action
+        for action in subparsers._choices_actions  # noqa: SLF001
+        if action.dest != command
+    ]
 
 
 def _load_json_payload(*, raw_json: str | None, file_path: str | None) -> dict[str, Any]:
@@ -155,13 +179,17 @@ def _parse_validation_flags(values: list[str]) -> tuple[ValidationRecord, ...]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackdog")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{init,summary,snapshot,prompt,attempts,codex,repo,task,worktree}",
+    )
 
     p_init = subparsers.add_parser("init", help="Write a default vNext Blackdog profile")
     p_init.add_argument("--project-root", default=".")
     p_init.add_argument("--project-name", required=True)
 
-    p_summary = subparsers.add_parser("summary", help="Summarize vNext workset and task runtime state")
+    p_summary = subparsers.add_parser("summary", help="Summarize task runtime state")
     p_summary.add_argument("--project-root", default=".")
     p_summary.add_argument("--workset")
     p_summary.add_argument("--include-canceled", action="store_true")
@@ -171,10 +199,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_snapshot.add_argument("--project-root", default=".")
     p_snapshot.add_argument("--workset")
 
-    p_next = subparsers.add_parser("next", help="Select the next task within one workset")
+    p_next = subparsers.add_parser("next", help=argparse.SUPPRESS)
     p_next.add_argument("--project-root", default=".")
     p_next.add_argument("--workset", required=True)
     p_next.add_argument("--json", action="store_true")
+    _hide_subparser_help(subparsers, "next")
 
     p_prompt = subparsers.add_parser("prompt", help="Preview or tune prompt composition against the repo contract")
     prompt_subparsers = p_prompt.add_subparsers(dest="prompt_command", required=True)
@@ -283,12 +312,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_refresh.add_argument("--project-root", default=".")
     p_repo_refresh.add_argument("--json", action="store_true")
 
-    p_workset = subparsers.add_parser("workset", help="Create or update vNext workset planning state")
+    p_workset = subparsers.add_parser("workset", help=argparse.SUPPRESS)
     workset_subparsers = p_workset.add_subparsers(dest="workset_command", required=True)
     p_workset_put = workset_subparsers.add_parser("put", help="Upsert one workset and optional task runtime rows")
     p_workset_put.add_argument("--project-root", default=".")
     p_workset_put.add_argument("--json")
     p_workset_put.add_argument("--file")
+    _hide_subparser_help(subparsers, "workset")
 
     p_task = subparsers.add_parser("task", help="Composed single-agent task workflow")
     task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
@@ -701,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "workset" and args.workset_command == "put":
+            _require_workset_commands_enabled()
             payload = _load_json_payload(raw_json=args.json, file_path=args.file)
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             workset = upsert_workset(profile, payload)

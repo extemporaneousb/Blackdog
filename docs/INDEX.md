@@ -36,7 +36,6 @@ CLI surfaces.
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
-- `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task recover`
@@ -46,7 +45,6 @@ CLI surfaces.
 - `blackdog task reopen`
 - `blackdog task cleanup`
 - `blackdog summary`
-- `blackdog next --workset`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`

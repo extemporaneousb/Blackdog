@@ -3,10 +3,12 @@ from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+from unittest.mock import patch
 
 from blackdog_cli.main import main as blackdog_main
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
@@ -19,6 +21,17 @@ class EnvHandlerTests(CoreAuditTestCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def put_workset(self, project_root: Path, payload: dict[str, object]) -> tuple[int, str, str]:
+        with patch.dict(os.environ, {"BLACKDOG_ENABLE_WORKSET_COMMANDS": "1"}, clear=False):
+            return self.run_cli(
+                "workset",
+                "put",
+                "--project-root",
+                str(project_root),
+                "--json",
+                json.dumps(payload),
+            )
 
     def _commit_if_dirty(self, repo_root: Path, message: str) -> None:
         status = subprocess.run(
@@ -56,14 +69,7 @@ class EnvHandlerTests(CoreAuditTestCase):
             "title": "Env Host",
             "tasks": [{"id": "ENVH-1", "title": "Start worktree", "intent": "exercise env handlers"}],
         }
-        exit_code, _, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self.root),
-            "--json",
-            json.dumps(payload),
-        )
+        exit_code, _, stderr = self.put_workset(self.root, payload)
         self.assertEqual(exit_code, 0, stderr)
 
         exit_code, stdout, stderr = self.run_cli(
@@ -114,14 +120,7 @@ class EnvHandlerTests(CoreAuditTestCase):
             "title": "Self Env",
             "tasks": [{"id": "SELF-1", "title": "Use target repo mode", "intent": "exercise self-host env handlers"}],
         }
-        exit_code, _, stderr = self.run_cli(
-            "workset",
-            "put",
-            "--project-root",
-            str(self_repo),
-            "--json",
-            json.dumps(payload),
-        )
+        exit_code, _, stderr = self.put_workset(self_repo, payload)
         self.assertEqual(exit_code, 0, stderr)
 
         exit_code, stdout, stderr = self.run_cli(

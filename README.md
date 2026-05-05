@@ -1,12 +1,11 @@
 # Blackdog
 
-Blackdog is a machine-native planning and runtime kernel for AI-first repo
-work.
+Blackdog is a machine-native task and attempt runtime for AI-first repo work.
 
-It owns a typed workset/task store under a shared control root and a WTAM
-kept-change workflow on top of that store. Humans primarily author docs,
-approvals, and prompts. Agents mutate planning and runtime state through the
-CLI and typed runtime operations.
+It owns a WTAM kept-change workflow plus typed runtime history under a shared
+control root. Humans primarily author docs, approvals, and prompts. Agents use
+the CLI to execute isolated tasks, recover interrupted attempts, and record the
+results needed for prompt shaping and performance measurement.
 
 ## Shipped Surface
 
@@ -21,7 +20,6 @@ The current shipped CLI is deliberately narrow:
 - `blackdog prompt tune`
 - `blackdog attempts summary`
 - `blackdog attempts table`
-- `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task recover`
@@ -31,7 +29,6 @@ The current shipped CLI is deliberately narrow:
 - `blackdog task reopen`
 - `blackdog task cleanup`
 - `blackdog summary`
-- `blackdog next --workset`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree preview`
@@ -42,8 +39,8 @@ The current shipped CLI is deliberately narrow:
 - `blackdog worktree cleanup`
 
 The shipped surface is split across repo lifecycle/operator-read surfaces
-(`repo`, `prompt`, and `attempts`), workset shaping/inspection, same-thread
-`task` execution, and explicit `worktree` control.
+(`repo`, `prompt`, and `attempts`), same-thread `task` execution, status and
+history reads, and explicit `worktree` control.
 
 Everything else from the legacy backlog/board/bootstrap/orchestration era remains
 removed from the active repo surface and must be rebuilt explicitly on top of
@@ -99,9 +96,10 @@ in-progress attempt without landing code, `blackdog task cancel` and
 `blackdog task cleanup` to remove a retained task workspace. Abandoned closes
 cancel the task by default, so normal `summary` and `next` stay focused on live
 work; use `summary --include-canceled` for audit views.
-Use `blackdog next --workset WORKSET` for human or recovery-oriented task
-selection inside one workset; explicit planned-task flows can still go through
-`worktree preview` and `worktree start` when they need that control.
+Direct planned-task authoring is disabled by default. If old planned state
+needs migration or repair, `BLACKDOG_ENABLE_WORKSET_COMMANDS=1 blackdog
+workset put ...` keeps the low-level escape hatch available without making it
+part of normal repo work.
 
 Blackdog has no non-WTAM implementation mode.
 

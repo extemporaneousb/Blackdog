@@ -1,6 +1,6 @@
 # AGENTS
 
-Blackdog is a machine-native workset/task runtime for AI-driven local
+Blackdog is a machine-native task and attempt runtime for AI-driven local
 development.
 
 ## Working Rules
@@ -25,14 +25,13 @@ development.
   - `blackdog repo analyze|bind|table|install|update|refresh|archive|unarchive|unbind`
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
-  - `blackdog workset put`
   - `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
   - `blackdog summary`
-  - `blackdog next --workset`
   - `blackdog snapshot`
   - `blackdog worktree preflight|preview|start|show|land|close|cleanup`
-- Treat `blackdog next` as a workset-scoped operator/recovery surface. The
-  direct-agent WTAM path usually already knows `--workset` and `--task`.
+- Direct planned-task authoring is disabled by default. Keep normal repo work
+  on `task begin`, `task land`, and the task recovery surfaces until a planned
+  workflow has clear value again.
 - Use `blackdog worktree preview` before `start` when you need to inspect the
   prompt receipt, repo contract inputs, branch/worktree plan, or worktree-local
   handler plan.

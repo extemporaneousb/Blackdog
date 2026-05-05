@@ -2466,8 +2466,7 @@ def render_task_state_text(payload: dict[str, Any]) -> str:
 
 def render_task_begin_text(spec: TaskBeginSpec, *, show_prompt: bool = False) -> str:
     lines = [
-        f"[blackdog-task] begin: {spec.workset_id}/{spec.task_id} actor={spec.actor}",
-        f"[blackdog-task] created workset: {'yes' if spec.created_workset else 'no'}",
+        f"[blackdog-task] begin: {spec.task_id} actor={spec.actor}",
         f"[blackdog-task] prompt mode: {spec.prompt_mode}",
         f"[blackdog-task] user prompt hash: {spec.user_prompt_hash}",
         f"[blackdog-task] execution prompt hash: {spec.execution_prompt_hash}",

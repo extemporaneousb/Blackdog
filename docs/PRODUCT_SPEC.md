@@ -22,11 +22,11 @@ The normal prompts are:
 
 - `$blackdog install or update in this repo` before the repo-local skill exists
 - `$<repo-name> do <task-description>` for current-thread implementation
-- `$<repo-name> PM-mode <outline>` for a guarded multi-step loop
 
 The explicit `blackdog` CLI remains the implementation surface behind that
-skill. Worksets, tasks, WTAM, and worktrees are the runtime contract; users do
-not need to name those concepts in ordinary repo work.
+skill. Task execution, recovery, attempt history, and WTAM worktrees are the
+repo-facing runtime contract; users do not need to name lower-level planning
+objects in ordinary repo work.
 
 Humans should use Blackdog to:
 
@@ -36,7 +36,6 @@ Humans should use Blackdog to:
 
 Agents should use Blackdog to:
 
-- shape work into worksets and tasks
 - execute kept-change tasks through the WTAM worktree lifecycle
 - record prompts, results, and runtime evidence
 - expose status and history back to humans
@@ -152,10 +151,10 @@ encoded as planning state.
 The generated repo skill is the user-facing overlay. Its `do` workflow turns a
 request into a skill-composed execution prompt, starts the normal same-thread
 task path with `prompt-mode=skill`, records the raw user prompt separately, and
-lands one canonical commit after validation. Its `PM-mode` workflow turns a
-larger outline into planned tasks with guardrails, executes ready slices one at
-a time, reviews summary/snapshot/attempt history after each slice, cancels
-superseded work, and stops when done, blocked, or user input is needed.
+lands one canonical commit after validation. Planned multi-task orchestration is
+not exposed through the repo skill in v1. For multi-agent work, use the active
+Codex thread directly and let Blackdog capture the durable task attempt results
+it can measure.
 
 ## V1 Stories
 
@@ -175,6 +174,10 @@ Blackdog must support:
 - a status view that shows the newly shaped work
 
 This is the intake story. If this is clumsy, Blackdog will not get used.
+
+Direct planned-task authoring remains a low-level capability for migration and
+repair only. The public repo workflow should not require a human or agent to
+create this state before starting ordinary work.
 
 ### Story 2: Ask What To Do Next
 
@@ -218,8 +221,8 @@ For v1, the default same-thread kept-change path should be:
 - `blackdog task land`
 
 `task begin` should create, claim, and start the task envelope in one action.
-It may create a one-task workset automatically when the caller does not target
-existing planning state. `task land` is the normative success-closure action.
+It may create a private one-task execution envelope when the caller does not
+target existing planning state. `task land` is the normative success-closure action.
 It should create one canonical landed commit per successful task attempt,
 record runtime, release claims, and clean up by default. That landed commit
 should carry canonical trailers for workset/task/attempt identity, changed
@@ -396,7 +399,6 @@ This is the decision frame for the rest of the repo.
 - `worktree close`
 - `worktree cleanup`
 - `summary`
-- `next --workset`
 - `snapshot`
 
 ### Keep With Changes
@@ -415,6 +417,10 @@ This is the decision frame for the rest of the repo.
   unbind/tune plus attempt inspection as first-class workflows, but rebuild
   them as explicit repo lifecycle/operator surfaces in the product layer
   rather than as task or workset operations
+- direct planned-task authoring:
+  keep the typed model capability, but disable the direct write surface by
+  default and keep it out of generated repo skills until a real workflow earns
+  it back
 
 ### Combine
 
@@ -422,8 +428,7 @@ This is the decision frame for the rest of the repo.
   default same-thread direct flow
 - success record + canonical landed commit + default cleanup are one
   finish/report action in `direct_wtam`
-- summary + next may remain separate commands but should read from one status
-  model
+- summary and snapshot should read from one status model
 
 ### Defer
 

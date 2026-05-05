@@ -1,4 +1,4 @@
 interface:
   display_name: "Blackdog Development"
   short_description: "Repo-local development overlay"
-  default_prompt: "Use $blackdog do <task-description> for repo work, or $blackdog PM-mode <outline> for guarded multi-step work."
+  default_prompt: "Use $blackdog do <task-description> for repo work."

@@ -351,13 +351,27 @@ plus prompt-hash and contract metadata.
 
 ### `blackdog workset put`
 
+Low-level planned-task authoring is disabled by default and is not part of the
+normal repo skill workflow. Use `task begin`, `task show`, `task recover`, and
+`task land` for ordinary kept-change work.
+
+To deliberately repair or migrate planned task state, opt in for that command:
+
+```bash
+BLACKDOG_ENABLE_WORKSET_COMMANDS=1 \
+  blackdog workset put --project-root /path/to/repo --file workset.json
+```
+
 Create or update one workset in `planning.json`.
 The same payload may also carry optional `task_states` rows, which patch the
 matching workset in `runtime.json`.
 
 ```bash
-blackdog workset put --project-root /path/to/repo --file workset.json
-blackdog workset put --project-root /path/to/repo --json '{"id":"kernel", ...}'
+BLACKDOG_ENABLE_WORKSET_COMMANDS=1 \
+  blackdog workset put --project-root /path/to/repo --file workset.json
+
+BLACKDOG_ENABLE_WORKSET_COMMANDS=1 \
+  blackdog workset put --project-root /path/to/repo --json '{"id":"kernel", ...}'
 ```
 
 Payload shape:
@@ -410,10 +424,11 @@ Important flags:
 - optional `--show-prompt`
 
 `task begin` is the default same-thread agent entrypoint. When `--workset` and
-`--task` are omitted, it creates a one-task workset automatically, claims it
-for the caller, records both the raw user prompt receipt and the execution
-prompt receipt, provisions the task worktree, and starts the WTAM attempt in
-one command.
+`--task` are omitted, it creates the internal one-task execution envelope,
+claims it for the caller, records both the raw user prompt receipt and the
+execution prompt receipt, provisions the task worktree, and starts the WTAM
+attempt in one command. That envelope is runtime bookkeeping for attempt
+history and recovery, not a repo-facing planning workflow.
 
 `--prompt-mode raw` records the supplied prompt directly. `--prompt-mode tuned`
 runs the user request through `blackdog prompt tune` first and records the
@@ -893,7 +908,12 @@ Normal summary hides canceled tasks and canceled-only worksets. Use
 
 ### `blackdog next`
 
-Select the next task inside one workset.
+Low-level read surface for existing planned-task state. This command is hidden
+from the normal help surface because generated repo skills should use
+`task begin`, task recovery, `summary`, `snapshot`, and attempt history instead
+of asking agents to manage planned task queues.
+
+Select the next task inside one existing workset.
 
 ```bash
 blackdog next --project-root /path/to/repo --workset kernel

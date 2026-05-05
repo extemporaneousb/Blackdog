@@ -619,11 +619,11 @@ def render_repo_skill(profile: RepoProfile) -> str:
         f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
         f"- `${skill_name} do <task-description>`: build a concise execution prompt from the request and routed docs, run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`, make changes only in the returned task workspace, validate, then land with `./.VE/bin/blackdog task land --project-root . --summary \"...\"`.\n"
-        f"- `${skill_name} PM-mode <outline>`: turn the outline into planned tasks with guardrails, execute one ready slice at a time, review `summary`, `snapshot`, and `attempts summary` after each attempt, cancel superseded work, and stop when done, blocked, or user input is needed.\n\n"
+        "- For multi-agent work, use the active Codex thread directly and keep Blackdog focused on the task execution and attempt history it can record through the normal `do` flow.\n\n"
         "## Internal CLI Surface\n\n"
         f"- repo lifecycle: {repo_lifecycle_surface}\n"
         "- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
-        "- planned execution: `workset put`, `summary`, `next --workset`, `snapshot`, and the explicit `worktree` commands when low-level recovery is needed\n"
+        "- status and evidence: `summary`, `snapshot`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`\n"
         "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
         "## Operator Guardrails\n\n"
         "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser; prefer Codex in-app browser tools or headless evidence.\n"
@@ -640,7 +640,7 @@ def render_repo_skill_metadata(profile: RepoProfile) -> str:
         "interface:\n"
         f"  display_name: {_yaml_quote(f'{profile.project_name} Development')}\n"
         f"  short_description: {_yaml_quote('Repo-local development overlay')}\n"
-        f"  default_prompt: {_yaml_quote(f'Use ${skill_name} do <task-description> for repo work, or ${skill_name} PM-mode <outline> for guarded multi-step work.')}\n"
+        f"  default_prompt: {_yaml_quote(f'Use ${skill_name} do <task-description> for repo work.')}\n"
     )
 
 

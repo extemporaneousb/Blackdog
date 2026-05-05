@@ -77,6 +77,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("attempts summary", cli_doc)
         self.assertIn("attempts table", cli_doc)
         self.assertIn("workset put", cli_doc)
+        self.assertIn("BLACKDOG_ENABLE_WORKSET_COMMANDS=1", cli_doc)
         self.assertIn("task begin", cli_doc)
         self.assertIn("task show", cli_doc)
         self.assertIn("task recover", cli_doc)

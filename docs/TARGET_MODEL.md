@@ -167,7 +167,6 @@ code, but they are removed from the vNext contract.
 
 The minimum coherent shipped slice after the sweep is:
 
-- one write surface for workset/task state: `blackdog workset put`
 - one same-thread task-begin surface: `blackdog task begin`
 - one same-thread task inspection surface: `blackdog task show`
 - one same-thread task recovery surface: `blackdog task recover`
@@ -185,7 +184,10 @@ The minimum coherent shipped slice after the sweep is:
 - one WTAM cleanup fallback surface: `blackdog task cleanup` (`worktree cleanup` remains a low-level alias)
 - one summary surface: `blackdog summary`
 - one machine snapshot surface: `blackdog snapshot`
-- one workset-scoped execution-facing read surface: `blackdog next --workset`
+
+Direct workset authoring and workset-scoped next-task selection remain
+low-level model capabilities for migration, repair, and future planned-task
+work. They are not part of the default repo-facing product surface.
 
 That slice is intentionally smaller than the previous Blackdog surface area.
 It is enough to prove the new foundation while keeping the package boundaries

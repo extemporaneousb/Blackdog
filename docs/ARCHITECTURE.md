@@ -115,7 +115,6 @@ The current coherent product surface on top of the new core is:
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
-- `blackdog workset put`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task recover`
@@ -132,15 +131,16 @@ The current coherent product surface on top of the new core is:
 - `blackdog worktree close`
 - `blackdog worktree cleanup`
 - `blackdog summary`
-- `blackdog next --workset`
 - `blackdog snapshot`
 
 The `task` family is the default same-thread WTAM path and is what generated
 repo-local skills use for `$<repo-name> do ...` requests. The skill may compose
 an execution prompt and pass it with `prompt-mode=skill` while recording the raw
 user request as separate prompt lineage.
-The `worktree` family remains the explicit planned-task path when an operator
-needs preflight, preview, or lower-level recovery control.
+The `worktree` family remains the explicit low-level WTAM path when an operator
+needs preflight, preview, or recovery control. Direct workset authoring remains
+available only behind an explicit opt-in for planned-task migration and repair;
+it is not part of the generated repo skill surface.
 
 The repo lifecycle family ships in `blackdog` as
 analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/unbind,
