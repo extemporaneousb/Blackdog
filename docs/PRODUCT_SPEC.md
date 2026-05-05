@@ -323,6 +323,7 @@ surfaces match the current package."
 Blackdog must support:
 
 - repo-local install/update/refresh behavior
+- first-class repo bind/table/archive/unarchive/unbind membership behavior
 - clear knowledge of which repo-managed files are in scope
 - skill/scaffold regeneration without confusing that operation with task
   execution
@@ -363,7 +364,7 @@ V1 should include these product capabilities:
 
 Blackdog should also keep a first-class repo lifecycle family in scope:
 
-- repo analyze/scaffold/install/update/refresh workflows
+- repo analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/unbind workflows
 - prompt/skill preview and tuning workflows
 - attempts summary/table as operator audit surfaces
 - Codex coverage/history indexing over `$CODEX_HOME/sessions`
@@ -410,9 +411,10 @@ This is the decision frame for the rest of the repo.
   keep the capability, but ground it in stored prompt receipts and attempt
   history instead of ad hoc chat memory
 - repo lifecycle workflows:
-  keep analyze/scaffold/install/update/refresh/tune plus attempt inspection as
-  first-class workflows, but rebuild them as explicit repo lifecycle/operator
-  surfaces in the product layer rather than as task or workset operations
+  keep analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/
+  unbind/tune plus attempt inspection as first-class workflows, but rebuild
+  them as explicit repo lifecycle/operator surfaces in the product layer
+  rather than as task or workset operations
 
 ### Combine
 
@@ -481,8 +483,9 @@ shape:
   recovery reads and non-success closure
 - one lower-level WTAM operator surface for planned-task execution when the
   caller needs explicit preflight/preview/start control
-- one repo lifecycle/operator surface family for analyze/scaffold/install/
-  update/refresh, prompt preview/tune, and attempt inspection
+- one repo lifecycle/operator surface family for analyze/bind/table/scaffold/
+  install/update/refresh/archive/unarchive/unbind, prompt preview/tune, and
+  attempt inspection
 - one human summary surface
 - one machine snapshot surface
 - one ready-task selection surface

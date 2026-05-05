@@ -12,6 +12,7 @@ class CoreConfigTests(CoreAuditTestCase):
         self.write_profile("Demo")
         profile = self.load_test_profile()
 
+        self.assertEqual(profile.status, profile_module.PROJECT_STATUS_ACTIVE)
         self.assertEqual(profile.paths.control_dir, (self.root / ".git" / "blackdog").resolve())
         self.assertEqual(profile.paths.planning_file, profile.paths.control_dir / "planning.json")
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
@@ -40,9 +41,38 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
         self.assertEqual(profile.validation_commands, ("make test",))
+        self.assertEqual(profile.status, profile_module.PROJECT_STATUS_ACTIVE)
         self.assertFalse(profile.handlers_explicit)
         self.assertEqual(profile.handlers[0].handler_id, "python")
         self.assertEqual(profile.handlers[1].handler_id, "blackdog")
+
+    def test_load_profile_accepts_project_statuses(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        original = profile_path.read_text(encoding="utf-8")
+
+        profile_path.write_text(
+            original.replace('[project]\n', '[project]\nstatus = "active"\n'),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.load_test_profile().status, profile_module.PROJECT_STATUS_ACTIVE)
+
+        profile_path.write_text(
+            original.replace('[project]\n', '[project]\nstatus = "archived"\n'),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.load_test_profile().status, profile_module.PROJECT_STATUS_ARCHIVED)
+
+    def test_load_profile_rejects_invalid_project_status(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8").replace('[project]\n', '[project]\nstatus = "paused"\n'),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(profile_module.ConfigError):
+            self.load_test_profile()
 
     def test_load_profile_rejects_invalid_handler_kind(self) -> None:
         (self.root / "blackdog.toml").write_text(

@@ -22,7 +22,7 @@ development.
   implementation mode.
 - The active shipped CLI surface is:
   - `blackdog init`
-  - `blackdog repo analyze|install|update|refresh`
+  - `blackdog repo analyze|bind|table|install|update|refresh|archive|unarchive|unbind`
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
   - `blackdog workset put`
@@ -44,7 +44,7 @@ development.
 - Do not use or preserve deleted backlog/board/inbox/render flows, the removed
   supervisor flow, or the old bootstrap/tune implementations unless they are
   explicitly rebuilt on top of the vNext core model.
-- Repo lifecycle/operator surfaces such as `repo analyze|install|update|refresh`,
+- Repo lifecycle/operator surfaces such as `repo analyze|bind|table|install|update|refresh|archive|unarchive|unbind`,
   `prompt preview|tune`, and `attempts summary|table` are distinct from
   workset/task execution. Keep them in the product layer and do not encode them
   as workset/task semantics.

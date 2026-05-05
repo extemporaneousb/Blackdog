@@ -19,6 +19,16 @@ from blackdog.repo_lifecycle import (
     scaffold_repo,
     update_repo,
 )
+from blackdog.repo_membership import (
+    archive_repo,
+    bind_repo,
+    build_repo_table,
+    render_repo_status_text,
+    render_repo_table_text,
+    render_repo_unbind_text,
+    unarchive_repo,
+    unbind_repo,
+)
 from blackdog.wtam import (
     WorktreeError,
     begin_task_worktree,
@@ -223,6 +233,34 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_install.add_argument("--project-name")
     p_repo_install.add_argument("--source-root")
     p_repo_install.add_argument("--json", action="store_true")
+
+    p_repo_bind = repo_subparsers.add_parser("bind", help="Bind a repo to Blackdog-managed membership")
+    p_repo_bind.add_argument("--project-root", default=".")
+    p_repo_bind.add_argument("--project-name")
+    p_repo_bind.add_argument("--source-root")
+    p_repo_bind.add_argument("--json", action="store_true")
+
+    p_repo_table = repo_subparsers.add_parser("table", help="Report Blackdog repo membership under one or more roots")
+    p_repo_table.add_argument("--root", action="append", required=True)
+    p_repo_table.add_argument("--since")
+    p_repo_table.add_argument("--include-archived", action="store_true")
+    p_repo_table.add_argument("--no-codex", action="store_true")
+    p_repo_table.add_argument("--json", action="store_true")
+
+    p_repo_archive = repo_subparsers.add_parser("archive", help="Mark a Blackdog repo as archived")
+    p_repo_archive.add_argument("--project-root", default=".")
+    p_repo_archive.add_argument("--reason")
+    p_repo_archive.add_argument("--json", action="store_true")
+
+    p_repo_unarchive = repo_subparsers.add_parser("unarchive", help="Mark a Blackdog repo as active")
+    p_repo_unarchive.add_argument("--project-root", default=".")
+    p_repo_unarchive.add_argument("--json", action="store_true")
+
+    p_repo_unbind = repo_subparsers.add_parser("unbind", help="Preview or remove Blackdog-managed membership files")
+    p_repo_unbind.add_argument("--project-root", default=".")
+    p_repo_unbind.add_argument("--confirm", action="store_true")
+    p_repo_unbind.add_argument("--keep-control-dir", action="store_true")
+    p_repo_unbind.add_argument("--json", action="store_true")
 
     p_repo_analyze = repo_subparsers.add_parser("analyze", help="Inspect a target repo and propose a Blackdog conversion plan")
     p_repo_analyze.add_argument("--project-root", default=".")
@@ -566,6 +604,59 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"repo": result.to_dict()})
             else:
                 print(render_repo_lifecycle_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "bind":
+            result = bind_repo(
+                Path(args.project_root).resolve(),
+                project_name=args.project_name,
+                source_root=args.source_root,
+            )
+            if args.json:
+                _emit_json({"repo": result.to_dict()})
+            else:
+                print(render_repo_lifecycle_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "table":
+            result = build_repo_table(
+                tuple(Path(root).resolve() for root in args.root),
+                since=args.since,
+                include_archived=args.include_archived,
+                include_codex=not args.no_codex,
+            )
+            if args.json:
+                _emit_json({"repo_table": result.to_dict()})
+            else:
+                print(render_repo_table_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "archive":
+            result = archive_repo(Path(args.project_root).resolve(), reason=args.reason)
+            if args.json:
+                _emit_json({"repo": result.to_dict()})
+            else:
+                print(render_repo_status_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "unarchive":
+            result = unarchive_repo(Path(args.project_root).resolve())
+            if args.json:
+                _emit_json({"repo": result.to_dict()})
+            else:
+                print(render_repo_status_text(result), end="")
+            return 0
+
+        if args.command == "repo" and args.repo_command == "unbind":
+            result = unbind_repo(
+                Path(args.project_root).resolve(),
+                confirm=args.confirm,
+                keep_control_dir=args.keep_control_dir,
+            )
+            if args.json:
+                _emit_json({"repo_unbind": result.to_dict()})
+            else:
+                print(render_repo_unbind_text(result), end="")
             return 0
 
         if args.command == "repo" and args.repo_command == "analyze":

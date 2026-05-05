@@ -15,6 +15,9 @@ DEFAULT_VALIDATION_COMMANDS = (
 )
 DEFAULT_CONTROL_DIR = f"{GIT_COMMON_TOKEN}/blackdog"
 DEFAULT_WORKTREES_DIR = "../.worktrees"
+PROJECT_STATUS_ACTIVE = "active"
+PROJECT_STATUS_ARCHIVED = "archived"
+PROJECT_STATUSES = (PROJECT_STATUS_ACTIVE, PROJECT_STATUS_ARCHIVED)
 HANDLER_KIND_PYTHON_OVERLAY_VENV = "python-overlay-venv"
 HANDLER_KIND_BLACKDOG_RUNTIME = "blackdog-runtime"
 HANDLER_SCRIPT_POLICY_ROOT_BIN_FALLBACK = "root-bin-fallback"
@@ -98,6 +101,7 @@ RepoHandlerConfig = PythonOverlayVenvHandlerConfig | BlackdogRuntimeHandlerConfi
 @dataclass(frozen=True)
 class RepoProfile:
     project_name: str
+    status: str
     profile_version: int
     validation_commands: tuple[str, ...]
     doc_routing_defaults: tuple[str, ...]
@@ -185,6 +189,15 @@ def _bool_value(value: object, *, field: str) -> bool:
     if isinstance(value, bool):
         return value
     raise ConfigError(f"{field} must be a boolean")
+
+
+def _project_status(value: object) -> str:
+    status = _optional_text(value)
+    if status is None:
+        return PROJECT_STATUS_ACTIVE
+    if status not in PROJECT_STATUSES:
+        raise ConfigError(f"project.status must be one of {', '.join(PROJECT_STATUSES)}")
+    return status
 
 
 def _python_overlay_handler_defaults() -> PythonOverlayVenvHandlerConfig:
@@ -402,6 +415,7 @@ def load_profile(project_root: Path | None = None) -> RepoProfile:
     project_name = str(project.get("name") or root.name)
     return RepoProfile(
         project_name=project_name,
+        status=_project_status(project.get("status")),
         profile_version=int(project.get("profile_version") or 1),
         validation_commands=tuple(
             str(item) for item in taxonomy.get("validation_commands") or DEFAULT_VALIDATION_COMMANDS

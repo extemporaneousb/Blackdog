@@ -82,13 +82,14 @@ Blackdog has two product-layer workflow families:
 
 1. workset execution workflows over typed planning/runtime state
    (`workset`, `summary`, `next`, `task`, and `worktree`)
-2. repo lifecycle/operator-read workflows over repo analyze/scaffold/install/
-   update/refresh, prompt/skill composition, and attempt inspection
+2. repo lifecycle/operator-read workflows over repo analyze/bind/table/
+   scaffold/install/update/refresh/archive/unarchive/unbind, prompt/skill
+   composition, and attempt inspection
 
 The second family is intentionally not part of the workset/task durable model.
-Analyze/scaffold/install/update/refresh, prompt preview/tune, and attempts
-summary/table are product workflows, but they are not claims, tasks, or
-attempts.
+Analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/unbind,
+prompt preview/tune, and attempts summary/table are product workflows, but
+they are not claims, tasks, or attempts.
 
 Any future orchestration beyond the direct WTAM path still belongs in
 `blackdog`, not in `blackdog_core`. The core model should stay small while the
@@ -100,9 +101,14 @@ The current coherent product surface on top of the new core is:
 
 - `blackdog repo install`
 - `blackdog repo analyze`
+- `blackdog repo bind`
+- `blackdog repo table`
 - `blackdog repo scaffold`
 - `blackdog repo update`
 - `blackdog repo refresh`
+- `blackdog repo archive`
+- `blackdog repo unarchive`
+- `blackdog repo unbind`
 - `blackdog prompt preview`
 - `blackdog prompt tune`
 - `blackdog attempts summary`
@@ -137,13 +143,15 @@ The `worktree` family remains the explicit planned-task path when an operator
 needs preflight, preview, or lower-level recovery control.
 
 The repo lifecycle family ships in `blackdog` as
-analyze/scaffold/install/update/refresh, prompt preview/tune, and attempt
-inspection.
+analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/unbind,
+prompt preview/tune, and attempt inspection.
 
 For repos other than Blackdog itself, `repo analyze` is the read-only
 conversion entrypoint. It inventories agent docs, skills, `.VE`, launcher and
 profile state, then emits findings plus a proposed conversion plan before any
-repo files are mutated. `repo install` and `repo update` default to a managed
+repo files are mutated. `repo bind` is the first-class membership spelling for
+the install contract and wraps the same implementation as `repo install` while
+reporting action `bind`. `repo install` and `repo update` default to a managed
 Blackdog source checkout under the control root, sourced from GitHub.
 `--source-root` is the explicit local override.
 `repo scaffold` is the new-project entrypoint: it creates or reuses a target
@@ -163,6 +171,19 @@ Repo lifecycle commands report when they changed repo-visible managed files.
 Those changes intentionally leave the primary checkout dirty until an operator
 commits, lands, reverts, or explicitly reports them, so generated skills and
 managed contracts require a closing `git status --short` check.
+
+`repo table` is a cross-repo operator-read surface. It discovers membership by
+scanning supplied roots for `blackdog.toml`, deduplicates by resolved project
+root, and reads each repo's runtime, attempt, and optional Codex coverage
+views. It deliberately does not introduce a central registry. Optional
+`[project].status` in `blackdog.toml` controls membership visibility:
+missing means active, `archived` hides the repo from table output unless the
+operator asks for archived rows. `repo archive` and `repo unarchive` update
+only that status key. `repo unbind` is the inverse lifecycle cleanup surface:
+it previews by default, strips only the managed `AGENTS.md` block on confirm,
+removes Blackdog-managed profile/skill/launcher/control paths, preserves
+repo-owned text and unrelated dirty files, and preserves external control dirs
+outside the repo or git common dir.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

@@ -21,10 +21,15 @@ CLI surfaces.
 
 - `blackdog init`
 - `blackdog repo analyze`
+- `blackdog repo bind`
+- `blackdog repo table`
 - `blackdog repo install`
 - `blackdog repo scaffold`
 - `blackdog repo update`
 - `blackdog repo refresh`
+- `blackdog repo archive`
+- `blackdog repo unarchive`
+- `blackdog repo unbind`
 - `blackdog prompt preview`
 - `blackdog prompt tune`
 - `blackdog attempts summary`

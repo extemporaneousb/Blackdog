@@ -601,12 +601,12 @@ def render_repo_skill(profile: RepoProfile) -> str:
     skill_name = managed_skill_name(profile)
     blackdog_source_skill = _looks_like_blackdog_source_checkout(profile.paths.project_root)
     scaffold_workflow = ""
-    repo_lifecycle_surface = "`repo analyze`, `repo install`, `repo update`, `repo refresh`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`"
+    repo_lifecycle_surface = "`repo analyze`, `repo bind`, `repo table`, `repo install`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`"
     if blackdog_source_skill:
         scaffold_workflow = (
             f"- `${skill_name} scaffold project <description>`: ask only for missing durable choices such as target path, project name, exemplar repo, validation commands, routed docs, local project access, and app/runtime needs; preview with `./.VE/bin/blackdog repo scaffold --target-root TARGET --like EXEMPLAR --project-name NAME --dry-run`, then apply without adding scaffold logic to the generated project skill.\n"
         )
-        repo_lifecycle_surface = "`repo analyze`, `repo install`, `repo scaffold`, `repo update`, `repo refresh`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`"
+        repo_lifecycle_surface = "`repo analyze`, `repo bind`, `repo table`, `repo install`, `repo scaffold`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`"
     return (
         "---\n"
         f"name: {skill_name}\n"

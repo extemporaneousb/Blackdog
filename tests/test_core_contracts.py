@@ -107,7 +107,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("reasoning_effort", cli_doc)
         self.assertIn("commit", cli_doc)
         self.assertNotIn("analysis-only workflow", cli_doc)
-        self.assertIn("scaffold/install/update/refresh/tune", cli_doc)
+        self.assertIn("bind/table/scaffold/install/update/refresh/archive/unarchive/unbind", cli_doc)
         self.assertIn("canonical landed commit", cli_doc)
         self.assertIn("planning.json", file_formats)
         self.assertIn("runtime.json", file_formats)

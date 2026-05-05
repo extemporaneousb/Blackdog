@@ -52,6 +52,63 @@ does not install or refresh anything. Instead it reports findings plus a
 proposed sequence of repo-owned and Blackdog-managed changes so the user can
 review the conversion plan before `repo install`.
 
+### `blackdog repo bind`
+
+Bind a repo to Blackdog-managed membership.
+
+`repo bind` is the first-class membership name for the same contract creation
+performed by `repo install`. It creates or repairs the repo-local `.VE`,
+launcher, `blackdog.toml`, managed `AGENTS.md` block, and repo-local managed
+skill, then reports action `bind`.
+
+```bash
+blackdog repo bind --project-root /path/to/repo --project-name "Repo Name"
+blackdog repo bind --project-root /path/to/repo --source-root /path/to/blackdog
+blackdog repo bind --project-root /path/to/repo --json
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--project-name`
+- optional `--source-root`
+- optional `--json`
+
+### `blackdog repo table`
+
+Discover Blackdog-installed repos by scanning supplied roots for
+`blackdog.toml` and emit one cross-repo membership/runtime row per resolved
+repo root.
+
+```bash
+blackdog repo table --root /path/to/work --json
+blackdog repo table --root /path/a --root /path/b --since 2026-05-01T00:00:00Z
+blackdog repo table --root /path/to/work --include-archived --no-codex
+```
+
+Important flags:
+
+- `--root` may be repeated
+- optional `--since` filters Codex coverage rows
+- optional `--include-archived`
+- optional `--no-codex`
+- optional `--json`
+
+Text output is stable TSV. JSON output carries the same column names under
+`repo_table.rows`. Columns are:
+
+`project_name`, `status`, `project_root`, `branch`, `dirty_count`,
+`worksets`, `tasks`, `active_attempts`, `blocked`, `done`, `attempts`,
+`codex_sessions`, `codex_user_turns`,
+`implementation_like_unlinked_turns`, `linked_attempts`, `docs_count`,
+`validation_count`, `prompt_modes`, `models`, `error`.
+
+Discovery skips nested `.worktrees`, `.git`, `.VE`, `.venv`, `node_modules`,
+cache, and build-output directories. `blackdog.toml` remains the source of
+truth; there is no central repo registry. Archived repos are excluded unless
+`--include-archived` is set. With `--no-codex`, Codex columns are null in JSON
+and `-` in text.
+
 ### `blackdog repo scaffold`
 
 Create a new git repo with the Blackdog contract installed from the start.
@@ -176,6 +233,73 @@ directory from the shared control root.
 Because refresh rewrites managed repo docs and skills, operators should expect
 `git status --short` to show those files until the lifecycle change is
 committed, landed, reverted, or explicitly reported.
+
+### `blackdog repo archive`
+
+Mark a bound repo as archived by setting `[project].status = "archived"` in
+`blackdog.toml`.
+
+```bash
+blackdog repo archive --project-root /path/to/repo --reason "superseded"
+blackdog repo archive --project-root /path/to/repo --json
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--reason`
+- optional `--json`
+
+The reason is reported in command output only. It is not written to
+`blackdog.toml`; the command updates only `[project].status`.
+
+### `blackdog repo unarchive`
+
+Mark a bound repo as active by setting `[project].status = "active"` in
+`blackdog.toml`.
+
+```bash
+blackdog repo unarchive --project-root /path/to/repo
+blackdog repo unarchive --project-root /path/to/repo --json
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--json`
+
+Missing `[project].status` still means active, but `repo unarchive` updates the
+status line when the repo is currently archived.
+
+### `blackdog repo unbind`
+
+Preview or remove Blackdog-managed membership files from a repo.
+
+```bash
+blackdog repo unbind --project-root /path/to/repo --json
+blackdog repo unbind --project-root /path/to/repo --confirm --json
+blackdog repo unbind --project-root /path/to/repo --confirm --keep-control-dir
+```
+
+Important flags:
+
+- `--project-root`
+- optional `--confirm`
+- optional `--keep-control-dir`
+- optional `--json`
+
+Without `--confirm`, `repo unbind` is a preview and does not mutate. It reports
+planned managed-block updates, planned managed removals, preserved paths, and
+unrelated dirty paths from `git status`.
+
+With `--confirm`, unbind strips only the managed Blackdog block from
+`AGENTS.md`, preserving repo-owned text. It removes `blackdog.toml`, the
+current managed repo skill directory, a legacy `.codex/skills/blackdog/`
+directory only when it looks Blackdog-managed, the repo-local
+`.VE/bin/blackdog` launcher, and the configured control directory when that
+directory is under the repo or git common dir. It preserves
+`.blackdog/history.jsonl` by default. External control dirs outside the repo
+and git common dir are preserved and reported as warnings.
 
 ### `blackdog prompt preview`
 
@@ -925,8 +1049,9 @@ If they are rebuilt later, they must target the new workset/runtime foundation
 instead of reviving `backlog.md`.
 
 Repo lifecycle workflows are different. `repo analyze` plus
-scaffold/install/update/refresh/tune and attempt-inspection flows are still
-first-class product concerns, but they should live as a separate workflow
-family in `blackdog`, not forced into workset/task semantics. New scaffold
-workflows must create the current Blackdog repo contract instead of reviving
-the old scaffold command tree unchanged.
+bind/table/scaffold/install/update/refresh/archive/unarchive/unbind, prompt
+tune, and attempt-inspection flows are still first-class product concerns, but
+they should live as a separate workflow family in `blackdog`, not forced into
+workset/task semantics. New scaffold workflows must create the current
+Blackdog repo contract instead of reviving the old scaffold command tree
+unchanged.

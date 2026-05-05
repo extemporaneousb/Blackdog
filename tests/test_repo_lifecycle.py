@@ -3,13 +3,17 @@ from __future__ import annotations
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
+from unittest.mock import patch
 
 from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_relative_path, managed_skill_name
 from blackdog.repo_lifecycle import render_repo_skill
+from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_cli.main import main as blackdog_main
-from blackdog_core.profile import load_profile
+from blackdog_core.profile import PROJECT_STATUS_ACTIVE, PROJECT_STATUS_ARCHIVED, load_profile, render_default_profile
+from blackdog_core.state import ValidationRecord, create_prompt_receipt
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
@@ -20,6 +24,26 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def make_member_repo(self, parent: Path, name: str, *, project_name: str | None = None, status: str | None = None) -> Path:
+        repo_root = parent / name
+        repo_root.mkdir(parents=True)
+        self.init_git_repo(repo_root)
+        profile_text = render_default_profile(project_name or name)
+        if status is not None:
+            profile_text = profile_text.replace("[project]\n", f'[project]\nstatus = "{status}"\n')
+        (repo_root / "blackdog.toml").write_text(profile_text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo_root), "add", "blackdog.toml"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-m", "Add Blackdog profile"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return repo_root
+
+    def profile_without_status(self, text: str) -> str:
+        return "\n".join(line for line in text.splitlines() if not line.strip().startswith("status = ")) + "\n"
 
     def test_repo_analyze_reports_unconverted_repo_and_conversion_plan(self) -> None:
         docs_dir = self.root / "docs"
@@ -199,6 +223,272 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         self.assertIn("$blackdog scaffold project <description>", skill_text)
         self.assertIn("repo scaffold", skill_text)
+        self.assertIn("repo table", skill_text)
+        self.assertIn("repo bind", skill_text)
+        self.assertIn("repo archive", skill_text)
+        self.assertIn("repo unarchive", skill_text)
+        self.assertIn("repo unbind", skill_text)
+
+    def test_repo_table_discovers_members_and_skips_worktrees(self) -> None:
+        fleet_root = self.root / "fleet"
+        self.make_member_repo(fleet_root, "active-repo", project_name="Active Repo")
+        self.make_member_repo(fleet_root / ".worktrees", "hidden-repo", project_name="Hidden Repo")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["repo_table"]
+        self.assertEqual(payload["columns"][0], "project_name")
+        self.assertEqual([row["project_name"] for row in payload["rows"]], ["Active Repo"])
+        self.assertIsNone(payload["rows"][0]["codex_sessions"])
+
+    def test_repo_table_excludes_archived_repos_by_default(self) -> None:
+        fleet_root = self.root / "fleet"
+        self.make_member_repo(fleet_root, "active-repo", project_name="Active Repo")
+        self.make_member_repo(
+            fleet_root,
+            "archived-repo",
+            project_name="Archived Repo",
+            status=PROJECT_STATUS_ARCHIVED,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        rows = json.loads(stdout)["repo_table"]["rows"]
+        self.assertEqual([row["project_name"] for row in rows], ["Active Repo"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--include-archived",
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        rows = json.loads(stdout)["repo_table"]["rows"]
+        self.assertEqual({row["project_name"] for row in rows}, {"Active Repo", "Archived Repo"})
+
+    def test_repo_table_reports_runtime_and_codex_columns(self) -> None:
+        fleet_root = self.root / "fleet"
+        empty_repo = self.make_member_repo(fleet_root, "empty-repo", project_name="Empty Repo")
+        active_repo = self.make_member_repo(fleet_root, "attempt-repo", project_name="Attempt Repo")
+        profile = load_profile(active_repo)
+        upsert_workset(
+            profile,
+            {
+                "id": "membership",
+                "title": "Membership",
+                "tasks": [
+                    {"id": "MEM-1", "title": "Finish row", "intent": "record completed attempt"},
+                    {"id": "MEM-2", "title": "Active row", "intent": "record active attempt"},
+                ],
+            },
+        )
+        completed_attempt = start_task(
+            profile,
+            workset_id="membership",
+            task_id="MEM-1",
+            actor="codex",
+            branch="feature/membership-1",
+            model="gpt-5.5",
+            prompt_receipt=create_prompt_receipt("Finish membership row.", source="unit", mode="skill"),
+        )
+        finish_task(
+            profile,
+            workset_id="membership",
+            task_id="MEM-1",
+            attempt_id=completed_attempt.attempt_id,
+            actor="codex",
+            status="success",
+            validations=(ValidationRecord(name="unit", status="passed"),),
+            landed_commit="abc123",
+        )
+        start_task(
+            profile,
+            workset_id="membership",
+            task_id="MEM-2",
+            actor="codex",
+            branch="feature/membership-2",
+            prompt_receipt=create_prompt_receipt("Keep membership row active.", source="unit", mode="raw"),
+        )
+
+        codex_home = self.root / "codex-home"
+        (codex_home / "sessions").mkdir(parents=True)
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
+            exit_code, stdout, stderr = self.run_cli("repo", "table", "--root", str(fleet_root), "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        rows = {row["project_name"]: row for row in json.loads(stdout)["repo_table"]["rows"]}
+
+        self.assertEqual(rows["Empty Repo"]["worksets"], 0)
+        self.assertEqual(rows["Empty Repo"]["attempts"], 0)
+        self.assertEqual(rows["Attempt Repo"]["worksets"], 1)
+        self.assertEqual(rows["Attempt Repo"]["tasks"], 2)
+        self.assertEqual(rows["Attempt Repo"]["attempts"], 2)
+        self.assertEqual(rows["Attempt Repo"]["active_attempts"], 1)
+        self.assertEqual(rows["Attempt Repo"]["done"], 1)
+        self.assertEqual(rows["Attempt Repo"]["codex_sessions"], 0)
+        self.assertEqual(rows["Attempt Repo"]["prompt_modes"], "skill")
+        self.assertEqual(rows["Attempt Repo"]["models"], "gpt-5.5")
+        self.assertEqual(rows["Attempt Repo"]["status"], PROJECT_STATUS_ACTIVE)
+        self.assertEqual(rows["Attempt Repo"]["project_root"], str(active_repo.resolve()))
+        self.assertEqual(rows["Empty Repo"]["project_root"], str(empty_repo.resolve()))
+
+    def test_repo_bind_creates_install_contract_with_bind_action(self) -> None:
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "bind",
+            "--project-root",
+            str(self.root),
+            "--project-name",
+            "Bind Demo",
+            "--source-root",
+            str(REPO_ROOT),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["repo"]
+        profile = load_profile(self.root)
+        skill_path = (self.root / managed_skill_relative_path(profile)).resolve()
+
+        self.assertEqual(payload["action"], "bind")
+        self.assertEqual(profile.project_name, "Bind Demo")
+        self.assertTrue((self.root / "blackdog.toml").is_file())
+        self.assertTrue((self.root / "AGENTS.md").is_file())
+        self.assertTrue(skill_path.is_file())
+        self.assertTrue((self.root / ".VE" / "bin" / "blackdog").is_file())
+
+    def test_repo_archive_and_unarchive_update_only_project_status(self) -> None:
+        self.write_profile("Archive Demo")
+        profile_path = self.root / "blackdog.toml"
+        before = profile_path.read_text(encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "archive",
+            "--project-root",
+            str(self.root),
+            "--reason",
+            "finished",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        archive_payload = json.loads(stdout)["repo"]
+        self.assertEqual(archive_payload["action"], "archive")
+        self.assertEqual(archive_payload["previous_status"], PROJECT_STATUS_ACTIVE)
+        self.assertEqual(archive_payload["status"], PROJECT_STATUS_ARCHIVED)
+        self.assertIn("archive reason: finished", archive_payload["notes"])
+        self.assertEqual(load_profile(self.root).status, PROJECT_STATUS_ARCHIVED)
+        self.assertEqual(self.profile_without_status(profile_path.read_text(encoding="utf-8")), before)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "unarchive",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        unarchive_payload = json.loads(stdout)["repo"]
+        self.assertEqual(unarchive_payload["action"], "unarchive")
+        self.assertEqual(unarchive_payload["previous_status"], PROJECT_STATUS_ARCHIVED)
+        self.assertEqual(unarchive_payload["status"], PROJECT_STATUS_ACTIVE)
+        self.assertEqual(load_profile(self.root).status, PROJECT_STATUS_ACTIVE)
+        self.assertEqual(self.profile_without_status(profile_path.read_text(encoding="utf-8")), before)
+
+    def test_repo_unbind_preview_and_confirm_only_touch_managed_paths(self) -> None:
+        exit_code, _, stderr = self.run_cli(
+            "repo",
+            "bind",
+            "--project-root",
+            str(self.root),
+            "--project-name",
+            "Unbind Demo",
+            "--source-root",
+            str(REPO_ROOT),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        profile = load_profile(self.root)
+        skill_dir = (self.root / managed_skill_relative_path(profile)).parent.resolve()
+        legacy_skill_dir = (self.root / legacy_managed_skill_relative_path()).parent.resolve()
+        if legacy_skill_dir != skill_dir:
+            legacy_skill_dir.mkdir(parents=True)
+            (legacy_skill_dir / "SKILL.md").write_text(render_repo_skill(profile), encoding="utf-8")
+        agents_path = self.root / "AGENTS.md"
+        agents_path.write_text(
+            "repo-owned before\n\n"
+            + agents_path.read_text(encoding="utf-8")
+            + "\nrepo-owned after\n",
+            encoding="utf-8",
+        )
+        before_agents = agents_path.read_text(encoding="utf-8")
+        unrelated_path = self.root / "README.md"
+        unrelated_path.write_text("repo-owned dirty file\n", encoding="utf-8")
+        history_path = self.root / ".blackdog" / "history.jsonl"
+        history_path.parent.mkdir(parents=True)
+        history_path.write_text("{}\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "unbind",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        preview = json.loads(stdout)["repo_unbind"]
+        self.assertFalse(preview["confirmed"])
+        self.assertIn(str(agents_path.resolve()), preview["planned_updates"])
+        self.assertIn(str((self.root / "blackdog.toml").resolve()), preview["planned_removals"])
+        self.assertIn(str(skill_dir), preview["planned_removals"])
+        if legacy_skill_dir != skill_dir:
+            self.assertIn(str(legacy_skill_dir), preview["planned_removals"])
+        self.assertIn(str((self.root / ".VE" / "bin" / "blackdog").resolve()), preview["planned_removals"])
+        self.assertIn("README.md", preview["unrelated_dirty_paths"])
+        self.assertEqual(agents_path.read_text(encoding="utf-8"), before_agents)
+        self.assertTrue((self.root / "blackdog.toml").exists())
+        self.assertTrue(skill_dir.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "unbind",
+            "--project-root",
+            str(self.root),
+            "--confirm",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        confirmed = json.loads(stdout)["repo_unbind"]
+        self.assertTrue(confirmed["confirmed"])
+        self.assertIn(str(agents_path.resolve()), confirmed["updated"])
+        self.assertIn(str((self.root / "blackdog.toml").resolve()), confirmed["removed"])
+        self.assertIn(str(skill_dir), confirmed["removed"])
+        self.assertFalse((self.root / "blackdog.toml").exists())
+        self.assertFalse(skill_dir.exists())
+        if legacy_skill_dir != skill_dir:
+            self.assertFalse(legacy_skill_dir.exists())
+        self.assertFalse((self.root / ".VE" / "bin" / "blackdog").exists())
+        self.assertTrue(unrelated_path.exists())
+        self.assertEqual(unrelated_path.read_text(encoding="utf-8"), "repo-owned dirty file\n")
+        self.assertTrue(history_path.exists())
+        agents_text = agents_path.read_text(encoding="utf-8")
+        self.assertIn("repo-owned before", agents_text)
+        self.assertIn("repo-owned after", agents_text)
+        self.assertNotIn("BLACKDOG MANAGED CONTRACT", agents_text)
 
     def test_repo_install_bootstraps_profile_skill_and_launcher(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
