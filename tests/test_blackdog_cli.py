@@ -1104,6 +1104,229 @@ class BlackdogCliTests(CoreAuditTestCase):
             text=True,
         )
 
+    def test_task_show_reports_missing_target_branch_without_crashing(self) -> None:
+        payload = {
+            "id": "missing-target",
+            "title": "Missing target",
+            "tasks": [{"id": "MT-1", "title": "Inspect missing target", "intent": "recover stale target refs"}],
+        }
+        self.put_workset(payload)
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "missing-target",
+            "--task",
+            "MT-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Start the missing target slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        attempt_id = start_payload["attempt_id"]
+        branch = start_payload["branch"]
+        worktree_path = Path(start_payload["worktree_path"])
+        profile = load_profile(self.root)
+        finished = finish_task(
+            profile,
+            workset_id="missing-target",
+            task_id="MT-1",
+            attempt_id=attempt_id,
+            actor="codex",
+            status="blocked",
+            summary="blocked before stale target inspection",
+        )
+        runtime_state = load_runtime_state(profile.paths)
+        runtime_workset = next(item for item in runtime_state.worksets if item.workset_id == "missing-target")
+        runtime_task_state = next(item for item in runtime_workset.task_states if item.task_id == "MT-1")
+        rewritten_runtime = merge_workset_runtime(
+            runtime_state,
+            workset_id="missing-target",
+            task_ids={"MT-1"},
+            incoming_records=(replace(runtime_task_state, failure_class=None, recovery_action=None),),
+            incoming_attempts=(replace(finished, target_branch="v3", failure_class=None, recovery_action=None),),
+        )
+        save_runtime_state(profile.paths, rewritten_runtime)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "missing-target",
+            "--task",
+            "MT-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        show_payload = json.loads(stdout)["task_show"]
+        self.assertEqual(show_payload["recovery_state"], "stale_reference")
+        self.assertEqual(show_payload["target_branch"], "v3")
+        self.assertTrue(show_payload["branch_exists"])
+        self.assertFalse(show_payload["target_branch_exists"])
+        self.assertEqual(show_payload["failure_class"], "stale_branch")
+        self.assertEqual(show_payload["recovery_action"], "restore_ref_or_cancel_task")
+        self.assertIn("target branch 'v3' is missing", show_payload["branch_ahead_error"])
+        self.assertIn("restore target branch `v3`", "\n".join(show_payload["recommended_actions"]))
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_task_recover_reports_missing_task_branch_without_crashing(self) -> None:
+        payload = {
+            "id": "missing-branch",
+            "title": "Missing branch",
+            "tasks": [{"id": "MB-1", "title": "Inspect missing branch", "intent": "recover stale branch refs"}],
+        }
+        self.put_workset(payload)
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "missing-branch",
+            "--task",
+            "MB-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Start the missing branch slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        attempt_id = start_payload["attempt_id"]
+        branch = start_payload["branch"]
+        worktree_path = Path(start_payload["worktree_path"])
+        profile = load_profile(self.root)
+        finished = finish_task(
+            profile,
+            workset_id="missing-branch",
+            task_id="MB-1",
+            attempt_id=attempt_id,
+            actor="codex",
+            status="blocked",
+            summary="blocked before stale branch inspection",
+        )
+        runtime_state = load_runtime_state(profile.paths)
+        runtime_workset = next(item for item in runtime_state.worksets if item.workset_id == "missing-branch")
+        runtime_task_state = next(item for item in runtime_workset.task_states if item.task_id == "MB-1")
+        rewritten_runtime = merge_workset_runtime(
+            runtime_state,
+            workset_id="missing-branch",
+            task_ids={"MB-1"},
+            incoming_records=(replace(runtime_task_state, failure_class=None, recovery_action=None),),
+            incoming_attempts=(replace(finished, failure_class=None, recovery_action=None),),
+        )
+        save_runtime_state(profile.paths, rewritten_runtime)
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "recover",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "missing-branch",
+            "--task",
+            "MB-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        recovery_payload = json.loads(stdout)["recovery"]
+        self.assertEqual(recovery_payload["recovery_state"], "stale_reference")
+        self.assertEqual(recovery_payload["branch"], branch)
+        self.assertFalse(recovery_payload["branch_exists"])
+        self.assertTrue(recovery_payload["target_branch_exists"])
+        self.assertEqual(recovery_payload["failure_class"], "stale_branch")
+        self.assertIn(f"task branch {branch!r} is missing", recovery_payload["branch_ahead_error"])
+        self.assertIn("use `blackdog task cancel`", "\n".join(recovery_payload["recommended_actions"]))
+
+    def test_task_recover_reports_missing_active_attempt_worktree(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Inspect a missing active attempt worktree.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        workset_id = task_payload["workset_id"]
+        task_id = task_payload["task_id"]
+        branch = task_payload["worktree"]["branch"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "recover",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        recovery_payload = json.loads(stdout)["recovery"]
+        self.assertTrue(recovery_payload["active_attempt"])
+        self.assertFalse(recovery_payload["worktree_exists"])
+        self.assertTrue(recovery_payload["branch_exists"])
+        self.assertTrue(recovery_payload["target_branch_exists"])
+        self.assertEqual(recovery_payload["failure_class"], "missing_worktree")
+        self.assertEqual(recovery_payload["recovery_action"], "restore_or_cleanup_worktree")
+        self.assertIn("restore the task workspace", "\n".join(recovery_payload["recommended_actions"]))
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_task_recover_can_release_a_stale_claim(self) -> None:
         self.install_repo_runtime()
 

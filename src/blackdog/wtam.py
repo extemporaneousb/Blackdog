@@ -775,6 +775,34 @@ def branch_ahead_of_target(profile: RepoProfile, *, branch: str, target_branch: 
     return int(completed.stdout.strip() or "0") > 0
 
 
+def _ref_exists(repo_root: Path, ref: str | None) -> bool | None:
+    if not ref:
+        return None
+    return _resolve_commit(repo_root, ref) is not None
+
+
+def _recovery_branch_state(
+    profile: RepoProfile,
+    *,
+    branch: str | None,
+    target_branch: str | None,
+) -> tuple[bool, bool | None, bool | None, str | None]:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    branch_exists = _ref_exists(primary_root, branch)
+    target_exists = _ref_exists(primary_root, target_branch)
+    if not branch or not target_branch:
+        return False, branch_exists, target_exists, None
+    if branch_exists is False:
+        return False, branch_exists, target_exists, f"task branch {branch!r} is missing"
+    if target_exists is False:
+        return False, branch_exists, target_exists, f"target branch {target_branch!r} is missing"
+    completed = _run_git_no_check(primary_root, "rev-list", "--count", f"{target_branch}..{branch}")
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        return False, branch_exists, target_exists, f"git rev-list --count {target_branch}..{branch} failed: {detail}"
+    return int(completed.stdout.strip() or "0") > 0, branch_exists, target_exists, None
+
+
 def _resolve_commit(repo_root: Path, ref: str | None) -> str | None:
     if not ref:
         return None
@@ -1503,11 +1531,14 @@ def _task_recovery_state(
     worktree_exists: bool,
     worktree_dirty: bool,
     branch_ahead_of_target: bool,
+    reference_issue: bool,
 ) -> str:
     if stale_claim:
         return "stale_claim"
     if active_attempt:
         return "active_attempt"
+    if reference_issue:
+        return "stale_reference"
     if worktree_exists and (worktree_dirty or branch_ahead_of_target):
         return "retained_dirty_worktree"
     if worktree_exists:
@@ -1546,10 +1577,10 @@ def _task_recovery_payload(
     )
     worktree_exists = task_worktree is not None and task_worktree.exists()
     worktree_dirty_paths = _worktree_changed_paths(profile, task_worktree) if task_worktree is not None else []
-    branch_ahead = (
-        branch_ahead_of_target(profile, branch=branch, target_branch=target_branch)
-        if branch and target_branch
-        else False
+    branch_ahead, branch_exists, target_branch_exists, branch_ahead_error = _recovery_branch_state(
+        profile,
+        branch=branch,
+        target_branch=target_branch,
     )
     primary_dirty = primary_worktree_is_dirty(profile, ignore_runtime=True)
     primary_dirty_paths = primary_worktree_dirty_paths(profile, ignore_runtime=True)
@@ -1560,6 +1591,7 @@ def _task_recovery_payload(
         worktree_exists=worktree_exists,
         worktree_dirty=bool(worktree_dirty_paths),
         branch_ahead_of_target=branch_ahead,
+        reference_issue=bool(branch_exists is False or target_branch_exists is False or branch_ahead_error),
     )
     failure_class = runtime_task_state.failure_class
     recovery_action = runtime_task_state.recovery_action
@@ -1569,7 +1601,17 @@ def _task_recovery_payload(
         failure_class = FAILURE_CLASS_MISSING_WORKTREE
         recovery_action = "restore_or_cleanup_worktree"
         operator_issue = True
+    elif failure_class is None and (branch_exists is False or target_branch_exists is False or branch_ahead_error):
+        failure_class = FAILURE_CLASS_STALE_BRANCH
+        recovery_action = "restore_ref_or_cancel_task"
+        operator_issue = True
     recommended_actions: list[str] = []
+    if branch_exists is False and branch:
+        recommended_actions.append(f"restore task branch `{branch}` before landing or close/cancel this stale task")
+    if target_branch_exists is False and target_branch:
+        recommended_actions.append(f"restore target branch `{target_branch}` or close/cancel this stale task if it is obsolete")
+    if branch_ahead_error and branch_exists is not False and target_branch_exists is not False:
+        recommended_actions.append("inspect the recorded task branch and target branch before landing")
     if stale_claim:
         if task_worktree is not None and (worktree_dirty_paths or branch_ahead):
             recommended_actions.append("inspect the retained task workspace before releasing the stale claim")
@@ -1580,9 +1622,13 @@ def _task_recovery_payload(
     elif active_attempt is not None:
         if primary_dirty:
             recommended_actions.append("clean or land the primary worktree changes before `blackdog task land`")
+        if not worktree_exists:
+            recommended_actions.append("restore the task workspace or close the attempt before starting new work")
         if worktree_dirty_paths or branch_ahead:
             recommended_actions.append("run `blackdog worktree land` to create the canonical landed commit")
         recommended_actions.append("run `blackdog worktree close --status blocked|failed|abandoned` to close without landing")
+    elif selected_attempt is not None and (branch_exists is False or target_branch_exists is False or branch_ahead_error):
+        recommended_actions.append("use `blackdog task cancel` if this stale task should stay out of normal ready work")
     elif task_worktree is None:
         recommended_actions.append("start a new WTAM attempt for this task")
     elif worktree_dirty_paths or branch_ahead:
@@ -1609,6 +1655,9 @@ def _task_recovery_payload(
         "worktree_dirty": bool(worktree_dirty_paths),
         "worktree_dirty_paths": worktree_dirty_paths,
         "branch_ahead_of_target": branch_ahead,
+        "branch_exists": branch_exists,
+        "target_branch_exists": target_branch_exists,
+        "branch_ahead_error": branch_ahead_error,
         "changed_paths": _attempt_changed_paths(
             profile,
             branch=branch,
@@ -2615,6 +2664,13 @@ def render_show_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
         lines.append(f"{prefix} target branch: {payload['target_branch']}")
     if payload["worktree_path"]:
         lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
+    if payload.get("branch_exists") is False:
+        lines.append(f"{prefix} branch exists: no")
+    if payload.get("target_branch_exists") is False:
+        lines.append(f"{prefix} target branch exists: no")
+    if payload.get("branch_ahead_error"):
+        lines.append(f"{prefix} branch ahead check: {payload['branch_ahead_error']}")
+    lines.append(f"{prefix} {workspace_label} exists: {'yes' if payload['worktree_exists'] else 'no'}")
     lines.append(f"{prefix} {workspace_label} dirty: {'yes' if payload['worktree_dirty'] else 'no'}")
     lines.append(f"{prefix} branch ahead of target: {'yes' if payload['branch_ahead_of_target'] else 'no'}")
     lines.append(f"{prefix} primary dirty: {'yes' if payload['primary_dirty'] else 'no'}")
@@ -2634,6 +2690,10 @@ def render_show_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
         lines.append(f"{prefix} execution prompt source: {payload['execution_prompt_source']}")
     if payload["execution_prompt_mode"]:
         lines.append(f"{prefix} execution prompt mode: {payload['execution_prompt_mode']}")
+    if payload.get("failure_class"):
+        lines.append(f"{prefix} failure class: {payload['failure_class']}")
+    if payload.get("recovery_action"):
+        lines.append(f"{prefix} recovery action: {payload['recovery_action']}")
     if payload["recommended_actions"]:
         lines.append(f"{prefix} recommended actions:")
         lines.extend(f"  - {item}" for item in payload["recommended_actions"])
@@ -2678,6 +2738,13 @@ def render_recover_text(payload: dict[str, Any]) -> str:
         lines.append(f"{prefix} target branch: {payload['target_branch']}")
     if payload["worktree_path"]:
         lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
+    if payload.get("branch_exists") is False:
+        lines.append(f"{prefix} branch exists: no")
+    if payload.get("target_branch_exists") is False:
+        lines.append(f"{prefix} target branch exists: no")
+    if payload.get("branch_ahead_error"):
+        lines.append(f"{prefix} branch ahead check: {payload['branch_ahead_error']}")
+    lines.append(f"{prefix} {workspace_label} exists: {'yes' if payload['worktree_exists'] else 'no'}")
     lines.append(f"{prefix} {workspace_label} dirty: {'yes' if payload['worktree_dirty'] else 'no'}")
     lines.append(f"{prefix} branch ahead of target: {'yes' if payload['branch_ahead_of_target'] else 'no'}")
     lines.append(f"{prefix} primary dirty: {'yes' if payload['primary_dirty'] else 'no'}")
@@ -2687,6 +2754,10 @@ def render_recover_text(payload: dict[str, Any]) -> str:
         lines.append(f"{prefix} attempt paths: {', '.join(payload['changed_paths'])}")
     if payload.get("task_runtime_note"):
         lines.append(f"{prefix} task note: {payload['task_runtime_note']}")
+    if payload.get("failure_class"):
+        lines.append(f"{prefix} failure class: {payload['failure_class']}")
+    if payload.get("recovery_action"):
+        lines.append(f"{prefix} recovery action: {payload['recovery_action']}")
     if payload["recommended_actions"]:
         lines.append(f"{prefix} recommended actions:")
         lines.extend(f"  - {item}" for item in payload["recommended_actions"])

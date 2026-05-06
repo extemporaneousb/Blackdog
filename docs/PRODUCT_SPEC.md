@@ -241,7 +241,10 @@ active attempt retryable; the agent fixes the blocker and reruns `task land` or
 `worktree land`. Classified terminal land failures close internally through
 the same non-success finalizer as `task close` / `worktree close`, so the
 operator does not need a second close command for a failure Blackdog can safely
-classify. Abandoned work cancels the task by default so it does not reappear in
+classify. Recovery reads must stay available even when historical attempts
+reference missing task branches, target branches, or worktrees; those cases are
+reported as structured recovery states and recommendations, not raw git
+failures. Abandoned work cancels the task by default so it does not reappear in
 the normal next-task or summary views.
 
 The explicit planned-task operator path remains:

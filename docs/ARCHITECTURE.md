@@ -214,7 +214,7 @@ These commands exercise one end-to-end vertical slice:
    worktree-local launcher, and real git execution identity while claiming both
    the workset and the task
 6. inspect one active or latest task attempt for recovery-oriented worktree and
-   claim state
+   claim state, including missing branch/worktree references
 7. land one successful task attempt through a canonical landed commit while
    recording structured result, validation, commit lineage, releasing claims,
    and cleaning up the task worktree by default

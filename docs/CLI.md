@@ -512,9 +512,16 @@ that worktree. It reports:
 - the current task runtime status plus any retained task/workset claims
 - whether the task is carrying a stale claim with no active attempt
 - the retained task-worktree path, dirty paths, and branch-ahead state
+- whether the recorded task branch and target branch still resolve locally
 - primary-worktree dirtiness that would still block landing
+- structured recovery fields such as `failure_class` and `recovery_action`
 - recommended next actions such as `task land`, `task close`, `task cleanup`,
   or stale-claim release
+
+If a latest historical attempt references a missing task branch or missing
+target branch, recovery reads return `recovery_state="stale_reference"` with
+`failure_class="stale_branch"` rather than failing on the underlying git
+inspection command.
 
 `--release-stale-claim` is intentionally narrow. It only applies when the task
 claim still exists but there is no active WTAM attempt to close. In that case
@@ -788,10 +795,12 @@ Important flags:
 
 - whether an active attempt still exists
 - branch and target-branch identity
+- whether the recorded task branch and target branch still resolve locally
 - task-worktree path and dirty paths
 - whether the branch is ahead of target
 - raw user-prompt and execution-prompt hashes, sources, and modes when captured
 - primary-worktree dirtiness
+- structured recovery fields such as `failure_class` and `recovery_action`
 - recommended next actions such as `land`, `close`, or `cleanup`
 
 ### `blackdog worktree land`
