@@ -62,6 +62,22 @@ def _write_session(
             "type": "response_item",
             "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]},
         },
+        {
+            "timestamp": "2026-05-04T19:00:04Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 25,
+                        "output_tokens": 12,
+                        "reasoning_output_tokens": 5,
+                        "total_tokens": 112,
+                    }
+                },
+            },
+        },
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     return path
@@ -97,6 +113,11 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(turn.turn_id, "turn-read")
         self.assertEqual(turn.cwd, str(self.root))
         self.assertEqual(turn.classification, "analysis_only")
+        self.assertEqual(turn.input_tokens, 100)
+        self.assertEqual(turn.cached_input_tokens, 25)
+        self.assertEqual(turn.output_tokens, 12)
+        self.assertEqual(turn.reasoning_output_tokens, 5)
+        self.assertEqual(turn.total_tokens, 112)
         self.assertEqual(
             turn.user_message_hash,
             hashlib.sha256("Analyze the repo and explain what changed.".encode("utf-8")).hexdigest(),
@@ -162,11 +183,17 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(coverage["counts"]["linked_attempts"], 1)
         self.assertEqual(coverage["counts"]["analysis_only_turns"], 1)
         self.assertEqual(coverage["counts"]["unlinked_user_turns"], 1)
+        self.assertEqual(coverage["counts"]["input_tokens"], 200)
+        self.assertEqual(coverage["counts"]["cached_input_tokens"], 50)
+        self.assertEqual(coverage["counts"]["output_tokens"], 24)
+        self.assertEqual(coverage["counts"]["reasoning_output_tokens"], 10)
+        self.assertEqual(coverage["counts"]["total_tokens"], 224)
         self.assertEqual(history["counts"]["attempt_rows"], 1)
         self.assertEqual(history["counts"]["codex_turn_rows"], 1)
         rendered_rows = "\n".join(json.dumps(row, sort_keys=True) for row in history["rows"])
         self.assertIn('"kind": "attempt"', rendered_rows)
         self.assertIn('"kind": "codex_turn"', rendered_rows)
+        self.assertIn('"input_tokens": 100', rendered_rows)
         self.assertNotIn(analysis_message, rendered_rows)
         self.assertEqual(
             Path(history["history_path"]).resolve(),

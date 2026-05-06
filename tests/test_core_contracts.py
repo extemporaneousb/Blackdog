@@ -11,7 +11,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertEqual(pyproject["project"]["scripts"], {"blackdog": "blackdog_cli.main:main"})
         self.assertEqual(
             pyproject["project"]["description"],
-            "Repo-scoped workset runtime for AI-assisted local development",
+            "Repo-scoped task and attempt runtime for AI-assisted local development",
         )
         self.assertNotIn("blackdog", pyproject.get("tool", {}))
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")

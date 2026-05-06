@@ -83,14 +83,18 @@ repo root.
 ```bash
 blackdog repo table --root /path/to/work --json
 blackdog repo table --root /path/a --root /path/b --since 2026-05-01T00:00:00Z
+blackdog repo table --root /path/to/work --since-hours 24
 blackdog repo table --root /path/to/work --include-archived --no-codex
 ```
 
 Important flags:
 
 - `--root` may be repeated
-- optional `--since` filters Codex coverage rows
+- optional `--since` filters windowed attempt metrics and Codex coverage rows
+- optional `--since-hours` is a convenience window, for example `24`
 - optional `--include-archived`
+- optional `--include-legacy-worksets` adds a legacy storage-count column for
+  migration/debugging; default table output does not expose worksets
 - optional `--no-codex`
 - optional `--json`
 
@@ -98,10 +102,23 @@ Text output is stable TSV. JSON output carries the same column names under
 `repo_table.rows`. Columns are:
 
 `project_name`, `status`, `project_root`, `branch`, `dirty_count`,
-`worksets`, `tasks`, `active_attempts`, `blocked`, `done`, `attempts`,
-`codex_sessions`, `codex_user_turns`,
-`implementation_like_unlinked_turns`, `linked_attempts`, `docs_count`,
-`validation_count`, `prompt_modes`, `models`, `error`.
+`tasks_total`, `current_ready_tasks`, `current_active_attempts`,
+`current_blocked_tasks`, `done_tasks_total`, `attempts_total`,
+`window_attempts`, `window_problem_attempts`, `window_success_attempts`,
+`window_blocked_attempts`, `window_failed_attempts`,
+`window_abandoned_attempts`, `window_elapsed_seconds`, `codex_sessions`,
+`codex_user_turns`, `codex_input_tokens`, `codex_cached_input_tokens`,
+`codex_output_tokens`, `codex_reasoning_output_tokens`, `codex_total_tokens`,
+`codex_tool_calls`, `implementation_like_unlinked_turns`, `linked_attempts`,
+`blackdog_version`, `profile_version`, `runtime_store_version`,
+`support_hash`, `docs_count`, `validation_count`, `prompt_modes`, `models`,
+`reasoning_efforts`, `error`.
+
+`current_*` columns describe live task/attempt state now. `window_*` columns
+describe attempts whose start or end timestamp is inside the requested window;
+without `--since` or `--since-hours`, the window is all recorded attempt
+history. `codex_input_tokens` is model input-token usage reported by Codex
+session logs, not a tokenizer pass over only the user's message text.
 
 Discovery skips nested `.worktrees`, `.git`, `.VE`, `.venv`, `node_modules`,
 cache, and build-output directories. `blackdog.toml` remains the source of

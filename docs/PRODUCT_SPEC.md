@@ -453,7 +453,6 @@ real telemetry contract.
 
 Minimum per-attempt stats:
 
-- `workset_id`
 - `task_id`
 - `attempt_id`
 - actor
@@ -474,6 +473,8 @@ Minimum per-attempt stats:
 - result status
 - landed commit when applicable
 - residuals / follow-ups
+- Codex session token counters when available: input, cached input, output,
+  reasoning output, and total tokens
 
 Without this, the product may coordinate work, but it will not capture the
 operating data you explicitly want from real usage.
@@ -504,8 +505,8 @@ reviving the old command tree wholesale.
 Blackdog is usable again when you can dogfood it in another repo for a real
 direct-agent workflow:
 
-1. shape a workset from a real goal
-2. ask what is next in one workset
+1. begin a task from a real goal
+2. ask what is current, blocked, or ready
 3. execute at least one kept-change task with explicit worktree/git identity
    and a stored prompt receipt
 4. land it through the primary checkout and clean up the task worktree

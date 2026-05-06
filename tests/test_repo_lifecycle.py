@@ -245,6 +245,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         payload = json.loads(stdout)["repo_table"]
         self.assertEqual(payload["columns"][0], "project_name")
+        self.assertNotIn("worksets", payload["columns"])
+        self.assertNotIn("legacy_worksets", payload["columns"])
         self.assertEqual([row["project_name"] for row in payload["rows"]], ["Active Repo"])
         self.assertIsNone(payload["rows"][0]["codex_sessions"])
 
@@ -334,19 +336,76 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         rows = {row["project_name"]: row for row in json.loads(stdout)["repo_table"]["rows"]}
 
-        self.assertEqual(rows["Empty Repo"]["worksets"], 0)
-        self.assertEqual(rows["Empty Repo"]["attempts"], 0)
-        self.assertEqual(rows["Attempt Repo"]["worksets"], 1)
-        self.assertEqual(rows["Attempt Repo"]["tasks"], 2)
-        self.assertEqual(rows["Attempt Repo"]["attempts"], 2)
-        self.assertEqual(rows["Attempt Repo"]["active_attempts"], 1)
-        self.assertEqual(rows["Attempt Repo"]["done"], 1)
+        self.assertEqual(rows["Empty Repo"]["tasks_total"], 0)
+        self.assertEqual(rows["Empty Repo"]["attempts_total"], 0)
+        self.assertEqual(rows["Attempt Repo"]["tasks_total"], 2)
+        self.assertEqual(rows["Attempt Repo"]["attempts_total"], 2)
+        self.assertEqual(rows["Attempt Repo"]["current_active_attempts"], 1)
+        self.assertEqual(rows["Attempt Repo"]["done_tasks_total"], 1)
+        self.assertEqual(rows["Attempt Repo"]["window_attempts"], 2)
+        self.assertEqual(rows["Attempt Repo"]["window_success_attempts"], 1)
+        self.assertEqual(rows["Attempt Repo"]["window_problem_attempts"], 0)
         self.assertEqual(rows["Attempt Repo"]["codex_sessions"], 0)
-        self.assertEqual(rows["Attempt Repo"]["prompt_modes"], "skill")
+        self.assertEqual(rows["Attempt Repo"]["codex_total_tokens"], 0)
+        self.assertEqual(rows["Attempt Repo"]["prompt_modes"], "raw,skill")
         self.assertEqual(rows["Attempt Repo"]["models"], "gpt-5.5")
+        self.assertEqual(rows["Attempt Repo"]["reasoning_efforts"], "")
+        self.assertEqual(rows["Attempt Repo"]["blackdog_version"], "0.1.0")
+        self.assertEqual(rows["Attempt Repo"]["profile_version"], 1)
+        self.assertTrue(rows["Attempt Repo"]["runtime_store_version"])
+        self.assertEqual(len(str(rows["Attempt Repo"]["support_hash"])), 12)
         self.assertEqual(rows["Attempt Repo"]["status"], PROJECT_STATUS_ACTIVE)
         self.assertEqual(rows["Attempt Repo"]["project_root"], str(active_repo.resolve()))
         self.assertEqual(rows["Empty Repo"]["project_root"], str(empty_repo.resolve()))
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--include-legacy-worksets",
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        rows = {row["project_name"]: row for row in json.loads(stdout)["repo_table"]["rows"]}
+        self.assertEqual(rows["Attempt Repo"]["legacy_worksets"], 1)
+
+    def test_repo_table_since_filters_window_attempts_not_current_status(self) -> None:
+        fleet_root = self.root / "fleet"
+        active_repo = self.make_member_repo(fleet_root, "attempt-repo", project_name="Attempt Repo")
+        profile = load_profile(active_repo)
+        upsert_workset(
+            profile,
+            {
+                "id": "membership",
+                "title": "Membership",
+                "tasks": [{"id": "MEM-1", "title": "Active row", "intent": "record active attempt"}],
+            },
+        )
+        start_task(
+            profile,
+            workset_id="membership",
+            task_id="MEM-1",
+            actor="codex",
+            prompt_receipt=create_prompt_receipt("Keep membership row active.", source="unit", mode="raw"),
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--since",
+            "2999-01-01T00:00:00+00:00",
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        row = json.loads(stdout)["repo_table"]["rows"][0]
+        self.assertEqual(row["current_active_attempts"], 1)
+        self.assertEqual(row["window_attempts"], 0)
+        self.assertEqual(row["window_elapsed_seconds"], 0)
 
     def test_repo_bind_creates_install_contract_with_bind_action(self) -> None:
         exit_code, stdout, stderr = self.run_cli(

@@ -175,7 +175,11 @@ managed contracts require a closing `git status --short` check.
 `repo table` is a cross-repo operator-read surface. It discovers membership by
 scanning supplied roots for `blackdog.toml`, deduplicates by resolved project
 root, and reads each repo's runtime, attempt, and optional Codex coverage
-views. It deliberately does not introduce a central registry. Optional
+views. Its default columns are task/attempt oriented: live state is reported
+under `current_*`, historical attempt diagnostics are reported under
+`window_*`, and legacy workset storage counts are hidden unless an operator
+explicitly asks for the migration/debug column. It deliberately does not
+introduce a central registry. Optional
 `[project].status` in `blackdog.toml` controls membership visibility:
 missing means active, `archived` hides the repo from table output unless the
 operator asks for archived rows. `repo archive` and `repo unarchive` update

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,17 @@ from blackdog_core.state import PROMPT_MODES, StoreError, VALIDATION_STATUSES, V
 
 
 WORKSET_COMMANDS_ENABLE_ENV = "BLACKDOG_ENABLE_WORKSET_COMMANDS"
+
+
+def _resolve_since_window(since: str | None, since_hours: float | None) -> str | None:
+    if since and since_hours is not None:
+        raise RepoLifecycleError("--since and --since-hours are mutually exclusive")
+    if since_hours is None:
+        return since
+    if since_hours <= 0:
+        raise RepoLifecycleError("--since-hours must be greater than 0")
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+    return cutoff.isoformat(timespec="seconds")
 
 
 def _emit_json(payload: Any) -> None:
@@ -272,7 +284,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_table = repo_subparsers.add_parser("table", help="Report Blackdog repo membership under one or more roots")
     p_repo_table.add_argument("--root", action="append", required=True)
     p_repo_table.add_argument("--since")
+    p_repo_table.add_argument("--since-hours", type=float)
     p_repo_table.add_argument("--include-archived", action="store_true")
+    p_repo_table.add_argument("--include-legacy-worksets", action="store_true")
     p_repo_table.add_argument("--no-codex", action="store_true")
     p_repo_table.add_argument("--json", action="store_true")
 
@@ -649,11 +663,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "table":
+            since = _resolve_since_window(args.since, args.since_hours)
             result = build_repo_table(
                 tuple(Path(root).resolve() for root in args.root),
-                since=args.since,
+                since=since,
                 include_archived=args.include_archived,
                 include_codex=not args.no_codex,
+                include_legacy_worksets=args.include_legacy_worksets,
             )
             if args.json:
                 _emit_json({"repo_table": result.to_dict()})

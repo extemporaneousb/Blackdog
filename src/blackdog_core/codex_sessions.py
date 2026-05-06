@@ -88,6 +88,11 @@ class CodexTurn:
     classification: str
     has_assistant_response: bool
     tool_call_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +185,11 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 "fallback_user_messages": [],
                 "assistant_response_count": 0,
                 "tool_call_count": 0,
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 0,
             }
             turn_order.append(turn_id)
         return turns[turn_id]
@@ -231,6 +241,12 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
             turn = ensure_turn(current_turn_id or f"line-{lineno}")
             turn["user_message"] = _optional_text(payload.get("message")) or turn["user_message"]
             continue
+        if row_type == "event_msg" and payload.get("type") == "token_count":
+            usage = _token_usage_from_payload(payload)
+            if usage is not None and current_turn_id is not None:
+                turn = ensure_turn(current_turn_id)
+                _add_token_usage(turn, usage)
+            continue
         if row_type == "response_item":
             item_type = _optional_text(payload.get("type"))
             role = _optional_text(payload.get("role"))
@@ -269,6 +285,11 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 classification=classify_user_message(user_message),
                 has_assistant_response=bool(payload["assistant_response_count"]),
                 tool_call_count=int(payload["tool_call_count"]),
+                input_tokens=int(payload["input_tokens"]),
+                cached_input_tokens=int(payload["cached_input_tokens"]),
+                output_tokens=int(payload["output_tokens"]),
+                reasoning_output_tokens=int(payload["reasoning_output_tokens"]),
+                total_tokens=int(payload["total_tokens"]),
             )
         )
     return CodexSession(
@@ -320,6 +341,11 @@ def build_codex_coverage(
                 "linked_attempt_ids": list(attempt_ids),
                 "has_assistant_response": turn.has_assistant_response,
                 "tool_call_count": turn.tool_call_count,
+                "input_tokens": turn.input_tokens,
+                "cached_input_tokens": turn.cached_input_tokens,
+                "output_tokens": turn.output_tokens,
+                "reasoning_output_tokens": turn.reasoning_output_tokens,
+                "total_tokens": turn.total_tokens,
             }
         )
     by_classification: dict[str, int] = {}
@@ -355,6 +381,12 @@ def build_codex_coverage(
             "model_missing_turns": len([turn for turn in turns if not turn.model]),
             "reasoning_known_turns": len([turn for turn in turns if turn.reasoning_effort]),
             "reasoning_missing_turns": len([turn for turn in turns if not turn.reasoning_effort]),
+            "tool_calls": sum(turn.tool_call_count for turn in turns),
+            "input_tokens": sum(turn.input_tokens for turn in turns),
+            "cached_input_tokens": sum(turn.cached_input_tokens for turn in turns),
+            "output_tokens": sum(turn.output_tokens for turn in turns),
+            "reasoning_output_tokens": sum(turn.reasoning_output_tokens for turn in turns),
+            "total_tokens": sum(turn.total_tokens for turn in turns),
         },
         "by_classification": by_classification,
         "attempt_status_counts": attempt_status_counts,
@@ -437,6 +469,12 @@ def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
             "Model signal: "
             f"known={counts['model_known_turns']} missing={counts['model_missing_turns']} | "
             f"Reasoning known={counts['reasoning_known_turns']} missing={counts['reasoning_missing_turns']}"
+        ),
+        (
+            "Token signal: "
+            f"input={counts['input_tokens']} cached_input={counts['cached_input_tokens']} "
+            f"output={counts['output_tokens']} reasoning_output={counts['reasoning_output_tokens']} "
+            f"total={counts['total_tokens']}"
         ),
     ]
     gaps = [
@@ -644,6 +682,11 @@ def _turn_history_row(profile: RepoProfile, turn: CodexTurn) -> dict[str, Any]:
         "user_prompt_hash": turn.user_message_hash,
         "has_assistant_response": turn.has_assistant_response,
         "tool_call_count": turn.tool_call_count,
+        "input_tokens": turn.input_tokens,
+        "cached_input_tokens": turn.cached_input_tokens,
+        "output_tokens": turn.output_tokens,
+        "reasoning_output_tokens": turn.reasoning_output_tokens,
+        "total_tokens": turn.total_tokens,
     }
 
 
@@ -731,6 +774,38 @@ def _timestamp_from_payload(value: Any) -> str | None:
     except (TypeError, ValueError):
         return _optional_text(value)
     return datetime.fromtimestamp(number, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+_TOKEN_USAGE_KEYS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+)
+
+
+def _token_usage_from_payload(payload: Mapping[str, Any]) -> dict[str, int] | None:
+    info = payload.get("info")
+    if not isinstance(info, Mapping):
+        return None
+    usage = info.get("last_token_usage")
+    if not isinstance(usage, Mapping):
+        return None
+    return {key: _non_negative_int(usage.get(key)) for key in _TOKEN_USAGE_KEYS}
+
+
+def _add_token_usage(turn: dict[str, Any], usage: Mapping[str, int]) -> None:
+    for key in _TOKEN_USAGE_KEYS:
+        turn[key] = int(turn.get(key) or 0) + int(usage.get(key) or 0)
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, number)
 
 
 def _relative_session_path(path: Path, home: Path) -> str:

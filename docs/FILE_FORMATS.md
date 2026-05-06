@@ -311,7 +311,8 @@ residuals, follow-up candidates, commit, landed commit, and elapsed seconds.
 
 `codex_turn` rows cover unlinked Codex user turns, including analysis-only
 turns. They include classification, cwd, originator, model, reasoning effort,
-user-prompt hash, assistant-response presence, and tool-call count.
+user-prompt hash, assistant-response presence, tool-call count, and Codex
+token counters when the session log reports them.
 
 ## `events.jsonl`
 

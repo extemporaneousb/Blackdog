@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import tomllib
 
-from blackdog.contract import LEGACY_MANAGED_SKILL_NAME, MANAGED_SKILLS_ROOT, managed_skill_name
+from blackdog import __version__ as BLACKDOG_VERSION
+from blackdog.contract import LEGACY_MANAGED_SKILL_NAME, MANAGED_SKILLS_ROOT, managed_skill_name, managed_skill_relative_path
 from blackdog.repo_lifecycle import (
     AGENTS_FILE_NAME,
     AGENTS_MANAGED_BEGIN,
@@ -25,11 +29,13 @@ from blackdog_core.profile import (
     PROJECT_STATUS_ACTIVE,
     PROJECT_STATUS_ARCHIVED,
     PROJECT_STATUSES,
+    RepoProfile,
     ConfigError,
     load_profile,
     resolve_config_path,
 )
-from blackdog_core.snapshot import build_attempts_table, build_runtime_summary
+from blackdog_core.runtime_model import AttemptView, hide_canceled_runtime_model, load_runtime_model
+from blackdog_core.state import parse_iso
 
 
 REPO_TABLE_COLUMNS = (
@@ -38,22 +44,42 @@ REPO_TABLE_COLUMNS = (
     "project_root",
     "branch",
     "dirty_count",
-    "worksets",
-    "tasks",
-    "active_attempts",
-    "blocked",
-    "done",
-    "attempts",
+    "tasks_total",
+    "current_ready_tasks",
+    "current_active_attempts",
+    "current_blocked_tasks",
+    "done_tasks_total",
+    "attempts_total",
+    "window_attempts",
+    "window_problem_attempts",
+    "window_success_attempts",
+    "window_blocked_attempts",
+    "window_failed_attempts",
+    "window_abandoned_attempts",
+    "window_elapsed_seconds",
     "codex_sessions",
     "codex_user_turns",
+    "codex_input_tokens",
+    "codex_cached_input_tokens",
+    "codex_output_tokens",
+    "codex_reasoning_output_tokens",
+    "codex_total_tokens",
+    "codex_tool_calls",
     "implementation_like_unlinked_turns",
     "linked_attempts",
+    "blackdog_version",
+    "profile_version",
+    "runtime_store_version",
+    "support_hash",
     "docs_count",
     "validation_count",
     "prompt_modes",
     "models",
+    "reasoning_efforts",
     "error",
 )
+LEGACY_REPO_TABLE_COLUMNS = ("legacy_worksets",)
+ALL_REPO_TABLE_COLUMNS = (*REPO_TABLE_COLUMNS, *LEGACY_REPO_TABLE_COLUMNS)
 
 _DISCOVERY_SKIP_DIRS = {
     ".git",
@@ -84,6 +110,7 @@ class RepoTableResult:
     since: str | None
     include_archived: bool
     include_codex: bool
+    include_legacy_worksets: bool
     columns: tuple[str, ...]
     rows: tuple[dict[str, object], ...]
 
@@ -94,6 +121,7 @@ class RepoTableResult:
             "since": self.since,
             "include_archived": self.include_archived,
             "include_codex": self.include_codex,
+            "include_legacy_worksets": self.include_legacy_worksets,
             "columns": list(self.columns),
             "rows": [dict(row) for row in self.rows],
         }
@@ -398,20 +426,39 @@ def _empty_table_row(project_root: Path) -> dict[str, object]:
         "project_root": str(project_root.resolve()),
         "branch": None,
         "dirty_count": None,
-        "worksets": None,
-        "tasks": None,
-        "active_attempts": None,
-        "blocked": None,
-        "done": None,
-        "attempts": None,
+        "tasks_total": None,
+        "current_ready_tasks": None,
+        "current_active_attempts": None,
+        "current_blocked_tasks": None,
+        "done_tasks_total": None,
+        "attempts_total": None,
+        "window_attempts": None,
+        "window_problem_attempts": None,
+        "window_success_attempts": None,
+        "window_blocked_attempts": None,
+        "window_failed_attempts": None,
+        "window_abandoned_attempts": None,
+        "window_elapsed_seconds": None,
         "codex_sessions": None,
         "codex_user_turns": None,
+        "codex_input_tokens": None,
+        "codex_cached_input_tokens": None,
+        "codex_output_tokens": None,
+        "codex_reasoning_output_tokens": None,
+        "codex_total_tokens": None,
+        "codex_tool_calls": None,
         "implementation_like_unlinked_turns": None,
         "linked_attempts": None,
+        "blackdog_version": None,
+        "profile_version": None,
+        "runtime_store_version": None,
+        "support_hash": None,
         "docs_count": None,
         "validation_count": None,
         "prompt_modes": "",
         "models": "",
+        "reasoning_efforts": "",
+        "legacy_worksets": None,
         "error": None,
     }
 
@@ -425,49 +472,161 @@ def _string_set_label(values: set[str]) -> str:
     return ",".join(sorted(value for value in values if value))
 
 
+def _count_label(counts: dict[str, int]) -> str:
+    return ",".join(f"{key}={counts[key]}" for key in sorted(counts) if key and counts[key])
+
+
+def _parse_table_since(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = parse_iso(value)
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(f"{value}T00:00:00")
+        except ValueError as exc:
+            raise RepoLifecycleError(f"--since must be an ISO timestamp or date: {value!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _attempt_in_window(attempt: AttemptView, cutoff: datetime | None, now: datetime) -> bool:
+    if cutoff is None:
+        return True
+    ended = parse_iso(attempt.ended_at) or (now if attempt.is_active else None)
+    return ended is not None and ended >= cutoff
+
+
+def _attempt_elapsed_seconds(attempt: AttemptView, *, now: datetime, cutoff: datetime | None) -> int:
+    if cutoff is None and attempt.elapsed_seconds is not None:
+        return max(0, int(attempt.elapsed_seconds))
+    started = parse_iso(attempt.started_at)
+    if started is None:
+        return 0
+    ended = parse_iso(attempt.ended_at) or (now if attempt.is_active else None)
+    if ended is None:
+        return 0
+    window_start = max(started, cutoff) if cutoff is not None else started
+    return max(0, int((ended - window_start).total_seconds()))
+
+
+def _add_attempt_labels(
+    attempt: AttemptView,
+    *,
+    models: set[str],
+    prompt_modes: set[str],
+    reasoning_counts: dict[str, int],
+) -> None:
+    if attempt.model:
+        models.add(attempt.model)
+    if attempt.reasoning_effort:
+        reasoning_counts[attempt.reasoning_effort] = reasoning_counts.get(attempt.reasoning_effort, 0) + 1
+    for receipt in (attempt.prompt_receipt, attempt.user_prompt_receipt):
+        if receipt is not None and receipt.mode:
+            prompt_modes.add(receipt.mode)
+
+
+def _runtime_store_version(profile: RepoProfile) -> str | None:
+    try:
+        payload = json.loads(profile.paths.runtime_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("store_version")
+    return str(value).strip() if value else None
+
+
+def _managed_agents_block_text(project_root: Path) -> str:
+    agents_path = project_root / AGENTS_FILE_NAME
+    try:
+        text = agents_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    start = text.find(AGENTS_MANAGED_BEGIN)
+    end = text.find(AGENTS_MANAGED_END)
+    if start == -1 or end == -1 or end < start:
+        return ""
+    return text[start : end + len(AGENTS_MANAGED_END)]
+
+
+def _support_hash(profile: RepoProfile) -> str:
+    chunks: list[str] = [
+        f"blackdog_version={BLACKDOG_VERSION}",
+        f"profile_version={profile.profile_version}",
+    ]
+    for path in (
+        profile.paths.project_root / PROFILE_FILE_NAME,
+        profile.paths.project_root / managed_skill_relative_path(profile),
+        profile.paths.project_root / MANAGED_SKILLS_ROOT / managed_skill_name(profile) / "agents" / "openai.yaml",
+    ):
+        try:
+            chunks.append(path.read_text(encoding="utf-8"))
+        except OSError:
+            if path.is_relative_to(profile.paths.project_root):
+                missing = path.relative_to(profile.paths.project_root)
+            else:
+                missing = path
+            chunks.append(f"missing:{missing}")
+    chunks.append(_managed_agents_block_text(profile.paths.project_root))
+    return hashlib.sha256("\n\n".join(chunks).encode("utf-8")).hexdigest()[:12]
+
+
 def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool) -> dict[str, object]:
     row = _empty_table_row(profile_dir)
     errors: list[str] = []
+    cutoff = _parse_table_since(since)
     try:
         profile = load_profile(profile_dir)
     except (ConfigError, RepoLifecycleError, OSError, tomllib.TOMLDecodeError) as exc:
         row["error"] = str(exc)
-        return {column: row.get(column) for column in REPO_TABLE_COLUMNS}
+        return {column: row.get(column) for column in ALL_REPO_TABLE_COLUMNS}
 
     row["project_name"] = profile.project_name
     row["status"] = profile.status
     row["project_root"] = str(profile.paths.project_root)
     row["branch"] = _current_branch(profile.paths.project_root)
     row["dirty_count"] = _dirty_count(profile.paths.project_root)
+    row["blackdog_version"] = BLACKDOG_VERSION
+    row["profile_version"] = profile.profile_version
+    row["runtime_store_version"] = _runtime_store_version(profile)
+    row["support_hash"] = _support_hash(profile)
     row["docs_count"] = len(profile.doc_routing_defaults)
     row["validation_count"] = len(profile.validation_commands)
+    window_attempt_views: tuple[AttemptView, ...] = ()
 
     try:
-        summary = build_runtime_summary(profile)
-        counts = summary["counts"]
-        row["worksets"] = counts.get("worksets", 0)
-        row["tasks"] = counts.get("tasks", 0)
-        row["active_attempts"] = counts.get("active_attempts", 0)
-        row["blocked"] = counts.get("blocked", 0)
-        row["done"] = counts.get("done", 0)
-        row["attempts"] = counts.get("attempts", 0)
+        model = hide_canceled_runtime_model(load_runtime_model(profile))
+        counts = model.counts
+        attempts = tuple(attempt for workset in model.worksets for attempt in workset.attempts)
+        now = datetime.now().astimezone()
+        window_attempts = tuple(attempt for attempt in attempts if _attempt_in_window(attempt, cutoff, now))
+        window_attempt_views = window_attempts
+        window_status_counts: dict[str, int] = {}
+        for attempt in window_attempts:
+            window_status_counts[attempt.status] = window_status_counts.get(attempt.status, 0) + 1
+        row["legacy_worksets"] = counts.get("worksets", 0)
+        row["tasks_total"] = counts.get("tasks", 0)
+        row["current_ready_tasks"] = counts.get("ready", 0)
+        row["current_active_attempts"] = counts.get("active_attempts", 0)
+        row["current_blocked_tasks"] = counts.get("blocked", 0)
+        row["done_tasks_total"] = counts.get("done", 0)
+        row["attempts_total"] = counts.get("attempts", 0)
+        row["window_attempts"] = len(window_attempts)
+        row["window_problem_attempts"] = sum(window_status_counts.get(status, 0) for status in ("blocked", "failed", "abandoned"))
+        row["window_success_attempts"] = window_status_counts.get("success", 0)
+        row["window_blocked_attempts"] = window_status_counts.get("blocked", 0)
+        row["window_failed_attempts"] = window_status_counts.get("failed", 0)
+        row["window_abandoned_attempts"] = window_status_counts.get("abandoned", 0)
+        row["window_elapsed_seconds"] = sum(_attempt_elapsed_seconds(attempt, now=now, cutoff=cutoff) for attempt in window_attempts)
     except Exception as exc:  # read model errors should not hide other repos
         _append_error(errors, f"runtime summary failed: {exc}")
 
     models: set[str] = set()
     prompt_modes: set[str] = set()
-    try:
-        attempts_table = build_attempts_table(profile)
-        for attempt_row in attempts_table["rows"]:
-            for key in ("prompt_mode", "user_prompt_mode", "execution_prompt_mode"):
-                value = attempt_row.get(key)
-                if value:
-                    prompt_modes.add(str(value))
-            model = attempt_row.get("model")
-            if model:
-                models.add(str(model))
-    except Exception as exc:
-        _append_error(errors, f"attempts table failed: {exc}")
+    reasoning_counts: dict[str, int] = {}
+    for attempt in window_attempt_views:
+        _add_attempt_labels(attempt, models=models, prompt_modes=prompt_modes, reasoning_counts=reasoning_counts)
 
     if include_codex:
         try:
@@ -475,6 +634,12 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
             coverage_counts = coverage["counts"]
             row["codex_sessions"] = coverage_counts.get("codex_sessions", 0)
             row["codex_user_turns"] = coverage_counts.get("codex_user_turns", 0)
+            row["codex_input_tokens"] = coverage_counts.get("input_tokens", 0)
+            row["codex_cached_input_tokens"] = coverage_counts.get("cached_input_tokens", 0)
+            row["codex_output_tokens"] = coverage_counts.get("output_tokens", 0)
+            row["codex_reasoning_output_tokens"] = coverage_counts.get("reasoning_output_tokens", 0)
+            row["codex_total_tokens"] = coverage_counts.get("total_tokens", 0)
+            row["codex_tool_calls"] = coverage_counts.get("tool_calls", 0)
             row["implementation_like_unlinked_turns"] = coverage_counts.get(
                 "implementation_like_unlinked_turns",
                 0,
@@ -484,18 +649,29 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
                 model = turn.get("model")
                 if model:
                     models.add(str(model))
+                reasoning_effort = turn.get("reasoning_effort")
+                if reasoning_effort:
+                    effort = str(reasoning_effort)
+                    reasoning_counts[effort] = reasoning_counts.get(effort, 0) + 1
         except Exception as exc:
             _append_error(errors, f"codex coverage failed: {exc}")
     else:
         row["codex_sessions"] = None
         row["codex_user_turns"] = None
+        row["codex_input_tokens"] = None
+        row["codex_cached_input_tokens"] = None
+        row["codex_output_tokens"] = None
+        row["codex_reasoning_output_tokens"] = None
+        row["codex_total_tokens"] = None
+        row["codex_tool_calls"] = None
         row["implementation_like_unlinked_turns"] = None
         row["linked_attempts"] = None
 
     row["prompt_modes"] = _string_set_label(prompt_modes)
     row["models"] = _string_set_label(models)
+    row["reasoning_efforts"] = _count_label(reasoning_counts)
     row["error"] = "; ".join(errors) if errors else None
-    return {column: row.get(column) for column in REPO_TABLE_COLUMNS}
+    return {column: row.get(column) for column in ALL_REPO_TABLE_COLUMNS}
 
 
 def build_repo_table(
@@ -504,6 +680,7 @@ def build_repo_table(
     since: str | None = None,
     include_archived: bool = False,
     include_codex: bool = True,
+    include_legacy_worksets: bool = False,
 ) -> RepoTableResult:
     if not roots:
         raise RepoLifecycleError("repo table requires at least one --root")
@@ -523,14 +700,16 @@ def build_repo_table(
             continue
         rows.append(row)
 
+    columns = (*REPO_TABLE_COLUMNS, *LEGACY_REPO_TABLE_COLUMNS) if include_legacy_worksets else REPO_TABLE_COLUMNS
     return RepoTableResult(
         action="table",
         roots=tuple(str(root.resolve()) for root in roots),
         since=since,
         include_archived=include_archived,
         include_codex=include_codex,
-        columns=REPO_TABLE_COLUMNS,
-        rows=tuple(rows),
+        include_legacy_worksets=include_legacy_worksets,
+        columns=columns,
+        rows=tuple({column: row.get(column) for column in columns} for row in rows),
     )
 
 
