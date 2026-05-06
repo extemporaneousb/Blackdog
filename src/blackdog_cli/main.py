@@ -81,7 +81,7 @@ from blackdog_core.snapshot import (
     render_next_text,
     render_summary_text,
 )
-from blackdog_core.state import PROMPT_MODES, StoreError, VALIDATION_STATUSES, ValidationRecord
+from blackdog_core.state import FAILURE_CLASSES, PROMPT_MODES, StoreError, VALIDATION_STATUSES, ValidationRecord
 
 
 WORKSET_COMMANDS_ENABLE_ENV = "BLACKDOG_ENABLE_WORKSET_COMMANDS"
@@ -205,11 +205,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_summary.add_argument("--project-root", default=".")
     p_summary.add_argument("--workset")
     p_summary.add_argument("--include-canceled", action="store_true")
+    p_summary.add_argument("--include-legacy-worksets", action="store_true")
     p_summary.add_argument("--json", action="store_true")
 
     p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable vNext runtime snapshot")
     p_snapshot.add_argument("--project-root", default=".")
     p_snapshot.add_argument("--workset")
+    p_snapshot.add_argument("--include-legacy-worksets", action="store_true")
 
     p_next = subparsers.add_parser("next", help=argparse.SUPPRESS)
     p_next.add_argument("--project-root", default=".")
@@ -245,11 +247,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_attempts_summary = attempts_subparsers.add_parser("summary", help="Summarize completed attempts")
     p_attempts_summary.add_argument("--project-root", default=".")
     p_attempts_summary.add_argument("--workset")
+    p_attempts_summary.add_argument("--include-legacy-worksets", action="store_true")
     p_attempts_summary.add_argument("--json", action="store_true")
 
     p_attempts_table = attempts_subparsers.add_parser("table", help="Emit a stable table over completed attempts")
     p_attempts_table.add_argument("--project-root", default=".")
     p_attempts_table.add_argument("--workset")
+    p_attempts_table.add_argument("--include-legacy-worksets", action="store_true")
     p_attempts_table.add_argument("--json", action="store_true")
 
     p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed session coverage and history")
@@ -384,6 +388,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_cancel.add_argument("--task", required=True)
     p_task_cancel.add_argument("--actor", default="codex")
     p_task_cancel.add_argument("--summary")
+    p_task_cancel.add_argument("--failure-class", choices=sorted(FAILURE_CLASSES))
+    p_task_cancel.add_argument("--recovery-action")
+    p_task_cancel.add_argument("--prompt-issue", action="store_true")
+    p_task_cancel.add_argument("--operator-issue", action="store_true")
     p_task_cancel.add_argument("--json", action="store_true")
 
     p_task_reopen = task_subparsers.add_parser("reopen", help="Reopen a canceled task")
@@ -540,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
                         profile,
                         workset_id=args.workset,
                         include_canceled=args.include_canceled,
+                        include_legacy_worksets=args.include_legacy_worksets,
                     )
                 )
             else:
@@ -548,7 +557,13 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "snapshot":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            _emit_json(build_runtime_snapshot(profile, workset_id=args.workset))
+            _emit_json(
+                build_runtime_snapshot(
+                    profile,
+                    workset_id=args.workset,
+                    include_legacy_worksets=args.include_legacy_worksets,
+                )
+            )
             return 0
 
         if args.command == "next":
@@ -603,7 +618,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "attempts" and args.attempts_command == "summary":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = build_attempts_summary(profile, workset_id=args.workset)
+            payload = build_attempts_summary(
+                profile,
+                workset_id=args.workset,
+                include_legacy_worksets=args.include_legacy_worksets,
+            )
             if args.json:
                 _emit_json(payload)
             else:
@@ -612,7 +631,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "attempts" and args.attempts_command == "table":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = build_attempts_table(profile, workset_id=args.workset)
+            payload = build_attempts_table(
+                profile,
+                workset_id=args.workset,
+                include_legacy_worksets=args.include_legacy_worksets,
+            )
             if args.json:
                 _emit_json(payload)
             else:
@@ -835,6 +858,10 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=args.task,
                 actor=args.actor,
                 summary=args.summary,
+                failure_class=args.failure_class,
+                recovery_action=args.recovery_action,
+                prompt_issue=args.prompt_issue,
+                operator_issue=args.operator_issue,
             )
             if args.json:
                 _emit_json({"task_state": payload})

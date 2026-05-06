@@ -146,8 +146,8 @@ class BlackdogCliTests(CoreAuditTestCase):
 
         exit_code, stdout, stderr = self.run_cli("summary", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
-        self.assertIn("vertical-slice: Vertical slice", stdout)
-        self.assertIn("[READY] VS-2 Read status", stdout)
+        self.assertIn("Ready tasks:", stdout)
+        self.assertIn("vertical-slice/VS-2 Read status", stdout)
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -161,7 +161,20 @@ class BlackdogCliTests(CoreAuditTestCase):
         scoped_summary = json.loads(stdout)
         self.assertEqual(scoped_summary["workset_scope"], "vertical-slice")
         self.assertEqual(scoped_summary["counts"]["worksets"], 1)
-        self.assertEqual(scoped_summary["worksets"][0]["id"], "vertical-slice")
+        self.assertNotIn("worksets", scoped_summary)
+        self.assertEqual(scoped_summary["ready_tasks"][0]["task_ref"], "vertical-slice/VS-2")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "vertical-slice",
+            "--include-legacy-worksets",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["worksets"][0]["id"], "vertical-slice")
 
         exit_code, stdout, stderr = self.run_cli(
             "next",
@@ -176,7 +189,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(next_payload["workset_id"], "vertical-slice")
         self.assertEqual(next_payload["selection_mode"], "start")
         self.assertEqual(next_payload["selected_task"]["task_id"], "VS-2")
-        self.assertEqual(next_payload["ready_tasks"][0]["workset_id"], "vertical-slice")
+        self.assertEqual(next_payload["ready_tasks"][0]["task_ref"], "vertical-slice/VS-2")
 
         exit_code, stdout, stderr = self.run_cli(
             "snapshot",
@@ -187,9 +200,10 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         snapshot = json.loads(stdout)
-        self.assertEqual(len(snapshot["runtime_model"]["worksets"]), 1)
+        self.assertNotIn("worksets", snapshot["runtime_model"])
+        self.assertEqual(len(snapshot["runtime_model"]["tasks"]), 2)
         self.assertEqual(snapshot["runtime_model"]["counts"]["ready"], 1)
-        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["workspace"]["identity"], "vertical-slice-workspace")
+        self.assertEqual(snapshot["runtime_model"]["tasks"][1]["task_ref"], "vertical-slice/VS-2")
         self.assertEqual(snapshot["runtime_model"]["counts"]["attempts"], 0)
 
     def test_workset_put_rejects_non_object_payload(self) -> None:
@@ -226,10 +240,19 @@ class BlackdogCliTests(CoreAuditTestCase):
             "CAN-1",
             "--summary",
             "stale",
+            "--failure-class",
+            "superseded",
+            "--recovery-action",
+            "leave_canceled",
+            "--operator-issue",
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
-        self.assertEqual(json.loads(stdout)["task_state"]["status"], "canceled")
+        task_state = json.loads(stdout)["task_state"]
+        self.assertEqual(task_state["status"], "canceled")
+        self.assertEqual(task_state["failure_class"], "superseded")
+        self.assertEqual(task_state["recovery_action"], "leave_canceled")
+        self.assertTrue(task_state["operator_issue"])
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -253,6 +276,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         self.assertEqual(json.loads(stdout)["counts"]["canceled"], 1)
+        self.assertEqual(json.loads(stdout)["tasks"][0]["failure_class"], "superseded")
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -413,7 +437,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertIn("Project: CLI Demo", completed.stdout)
 
-        exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
+        exit_code, stdout, stderr = self.run_cli(
+            "snapshot",
+            "--project-root",
+            str(self.root),
+            "--include-legacy-worksets",
+        )
         self.assertEqual(exit_code, 0, stderr)
         snapshot = json.loads(stdout)
         self.assertEqual(snapshot["runtime_model"]["counts"]["claimed_worksets"], 1)
@@ -474,11 +503,17 @@ class BlackdogCliTests(CoreAuditTestCase):
         exit_code, stdout, stderr = self.run_cli("summary", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
         self.assertIn("Attempts: 1 | Active attempts: 0", stdout)
-        self.assertIn("latest_attempt=success", stdout)
+        self.assertIn("Recent attempts:", stdout)
+        self.assertIn("status=success", stdout)
         self.assertIn("branch=", stdout)
         self.assertIn("prompt=", stdout)
 
-        exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
+        exit_code, stdout, stderr = self.run_cli(
+            "snapshot",
+            "--project-root",
+            str(self.root),
+            "--include-legacy-worksets",
+        )
         self.assertEqual(exit_code, 0, stderr)
         snapshot = json.loads(stdout)
         self.assertEqual(snapshot["runtime_model"]["counts"]["attempts"], 1)
@@ -739,7 +774,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         summary_payload = json.loads(stdout)
         self.assertEqual(summary_payload["counts"]["tasks"], 0)
-        self.assertEqual(summary_payload["worksets"], [])
+        self.assertNotIn("worksets", summary_payload)
+        self.assertEqual(summary_payload["tasks"], [])
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -753,12 +789,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         summary_payload = json.loads(stdout)
         self.assertEqual(summary_payload["counts"]["canceled"], 1)
-        self.assertEqual(summary_payload["worksets"][0]["recent_attempts"][0]["user_prompt_hash"], task_payload["user_prompt_hash"])
+        self.assertEqual(summary_payload["recent_attempts"][0]["user_prompt_hash"], task_payload["user_prompt_hash"])
         self.assertEqual(
-            summary_payload["worksets"][0]["recent_attempts"][0]["execution_prompt_hash"],
+            summary_payload["recent_attempts"][0]["execution_prompt_hash"],
             task_payload["execution_prompt_hash"],
         )
-        self.assertIsNone(summary_payload["worksets"][0]["recent_attempts"][0]["prompt_hash"])
+        self.assertIsNone(summary_payload["recent_attempts"][0]["prompt_hash"])
 
     def test_task_begin_accepts_skill_execution_prompt_and_user_prompt(self) -> None:
         self.install_repo_runtime()
@@ -1321,6 +1357,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(land_payload["attempt_active"])
         self.assertEqual(land_payload["land_failure_disposition"], "retryable")
         self.assertIn("dirty primary worktree", land_payload["error"])
+        self.assertEqual(land_payload["failure_class"], "dirty_primary")
+        self.assertEqual(land_payload["recovery_action"], "clean_primary_worktree")
+        self.assertTrue(land_payload["operator_issue"])
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -1334,7 +1373,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         summary = json.loads(stdout)
         self.assertEqual(summary["counts"]["active_attempts"], 1)
         self.assertEqual(summary["counts"]["claimed_tasks"], 1)
-        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "in_progress")
+        self.assertEqual(summary["recent_attempts"][0]["status"], "in_progress")
 
         (self.root / "primary-dirty.txt").unlink()
 
@@ -1373,7 +1412,80 @@ class BlackdogCliTests(CoreAuditTestCase):
         summary = json.loads(stdout)
         self.assertEqual(summary["counts"]["active_attempts"], 0)
         self.assertEqual(summary["counts"]["claimed_tasks"], 0)
-        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "success")
+        self.assertEqual(summary["recent_attempts"][0]["status"], "success")
+
+    def test_worktree_land_classifies_stale_branch_blocker(self) -> None:
+        payload = {
+            "id": "stale-land",
+            "title": "Stale land",
+            "tasks": [{"id": "SL-1", "title": "Block stale branch", "intent": "detect stale task branch"}],
+        }
+        self.put_workset(payload)
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "stale-land",
+            "--task",
+            "SL-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Attempt the stale branch land slice.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        worktree_path = Path(start_payload["worktree_path"])
+        (worktree_path / "stale.txt").write_text("stale\n", encoding="utf-8")
+        (self.root / "main-advanced.txt").write_text("advanced\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "main-advanced.txt"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "stale-land",
+            "--task",
+            "SL-1",
+            "--actor",
+            "codex",
+            "--summary",
+            "attempted stale branch land",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        land_payload = json.loads(stdout)["landing"]
+        self.assertEqual(land_payload["status"], "blocked")
+        self.assertTrue(land_payload["attempt_active"])
+        self.assertEqual(land_payload["land_failure_disposition"], "retryable")
+        self.assertEqual(land_payload["failure_class"], "stale_branch")
+        self.assertEqual(land_payload["recovery_action"], "rebase_task_branch")
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", start_payload["branch"]],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_worktree_land_closes_terminal_no_change_failure_without_extra_close_call(self) -> None:
         payload = {
@@ -1441,7 +1553,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         summary = json.loads(stdout)
         self.assertEqual(summary["counts"]["active_attempts"], 0)
         self.assertEqual(summary["counts"]["claimed_tasks"], 0)
-        self.assertEqual(summary["worksets"][0]["recent_attempts"][0]["status"], "blocked")
+        self.assertEqual(summary["recent_attempts"][0]["status"], "blocked")
+        self.assertEqual(summary["recent_attempts"][0]["failure_class"], "no_changes")
 
     def test_attempts_summary_and_table_report_completed_history(self) -> None:
         profile = load_profile(self.root)
@@ -1526,7 +1639,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary["counts"]["validation_passed"], 1)
         self.assertEqual(summary["counts"]["validation_failed"], 1)
         self.assertEqual(summary["workset_scope"], "attempt-audit")
-        self.assertEqual(summary["worksets"][0]["workset_id"], "attempt-audit")
+        self.assertEqual(summary["tasks"][0]["task_ref"], "attempt-audit/AT-1")
+        self.assertNotIn("worksets", summary)
         self.assertIsNone(summary["recent_completed_attempts"][0]["prompt_source"])
         self.assertIsNone(summary["recent_completed_attempts"][0]["prompt_hash"])
         self.assertEqual(summary["recent_completed_attempts"][0]["user_prompt_source"], "user-test")
@@ -1560,17 +1674,19 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         table = json.loads(stdout)
-        self.assertEqual(table["columns"][0], "workset_id")
+        self.assertEqual(table["columns"][0], "task_ref")
+        self.assertNotIn("workset_id", table["columns"])
         self.assertIn("model", table["columns"])
         self.assertIn("reasoning_effort", table["columns"])
         self.assertIn("prompt_source", table["columns"])
         self.assertIn("user_prompt_source", table["columns"])
         self.assertIn("execution_prompt_hash", table["columns"])
         self.assertIn("commit", table["columns"])
+        self.assertIn("failure_class", table["columns"])
         self.assertIn("summary", table["columns"])
         self.assertEqual(len(table["rows"]), 2)
         self.assertEqual(table["workset_scope"], "attempt-audit")
-        self.assertEqual(table["rows"][0]["workset_id"], "attempt-audit")
+        self.assertTrue(table["rows"][0]["task_ref"].startswith("attempt-audit/"))
         self.assertIsNone(table["rows"][0]["prompt_source"])
         self.assertIsNone(table["rows"][0]["prompt_hash"])
         self.assertEqual(table["rows"][0]["user_prompt_source"], "user-test")
@@ -1580,6 +1696,21 @@ class BlackdogCliTests(CoreAuditTestCase):
             {row["landed_commit"] for row in table["rows"]},
             {"def456", None},
         )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "attempts",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "attempt-audit",
+            "--include-legacy-worksets",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        legacy_table = json.loads(stdout)
+        self.assertEqual(legacy_table["columns"][0], "workset_id")
+        self.assertEqual(legacy_table["rows"][0]["workset_id"], "attempt-audit")
 
     def test_worktree_land_rejects_invalid_validation_status(self) -> None:
         payload = {

@@ -10,6 +10,11 @@ from .backlog import PlanningState, TaskSpec, Workset, load_planning_state, next
 from .profile import RepoProfile
 from .state import (
     ATTEMPT_ACTIVE_STATUSES,
+    ATTEMPT_STATUS_BLOCKED,
+    ATTEMPT_STATUS_FAILED,
+    ATTEMPT_STATUS_ABANDONED,
+    FAILURE_CLASS_ABANDONED,
+    FAILURE_CLASS_UNKNOWN,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_CANCELED,
     TASK_STATUS_DONE,
@@ -121,6 +126,10 @@ class AttemptView:
     commit: str | None
     landed_commit: str | None
     is_active: bool
+    failure_class: str | None
+    recovery_action: str | None
+    prompt_issue: bool
+    operator_issue: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +158,10 @@ class TaskView:
     latest_attempt_status: str | None
     latest_attempt_summary: str | None
     active_attempt_id: str | None
+    failure_class: str | None
+    recovery_action: str | None
+    prompt_issue: bool
+    operator_issue: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +270,11 @@ def _task_claim_view(claim: TaskClaimRecord) -> TaskClaimView:
 
 
 def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
+    failure_class = attempt.failure_class
+    if failure_class is None and attempt.status == ATTEMPT_STATUS_ABANDONED:
+        failure_class = FAILURE_CLASS_ABANDONED
+    elif failure_class is None and attempt.status in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}:
+        failure_class = FAILURE_CLASS_UNKNOWN
     return AttemptView(
         attempt_id=attempt.attempt_id,
         task_id=attempt.task_id,
@@ -288,6 +306,10 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
         commit=attempt.commit,
         landed_commit=attempt.landed_commit,
         is_active=attempt.status in ATTEMPT_ACTIVE_STATUSES,
+        failure_class=failure_class,
+        recovery_action=attempt.recovery_action,
+        prompt_issue=attempt.prompt_issue,
+        operator_issue=attempt.operator_issue,
     )
 
 
@@ -348,6 +370,10 @@ def _task_view(
         latest_attempt_status=latest_attempt.status if latest_attempt else None,
         latest_attempt_summary=latest_attempt.summary if latest_attempt else None,
         active_attempt_id=active_attempt.attempt_id if active_attempt else None,
+        failure_class=runtime.failure_class,
+        recovery_action=runtime.recovery_action,
+        prompt_issue=runtime.prompt_issue,
+        operator_issue=runtime.operator_issue,
     )
 
 

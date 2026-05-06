@@ -27,6 +27,12 @@ from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
     ATTEMPT_STATUS_BLOCKED,
+    FAILURE_CLASS_ABANDONED,
+    FAILURE_CLASS_DIRTY_PRIMARY,
+    FAILURE_CLASS_MISSING_WORKTREE,
+    FAILURE_CLASS_NO_CHANGES,
+    FAILURE_CLASS_STALE_BRANCH,
+    FAILURE_CLASS_UNKNOWN,
     ATTEMPT_STATUS_FAILED,
     ATTEMPT_STATUS_SUCCESS,
     PROMPT_MODE_RAW,
@@ -1390,6 +1396,10 @@ def _task_state_payload(
     actor: str,
     status: str,
     summary: str | None,
+    failure_class: str | None = None,
+    recovery_action: str | None = None,
+    prompt_issue: bool = False,
+    operator_issue: bool = False,
 ) -> dict[str, Any]:
     record = set_task_runtime_status(
         profile,
@@ -1398,6 +1408,10 @@ def _task_state_payload(
         actor=actor,
         status=status,
         summary=summary,
+        failure_class=failure_class,
+        recovery_action=recovery_action,
+        prompt_issue=prompt_issue,
+        operator_issue=operator_issue,
     )
     return {
         "workset_id": workset_id,
@@ -1406,6 +1420,10 @@ def _task_state_payload(
         "status": record.status,
         "updated_at": record.updated_at,
         "summary": record.note,
+        "failure_class": record.failure_class,
+        "recovery_action": record.recovery_action,
+        "prompt_issue": record.prompt_issue,
+        "operator_issue": record.operator_issue,
     }
 
 
@@ -1416,6 +1434,10 @@ def cancel_task(
     task_id: str,
     actor: str,
     summary: str | None = None,
+    failure_class: str | None = None,
+    recovery_action: str | None = None,
+    prompt_issue: bool = False,
+    operator_issue: bool = False,
 ) -> dict[str, Any]:
     return _task_state_payload(
         profile=profile,
@@ -1424,6 +1446,10 @@ def cancel_task(
         actor=actor,
         status=TASK_STATUS_CANCELED,
         summary=summary,
+        failure_class=failure_class,
+        recovery_action=recovery_action,
+        prompt_issue=prompt_issue,
+        operator_issue=operator_issue,
     )
 
 
@@ -1535,6 +1561,14 @@ def _task_recovery_payload(
         worktree_dirty=bool(worktree_dirty_paths),
         branch_ahead_of_target=branch_ahead,
     )
+    failure_class = runtime_task_state.failure_class
+    recovery_action = runtime_task_state.recovery_action
+    prompt_issue = runtime_task_state.prompt_issue
+    operator_issue = runtime_task_state.operator_issue
+    if failure_class is None and active_attempt is not None and not worktree_exists:
+        failure_class = FAILURE_CLASS_MISSING_WORKTREE
+        recovery_action = "restore_or_cleanup_worktree"
+        operator_issue = True
     recommended_actions: list[str] = []
     if stale_claim:
         if task_worktree is not None and (worktree_dirty_paths or branch_ahead):
@@ -1604,6 +1638,10 @@ def _task_recovery_payload(
         ),
         "stale_claim": stale_claim,
         "recovery_state": recovery_state,
+        "failure_class": failure_class,
+        "recovery_action": recovery_action,
+        "prompt_issue": prompt_issue,
+        "operator_issue": operator_issue,
         "execution_prompt_hash": (
             selected_attempt.prompt_receipt.prompt_hash
             if selected_attempt is not None and selected_attempt.prompt_receipt is not None
@@ -1681,14 +1719,18 @@ def _release_stale_task_claim(
     incoming_records: tuple[TaskRuntimeRecord, ...] | None = None
     if current_task_state is not None and current_task_state.status == TASK_STATUS_IN_PROGRESS:
         repaired_runtime_status = TASK_STATUS_CANCELED if status == ATTEMPT_STATUS_ABANDONED else TASK_STATUS_BLOCKED
+        failure_details = _failure_details_for_status(status, recovery_action="release_stale_claim")
         incoming_records = (
             TaskRuntimeRecord(
                 task_id=task_id,
                 status=repaired_runtime_status,
                 updated_at=released_at,
                 note=resolved_summary,
+                **failure_details,
             ),
         )
+    else:
+        failure_details = _failure_details_for_status(status, recovery_action="release_stale_claim")
     current_workset_claim = workset_claim(runtime_state, workset_id)
     remaining_task_claims = tuple(
         claim
@@ -1720,6 +1762,7 @@ def _release_stale_task_claim(
             "note": note,
             "recovery": "stale_claim",
             "repaired_runtime_status": repaired_runtime_status,
+            **failure_details,
         },
     )
     if release_workset_claim:
@@ -1734,6 +1777,7 @@ def _release_stale_task_claim(
                 "summary": resolved_summary,
                 "note": note,
                 "recovery": "stale_claim",
+                **failure_details,
             },
         )
     payload = _task_recovery_payload(profile, workset_id=workset_id, task_id=task_id)
@@ -1744,6 +1788,7 @@ def _release_stale_task_claim(
     payload["release_note"] = note
     payload["released_workset_claim"] = release_workset_claim
     payload["repaired_runtime_status"] = repaired_runtime_status
+    payload.update(failure_details)
     return payload
 
 
@@ -1904,6 +1949,55 @@ def land_branch(
         raise
 
 
+def _failure_details_for_status(status: str, *, recovery_action: str | None = None) -> dict[str, Any]:
+    if status == ATTEMPT_STATUS_ABANDONED:
+        return {
+            "failure_class": FAILURE_CLASS_ABANDONED,
+            "recovery_action": recovery_action or "reopen_if_needed",
+            "prompt_issue": False,
+            "operator_issue": True,
+        }
+    return {
+        "failure_class": FAILURE_CLASS_UNKNOWN,
+        "recovery_action": recovery_action or "inspect",
+        "prompt_issue": False,
+        "operator_issue": False,
+    }
+
+
+def _failure_details_for_land_error(exc: Exception) -> dict[str, Any]:
+    message = str(exc)
+    if "dirty primary worktree" in message:
+        return {
+            "failure_class": FAILURE_CLASS_DIRTY_PRIMARY,
+            "recovery_action": "clean_primary_worktree",
+            "prompt_issue": False,
+            "operator_issue": True,
+        }
+    if "is not based on the current" in message:
+        return {
+            "failure_class": FAILURE_CLASS_STALE_BRANCH,
+            "recovery_action": "rebase_task_branch",
+            "prompt_issue": False,
+            "operator_issue": True,
+        }
+    if "missing" in message and "worktree" in message:
+        return {
+            "failure_class": FAILURE_CLASS_MISSING_WORKTREE,
+            "recovery_action": "restore_or_cleanup_worktree",
+            "prompt_issue": False,
+            "operator_issue": True,
+        }
+    if "has no changes relative to" in message:
+        return {
+            "failure_class": FAILURE_CLASS_NO_CHANGES,
+            "recovery_action": "close_no_change_attempt",
+            "prompt_issue": False,
+            "operator_issue": False,
+        }
+    return _failure_details_for_status(ATTEMPT_STATUS_BLOCKED)
+
+
 def _terminal_land_failure_status(exc: Exception) -> str | None:
     message = str(exc)
     if "has no changes relative to" in message:
@@ -1990,6 +2084,7 @@ def land_task_worktree(
             if completed.returncode == 0:
                 branch_head_commit = completed.stdout.strip() or None
         terminal_status = _terminal_land_failure_status(exc)
+        failure_details = _failure_details_for_land_error(exc)
         if terminal_status is not None:
             payload = close_task_worktree(
                 profile,
@@ -2003,10 +2098,12 @@ def land_task_worktree(
                 followup_candidates=followup_candidates,
                 note=note or str(exc),
                 cleanup=cleanup,
+                **failure_details,
             )
             payload["error"] = str(exc)
             payload["attempt_active"] = False
             payload["land_failure_disposition"] = "closed"
+            payload.update(failure_details)
             payload["recommended_actions"] = []
             if not payload.get("cleanup_performed"):
                 payload["recommended_actions"].append("run `blackdog task cleanup` if the task workspace is no longer needed")
@@ -2035,6 +2132,7 @@ def land_task_worktree(
             "error": str(exc),
             "attempt_active": True,
             "land_failure_disposition": "retryable",
+            **failure_details,
             "recommended_actions": [
                 "fix the landing blocker and rerun `blackdog task land` from the task worktree, "
                 "or `blackdog worktree land` with --workset/--task",
@@ -2110,6 +2208,10 @@ def close_task_worktree(
     followup_candidates: tuple[str, ...] = (),
     note: str | None = None,
     cleanup: bool = False,
+    failure_class: str | None = None,
+    recovery_action: str | None = None,
+    prompt_issue: bool = False,
+    operator_issue: bool = False,
 ) -> dict[str, Any]:
     runtime_state = load_runtime_state(profile.paths)
     attempt = active_task_attempt(runtime_state, workset_id, task_id)
@@ -2134,6 +2236,11 @@ def close_task_worktree(
         completed = _run_git_no_check(find_primary_worktree(profile.paths.project_root), "rev-parse", attempt.branch)
         if completed.returncode == 0:
             branch_head_commit = completed.stdout.strip() or None
+    failure_details = _failure_details_for_status(status, recovery_action=recovery_action)
+    if failure_class is not None:
+        failure_details["failure_class"] = failure_class
+    failure_details["prompt_issue"] = bool(prompt_issue or failure_details["prompt_issue"])
+    failure_details["operator_issue"] = bool(operator_issue or failure_details["operator_issue"])
     finished = finish_task(
         profile,
         workset_id=workset_id,
@@ -2148,6 +2255,7 @@ def close_task_worktree(
         followup_candidates=followup_candidates,
         commit=branch_head_commit,
         note=note,
+        **failure_details,
     )
     cleanup_reason: str | None = None
     cleanup_payload: dict[str, Any] | None = None
@@ -2183,6 +2291,7 @@ def close_task_worktree(
             "cleanup_requested": cleanup,
             "cleanup_performed": cleanup_payload is not None,
             "cleanup_reason": cleanup_reason,
+            **failure_details,
         },
     )
     return {
@@ -2200,6 +2309,7 @@ def close_task_worktree(
         "cleanup_performed": cleanup_payload is not None,
         "cleanup_reason": cleanup_reason,
         "cleanup": cleanup_payload,
+        **failure_details,
     }
 
 
@@ -2421,6 +2531,10 @@ def render_land_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
         ]
         if payload.get("summary"):
             lines.append(f"{prefix} summary: {payload['summary']}")
+        if payload.get("failure_class"):
+            lines.append(f"{prefix} failure class: {payload['failure_class']}")
+        if payload.get("recovery_action"):
+            lines.append(f"{prefix} recovery action: {payload['recovery_action']}")
         if payload.get("worktree_path"):
             lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
         if payload.get("commit"):
@@ -2461,6 +2575,10 @@ def render_task_state_text(payload: dict[str, Any]) -> str:
         lines.append(f"[blackdog-task] updated at: {payload['updated_at']}")
     if payload.get("summary"):
         lines.append(f"[blackdog-task] summary: {payload['summary']}")
+    if payload.get("failure_class"):
+        lines.append(f"[blackdog-task] failure class: {payload['failure_class']}")
+    if payload.get("recovery_action"):
+        lines.append(f"[blackdog-task] recovery action: {payload['recovery_action']}")
     return "\n".join(lines) + "\n"
 
 
@@ -2590,6 +2708,10 @@ def render_close_text(payload: dict[str, Any], *, surface: str = "worktree") -> 
         lines.append(f"{prefix} {workspace_label}: {payload['worktree_path']}")
     if payload.get("changed_paths"):
         lines.append(f"{prefix} changed paths: {', '.join(payload['changed_paths'])}")
+    if payload.get("failure_class"):
+        lines.append(f"{prefix} failure class: {payload['failure_class']}")
+    if payload.get("recovery_action"):
+        lines.append(f"{prefix} recovery action: {payload['recovery_action']}")
     if payload.get("cleanup_performed") and payload.get("cleanup"):
         lines.append(f"{prefix} removed: {payload['cleanup']['worktree_path']}")
     elif payload.get("cleanup_reason"):

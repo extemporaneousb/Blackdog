@@ -151,9 +151,29 @@ def current_codex_session_ref(
     context = current_codex_runtime_context(home)
     if context.thread_id is None:
         return None
+    turn_id: str | None = None
+    turn_started_at: str | None = None
+    if context.session_path:
+        session_file = _session_file_from_ref(context.session_path, home or codex_home())
+        if session_file is not None and session_file.is_file():
+            try:
+                session = read_codex_session(session_file, home=home)
+            except CodexSessionError:
+                session = None
+            if session is not None:
+                matched_turn = _match_turn_for_hashes(
+                    session.turns,
+                    user_prompt_hash=user_prompt_hash,
+                    execution_prompt_hash=execution_prompt_hash,
+                )
+                if matched_turn is not None:
+                    turn_id = matched_turn.turn_id
+                    turn_started_at = matched_turn.started_at
     return CodexSessionRefRecord(
         thread_id=context.thread_id,
         session_path=context.session_path,
+        turn_id=turn_id,
+        turn_started_at=turn_started_at,
         user_prompt_hash=user_prompt_hash,
         execution_prompt_hash=execution_prompt_hash,
     )
@@ -581,31 +601,87 @@ def _cwd_matches(roots: tuple[Path, ...], cwd: str | None) -> bool:
     return False
 
 
+def _session_file_from_ref(session_path: str, home: Path) -> Path | None:
+    candidate = Path(session_path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (home / candidate).resolve()
+
+
+def _attempt_prompt_hashes(attempt: AttemptView) -> set[str]:
+    hashes: set[str] = set()
+    for prompt_receipt in (attempt.prompt_receipt, attempt.user_prompt_receipt):
+        if prompt_receipt is not None and prompt_receipt.prompt_hash:
+            hashes.add(prompt_receipt.prompt_hash)
+    if attempt.codex_session is not None:
+        for prompt_hash in (attempt.codex_session.user_prompt_hash, attempt.codex_session.execution_prompt_hash):
+            if prompt_hash:
+                hashes.add(prompt_hash)
+    return hashes
+
+
+def _match_turn_for_hashes(
+    turns: tuple[CodexTurn, ...],
+    *,
+    user_prompt_hash: str | None,
+    execution_prompt_hash: str | None,
+) -> CodexTurn | None:
+    hashes = {item for item in (user_prompt_hash, execution_prompt_hash) if item}
+    if not hashes:
+        return turns[0] if len(turns) == 1 else None
+    for turn in turns:
+        if turn.user_message_hash in hashes:
+            return turn
+    return turns[0] if len(turns) == 1 else None
+
+
+def _session_ref_matches(turn: CodexTurn, attempt: AttemptView) -> bool:
+    if attempt.codex_session is None:
+        return False
+    ref = attempt.codex_session
+    if ref.thread_id and ref.thread_id != turn.thread_id:
+        return False
+    if ref.session_path and ref.session_path != turn.session_path:
+        return False
+    if ref.turn_id:
+        return ref.turn_id == turn.turn_id
+    if ref.turn_started_at and turn.started_at:
+        return ref.turn_started_at == turn.started_at
+    return bool(ref.session_path or ref.thread_id)
+
+
 def _link_turns_to_attempts(turns: tuple[CodexTurn, ...], attempts: tuple[AttemptView, ...]) -> dict[tuple[str, str], tuple[str, ...]]:
     attempts_by_hash: dict[str, list[str]] = {}
-    attempts_by_codex_hash: dict[str, list[str]] = {}
+    attempts_by_turn_ref: dict[tuple[str, str], list[str]] = {}
+    attempts_by_session: dict[tuple[str, str], list[AttemptView]] = {}
     for attempt in attempts:
-        for prompt_receipt in (attempt.prompt_receipt, attempt.user_prompt_receipt):
-            if prompt_receipt is not None:
-                attempts_by_hash.setdefault(prompt_receipt.prompt_hash, []).append(attempt.attempt_id)
+        for prompt_hash in _attempt_prompt_hashes(attempt):
+            attempts_by_hash.setdefault(prompt_hash, []).append(attempt.attempt_id)
         if attempt.codex_session is not None:
-            for prompt_hash in (attempt.codex_session.user_prompt_hash, attempt.codex_session.execution_prompt_hash):
-                if prompt_hash:
-                    attempts_by_codex_hash.setdefault(prompt_hash, []).append(attempt.attempt_id)
+            ref = attempt.codex_session
+            if ref.turn_id:
+                attempts_by_turn_ref.setdefault((ref.thread_id, ref.turn_id), []).append(attempt.attempt_id)
+            if ref.session_path:
+                attempts_by_session.setdefault((ref.thread_id, ref.session_path), []).append(attempt)
+    turns_by_session: dict[tuple[str, str], list[CodexTurn]] = {}
+    for turn in turns:
+        turns_by_session.setdefault((turn.thread_id, turn.session_path), []).append(turn)
     linked: dict[tuple[str, str], tuple[str, ...]] = {}
     for turn in turns:
-        if turn.user_message_hash is None:
-            continue
-        attempt_ids = tuple(
-            sorted(
-                set(
-                    [
-                        *attempts_by_hash.get(turn.user_message_hash, []),
-                        *attempts_by_codex_hash.get(turn.user_message_hash, []),
-                    ]
-                )
-            )
-        )
+        matched_attempt_ids: set[str] = set(attempts_by_turn_ref.get(_turn_key(turn), ()))
+        if turn.user_message_hash is not None:
+            matched_attempt_ids.update(attempts_by_hash.get(turn.user_message_hash, ()))
+        session_key = (turn.thread_id, turn.session_path)
+        session_turns = tuple(turns_by_session.get(session_key, ()))
+        for attempt in attempts_by_session.get(session_key, ()):
+            prompt_hashes = _attempt_prompt_hashes(attempt)
+            if prompt_hashes and turn.user_message_hash in prompt_hashes:
+                matched_attempt_ids.add(attempt.attempt_id)
+            elif not prompt_hashes and _session_ref_matches(turn, attempt) and len(session_turns) == 1:
+                matched_attempt_ids.add(attempt.attempt_id)
+            elif _session_ref_matches(turn, attempt) and len(session_turns) == 1:
+                matched_attempt_ids.add(attempt.attempt_id)
+        attempt_ids = tuple(sorted(matched_attempt_ids))
         if attempt_ids:
             linked[_turn_key(turn)] = attempt_ids
     return linked
@@ -623,6 +699,8 @@ def _attempt_coverage_row(attempt: AttemptView, linked_attempt_ids: set[str]) ->
         "reasoning_effort": attempt.reasoning_effort,
         "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session else None,
         "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
+        "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
+        "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
         "linked_codex_turn": attempt.attempt_id in linked_attempt_ids,
     }
 
@@ -649,8 +727,13 @@ def _attempt_history_row(profile: RepoProfile, workset_id: str, attempt: Attempt
         "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session else None,
         "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
         "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
+        "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
         "execution_prompt_hash": prompt_hash,
         "user_prompt_hash": user_prompt_hash,
+        "failure_class": attempt.failure_class,
+        "recovery_action": attempt.recovery_action,
+        "prompt_issue": attempt.prompt_issue,
+        "operator_issue": attempt.operator_issue,
         "changed_paths": list(attempt.changed_paths),
         "changed_paths_count": len(attempt.changed_paths),
         "validations": [{"name": item.name, "status": item.status} for item in attempt.validations],

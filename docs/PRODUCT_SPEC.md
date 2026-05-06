@@ -52,6 +52,10 @@ task mutations:
 - cancel abandoned or superseded work so normal status and next-task views stay
   focused
 
+Normal read surfaces should speak in tasks, attempts, and current state first.
+Legacy workset groupings remain useful for migration/debugging, but they should
+be opt-in on operator tables and JSON payloads.
+
 ## Locked V1 Decisions
 
 These decisions are no longer open:
@@ -271,6 +275,8 @@ Blackdog must support recording:
 - residual risks or follow-up candidates
 - branch-head `commit` linkage when present and canonical `landed_commit`
   linkage when landing succeeds
+- structured failure taxonomy for non-success paths:
+  `failure_class`, `recovery_action`, `prompt_issue`, and `operator_issue`
 
 This story matters because Blackdog is not just task selection. It is also how
 you want to accumulate operating data from real repo work.
@@ -282,8 +288,8 @@ Human:
 
 Blackdog must support:
 
-- a concise human-oriented summary
-- a machine-readable snapshot
+- a concise task-first human-oriented summary
+- a machine-readable task/attempt-first snapshot
 - recent results and current blockers
 - counts that match durable runtime state
 

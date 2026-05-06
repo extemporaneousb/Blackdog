@@ -451,8 +451,11 @@ class CorePlanningTests(CoreAuditTestCase):
         )
 
         self.assertEqual(finished.status, "abandoned")
+        self.assertEqual(finished.failure_class, "abandoned")
+        self.assertTrue(finished.operator_issue)
         runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
         self.assertEqual(runtime_state.worksets[0].task_states[0].status, "canceled")
+        self.assertEqual(runtime_state.worksets[0].task_states[0].failure_class, "abandoned")
         self.assertIsNone(runtime_state.worksets[0].workset_claim)
         self.assertEqual(runtime_state.worksets[0].task_claims, ())
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
-from blackdog_core.codex_sessions import build_codex_coverage, build_codex_history, read_codex_session
+from blackdog_core.codex_sessions import build_codex_coverage, build_codex_history, current_codex_session_ref, read_codex_session
 from blackdog_core.state import CodexSessionRefRecord, create_prompt_receipt, prompt_receipt_reference
 from tests.core_audit_support import CoreAuditTestCase
 
@@ -124,6 +124,30 @@ class CodexSessionTests(CoreAuditTestCase):
         )
         self.assertTrue(turn.has_assistant_response)
 
+    def test_current_codex_session_ref_recovers_turn_fields_from_prompt_hash(self) -> None:
+        message = "Implement the current turn capture."
+        session_path = _write_session(
+            self.codex_home,
+            thread_id="thread-current",
+            cwd=self.root,
+            turn_id="turn-current",
+            message=message,
+        )
+        prompt_hash = hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+        with patch.dict(
+            "os.environ",
+            {"CODEX_HOME": str(self.codex_home), "CODEX_THREAD_ID": "thread-current"},
+            clear=False,
+        ):
+            ref = current_codex_session_ref(user_prompt_hash=prompt_hash, execution_prompt_hash=prompt_hash)
+
+        self.assertIsNotNone(ref)
+        self.assertEqual(ref.session_path, str(session_path.relative_to(self.codex_home)))
+        self.assertEqual(ref.turn_id, "turn-current")
+        self.assertIsNotNone(ref.turn_started_at)
+        self.assertEqual(ref.user_prompt_hash, prompt_hash)
+
     def test_coverage_and_history_join_attempts_without_copying_prompt_text(self) -> None:
         linked_message = "Implement linked task."
         analysis_message = "Assess whether this repo is ready."
@@ -181,6 +205,8 @@ class CodexSessionTests(CoreAuditTestCase):
 
         self.assertEqual(coverage["counts"]["codex_user_turns"], 2)
         self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        linked_turn = next(row for row in coverage["turns"] if row["thread_id"] == "thread-linked")
+        self.assertEqual(linked_turn["linked_attempt_ids"], [attempt.attempt_id])
         self.assertEqual(coverage["counts"]["analysis_only_turns"], 1)
         self.assertEqual(coverage["counts"]["unlinked_user_turns"], 1)
         self.assertEqual(coverage["counts"]["input_tokens"], 200)
@@ -200,6 +226,64 @@ class CodexSessionTests(CoreAuditTestCase):
             (self.root / ".blackdog" / "history.jsonl").resolve(),
         )
         self.assertTrue(Path(history["history_path"]).is_file())
+
+    def test_coverage_links_attempt_by_prompt_hash_and_session_ref_without_turn_id(self) -> None:
+        linked_message = "Implement recoverable linked task."
+        linked_path = _write_session(
+            self.codex_home,
+            thread_id="thread-hash",
+            cwd=self.root,
+            turn_id="turn-hash",
+            message=linked_message,
+        )
+        _write_session(
+            self.codex_home,
+            thread_id="thread-unlinked",
+            cwd=self.root,
+            turn_id="turn-unlinked",
+            message="Implement an unrelated task outside the tracked run.",
+        )
+        upsert_workset(
+            self.profile,
+            {
+                "id": "codex-hash",
+                "title": "Codex hash",
+                "tasks": [{"id": "CH-1", "title": "Link by hash", "intent": "link without a turn id"}],
+            },
+        )
+        receipt = create_prompt_receipt(linked_message, recorded_at="2026-05-04T19:00:02+00:00")
+        attempt = start_task(
+            self.profile,
+            workset_id="codex-hash",
+            task_id="CH-1",
+            actor="codex",
+            prompt_receipt=prompt_receipt_reference(receipt),
+            codex_session=CodexSessionRefRecord(
+                thread_id="thread-hash",
+                session_path=str(linked_path.relative_to(self.codex_home)),
+                user_prompt_hash=receipt.prompt_hash,
+                execution_prompt_hash=receipt.prompt_hash,
+            ),
+        )
+        finish_task(
+            self.profile,
+            workset_id="codex-hash",
+            task_id="CH-1",
+            attempt_id=attempt.attempt_id,
+            actor="codex",
+            status="success",
+            summary="linked by hash",
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        linked_turn = next(row for row in coverage["turns"] if row["thread_id"] == "thread-hash")
+        unlinked_turn = next(row for row in coverage["turns"] if row["thread_id"] == "thread-unlinked")
+        self.assertEqual(linked_turn["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(unlinked_turn["linked_attempt_ids"], [])
+        self.assertEqual(coverage["counts"]["implementation_like_unlinked_turns"], 1)
 
     def test_repo_matching_includes_git_worktree_cwds(self) -> None:
         worktree_path = self.root.parent / f"{self.root.name}-linked-worktree"

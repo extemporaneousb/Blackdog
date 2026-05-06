@@ -56,9 +56,10 @@ CLI surfaces.
 
 The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
 own repo lifecycle and operator-read workflows, `codex` owns Codex-session
-coverage/history indexing, `workset`/`summary`/`next` own planning and
-inspection, `task` is the default same-thread WTAM path, and `worktree` is the
-explicit planned-task WTAM path.
+coverage/history indexing, `summary`/`snapshot` expose task-first current
+state, `task` is the default same-thread WTAM path, and `worktree` is the
+explicit planned-task WTAM path. Direct workset reads remain a migration/debug
+concern, not the default operator surface.
 
 ## Direction
 

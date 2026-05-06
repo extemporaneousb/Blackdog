@@ -75,8 +75,12 @@ class RuntimeModelTests(CoreAuditTestCase):
 
         self.assertEqual(snapshot["format"], "blackdog.snapshot/vnext1")
         self.assertEqual(snapshot["runtime_model"]["repository"]["project_name"], "Blackdog")
-        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["workset_id"], "snapshot")
-        self.assertEqual(snapshot["runtime_model"]["worksets"][0]["next_task_ids"], ["SNAP-1"])
+        self.assertNotIn("worksets", snapshot["runtime_model"])
+        self.assertEqual(snapshot["runtime_model"]["tasks"][0]["task_ref"], "snapshot/SNAP-1")
+
+        legacy_snapshot = build_runtime_snapshot(self.profile, include_legacy_worksets=True)
+        self.assertEqual(legacy_snapshot["runtime_model"]["worksets"][0]["workset_id"], "snapshot")
+        self.assertEqual(legacy_snapshot["runtime_model"]["worksets"][0]["next_task_ids"], ["SNAP-1"])
 
     def test_runtime_store_loads_v2_and_writes_v3_with_hash_only_receipts(self) -> None:
         self.profile.paths.runtime_file.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +143,47 @@ class RuntimeModelTests(CoreAuditTestCase):
         self.assertEqual(migrated["schema_version"], 3)
         self.assertEqual(migrated["store_version"], "blackdog.runtime/vnext3")
         self.assertNotIn("text", migrated["worksets"][0]["attempts"][1]["prompt_receipt"])
+
+    def test_runtime_model_infers_unknown_failure_class_for_legacy_failed_attempts(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "legacy-failure",
+                "title": "Legacy failure",
+                "tasks": [{"id": "LF-1", "title": "Blocked old task", "intent": "load old attempt"}],
+            },
+        )
+        self.profile.paths.runtime_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "store_version": "blackdog.runtime/vnext3",
+                    "worksets": [
+                        {
+                            "id": "legacy-failure",
+                            "task_states": [{"task_id": "LF-1", "status": "blocked"}],
+                            "attempts": [
+                                {
+                                    "attempt_id": "LF-1-old",
+                                    "task_id": "LF-1",
+                                    "status": "failed",
+                                    "actor": "codex",
+                                    "started_at": "2026-05-04T11:00:00+00:00",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        model = load_runtime_model(self.profile)
+
+        self.assertEqual(model.recent_attempts[0].failure_class, "unknown")
+        self.assertFalse(model.recent_attempts[0].prompt_issue)
+        self.assertFalse(model.recent_attempts[0].operator_issue)
 
     def test_runtime_model_surfaces_recent_attempts_and_latest_task_result(self) -> None:
         upsert_workset(

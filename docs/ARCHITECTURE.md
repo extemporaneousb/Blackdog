@@ -177,8 +177,9 @@ scanning supplied roots for `blackdog.toml`, deduplicates by resolved project
 root, and reads each repo's runtime, attempt, and optional Codex coverage
 views. Its default columns are task/attempt oriented: live state is reported
 under `current_*`, historical attempt diagnostics are reported under
-`window_*`, and legacy workset storage counts are hidden unless an operator
-explicitly asks for the migration/debug column. It deliberately does not
+`window_*`, structured failure classes are counted in the window diagnostics,
+and legacy workset storage counts are hidden unless an operator explicitly asks
+for the migration/debug column. It deliberately does not
 introduce a central registry. Optional
 `[project].status` in `blackdog.toml` controls membership visibility:
 missing means active, `archived` hides the repo from table output unless the
@@ -221,9 +222,10 @@ These commands exercise one end-to-end vertical slice:
    abandoned attempts cancel the task by default
 9. cancel or reopen planned work so stale tasks do not pollute normal reads
 10. clean up any retained or leftover task worktree
-11. read summary/status, hiding canceled work unless explicitly requested
+11. read task-first summary/status, hiding canceled work unless explicitly requested
 12. identify the next runnable tasks
-13. emit a machine-readable runtime snapshot
+13. emit a machine-readable task/attempt-first runtime snapshot, with legacy
+    nested workset rows only on explicit request
 
 ## Deferred Or Removed Product Code
 

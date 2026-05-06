@@ -17,6 +17,9 @@ from .state import (
     ATTEMPT_STATUS_SUCCESS,
     EXECUTION_MODELS,
     EXECUTION_MODEL_DIRECT_WTAM,
+    FAILURE_CLASSES,
+    FAILURE_CLASS_ABANDONED,
+    FAILURE_CLASS_UNKNOWN,
     TASK_STATUS_BLOCKED,
     TASK_STATUS_CANCELED,
     TASK_STATUS_DONE,
@@ -54,6 +57,28 @@ _UNSET = object()
 
 class BacklogError(RuntimeError):
     pass
+
+
+def normalize_failure_class(value: str | None) -> str | None:
+    failure_class = str(value or "").strip() or None
+    if failure_class is None:
+        return None
+    if failure_class not in FAILURE_CLASSES:
+        raise BacklogError(f"failure_class must be one of {', '.join(sorted(FAILURE_CLASSES))}")
+    return failure_class
+
+
+def default_failure_class_for_status(status: str, failure_class: str | None = None) -> str | None:
+    resolved = normalize_failure_class(failure_class)
+    if resolved is not None:
+        return resolved
+    if status == ATTEMPT_STATUS_SUCCESS:
+        return None
+    if status == ATTEMPT_STATUS_ABANDONED:
+        return FAILURE_CLASS_ABANDONED
+    if status in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}:
+        return FAILURE_CLASS_UNKNOWN
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,6 +596,10 @@ def finish_task(
     commit: str | None = None,
     landed_commit: str | None = None,
     elapsed_seconds: int | None = None,
+    failure_class: str | None = None,
+    recovery_action: str | None = None,
+    prompt_issue: bool = False,
+    operator_issue: bool = False,
     note: str | None = None,
     planning_store: PlanningStore | None = None,
     runtime_store: RuntimeStore | None = None,
@@ -596,6 +625,10 @@ def finish_task(
         raise BacklogError(f"Attempt {attempt_id!r} is not active")
 
     ended_at = now_iso()
+    resolved_failure_class = default_failure_class_for_status(status, failure_class)
+    resolved_prompt_issue = bool(prompt_issue)
+    resolved_operator_issue = bool(operator_issue or status == ATTEMPT_STATUS_ABANDONED)
+    resolved_recovery_action = str(recovery_action or "").strip() or None
     derived_elapsed_seconds = elapsed_seconds
     if derived_elapsed_seconds is None:
         started_at = parse_iso(existing_attempt.started_at)
@@ -632,6 +665,10 @@ def finish_task(
         commit=commit,
         landed_commit=landed_commit,
         elapsed_seconds=derived_elapsed_seconds,
+        failure_class=resolved_failure_class,
+        recovery_action=resolved_recovery_action,
+        prompt_issue=resolved_prompt_issue,
+        operator_issue=resolved_operator_issue,
     )
     if status == ATTEMPT_STATUS_SUCCESS:
         task_runtime_status = TASK_STATUS_DONE
@@ -644,6 +681,10 @@ def finish_task(
         status=task_runtime_status,
         updated_at=ended_at,
         note=summary or note,
+        failure_class=resolved_failure_class,
+        recovery_action=resolved_recovery_action,
+        prompt_issue=resolved_prompt_issue,
+        operator_issue=resolved_operator_issue,
     )
     current_task_claims = task_claim_index(runtime_state, workset_id)
     remaining_task_claims = tuple(
@@ -749,6 +790,10 @@ def finish_task(
             "commit": commit,
             "landed_commit": landed_commit,
             "elapsed_seconds": derived_elapsed_seconds,
+            "failure_class": resolved_failure_class,
+            "recovery_action": resolved_recovery_action,
+            "prompt_issue": resolved_prompt_issue,
+            "operator_issue": resolved_operator_issue,
         },
     )
     return finished_attempt
@@ -762,6 +807,10 @@ def set_task_runtime_status(
     status: str,
     actor: str,
     summary: str | None = None,
+    failure_class: str | None = None,
+    recovery_action: str | None = None,
+    prompt_issue: bool = False,
+    operator_issue: bool = False,
     planning_store: PlanningStore | None = None,
     runtime_store: RuntimeStore | None = None,
 ) -> TaskRuntimeRecord:
@@ -786,11 +835,18 @@ def set_task_runtime_status(
     if status == TASK_STATUS_PLANNED and current_status != TASK_STATUS_CANCELED:
         raise BacklogError(f"Task {task_id!r} is not canceled")
     updated_at = now_iso()
+    resolved_failure_class = normalize_failure_class(failure_class)
+    if status == TASK_STATUS_CANCELED and resolved_failure_class is None:
+        resolved_failure_class = FAILURE_CLASS_UNKNOWN
     record = TaskRuntimeRecord(
         task_id=task_id,
         status=status,
         updated_at=updated_at,
         note=summary,
+        failure_class=resolved_failure_class if status == TASK_STATUS_CANCELED else None,
+        recovery_action=(str(recovery_action or "").strip() or None) if status == TASK_STATUS_CANCELED else None,
+        prompt_issue=bool(prompt_issue) if status == TASK_STATUS_CANCELED else False,
+        operator_issue=bool(operator_issue) if status == TASK_STATUS_CANCELED else False,
     )
     next_runtime_state = merge_workset_runtime(
         runtime_state,
@@ -810,6 +866,10 @@ def set_task_runtime_status(
             "updated_at": updated_at,
             "summary": summary,
             "previous_status": current_status,
+            "failure_class": record.failure_class,
+            "recovery_action": record.recovery_action,
+            "prompt_issue": record.prompt_issue,
+            "operator_issue": record.operator_issue,
         },
     )
     return record
@@ -856,11 +916,13 @@ __all__ = [
     "PlanningStore",
     "TaskSpec",
     "Workset",
+    "default_failure_class_for_status",
     "default_planning_state",
     "find_workset",
     "finish_task",
     "load_planning_state",
     "next_ready_tasks",
+    "normalize_failure_class",
     "planning_state_to_payload",
     "save_planning_state",
     "set_task_runtime_status",

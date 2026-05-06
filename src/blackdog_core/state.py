@@ -79,6 +79,25 @@ PROMPT_MODE_TUNED = "tuned"
 PROMPT_MODE_SKILL = "skill"
 PROMPT_MODES = frozenset({PROMPT_MODE_RAW, PROMPT_MODE_TUNED, PROMPT_MODE_SKILL})
 
+FAILURE_CLASS_DIRTY_PRIMARY = "dirty_primary"
+FAILURE_CLASS_STALE_BRANCH = "stale_branch"
+FAILURE_CLASS_MISSING_WORKTREE = "missing_worktree"
+FAILURE_CLASS_NO_CHANGES = "no_changes"
+FAILURE_CLASS_SUPERSEDED = "superseded"
+FAILURE_CLASS_ABANDONED = "abandoned"
+FAILURE_CLASS_UNKNOWN = "unknown"
+FAILURE_CLASSES = frozenset(
+    {
+        FAILURE_CLASS_DIRTY_PRIMARY,
+        FAILURE_CLASS_STALE_BRANCH,
+        FAILURE_CLASS_MISSING_WORKTREE,
+        FAILURE_CLASS_NO_CHANGES,
+        FAILURE_CLASS_SUPERSEDED,
+        FAILURE_CLASS_ABANDONED,
+        FAILURE_CLASS_UNKNOWN,
+    }
+)
+
 
 class StoreError(RuntimeError):
     pass
@@ -90,6 +109,10 @@ class TaskRuntimeRecord:
     status: str
     updated_at: str | None = None
     note: str | None = None
+    failure_class: str | None = None
+    recovery_action: str | None = None
+    prompt_issue: bool = False
+    operator_issue: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +189,10 @@ class TaskAttemptRecord:
     commit: str | None = None
     landed_commit: str | None = None
     elapsed_seconds: int | None = None
+    failure_class: str | None = None
+    recovery_action: str | None = None
+    prompt_issue: bool = False
+    operator_issue: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +312,29 @@ def _normalize_string_list(value: Any, *, field: str, source: Path) -> tuple[str
     return tuple(items)
 
 
+def _normalize_bool(value: Any, *, field: str, source: Path) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise StoreError(f"{field} must be a boolean in {source}")
+
+
+def _normalize_failure_class(value: Any, *, field: str, source: Path) -> str | None:
+    failure_class = _optional_text(value)
+    if failure_class is None:
+        return None
+    if failure_class not in FAILURE_CLASSES:
+        raise StoreError(f"{field} must be one of {sorted(FAILURE_CLASSES)} in {source}")
+    return failure_class
+
+
 def _normalize_execution_model(value: Any, *, field: str, source: Path) -> str:
     return _normalize_execution_model_for_runtime(value, field=field, source=source, allow_legacy=False)
 
@@ -386,6 +436,10 @@ def _task_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         status=status,
         updated_at=_optional_text(payload.get("updated_at")),
         note=_optional_text(payload.get("note")),
+        failure_class=_normalize_failure_class(payload.get("failure_class"), field="task_state.failure_class", source=source),
+        recovery_action=_optional_text(payload.get("recovery_action")),
+        prompt_issue=_normalize_bool(payload.get("prompt_issue"), field="task_state.prompt_issue", source=source),
+        operator_issue=_normalize_bool(payload.get("operator_issue"), field="task_state.operator_issue", source=source),
     )
 
 
@@ -513,6 +567,10 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         commit=_optional_text(payload.get("commit")),
         landed_commit=_optional_text(payload.get("landed_commit")),
         elapsed_seconds=_normalize_non_negative_int(payload.get("elapsed_seconds"), field="attempt.elapsed_seconds", source=source),
+        failure_class=_normalize_failure_class(payload.get("failure_class"), field="attempt.failure_class", source=source),
+        recovery_action=_optional_text(payload.get("recovery_action")),
+        prompt_issue=_normalize_bool(payload.get("prompt_issue"), field="attempt.prompt_issue", source=source),
+        operator_issue=_normalize_bool(payload.get("operator_issue"), field="attempt.operator_issue", source=source),
     )
 
 
@@ -636,6 +694,10 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                         "status": task_state.status,
                         "updated_at": task_state.updated_at,
                         "note": task_state.note,
+                        "failure_class": task_state.failure_class,
+                        "recovery_action": task_state.recovery_action,
+                        "prompt_issue": task_state.prompt_issue,
+                        "operator_issue": task_state.operator_issue,
                     }
                     for task_state in workset.task_states
                 ],
@@ -673,6 +735,10 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                         "commit": attempt.commit,
                         "landed_commit": attempt.landed_commit,
                         "elapsed_seconds": attempt.elapsed_seconds,
+                        "failure_class": attempt.failure_class,
+                        "recovery_action": attempt.recovery_action,
+                        "prompt_issue": attempt.prompt_issue,
+                        "operator_issue": attempt.operator_issue,
                     }
                     for attempt in workset.attempts
                 ],
@@ -925,6 +991,14 @@ __all__ = [
     "ATTEMPT_STATUS_SUCCESS",
     "EXECUTION_MODELS",
     "EXECUTION_MODEL_DIRECT_WTAM",
+    "FAILURE_CLASSES",
+    "FAILURE_CLASS_ABANDONED",
+    "FAILURE_CLASS_DIRTY_PRIMARY",
+    "FAILURE_CLASS_MISSING_WORKTREE",
+    "FAILURE_CLASS_NO_CHANGES",
+    "FAILURE_CLASS_STALE_BRANCH",
+    "FAILURE_CLASS_SUPERSEDED",
+    "FAILURE_CLASS_UNKNOWN",
     "PROMPT_MODES",
     "PROMPT_MODE_RAW",
     "PROMPT_MODE_SKILL",

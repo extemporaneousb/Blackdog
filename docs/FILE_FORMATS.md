@@ -166,6 +166,10 @@ Each task-state row contains:
 - `status`
 - optional `updated_at`
 - optional `note`
+- optional `failure_class`
+- optional `recovery_action`
+- optional `prompt_issue`
+- optional `operator_issue`
 
 Each attempt row contains:
 
@@ -198,6 +202,10 @@ Each attempt row contains:
 - optional `commit`
 - optional `landed_commit`
 - optional `elapsed_seconds`
+- optional `failure_class`
+- optional `recovery_action`
+- optional `prompt_issue`
+- optional `operator_issue`
 
 `commit`, when present, is the task-branch head Blackdog landed or closed
 from. On successful `worktree land`, it may be an internal prep commit created
@@ -228,6 +236,21 @@ Allowed attempt statuses:
 `abandoned` closes the active attempt and releases its claims while setting the
 task runtime state to `canceled`. Normal `summary` and `next` views hide
 canceled tasks; `snapshot` and attempt-history views retain the history.
+
+Allowed failure classes:
+
+- `dirty_primary`
+- `stale_branch`
+- `missing_worktree`
+- `no_changes`
+- `superseded`
+- `abandoned`
+- `unknown`
+
+`failure_class`, `recovery_action`, `prompt_issue`, and `operator_issue`
+provide structured failure taxonomy while preserving free-text `summary` and
+`note`. Old runtime rows without these fields remain readable; non-success
+attempt read views expose missing historical classes as `unknown`.
 
 Allowed validation statuses:
 
@@ -304,6 +327,7 @@ Each row contains:
 - `started_at`
 - Codex thread/session/turn refs when known
 - prompt hashes, never full prompt or response text
+- structured failure fields when present
 
 `attempt` rows also include workset/task/attempt identity, status, actor,
 model, reasoning effort, execution model, changed paths, validations,

@@ -56,6 +56,9 @@ REPO_TABLE_COLUMNS = (
     "window_blocked_attempts",
     "window_failed_attempts",
     "window_abandoned_attempts",
+    "window_failure_classes",
+    "window_prompt_issue_attempts",
+    "window_operator_issue_attempts",
     "window_elapsed_seconds",
     "codex_sessions",
     "codex_user_turns",
@@ -438,6 +441,9 @@ def _empty_table_row(project_root: Path) -> dict[str, object]:
         "window_blocked_attempts": None,
         "window_failed_attempts": None,
         "window_abandoned_attempts": None,
+        "window_failure_classes": "",
+        "window_prompt_issue_attempts": None,
+        "window_operator_issue_attempts": None,
         "window_elapsed_seconds": None,
         "codex_sessions": None,
         "codex_user_turns": None,
@@ -603,8 +609,11 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
         window_attempts = tuple(attempt for attempt in attempts if _attempt_in_window(attempt, cutoff, now))
         window_attempt_views = window_attempts
         window_status_counts: dict[str, int] = {}
+        window_failure_counts: dict[str, int] = {}
         for attempt in window_attempts:
             window_status_counts[attempt.status] = window_status_counts.get(attempt.status, 0) + 1
+            if attempt.failure_class:
+                window_failure_counts[attempt.failure_class] = window_failure_counts.get(attempt.failure_class, 0) + 1
         row["legacy_worksets"] = counts.get("worksets", 0)
         row["tasks_total"] = counts.get("tasks", 0)
         row["current_ready_tasks"] = counts.get("ready", 0)
@@ -618,6 +627,9 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
         row["window_blocked_attempts"] = window_status_counts.get("blocked", 0)
         row["window_failed_attempts"] = window_status_counts.get("failed", 0)
         row["window_abandoned_attempts"] = window_status_counts.get("abandoned", 0)
+        row["window_failure_classes"] = _count_label(window_failure_counts)
+        row["window_prompt_issue_attempts"] = sum(1 for attempt in window_attempts if attempt.prompt_issue)
+        row["window_operator_issue_attempts"] = sum(1 for attempt in window_attempts if attempt.operator_issue)
         row["window_elapsed_seconds"] = sum(_attempt_elapsed_seconds(attempt, now=now, cutoff=cutoff) for attempt in window_attempts)
     except Exception as exc:  # read model errors should not hide other repos
         _append_error(errors, f"runtime summary failed: {exc}")

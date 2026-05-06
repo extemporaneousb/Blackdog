@@ -106,13 +106,14 @@ Text output is stable TSV. JSON output carries the same column names under
 `current_blocked_tasks`, `done_tasks_total`, `attempts_total`,
 `window_attempts`, `window_problem_attempts`, `window_success_attempts`,
 `window_blocked_attempts`, `window_failed_attempts`,
-`window_abandoned_attempts`, `window_elapsed_seconds`, `codex_sessions`,
-`codex_user_turns`, `codex_input_tokens`, `codex_cached_input_tokens`,
-`codex_output_tokens`, `codex_reasoning_output_tokens`, `codex_total_tokens`,
-`codex_tool_calls`, `implementation_like_unlinked_turns`, `linked_attempts`,
-`blackdog_version`, `profile_version`, `runtime_store_version`,
-`support_hash`, `docs_count`, `validation_count`, `prompt_modes`, `models`,
-`reasoning_efforts`, `error`.
+`window_abandoned_attempts`, `window_failure_classes`,
+`window_prompt_issue_attempts`, `window_operator_issue_attempts`,
+`window_elapsed_seconds`, `codex_sessions`, `codex_user_turns`,
+`codex_input_tokens`, `codex_cached_input_tokens`, `codex_output_tokens`,
+`codex_reasoning_output_tokens`, `codex_total_tokens`, `codex_tool_calls`,
+`implementation_like_unlinked_turns`, `linked_attempts`, `blackdog_version`,
+`profile_version`, `runtime_store_version`, `support_hash`, `docs_count`,
+`validation_count`, `prompt_modes`, `models`, `reasoning_efforts`, `error`.
 
 `current_*` columns describe live task/attempt state now. `window_*` columns
 describe attempts whose start or end timestamp is inside the requested window;
@@ -592,7 +593,9 @@ blackdog task cancel \
   --project-root /path/to/repo \
   --workset kernel \
   --task KERN-1 \
-  --summary "superseded by KERN-2"
+  --summary "superseded by KERN-2" \
+  --failure-class superseded \
+  --recovery-action leave_canceled
 ```
 
 Important flags:
@@ -602,6 +605,10 @@ Important flags:
 - `--task`
 - optional `--actor`
 - optional `--summary`
+- optional `--failure-class`
+- optional `--recovery-action`
+- optional `--prompt-issue`
+- optional `--operator-issue`
 
 ### `blackdog task reopen`
 
@@ -917,11 +924,13 @@ Read the typed runtime model and print a human-oriented status summary.
 blackdog summary --project-root /path/to/repo
 blackdog summary --project-root /path/to/repo --workset kernel
 blackdog summary --project-root /path/to/repo --include-canceled
+blackdog summary --project-root /path/to/repo --include-legacy-worksets --json
 blackdog summary --project-root /path/to/repo --json
 ```
 
-Normal summary hides canceled tasks and canceled-only worksets. Use
-`--include-canceled` for operator/debug views.
+Normal summary is task/attempt first. It hides canceled tasks by default; use
+`--include-canceled` for operator/debug views. JSON includes legacy workset
+lists only with `--include-legacy-worksets`.
 
 ### `blackdog next`
 
@@ -948,10 +957,12 @@ Emit the canonical machine-readable runtime snapshot.
 ```bash
 blackdog snapshot --project-root /path/to/repo
 blackdog snapshot --project-root /path/to/repo --workset kernel
+blackdog snapshot --project-root /path/to/repo --include-legacy-worksets
 ```
 
-The snapshot embeds the fully typed runtime model under `runtime_model`.
-That runtime model now includes attempt/result rows from the WTAM lifecycle.
+The snapshot embeds the fully typed runtime model under `runtime_model`. By
+default that model leads with task and attempt rows. Legacy nested workset rows
+are emitted only with `--include-legacy-worksets`.
 
 ### `blackdog attempts summary`
 
@@ -960,13 +971,14 @@ Summarize completed attempt history from the typed runtime model.
 ```bash
 blackdog attempts summary --project-root /path/to/repo
 blackdog attempts summary --project-root /path/to/repo --workset kernel
+blackdog attempts summary --project-root /path/to/repo --include-legacy-worksets --json
 blackdog attempts summary --project-root /path/to/repo --json
 ```
 
 The summary centers on completed attempts and includes:
 
 - recent completed attempts
-- completed counts by workset
+- completed counts by task
 - model / reasoning-effort when present
 - user-prompt lineage and execution-prompt lineage when they differ
 - stable `prompt_*` aliases only when both lineages match
@@ -974,6 +986,10 @@ The summary centers on completed attempts and includes:
 - validation pass/fail/skipped totals
 - landed vs not-landed completion totals
 - Codex thread/session refs when present
+- structured failure fields when present: `failure_class`, `recovery_action`,
+  `prompt_issue`, and `operator_issue`
+
+Legacy per-workset summaries are emitted only with `--include-legacy-worksets`.
 
 Here `commit` is the task-branch head Blackdog landed or closed from, while
 `landed_commit` is the canonical landed commit created on the target branch
@@ -986,13 +1002,14 @@ Emit a stable table over completed attempt history.
 ```bash
 blackdog attempts table --project-root /path/to/repo
 blackdog attempts table --project-root /path/to/repo --workset kernel
+blackdog attempts table --project-root /path/to/repo --include-legacy-worksets
 blackdog attempts table --project-root /path/to/repo --json
 ```
 
 Text output is tab-separated with stable columns. JSON output returns the same
 columns plus row dictionaries. Current columns are:
 
-- `workset_id`
+- `task_ref`
 - `task_id`
 - `attempt_id`
 - `status`
@@ -1006,6 +1023,7 @@ columns plus row dictionaries. Current columns are:
 - `codex_thread_id`
 - `codex_session_path`
 - `codex_turn_id`
+- `codex_turn_started_at`
 - `execution_prompt_source`
 - `user_prompt_source`
 - `prompt_source`
@@ -1022,7 +1040,14 @@ columns plus row dictionaries. Current columns are:
 - `prompt_hash`
 - `changed_paths_count`
 - `validation_summary`
+- `failure_class`
+- `recovery_action`
+- `prompt_issue`
+- `operator_issue`
 - `summary`
+
+`--include-legacy-worksets` prepends the legacy `workset_id` column for
+migration/debugging.
 
 ### `blackdog codex coverage`
 
@@ -1036,7 +1061,10 @@ blackdog codex coverage --project-root /path/to/repo --json
 
 The command scans `$CODEX_HOME/sessions`, maps sessions to the repo and its git
 worktrees by cwd, classifies user turns, and joins turns to Blackdog attempts
-by prompt hashes and stored Codex session refs. It reports:
+by explicit turn refs, prompt hashes, and stored Codex session refs. Attempts
+with a stored `codex_session_path` can still link when `turn_id` is missing if
+the session ref plus prompt hash, or a safe single-turn session match, is
+available. It reports:
 
 - Codex sessions and user-turn counts
 - Blackdog attempt counts and active attempts
