@@ -332,7 +332,81 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         )
 
         codex_home = self.root / "codex-home"
-        (codex_home / "sessions").mkdir(parents=True)
+        codex_session_path = (
+            codex_home
+            / "sessions"
+            / "2026"
+            / "05"
+            / "04"
+            / "rollout-2026-05-04T12-00-00-thread-table.jsonl"
+        )
+        codex_session_path.parent.mkdir(parents=True)
+        codex_rows = [
+            {
+                "timestamp": "2026-05-04T19:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "thread-table",
+                    "timestamp": "2026-05-04T19:00:00Z",
+                    "cwd": str(active_repo),
+                    "originator": "Codex Desktop",
+                    "model_provider": "openai",
+                },
+            },
+            {
+                "timestamp": "2026-05-04T19:00:01Z",
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "turn-table", "started_at": 1777921201},
+            },
+            {
+                "timestamp": "2026-05-04T19:00:01Z",
+                "type": "turn_context",
+                "payload": {"turn_id": "turn-table", "cwd": str(active_repo), "model": "gpt-5.5", "effort": "xhigh"},
+            },
+            {
+                "timestamp": "2026-05-04T19:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "Implement repo table Codex stats."},
+            },
+            {
+                "timestamp": "2026-05-04T19:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "arguments": "{}",
+                    "call_id": "call-table",
+                },
+            },
+            {
+                "timestamp": "2026-05-04T19:00:04Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 25,
+                            "output_tokens": 12,
+                            "reasoning_output_tokens": 5,
+                            "total_tokens": 112,
+                        }
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-05-04T19:00:05Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-table",
+                    "completed_at": 1777921205,
+                    "duration_ms": 12_345,
+                    "time_to_first_token_ms": 987,
+                },
+            },
+        ]
+        codex_session_path.write_text("\n".join(json.dumps(row) for row in codex_rows) + "\n", encoding="utf-8")
         with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False):
             exit_code, stdout, stderr = self.run_cli("repo", "table", "--root", str(fleet_root), "--json")
         self.assertEqual(exit_code, 0, stderr)
@@ -347,11 +421,16 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(rows["Attempt Repo"]["window_attempts"], 2)
         self.assertEqual(rows["Attempt Repo"]["window_success_attempts"], 1)
         self.assertEqual(rows["Attempt Repo"]["window_problem_attempts"], 0)
-        self.assertEqual(rows["Attempt Repo"]["codex_sessions"], 0)
-        self.assertEqual(rows["Attempt Repo"]["codex_total_tokens"], 0)
+        self.assertEqual(rows["Attempt Repo"]["codex_sessions"], 1)
+        self.assertEqual(rows["Attempt Repo"]["codex_total_tokens"], 112)
+        self.assertEqual(rows["Attempt Repo"]["codex_tool_calls"], 1)
+        self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_duration_ms"], 12_345)
+        self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_started_at"], "2026-05-04T19:00:01Z")
+        self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_thread_id"], "thread-table")
+        self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_id"], "turn-table")
         self.assertEqual(rows["Attempt Repo"]["prompt_modes"], "raw,skill")
         self.assertEqual(rows["Attempt Repo"]["models"], "gpt-5.5")
-        self.assertEqual(rows["Attempt Repo"]["reasoning_efforts"], "")
+        self.assertEqual(rows["Attempt Repo"]["reasoning_efforts"], "xhigh=1")
         self.assertEqual(rows["Attempt Repo"]["blackdog_version"], "0.1.0")
         self.assertEqual(rows["Attempt Repo"]["profile_version"], 1)
         self.assertTrue(rows["Attempt Repo"]["runtime_store_version"])
@@ -372,6 +451,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         rows = {row["project_name"]: row for row in json.loads(stdout)["repo_table"]["rows"]}
         self.assertEqual(rows["Attempt Repo"]["legacy_worksets"], 1)
+        self.assertIsNone(rows["Attempt Repo"]["codex_longest_completed_turn_duration_ms"])
 
     def test_repo_table_since_filters_window_attempts_not_current_status(self) -> None:
         fleet_root = self.root / "fleet"

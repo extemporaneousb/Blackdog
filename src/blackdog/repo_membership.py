@@ -22,7 +22,7 @@ from blackdog.repo_lifecycle import (
     RepoLifecycleResult,
     install_repo,
 )
-from blackdog_core.codex_sessions import build_codex_coverage
+from blackdog_core.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
 from blackdog_core.profile import (
     DEFAULT_CONTROL_DIR,
     PROFILE_FILE_NAME,
@@ -68,6 +68,10 @@ REPO_TABLE_COLUMNS = (
     "codex_reasoning_output_tokens",
     "codex_total_tokens",
     "codex_tool_calls",
+    "codex_longest_completed_turn_duration_ms",
+    "codex_longest_completed_turn_started_at",
+    "codex_longest_completed_turn_thread_id",
+    "codex_longest_completed_turn_id",
     "implementation_like_unlinked_turns",
     "linked_attempts",
     "blackdog_version",
@@ -453,6 +457,10 @@ def _empty_table_row(project_root: Path) -> dict[str, object]:
         "codex_reasoning_output_tokens": None,
         "codex_total_tokens": None,
         "codex_tool_calls": None,
+        "codex_longest_completed_turn_duration_ms": None,
+        "codex_longest_completed_turn_started_at": None,
+        "codex_longest_completed_turn_thread_id": None,
+        "codex_longest_completed_turn_id": None,
         "implementation_like_unlinked_turns": None,
         "linked_attempts": None,
         "blackdog_version": None,
@@ -578,7 +586,14 @@ def _support_hash(profile: RepoProfile) -> str:
     return hashlib.sha256("\n\n".join(chunks).encode("utf-8")).hexdigest()[:12]
 
 
-def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool) -> dict[str, object]:
+def _repo_table_row(
+    profile_dir: Path,
+    *,
+    since: str | None,
+    include_codex: bool,
+    codex_turns: tuple[CodexTurn, ...] | None = None,
+    codex_read_error: str | None = None,
+) -> dict[str, object]:
     row = _empty_table_row(profile_dir)
     errors: list[str] = []
     cutoff = _parse_table_since(since)
@@ -642,7 +657,9 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
 
     if include_codex:
         try:
-            coverage = build_codex_coverage(profile, since=since)
+            if codex_read_error is not None:
+                raise RepoLifecycleError(codex_read_error)
+            coverage = build_codex_coverage(profile, since=since, codex_turns=codex_turns)
             coverage_counts = coverage["counts"]
             row["codex_sessions"] = coverage_counts.get("codex_sessions", 0)
             row["codex_user_turns"] = coverage_counts.get("codex_user_turns", 0)
@@ -652,6 +669,16 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
             row["codex_reasoning_output_tokens"] = coverage_counts.get("reasoning_output_tokens", 0)
             row["codex_total_tokens"] = coverage_counts.get("total_tokens", 0)
             row["codex_tool_calls"] = coverage_counts.get("tool_calls", 0)
+            row["codex_longest_completed_turn_duration_ms"] = coverage_counts.get(
+                "longest_completed_turn_duration_ms",
+            )
+            row["codex_longest_completed_turn_started_at"] = coverage_counts.get(
+                "longest_completed_turn_started_at",
+            )
+            row["codex_longest_completed_turn_thread_id"] = coverage_counts.get(
+                "longest_completed_turn_thread_id",
+            )
+            row["codex_longest_completed_turn_id"] = coverage_counts.get("longest_completed_turn_id")
             row["implementation_like_unlinked_turns"] = coverage_counts.get(
                 "implementation_like_unlinked_turns",
                 0,
@@ -676,6 +703,10 @@ def _repo_table_row(profile_dir: Path, *, since: str | None, include_codex: bool
         row["codex_reasoning_output_tokens"] = None
         row["codex_total_tokens"] = None
         row["codex_tool_calls"] = None
+        row["codex_longest_completed_turn_duration_ms"] = None
+        row["codex_longest_completed_turn_started_at"] = None
+        row["codex_longest_completed_turn_thread_id"] = None
+        row["codex_longest_completed_turn_id"] = None
         row["implementation_like_unlinked_turns"] = None
         row["linked_attempts"] = None
 
@@ -702,8 +733,21 @@ def build_repo_table(
 
     rows: list[dict[str, object]] = []
     seen_roots: set[Path] = set()
+    codex_turns: tuple[CodexTurn, ...] | None = None
+    codex_read_error: str | None = None
+    if include_codex:
+        try:
+            codex_turns = collect_codex_turns()
+        except Exception as exc:
+            codex_read_error = str(exc)
     for profile_dir in sorted(dict.fromkeys(discovered)):
-        row = _repo_table_row(profile_dir, since=since, include_codex=include_codex)
+        row = _repo_table_row(
+            profile_dir,
+            since=since,
+            include_codex=include_codex,
+            codex_turns=codex_turns,
+            codex_read_error=codex_read_error,
+        )
         project_root = Path(str(row["project_root"])).resolve()
         if project_root in seen_roots:
             continue

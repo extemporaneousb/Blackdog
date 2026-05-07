@@ -111,6 +111,10 @@ Text output is stable TSV. JSON output carries the same column names under
 `window_elapsed_seconds`, `codex_sessions`, `codex_user_turns`,
 `codex_input_tokens`, `codex_cached_input_tokens`, `codex_output_tokens`,
 `codex_reasoning_output_tokens`, `codex_total_tokens`, `codex_tool_calls`,
+`codex_longest_completed_turn_duration_ms`,
+`codex_longest_completed_turn_started_at`,
+`codex_longest_completed_turn_thread_id`,
+`codex_longest_completed_turn_id`,
 `implementation_like_unlinked_turns`, `linked_attempts`, `blackdog_version`,
 `profile_version`, `runtime_store_version`, `support_hash`, `docs_count`,
 `validation_count`, `prompt_modes`, `models`, `reasoning_efforts`, `error`.
@@ -120,6 +124,11 @@ describe attempts whose start or end timestamp is inside the requested window;
 without `--since` or `--since-hours`, the window is all recorded attempt
 history. `codex_input_tokens` is model input-token usage reported by Codex
 session logs, not a tokenizer pass over only the user's message text.
+`codex_longest_completed_turn_duration_ms` is the longest single Codex turn
+that returned for that repo, measured from Codex `task_started` to
+`task_complete`. The companion `started_at`, `thread_id`, and `id` columns
+identify the turn. Codex turn metrics scan both active and archived Codex
+session logs and deduplicate repeated archived snapshots by thread and turn id.
 
 Discovery skips nested `.worktrees`, `.git`, `.VE`, `.venv`, `node_modules`,
 cache, and build-output directories. `blackdog.toml` remains the source of
@@ -1093,6 +1102,7 @@ available. It reports:
 - analysis-only turns
 - unlinked implementation-like turns
 - model/reasoning observability
+- longest completed Codex turn duration and turn identifiers
 
 Coverage output may show short prompt excerpts for operator diagnosis, but it
 does not persist transcript text.

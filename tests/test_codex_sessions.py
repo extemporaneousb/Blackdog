@@ -19,11 +19,14 @@ def _write_session(
     cwd: Path,
     turn_id: str,
     message: str,
+    session_dir: str = "sessions",
+    duration_ms: int | None = 42_000,
+    tool_calls: int = 0,
     model: str | None = "gpt-5.5",
     reasoning_effort: str | None = "xhigh",
     originator: str = "Codex Desktop",
 ) -> Path:
-    path = home / "sessions" / "2026" / "05" / "04" / f"rollout-2026-05-04T12-00-00-{thread_id}.jsonl"
+    path = home / session_dir / "2026" / "05" / "04" / f"rollout-2026-05-04T12-00-00-{thread_id}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
         {
@@ -79,6 +82,33 @@ def _write_session(
             },
         },
     ]
+    rows.extend(
+        {
+            "timestamp": "2026-05-04T19:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{}",
+                "call_id": f"call-{index}",
+            },
+        }
+        for index in range(tool_calls)
+    )
+    if duration_ms is not None:
+        rows.append(
+            {
+                "timestamp": "2026-05-04T19:00:05Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": turn_id,
+                    "completed_at": 1777921205,
+                    "duration_ms": duration_ms,
+                    "time_to_first_token_ms": 1200,
+                },
+            }
+        )
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     return path
 
@@ -118,6 +148,9 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(turn.output_tokens, 12)
         self.assertEqual(turn.reasoning_output_tokens, 5)
         self.assertEqual(turn.total_tokens, 112)
+        self.assertEqual(turn.duration_ms, 42_000)
+        self.assertEqual(turn.time_to_first_token_ms, 1200)
+        self.assertIsNotNone(turn.completed_at)
         self.assertEqual(
             turn.user_message_hash,
             hashlib.sha256("Analyze the repo and explain what changed.".encode("utf-8")).hexdigest(),
@@ -157,6 +190,7 @@ class CodexSessionTests(CoreAuditTestCase):
             cwd=self.root,
             turn_id="turn-linked",
             message=linked_message,
+            duration_ms=90_000,
         )
         _write_session(
             self.codex_home,
@@ -164,6 +198,7 @@ class CodexSessionTests(CoreAuditTestCase):
             cwd=self.root,
             turn_id="turn-analysis",
             message=analysis_message,
+            duration_ms=120_000,
         )
         upsert_workset(
             self.profile,
@@ -214,12 +249,16 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(coverage["counts"]["output_tokens"], 24)
         self.assertEqual(coverage["counts"]["reasoning_output_tokens"], 10)
         self.assertEqual(coverage["counts"]["total_tokens"], 224)
+        self.assertEqual(coverage["counts"]["longest_completed_turn_duration_ms"], 120_000)
+        self.assertEqual(coverage["counts"]["longest_completed_turn_thread_id"], "thread-analysis")
+        self.assertEqual(coverage["counts"]["longest_completed_turn_id"], "turn-analysis")
         self.assertEqual(history["counts"]["attempt_rows"], 1)
         self.assertEqual(history["counts"]["codex_turn_rows"], 1)
         rendered_rows = "\n".join(json.dumps(row, sort_keys=True) for row in history["rows"])
         self.assertIn('"kind": "attempt"', rendered_rows)
         self.assertIn('"kind": "codex_turn"', rendered_rows)
         self.assertIn('"input_tokens": 100', rendered_rows)
+        self.assertIn('"duration_ms": 120000', rendered_rows)
         self.assertNotIn(analysis_message, rendered_rows)
         self.assertEqual(
             Path(history["history_path"]).resolve(),
@@ -319,3 +358,47 @@ class CodexSessionTests(CoreAuditTestCase):
                 capture_output=True,
                 text=True,
             )
+
+    def test_coverage_includes_archived_sessions_and_dedupes_same_turn(self) -> None:
+        _write_session(
+            self.codex_home,
+            thread_id="thread-dupe",
+            cwd=self.root,
+            turn_id="turn-dupe",
+            message="Implement the durable turn once.",
+            duration_ms=100_000,
+            tool_calls=2,
+        )
+        _write_session(
+            self.codex_home,
+            thread_id="thread-dupe",
+            cwd=self.root,
+            turn_id="turn-dupe",
+            message="Implement the durable turn once.",
+            session_dir="archived_sessions",
+            duration_ms=200_000,
+            tool_calls=0,
+            model=None,
+            reasoning_effort=None,
+        )
+        _write_session(
+            self.codex_home,
+            thread_id="thread-archived",
+            cwd=self.root,
+            turn_id="turn-archived",
+            message="Run the archived-only long request.",
+            session_dir="archived_sessions",
+            duration_ms=240_000,
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(coverage["counts"]["codex_user_turns"], 2)
+        self.assertEqual(coverage["counts"]["tool_calls"], 2)
+        self.assertEqual(coverage["counts"]["longest_completed_turn_duration_ms"], 240_000)
+        self.assertEqual(coverage["counts"]["longest_completed_turn_thread_id"], "thread-archived")
+        self.assertEqual(coverage["counts"]["longest_completed_turn_id"], "turn-archived")
+        dupe_turn = next(row for row in coverage["turns"] if row["thread_id"] == "thread-dupe")
+        self.assertEqual(dupe_turn["duration_ms"], 100_000)
+        self.assertEqual(dupe_turn["tool_call_count"], 2)

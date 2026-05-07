@@ -87,6 +87,9 @@ class CodexTurn:
     message_excerpt: str | None
     classification: str
     has_assistant_response: bool
+    completed_at: str | None
+    duration_ms: int | None
+    time_to_first_token_ms: int | None
     tool_call_count: int
     input_tokens: int
     cached_input_tokens: int
@@ -204,6 +207,9 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 "user_message": None,
                 "fallback_user_messages": [],
                 "assistant_response_count": 0,
+                "completed_at": None,
+                "duration_ms": None,
+                "time_to_first_token_ms": None,
                 "tool_call_count": 0,
                 "input_tokens": 0,
                 "cached_input_tokens": 0,
@@ -267,6 +273,21 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 turn = ensure_turn(current_turn_id)
                 _add_token_usage(turn, usage)
             continue
+        if row_type == "event_msg" and payload.get("type") in {"task_complete", "task_completed"}:
+            current_turn_id = _optional_text(payload.get("turn_id")) or current_turn_id or f"line-{lineno}"
+            turn = ensure_turn(current_turn_id)
+            duration_ms = _non_negative_optional_int(payload.get("duration_ms"))
+            time_to_first_token_ms = _non_negative_optional_int(payload.get("time_to_first_token_ms"))
+            turn["completed_at"] = (
+                _timestamp_from_payload(payload.get("completed_at"))
+                or timestamp
+                or turn["completed_at"]
+            )
+            turn["duration_ms"] = duration_ms if duration_ms is not None else turn["duration_ms"]
+            turn["time_to_first_token_ms"] = (
+                time_to_first_token_ms if time_to_first_token_ms is not None else turn["time_to_first_token_ms"]
+            )
+            continue
         if row_type == "response_item":
             item_type = _optional_text(payload.get("type"))
             role = _optional_text(payload.get("role"))
@@ -304,6 +325,9 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 message_excerpt=_excerpt(user_message),
                 classification=classify_user_message(user_message),
                 has_assistant_response=bool(payload["assistant_response_count"]),
+                completed_at=payload["completed_at"],
+                duration_ms=payload["duration_ms"],
+                time_to_first_token_ms=payload["time_to_first_token_ms"],
                 tool_call_count=int(payload["tool_call_count"]),
                 input_tokens=int(payload["input_tokens"]),
                 cached_input_tokens=int(payload["cached_input_tokens"]),
@@ -328,8 +352,9 @@ def build_codex_coverage(
     profile: RepoProfile,
     *,
     since: str | None = None,
+    codex_turns: Iterable[CodexTurn] | None = None,
 ) -> dict[str, Any]:
-    turns = _project_turns(profile, since=since)
+    turns = _project_turns(profile, since=since, codex_turns=codex_turns)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     attempts = tuple(
@@ -360,6 +385,9 @@ def build_codex_coverage(
                 "classification": classification,
                 "linked_attempt_ids": list(attempt_ids),
                 "has_assistant_response": turn.has_assistant_response,
+                "completed_at": turn.completed_at,
+                "duration_ms": turn.duration_ms,
+                "time_to_first_token_ms": turn.time_to_first_token_ms,
                 "tool_call_count": turn.tool_call_count,
                 "input_tokens": turn.input_tokens,
                 "cached_input_tokens": turn.cached_input_tokens,
@@ -375,6 +403,7 @@ def build_codex_coverage(
     attempt_status_counts: dict[str, int] = {}
     for attempt in attempts:
         attempt_status_counts[attempt.status] = attempt_status_counts.get(attempt.status, 0) + 1
+    longest_completed_turn = _longest_completed_turn(turns)
     return {
         "project_name": profile.project_name,
         "project_root": str(profile.paths.project_root),
@@ -401,6 +430,16 @@ def build_codex_coverage(
             "model_missing_turns": len([turn for turn in turns if not turn.model]),
             "reasoning_known_turns": len([turn for turn in turns if turn.reasoning_effort]),
             "reasoning_missing_turns": len([turn for turn in turns if not turn.reasoning_effort]),
+            "longest_completed_turn_duration_ms": (
+                longest_completed_turn.duration_ms if longest_completed_turn is not None else None
+            ),
+            "longest_completed_turn_started_at": (
+                longest_completed_turn.started_at if longest_completed_turn is not None else None
+            ),
+            "longest_completed_turn_thread_id": (
+                longest_completed_turn.thread_id if longest_completed_turn is not None else None
+            ),
+            "longest_completed_turn_id": longest_completed_turn.turn_id if longest_completed_turn is not None else None,
             "tool_calls": sum(turn.tool_call_count for turn in turns),
             "input_tokens": sum(turn.input_tokens for turn in turns),
             "cached_input_tokens": sum(turn.cached_input_tokens for turn in turns),
@@ -467,6 +506,17 @@ def history_export_path(profile: RepoProfile) -> Path:
     return profile.paths.project_root / HISTORY_DIR_NAME / HISTORY_FILE_NAME
 
 
+def collect_codex_turns(home: Path | None = None) -> tuple[CodexTurn, ...]:
+    resolved_home = home or codex_home()
+    turns: list[CodexTurn] = []
+    for path in _session_files(resolved_home):
+        session = read_codex_session(path, home=resolved_home)
+        if session is None:
+            continue
+        turns.extend(session.turns)
+    return tuple(turns)
+
+
 def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
     counts = payload["counts"]
     lines = [
@@ -489,6 +539,12 @@ def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
             "Model signal: "
             f"known={counts['model_known_turns']} missing={counts['model_missing_turns']} | "
             f"Reasoning known={counts['reasoning_known_turns']} missing={counts['reasoning_missing_turns']}"
+        ),
+        (
+            "Longest completed turn: "
+            f"{counts['longest_completed_turn_duration_ms'] or 0}ms "
+            f"{counts['longest_completed_turn_thread_id'] or '-'} "
+            f"{counts['longest_completed_turn_id'] or '-'}"
         ),
         (
             "Token signal: "
@@ -546,31 +602,71 @@ def _contains_keyword(text: str, keyword: str) -> bool:
     return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
 
 
-def _project_turns(profile: RepoProfile, *, since: str | None) -> tuple[CodexTurn, ...]:
+def _project_turns(
+    profile: RepoProfile,
+    *,
+    since: str | None,
+    codex_turns: Iterable[CodexTurn] | None = None,
+) -> tuple[CodexTurn, ...]:
     roots = _project_roots(profile)
     cutoff = _parse_since(since)
     turns: list[CodexTurn] = []
-    home = codex_home()
-    for path in _session_files(home):
-        session = read_codex_session(path, home=home)
-        if session is None:
+    candidate_turns = codex_turns if codex_turns is not None else collect_codex_turns()
+    for turn in candidate_turns:
+        if not _cwd_matches(roots, turn.cwd):
             continue
-        for turn in session.turns:
-            if not _cwd_matches(roots, turn.cwd):
+        if cutoff is not None:
+            started = parse_iso(turn.started_at)
+            if started is None or started < cutoff:
                 continue
-            if cutoff is not None:
-                started = parse_iso(turn.started_at)
-                if started is None or started < cutoff:
-                    continue
-            turns.append(turn)
-    return tuple(sorted(turns, key=lambda turn: (parse_iso(turn.started_at) or datetime.min.replace(tzinfo=timezone.utc), turn.session_path, turn.turn_index)))
+        turns.append(turn)
+    return tuple(
+        sorted(
+            _dedupe_turns(turns),
+            key=lambda turn: (
+                parse_iso(turn.started_at) or datetime.min.replace(tzinfo=timezone.utc),
+                turn.session_path,
+                turn.turn_index,
+            ),
+        )
+    )
 
 
 def _session_files(home: Path) -> Iterable[Path]:
-    sessions_dir = home / "sessions"
-    if not sessions_dir.exists():
-        return ()
-    return sorted(sessions_dir.rglob("rollout-*.jsonl"))
+    files: list[Path] = []
+    for dirname in ("sessions", "archived_sessions"):
+        sessions_dir = home / dirname
+        if sessions_dir.exists():
+            files.extend(sessions_dir.rglob("rollout-*.jsonl"))
+    return sorted(files)
+
+
+def _dedupe_turns(turns: Iterable[CodexTurn]) -> tuple[CodexTurn, ...]:
+    selected: dict[tuple[str, str], CodexTurn] = {}
+    for turn in turns:
+        key = _turn_key(turn)
+        current = selected.get(key)
+        if current is None or _turn_quality(turn) > _turn_quality(current):
+            selected[key] = turn
+    return tuple(selected.values())
+
+
+def _turn_quality(turn: CodexTurn) -> tuple[int, int, int, int, int, int]:
+    return (
+        1 if turn.duration_ms is not None else 0,
+        1 if turn.model else 0,
+        1 if turn.reasoning_effort else 0,
+        turn.tool_call_count,
+        turn.total_tokens,
+        0 if turn.session_path.startswith("archived_sessions/") else 1,
+    )
+
+
+def _longest_completed_turn(turns: Iterable[CodexTurn]) -> CodexTurn | None:
+    completed = [turn for turn in turns if turn.duration_ms is not None]
+    if not completed:
+        return None
+    return max(completed, key=lambda turn: (turn.duration_ms or 0, turn.started_at or "", turn.thread_id, turn.turn_id))
 
 
 def _project_roots(profile: RepoProfile) -> tuple[Path, ...]:
@@ -764,6 +860,9 @@ def _turn_history_row(profile: RepoProfile, turn: CodexTurn) -> dict[str, Any]:
         "classification": turn.classification,
         "user_prompt_hash": turn.user_message_hash,
         "has_assistant_response": turn.has_assistant_response,
+        "completed_at": turn.completed_at,
+        "duration_ms": turn.duration_ms,
+        "time_to_first_token_ms": turn.time_to_first_token_ms,
         "tool_call_count": turn.tool_call_count,
         "input_tokens": turn.input_tokens,
         "cached_input_tokens": turn.cached_input_tokens,
@@ -891,6 +990,12 @@ def _non_negative_int(value: Any) -> int:
     return max(0, number)
 
 
+def _non_negative_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value)
+
+
 def _relative_session_path(path: Path, home: Path) -> str:
     resolved = path.resolve()
     try:
@@ -937,6 +1042,7 @@ __all__ = [
     "build_codex_history",
     "classify_user_message",
     "codex_home",
+    "collect_codex_turns",
     "current_codex_runtime_context",
     "current_codex_session_ref",
     "history_export_path",
