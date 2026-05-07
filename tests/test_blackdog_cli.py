@@ -115,6 +115,46 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertNotIn("workset", help_text)
         self.assertNotIn("next", help_text)
 
+    def test_task_begin_partial_existing_target_points_to_normal_new_task_path(self) -> None:
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Implement a new task.",
+            "--workset",
+            "invented-workset",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("For new work, omit both flags", stderr)
+        self.assertIn("provide both", stderr)
+
+    def test_worktree_start_unknown_workset_points_to_task_begin(self) -> None:
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "invented-workset",
+            "--task",
+            "TASK-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Implement a new task.",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("Unknown workset 'invented-workset'", stderr)
+        self.assertIn("use `blackdog task begin` without --workset/--task", stderr)
+
     def test_workset_put_summary_next_and_snapshot_form_one_vertical_slice(self) -> None:
         payload = {
             "id": "vertical-slice",

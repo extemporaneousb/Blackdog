@@ -31,10 +31,12 @@ development.
   - `blackdog worktree preflight|preview|start|show|land|close|cleanup`
 - Direct planned-task authoring is disabled by default. Keep normal repo work
   on `task begin`, `task land`, and the task recovery surfaces until a planned
-  workflow has clear value again.
-- Use `blackdog worktree preview` before `start` when you need to inspect the
+  workflow has clear value again. For new work, do not pass `--workset` or
+  `--task`; `task begin` creates the task envelope.
+- Use `blackdog worktree preview` or `blackdog worktree start` only when
+  resuming or repairing a known existing task id and you need to inspect the
   prompt receipt, repo contract inputs, branch/worktree plan, or worktree-local
-  handler plan.
+  handler plan. Do not invent workset or task names.
 - `blackdog.toml` owns explicit `[[handlers]]` blocks for repo-local env and
   runtime setup. Keep env/bootstrap policy there, not in the skill.
 - `blackdog worktree start` is responsible for executing the handler plan:
@@ -87,8 +89,9 @@ Keep repo-specific requirements outside this block.
 - Analysis-only work may stay in the current checkout.
 - `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.
 - Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.
+- For new work, do not pass `--workset` or `--task`; `task begin` creates the task envelope and returns the task workspace.
 - Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.
-- Use `./.VE/bin/blackdog worktree preview --project-root . ...` before `worktree start` when you need to inspect the WTAM plan first.
+- Use low-level `worktree preview` or `worktree start` only when resuming or repairing a known existing task id; do not invent workset or task names.
 - Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser. Prefer Codex in-app browser tools or headless evidence.
 - After `repo install`, `repo update`, or `repo refresh`, run `git status --short`; commit or land managed repo changes, or report the checkout as intentionally dirty before finishing.
 - Before finishing implementation work, re-check branch and dirty state. Do not leave uncommitted changes from your work; if committing or landing, make sure the result is on the primary `main` branch unless the user explicitly requested another branch.

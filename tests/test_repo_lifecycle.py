@@ -228,6 +228,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("repo archive", skill_text)
         self.assertIn("repo unarchive", skill_text)
         self.assertIn("repo unbind", skill_text)
+        self.assertIn("without `--workset` or `--task`", skill_text)
+        self.assertNotIn("planned execution", skill_text)
 
     def test_repo_table_discovers_members_and_skips_worktrees(self) -> None:
         fleet_root = self.root / "fleet"

@@ -430,8 +430,8 @@ Important flags:
 - exactly one of `--prompt` or `--prompt-file`
 - optional `--prompt-mode raw|skill|tuned`
 - optional `--user-prompt` or `--user-prompt-file`
-- optional `--workset`
-- optional `--task`
+- optional `--workset` for an existing planning task only
+- optional `--task` for an existing planning task only
 - optional `--title`
 - optional `--branch`
 - optional `--from`
@@ -447,6 +447,10 @@ claims it for the caller, records both the raw user prompt receipt and the
 execution prompt receipt, provisions the task worktree, and starts the WTAM
 attempt in one command. That envelope is runtime bookkeeping for attempt
 history and recovery, not a repo-facing planning workflow.
+
+For normal new repo work, omit `--workset` and `--task`. Those flags are only
+for explicitly targeting an existing planned task; agents should not invent
+them from the user request.
 
 `--prompt-mode raw` records the supplied prompt directly. `--prompt-mode tuned`
 runs the user request through `blackdog prompt tune` first and records the
@@ -679,7 +683,8 @@ blackdog worktree preflight --project-root /path/to/repo --json
 
 ### `blackdog worktree preview`
 
-Preview the WTAM start plan before Blackdog claims or mutates runtime state.
+Preview the WTAM start plan for an existing task before Blackdog claims or
+mutates runtime state.
 
 ```bash
 blackdog worktree preview \
@@ -720,9 +725,13 @@ Use `--show-prompt` when you want the exact prompt receipt text.
 Use `--expand-contract` when you want the preview to inline the contract
 documents Blackdog expects an agent to use.
 
+`worktree preview` is a low-level recovery/repair command. Use `task begin`
+without `--workset` or `--task` for new work; do not invent workset or task ids.
+
 ### `blackdog worktree start`
 
-Create a branch-backed task worktree and start the WTAM attempt for one task.
+Create a branch-backed task worktree and start the WTAM attempt for one existing
+task.
 
 ```bash
 blackdog worktree start \
@@ -760,6 +769,9 @@ handler plan, and records:
 - prompt source
 - prompt receipt hash
 - handler actions and timings
+
+`worktree start` is a low-level existing-task command. Use `task begin` without
+`--workset` or `--task` for new work; do not invent workset or task ids.
 
 On the shipped handler path, `worktree start`:
 

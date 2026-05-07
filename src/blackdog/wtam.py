@@ -348,15 +348,22 @@ def _current_branch(repo_root: Path) -> str:
     return branch
 
 
+_NEW_TASK_BEGIN_HINT = (
+    "For new work, use `blackdog task begin` without --workset/--task; "
+    "low-level worktree commands only target existing task ids from `task show`, "
+    "`task recover`, or a prior `task begin` response."
+)
+
+
 def _require_workset_and_task(profile: RepoProfile, *, workset_id: str, task_id: str) -> tuple[Workset, TaskSpec]:
     planning_state = load_planning_state(profile.paths)
     workset = find_workset(planning_state, workset_id)
     if workset is None:
-        raise BacklogError(f"Unknown workset {workset_id!r}")
+        raise BacklogError(f"Unknown workset {workset_id!r}. {_NEW_TASK_BEGIN_HINT}")
     for task in workset.tasks:
         if task.task_id == task_id:
             return workset, task
-    raise BacklogError(f"Unknown task {task_id!r} in workset {workset_id!r}")
+    raise BacklogError(f"Unknown task {task_id!r} in workset {workset_id!r}. {_NEW_TASK_BEGIN_HINT}")
 
 
 def _task_slug(workset_id: str, task: TaskSpec) -> str:
@@ -504,7 +511,11 @@ def _resolve_task_command_target(
     if allow_latest and latest_matches:
         workset, attempt = max(latest_matches, key=lambda item: _attempt_sort_key(item[1]))
         return workset, attempt.task_id, attempt
-    raise WorktreeError(f"could not infer a Blackdog task from {workspace_root}; specify --workset and --task")
+    raise WorktreeError(
+        f"could not infer a Blackdog task from {workspace_root}; run from a task worktree or provide both "
+        "--workset and --task for an existing task. For new work, use `blackdog task begin` without "
+        "--workset/--task."
+    )
 
 
 def _task_surface_actions(actions: list[str]) -> list[str]:
@@ -1268,7 +1279,10 @@ def begin_task_worktree(
     if prompt_mode not in {PROMPT_MODE_RAW, PROMPT_MODE_SKILL, PROMPT_MODE_TUNED}:
         raise BacklogError(f"prompt mode must be one of {PROMPT_MODE_RAW}, {PROMPT_MODE_SKILL}, {PROMPT_MODE_TUNED}")
     if (resolved_workset is None) != (resolved_task is None):
-        raise BacklogError("task begin requires both --workset and --task when targeting existing planning state")
+        raise BacklogError(
+            "task begin received only one of --workset/--task. For new work, omit both flags; "
+            "to target existing planning state, provide both."
+        )
 
     user_receipt, execution_receipt = _resolve_task_begin_prompts(
         profile,
