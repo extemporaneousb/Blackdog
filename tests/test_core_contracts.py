@@ -87,6 +87,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("--workset", cli_doc)
         self.assertIn("next --project-root /path/to/repo --workset kernel", cli_doc)
         self.assertIn("worktree preflight", cli_doc)
+        self.assertIn("worktree table", cli_doc)
         self.assertIn("worktree preview", cli_doc)
         self.assertIn("worktree start", cli_doc)
         self.assertIn("worktree show", cli_doc)

@@ -34,9 +34,11 @@ from blackdog.repo_membership import (
 from blackdog.wtam import (
     WorktreeError,
     begin_task_worktree,
+    build_worktree_table,
     cancel_task,
     cleanup_task,
     cleanup_task_worktree,
+    cleanup_worktree_table,
     close_task,
     close_task_worktree,
     inspect_task_worktree,
@@ -54,6 +56,8 @@ from blackdog.wtam import (
     render_show_text,
     render_start_text,
     render_task_state_text,
+    render_worktree_cleanup_all_text,
+    render_worktree_table_text,
     show_task,
     preview_task_worktree,
     start_task_worktree,
@@ -444,6 +448,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_preflight.add_argument("--project-root", default=".")
     p_worktree_preflight.add_argument("--json", action="store_true")
 
+    p_worktree_table = worktree_subparsers.add_parser(
+        "table",
+        help="Emit a stable table of active or retained WTAM worktrees",
+    )
+    p_worktree_table.add_argument("--project-root", default=".")
+    p_worktree_table.add_argument("--json", action="store_true")
+
     p_worktree_preview = worktree_subparsers.add_parser("preview", help="Preview the WTAM start plan for an existing task")
     p_worktree_preview.add_argument("--project-root", default=".")
     p_worktree_preview.add_argument("--workset", required=True, help="existing workset id; use task begin for new work")
@@ -511,12 +522,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_close.add_argument("--cleanup", action="store_true")
     p_worktree_close.add_argument("--json", action="store_true")
 
-    p_worktree_cleanup = worktree_subparsers.add_parser("cleanup", help="Remove a retained or leftover WTAM worktree and delete its branch")
+    p_worktree_cleanup = worktree_subparsers.add_parser(
+        "cleanup",
+        help="Remove a retained or leftover WTAM worktree and delete its branch",
+    )
     p_worktree_cleanup.add_argument("--project-root", default=".")
-    p_worktree_cleanup.add_argument("--workset", required=True)
-    p_worktree_cleanup.add_argument("--task", required=True)
+    p_worktree_cleanup.add_argument("--workset")
+    p_worktree_cleanup.add_argument("--task")
     p_worktree_cleanup.add_argument("--path")
     p_worktree_cleanup.add_argument("--branch")
+    p_worktree_cleanup.add_argument("--all", action="store_true")
     p_worktree_cleanup.add_argument("--json", action="store_true")
 
     return parser
@@ -952,6 +967,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_preflight_text(payload), end="")
             return 0
 
+        if args.command == "worktree" and args.worktree_command == "table":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = build_worktree_table(profile)
+            if args.json:
+                _emit_json({"worktree_table": payload})
+            else:
+                print(render_worktree_table_text(payload), end="")
+            return 0
+
         if args.command == "worktree" and args.worktree_command == "preview":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
@@ -1071,6 +1095,19 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "worktree" and args.worktree_command == "cleanup":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            if args.all:
+                if args.workset or args.task or args.path or args.branch:
+                    raise WorktreeError(
+                        "worktree cleanup --all cannot be combined with --workset, --task, --path, or --branch"
+                    )
+                payload = cleanup_worktree_table(profile)
+                if args.json:
+                    _emit_json({"cleanup": payload})
+                else:
+                    print(render_worktree_cleanup_all_text(payload), end="")
+                return 0 if not payload["errors"] else 1
+            if not args.workset or not args.task:
+                raise WorktreeError("worktree cleanup requires --workset and --task unless --all is set")
             payload = cleanup_task_worktree(
                 profile,
                 workset_id=args.workset,

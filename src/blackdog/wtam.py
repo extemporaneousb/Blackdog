@@ -201,6 +201,32 @@ class _BranchCleanupPlan:
     reason: str
 
 
+WORKTREE_TABLE_COLUMNS = (
+    "workset_id",
+    "task_id",
+    "task_title",
+    "state",
+    "latest_attempt_status",
+    "started_at",
+    "ended_at",
+    "last_commit_at",
+    "last_commit",
+    "last_commit_message",
+    "branch",
+    "target_branch",
+    "worktree_path",
+    "worktree_dirty_count",
+    "branch_ahead_of_target",
+    "changed_paths_count",
+    "size_bytes",
+    "size",
+    "cleanup_status",
+    "cleanup_reason",
+    "cleanup_command",
+    "recommended_action",
+)
+
+
 def _run_git(repo_root: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo_root), *args],
@@ -953,6 +979,234 @@ def _attempt_changed_paths(
     if worktree_path is not None and worktree_path.exists():
         changed.update(_worktree_changed_paths(profile, worktree_path))
     return sorted(changed)
+
+
+def _format_size(size_bytes: int | None) -> str | None:
+    if size_bytes is None:
+        return None
+    units = ("B", "KiB", "MiB", "GiB")
+    value = float(size_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size_bytes} B"
+
+
+def _path_size_bytes(path: Path | None) -> int | None:
+    if path is None or not path.exists():
+        return None
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink()]
+        for filename in files:
+            candidate = Path(root) / filename
+            if candidate.is_symlink():
+                continue
+            total += candidate.stat().st_size
+    return total
+
+
+def _commit_metadata(repo_root: Path | None, ref: str = "HEAD") -> dict[str, str | None]:
+    empty = {"commit": None, "date": None, "message": None}
+    if repo_root is None or not repo_root.exists():
+        return empty
+    completed = _run_git_no_check(repo_root, "show", "-s", "--format=%H%x00%cI%x00%s", ref)
+    if completed.returncode != 0:
+        return empty
+    parts = completed.stdout.rstrip("\n").split("\x00", 2)
+    if len(parts) != 3:
+        return empty
+    return {"commit": parts[0] or None, "date": parts[1] or None, "message": parts[2] or None}
+
+
+def _cleanup_classification(
+    profile: RepoProfile,
+    *,
+    branch: str | None,
+    worktree_exists: bool,
+    worktree_dirty_paths: list[str],
+    active_attempt: bool,
+    latest_attempt: TaskRuntimeRecord | None,
+) -> tuple[str, str | None]:
+    if not worktree_exists:
+        return ("missing_worktree" if active_attempt else "absent"), None
+    if worktree_dirty_paths:
+        return "blocked_dirty", "worktree has uncommitted changes"
+    if active_attempt:
+        return "active", "active attempts must be landed or closed before cleanup"
+    if not branch:
+        return "cleanup_ready", "no branch recorded"
+    try:
+        plan = _plan_task_branch_cleanup(
+            find_primary_worktree(profile.paths.project_root),
+            branch=branch,
+            latest_attempt=latest_attempt,
+        )
+    except WorktreeError as exc:
+        return "blocked_unlanded", str(exc)
+    return "cleanup_ready", plan.reason
+
+
+def _worktree_table_row(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task: TaskSpec,
+) -> dict[str, Any] | None:
+    runtime_state = load_runtime_state(profile.paths)
+    active_attempt = active_task_attempt(runtime_state, workset_id, task.task_id)
+    latest_attempt = latest_task_attempt(runtime_state, workset_id, task.task_id)
+    selected_attempt = active_attempt or latest_attempt
+    if selected_attempt is None:
+        return None
+
+    payload = _task_recovery_payload(profile, workset_id=workset_id, task_id=task.task_id)
+    if not (payload["worktree_exists"] or payload["active_attempt"] or payload["stale_claim"]):
+        return None
+
+    worktree_path = Path(payload["worktree_path"]).resolve() if payload["worktree_path"] else None
+    worktree_dirty_paths = list(payload["worktree_dirty_paths"])
+    resolved_branch = (
+        payload["branch"]
+        or (latest_attempt.branch if latest_attempt is not None else None)
+        or default_task_branch(workset_id, task)
+    )
+    cleanup_status, cleanup_reason = _cleanup_classification(
+        profile,
+        branch=resolved_branch,
+        worktree_exists=bool(payload["worktree_exists"]),
+        worktree_dirty_paths=worktree_dirty_paths,
+        active_attempt=bool(payload["active_attempt"]),
+        latest_attempt=latest_attempt,
+    )
+    commit_root = worktree_path if worktree_path is not None and worktree_path.exists() else find_primary_worktree(
+        profile.paths.project_root
+    )
+    commit_ref = "HEAD" if worktree_path is not None and worktree_path.exists() else resolved_branch or "HEAD"
+    commit = _commit_metadata(commit_root, commit_ref)
+    size_bytes = _path_size_bytes(worktree_path)
+    cleanup_command = (
+        f"blackdog task cleanup --project-root . --workset {workset_id} --task {task.task_id}"
+        if cleanup_status == "cleanup_ready"
+        else None
+    )
+    recommended_action = cleanup_command
+    if recommended_action is None and payload["recommended_actions"]:
+        recommended_action = payload["recommended_actions"][0]
+    if recommended_action is None:
+        recommended_action = cleanup_reason
+    return {
+        "workset_id": workset_id,
+        "task_id": task.task_id,
+        "task_title": task.title,
+        "state": payload["recovery_state"],
+        "latest_attempt_status": payload["latest_attempt_status"],
+        "started_at": payload["started_at"],
+        "ended_at": payload["ended_at"],
+        "last_commit_at": commit["date"],
+        "last_commit": commit["commit"],
+        "last_commit_message": commit["message"],
+        "branch": resolved_branch,
+        "target_branch": payload["target_branch"],
+        "worktree_path": payload["worktree_path"],
+        "worktree_dirty_count": len(worktree_dirty_paths),
+        "branch_ahead_of_target": payload["branch_ahead_of_target"],
+        "changed_paths_count": len(payload["changed_paths"]),
+        "size_bytes": size_bytes,
+        "size": _format_size(size_bytes),
+        "cleanup_status": cleanup_status,
+        "cleanup_reason": cleanup_reason,
+        "cleanup_command": cleanup_command,
+        "recommended_action": recommended_action,
+    }
+
+
+def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    planning_state = load_planning_state(profile.paths)
+    for workset in planning_state.worksets:
+        for task in workset.tasks:
+            row = _worktree_table_row(profile, workset_id=workset.workset_id, task=task)
+            if row is not None:
+                rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            str(row.get("started_at") or ""),
+            str(row.get("workset_id") or ""),
+            str(row.get("task_id") or ""),
+        ),
+        reverse=True,
+    )
+    return {
+        "project_name": profile.project_name,
+        "project_root": str(profile.paths.project_root),
+        "columns": list(WORKTREE_TABLE_COLUMNS),
+        "rows": rows,
+        "counts": {
+            "rows": len(rows),
+            "cleanup_ready": sum(1 for row in rows if row["cleanup_status"] == "cleanup_ready"),
+            "blocked": sum(1 for row in rows if str(row["cleanup_status"]).startswith("blocked_")),
+            "active": sum(1 for row in rows if row["state"] == "active_attempt"),
+            "missing_worktree": sum(1 for row in rows if row["cleanup_status"] == "missing_worktree"),
+        },
+    }
+
+
+def cleanup_worktree_table(profile: RepoProfile) -> dict[str, Any]:
+    before = build_worktree_table(profile)
+    cleaned: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for row in before["rows"]:
+        if row["cleanup_status"] != "cleanup_ready":
+            skipped.append(
+                {
+                    "workset_id": row["workset_id"],
+                    "task_id": row["task_id"],
+                    "cleanup_status": row["cleanup_status"],
+                    "reason": row["recommended_action"],
+                }
+            )
+            continue
+        try:
+            cleanup = cleanup_task_worktree(
+                profile,
+                workset_id=row["workset_id"],
+                task_id=row["task_id"],
+                path=row["worktree_path"],
+                branch=row["branch"],
+            )
+        except WorktreeError as exc:
+            errors.append(
+                {
+                    "workset_id": row["workset_id"],
+                    "task_id": row["task_id"],
+                    "worktree_path": row["worktree_path"],
+                    "error": str(exc),
+                }
+            )
+        else:
+            cleaned.append(
+                {
+                    "workset_id": row["workset_id"],
+                    "task_id": row["task_id"],
+                    **cleanup,
+                }
+            )
+    return {
+        "project_name": profile.project_name,
+        "project_root": str(profile.paths.project_root),
+        "cleaned": cleaned,
+        "skipped": skipped,
+        "errors": errors,
+        "before": before,
+        "remaining": build_worktree_table(profile),
+    }
 
 
 def _append_prompt_lineage_trailers(
@@ -2815,9 +3069,37 @@ def render_cleanup_text(payload: dict[str, Any], *, surface: str = "worktree") -
     return "\n".join(lines) + "\n"
 
 
+def render_worktree_table_text(payload: dict[str, Any]) -> str:
+    rows = payload["rows"]
+    columns = payload["columns"]
+    if not rows:
+        return "\t".join(columns) + "\n"
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join("" if row.get(column) is None else str(row.get(column)) for column in columns))
+    return "\n".join(lines) + "\n"
+
+
+def render_worktree_cleanup_all_text(payload: dict[str, Any]) -> str:
+    lines = [
+        (
+            f"[blackdog-worktree] cleanup all: cleaned={len(payload['cleaned'])} "
+            f"skipped={len(payload['skipped'])} errors={len(payload['errors'])}"
+        ),
+        f"[blackdog-worktree] remaining rows: {payload['remaining']['counts']['rows']}",
+    ]
+    for row in payload["cleaned"]:
+        branch = f" branch={row['branch']}" if row.get("branch") else ""
+        lines.append(f"[blackdog-worktree] removed: {row['worktree_path']}{branch}")
+    for row in payload["errors"]:
+        lines.append(f"[blackdog-worktree] error: {row['workset_id']}/{row['task_id']} {row['error']}")
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
     "DirtyPrimaryWorktreeError",
     "TaskBeginSpec",
+    "WORKTREE_TABLE_COLUMNS",
     "WORKSPACE_MODE_GIT_WORKTREE",
     "WORKTREE_ROLE_LINKED",
     "WORKTREE_ROLE_PRIMARY",
@@ -2829,8 +3111,10 @@ __all__ = [
     "branch_changed_paths",
     "begin_task_worktree",
     "cancel_task",
+    "build_worktree_table",
     "cleanup_task",
     "cleanup_task_worktree",
+    "cleanup_worktree_table",
     "close_task",
     "close_task_worktree",
     "default_task_branch",
@@ -2856,6 +3140,8 @@ __all__ = [
     "render_start_text",
     "render_task_begin_text",
     "render_task_state_text",
+    "render_worktree_cleanup_all_text",
+    "render_worktree_table_text",
     "recover_task",
     "reopen_task",
     "show_task",

@@ -124,6 +124,7 @@ The current coherent product surface on top of the new core is:
 - `blackdog task reopen`
 - `blackdog task cleanup`
 - `blackdog worktree preflight`
+- `blackdog worktree table`
 - `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree show`

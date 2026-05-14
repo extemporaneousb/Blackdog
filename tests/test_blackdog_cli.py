@@ -1092,6 +1092,126 @@ class BlackdogCliTests(CoreAuditTestCase):
             text=True,
         )
 
+    def test_worktree_table_reports_active_dirty_task_worktree(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Leave active work in the task worktree.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "unlanded.txt").write_text("unlanded\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        table = json.loads(stdout)["worktree_table"]
+        self.assertEqual(table["counts"]["rows"], 1)
+        row = table["rows"][0]
+        self.assertEqual(row["workset_id"], task_payload["workset_id"])
+        self.assertEqual(row["task_id"], task_payload["task_id"])
+        self.assertEqual(row["state"], "active_attempt")
+        self.assertEqual(row["cleanup_status"], "blocked_dirty")
+        self.assertEqual(row["worktree_dirty_count"], 1)
+        self.assertEqual(row["changed_paths_count"], 1)
+        self.assertEqual(row["worktree_path"], str(worktree_path))
+        self.assertEqual(row["cleanup_reason"], "worktree has uncommitted changes")
+        self.assertIn("blackdog worktree land", row["recommended_action"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertIn("last_commit_message", stdout.splitlines()[0])
+        self.assertIn("size_bytes", stdout.splitlines()[0])
+
+    def test_worktree_cleanup_all_removes_cleanup_ready_rows_until_table_is_empty(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Retain a landed task worktree for bulk cleanup.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "landed.txt").write_text("landed\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "landed but retained for table cleanup",
+            "--keep-worktree",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        table = json.loads(stdout)["worktree_table"]
+        self.assertEqual(table["counts"]["rows"], 1)
+        self.assertEqual(table["counts"]["cleanup_ready"], 1)
+        self.assertEqual(table["rows"][0]["cleanup_status"], "cleanup_ready")
+        self.assertIn("blackdog task cleanup", table["rows"][0]["cleanup_command"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--all",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        cleanup = json.loads(stdout)["cleanup"]
+        self.assertEqual(len(cleanup["cleaned"]), 1)
+        self.assertEqual(cleanup["remaining"]["counts"]["rows"], 0)
+        self.assertFalse(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["worktree_table"]["counts"]["rows"], 0)
+
     def test_task_recover_reports_dirty_same_thread_recovery_state(self) -> None:
         self.install_repo_runtime()
 

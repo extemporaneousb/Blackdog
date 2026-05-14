@@ -365,7 +365,7 @@ V1 should include these product capabilities:
 - mutable task runtime state
 - explicit workset/task claims
 - same-thread task begin/show/recover/land/close/cancel/reopen/cleanup
-- worktree-backed WTAM preflight/preview/start/show/land/close/cleanup
+- worktree-backed WTAM preflight/table/preview/start/show/land/close/cleanup
 - raw user-prompt and execution-prompt capture
 - prompt/contract preview before execution start
 - result/stat recording
@@ -401,6 +401,7 @@ This is the decision frame for the rest of the repo.
 - `task reopen`
 - `task cleanup`
 - `worktree preflight`
+- `worktree table`
 - `worktree preview`
 - `worktree start`
 - `worktree show`

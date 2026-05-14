@@ -176,6 +176,7 @@ The minimum coherent shipped slice after the sweep is:
 - one same-thread task reopen surface: `blackdog task reopen`
 - one same-thread task cleanup surface: `blackdog task cleanup`
 - one WTAM contract/readiness surface: `blackdog worktree preflight`
+- one WTAM cleanup inventory surface: `blackdog worktree table`
 - one WTAM plan-inspection surface: `blackdog worktree preview`
 - one WTAM execution start surface: `blackdog worktree start`
 - one WTAM inspection/recovery read surface: `blackdog worktree show`

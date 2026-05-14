@@ -690,6 +690,49 @@ blackdog worktree preflight --project-root /path/to/repo
 blackdog worktree preflight --project-root /path/to/repo --json
 ```
 
+### `blackdog worktree table`
+
+Emit a stable table of active, dirty, retained, or otherwise cleanup-relevant
+WTAM worktrees for one repo.
+
+```bash
+blackdog worktree table --project-root /path/to/repo
+blackdog worktree table --project-root /path/to/repo --json
+```
+
+Text output is tab-separated with stable columns. JSON output returns the same
+columns under `worktree_table.rows` plus counts for cleanup-ready, blocked,
+active, and missing-worktree rows. Current columns are:
+
+- `workset_id`
+- `task_id`
+- `task_title`
+- `state`
+- `latest_attempt_status`
+- `started_at`
+- `ended_at`
+- `last_commit_at`
+- `last_commit`
+- `last_commit_message`
+- `branch`
+- `target_branch`
+- `worktree_path`
+- `worktree_dirty_count`
+- `branch_ahead_of_target`
+- `changed_paths_count`
+- `size_bytes`
+- `size`
+- `cleanup_status`
+- `cleanup_reason`
+- `cleanup_command`
+- `recommended_action`
+
+The table is intentionally empty when there are no active or retained task
+worktrees requiring operator attention. Retained worktrees whose branches are
+provably represented by the canonical landed commit are marked
+`cleanup_ready`. Dirty, active, missing, or unproven branch rows stay visible
+with a recommended next action instead of being silently removed.
+
 ### `blackdog worktree preview`
 
 Preview the WTAM start plan for an existing task before Blackdog claims or
@@ -931,20 +974,24 @@ blackdog worktree cleanup \
   --project-root /path/to/repo \
   --workset kernel \
   --task KERN-1
+blackdog worktree cleanup --project-root /path/to/repo --all
 ```
 
 Important flags:
 
 - `--project-root`
-- `--workset`
-- `--task`
+- `--workset` and `--task` for one task worktree
 - optional `--path`
 - optional `--branch`
+- optional `--all` removes every row currently classified as `cleanup_ready`
 
 `worktree cleanup` remains the lower-level WTAM operator alias. Prefer
 `task cleanup` for the same-thread agent workflow. Use `worktree cleanup`
 when you are operating explicitly on the WTAM worktree surface or recovering a
 task workspace from outside that worktree.
+`worktree cleanup --all` is the bulk cleanup companion to `worktree table`: it
+deletes only rows whose cleanup proof has already passed and leaves dirty,
+active, missing, or unproven rows in the table for explicit operator handling.
 
 ### `blackdog summary`
 

@@ -28,7 +28,7 @@ development.
   - `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
   - `blackdog summary`
   - `blackdog snapshot`
-  - `blackdog worktree preflight|preview|start|show|land|close|cleanup`
+  - `blackdog worktree preflight|table|preview|start|show|land|close|cleanup`
 - Direct planned-task authoring is disabled by default. Keep normal repo work
   on `task begin`, `task land`, and the task recovery surfaces until a planned
   workflow has clear value again. For new work, do not pass `--workset` or
