@@ -60,6 +60,16 @@ class EnvHandlerTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         self._commit_if_dirty(self.root, "Add repo runtime")
 
+        editable_src = self.root / "demo-editable" / "src" / "demo_editable"
+        editable_src.mkdir(parents=True)
+        (editable_src / "__init__.py").write_text('VALUE = "task-source"\n', encoding="utf-8")
+        self._commit_if_dirty(self.root, "Add editable package")
+        root_site_packages = next((self.root / ".VE" / "lib").glob("python*/site-packages"))
+        (root_site_packages / "__editable__.demo_editable-0.1.pth").write_text(
+            str(self.root / "demo-editable" / "src") + "\n",
+            encoding="utf-8",
+        )
+
         demo_tool = self.root / ".VE" / "bin" / "demo-tool"
         demo_tool.write_text("#!/bin/sh\necho root-tool\n", encoding="utf-8")
         demo_tool.chmod(0o755)
@@ -92,14 +102,34 @@ class EnvHandlerTests(CoreAuditTestCase):
         worktree_path = Path(payload["worktree_path"])
         launcher_path = worktree_path / ".VE" / "bin" / "blackdog"
         tool_path = worktree_path / ".VE" / "bin" / "demo-tool"
+        editable_overlay = next(
+            worktree_path.glob(".VE/lib/python*/site-packages/blackdog-worktree-editables.pth")
+        )
 
         self.assertTrue(launcher_path.is_file())
         self.assertTrue(tool_path.exists())
+        self.assertEqual(
+            editable_overlay.read_text(encoding="utf-8").strip(),
+            str(worktree_path / "demo-editable" / "src"),
+        )
         launcher_text = launcher_path.read_text(encoding="utf-8")
         self.assertIn(str(worktree_path / ".VE" / "bin" / "python"), launcher_text)
         self.assertIn(str((REPO_ROOT / "src").resolve()), launcher_text)
         self.assertTrue(any(action["action"] == "root-bin-fallback" for action in payload["handlers"]["actions"]))
+        self.assertTrue(any(action["action"] == "wire-worktree-editables" for action in payload["handlers"]["actions"]))
         self.assertEqual(payload["source_mode"], "local-override")
+
+        completed = subprocess.run(
+            [
+                str(worktree_path / ".VE" / "bin" / "python"),
+                "-c",
+                "import demo_editable; print(demo_editable.VALUE)",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.stdout.strip(), "task-source")
 
     def test_self_repo_worktree_start_uses_editable_worktree_source_overlay(self) -> None:
         self_repo = self.root / "self-blackdog"

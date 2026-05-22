@@ -46,6 +46,7 @@ _ROOT_BIN_FALLBACK_EXCLUDES = {
     "python",
     "python3",
 }
+_WORKTREE_EDITABLE_OVERLAY = "blackdog-worktree-editables.pth"
 
 
 class HandlerError(RuntimeError):
@@ -259,6 +260,88 @@ def _write_text_if_changed(path: Path, text: str, *, executable: bool = False) -
     if previous != text:
         return HANDLER_STATUS_UPDATED
     return HANDLER_STATUS_PRESERVED
+
+
+def _map_path_from_root_to_worktree(path: Path, *, project_root: Path, worktree_path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    try:
+        relative = resolved.relative_to(project_root)
+    except ValueError:
+        return resolved
+    return (worktree_path / relative).resolve()
+
+
+def _editable_source_paths(
+    root_site_packages: Path,
+    *,
+    project_root: Path,
+    worktree_path: Path,
+    require_mapped_exists: bool,
+) -> tuple[Path, ...]:
+    if not root_site_packages.is_dir():
+        return ()
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for pth_file in sorted(root_site_packages.glob("*.pth")):
+        if pth_file.name.startswith("blackdog-"):
+            continue
+        for raw_line in pth_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or line.startswith("import "):
+                continue
+            root_candidate = Path(line)
+            if not root_candidate.expanduser().exists():
+                continue
+            candidate = _map_path_from_root_to_worktree(
+                root_candidate,
+                project_root=project_root,
+                worktree_path=worktree_path,
+            )
+            if require_mapped_exists and not candidate.exists():
+                continue
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            paths.append(candidate)
+    return tuple(paths)
+
+
+def _worktree_editable_action(
+    config: PythonOverlayVenvHandlerConfig,
+    state: _PythonOverlayState,
+    *,
+    project_root: Path,
+    worktree_path: Path,
+    execute: bool,
+) -> HandlerAction | None:
+    if state.worktree_site_packages is None:
+        raise HandlerError("missing worktree site-packages path")
+    source_paths = _editable_source_paths(
+        state.root_site_packages,
+        project_root=project_root,
+        worktree_path=worktree_path,
+        require_mapped_exists=execute,
+    )
+    if not source_paths:
+        return None
+    overlay_path = state.worktree_site_packages / _WORKTREE_EDITABLE_OVERLAY
+    if execute:
+        started = time.perf_counter()
+        text = "".join(f"{path}\n" for path in source_paths)
+        overlay_status = _write_text_if_changed(overlay_path, text)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+    else:
+        overlay_status = HANDLER_STATUS_PLANNED
+        elapsed_ms = None
+    return HandlerAction(
+        handler_id=config.handler_id,
+        kind=config.kind,
+        action="wire-worktree-editables",
+        target_path=str(overlay_path),
+        status=overlay_status,
+        message=f"wired {len(source_paths)} editable source path(s) into the worktree env",
+        elapsed_ms=elapsed_ms,
+    )
 
 
 def _timed_action(
@@ -535,14 +618,25 @@ def _preview_python_handler(
                         status=HANDLER_STATUS_PLANNED,
                         message="overlay repo-root site-packages into the worktree env",
                     ),
-                    HandlerAction(
-                        handler_id=config.handler_id,
-                        kind=config.kind,
-                        action="root-bin-fallback",
-                        target_path=str(state.worktree_bin_path),
-                        status=HANDLER_STATUS_PLANNED,
-                        message="link missing repo-root tool scripts into the worktree env",
-                    ),
+                )
+            )
+            editable_action = _worktree_editable_action(
+                config,
+                state,
+                project_root=context.project_root,
+                worktree_path=context.worktree_path,
+                execute=False,
+            )
+            if editable_action is not None:
+                actions.append(editable_action)
+            actions.append(
+                HandlerAction(
+                    handler_id=config.handler_id,
+                    kind=config.kind,
+                    action="root-bin-fallback",
+                    target_path=str(state.worktree_bin_path),
+                    status=HANDLER_STATUS_PLANNED,
+                    message="link missing repo-root tool scripts into the worktree env",
                 )
             )
     return _HandlerStepResult(
@@ -649,6 +743,15 @@ def _execute_python_handler(
             elapsed_ms=int((time.perf_counter() - started) * 1000),
         )
     )
+    editable_action = _worktree_editable_action(
+        config,
+        state,
+        project_root=context.project_root,
+        worktree_path=context.worktree_path,
+        execute=True,
+    )
+    if editable_action is not None:
+        actions.append(editable_action)
     started = time.perf_counter()
     created_links, preserved_links = _symlink_root_bin_fallback(state.root_bin_path, state.worktree_bin_path)
     status = HANDLER_STATUS_CREATED if created_links else HANDLER_STATUS_PRESERVED

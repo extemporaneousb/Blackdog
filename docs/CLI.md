@@ -202,9 +202,12 @@ sourced from GitHub. Use `--source-root` to point the repo-local launcher at a
 local Blackdog checkout instead. When the target repo is Blackdog itself,
 install uses that repo as the source checkout. The shipped Python handler keeps
 repo-root `.VE` as the canonical base env; WTAM worktrees later get their own
-overlay `.VE` rooted at the task worktree. If `blackdog.toml` or the repo-local
-skill already exist, install preserves repo-owned files and repairs runtime
-artifacts through handler actions. When install has to create `blackdog.toml`,
+overlay `.VE` rooted at the task worktree. During worktree setup, simple
+editable source paths from the repo-root env are replayed into the worktree env,
+with paths inside the primary checkout remapped to the task worktree. If
+`blackdog.toml` or the repo-local skill already exist, install preserves
+repo-owned files and repairs runtime artifacts through handler actions. When
+install has to create `blackdog.toml`,
 it seeds `doc_routing_defaults` from `AGENTS.md` plus common repo docs that
 already exist in the host repo so the initial contract matches the converted
 repo instead of Blackdog's own docs.
@@ -830,6 +833,8 @@ On the shipped handler path, `worktree start`:
 - validates the repo-root `.VE`
 - creates the task worktree `.VE` from the repo-root env
 - wires a site-packages overlay back to the repo-root env
+- wires worktree-local source paths for simple editable installs from the
+  repo-root env
 - links root-bin fallback tools into the task worktree env
 - writes the worktree-local `blackdog` launcher
 

@@ -197,7 +197,7 @@ Repo-local env/runtime setup is now owned by explicit handler blocks in
 handlers are:
 
 - `python-overlay-venv` for the repo-root `.VE`, worktree-local overlay `.VE`,
-  and root-bin fallback linking
+  simple editable source path replay, and root-bin fallback linking
 - `blackdog-runtime` for the repo-local or worktree-local `blackdog` launcher
   plus managed-source resolution
 
@@ -212,9 +212,9 @@ These commands exercise one end-to-end vertical slice:
    metadata, repo contract inputs, and the ordered handler plan for the task
    worktree
 5. start one branch-backed task worktree with a prompt receipt, a provisioned
-   worktree-local `.VE`, repo-root overlay wiring, root-bin fallback links, a
-   worktree-local launcher, and real git execution identity while claiming both
-   the workset and the task
+   worktree-local `.VE`, repo-root overlay wiring, worktree-local editable
+   source paths, root-bin fallback links, a worktree-local launcher, and real
+   git execution identity while claiming both the workset and the task
 6. inspect one active or latest task attempt for recovery-oriented worktree and
    claim state, including missing branch/worktree references
 7. land one successful task attempt through a canonical landed commit while
