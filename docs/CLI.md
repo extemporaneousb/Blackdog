@@ -687,6 +687,8 @@ operator intervention.
 ### `blackdog worktree preflight`
 
 Show the current WTAM contract for the checkout and primary worktree.
+When the current checkout is a normal linked worktree, preflight reports that
+linked branch as the target branch instead of the primary checkout branch.
 
 ```bash
 blackdog worktree preflight --project-root /path/to/repo

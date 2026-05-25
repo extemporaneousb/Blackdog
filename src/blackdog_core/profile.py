@@ -136,6 +136,37 @@ def _run_git(project_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
+def _parse_git_worktree_list(raw: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in raw.splitlines():
+        if not line.strip():
+            if current:
+                rows.append(current)
+                current = {}
+            continue
+        key, _, value = line.partition(" ")
+        current[key] = value.strip()
+    if current:
+        rows.append(current)
+    return rows
+
+
+def _primary_worktree_root(project_root: Path) -> Path:
+    try:
+        raw = _run_git(project_root, "worktree", "list", "--porcelain")
+    except ConfigError:
+        return project_root
+    for row in _parse_git_worktree_list(raw):
+        path_text = row.get("worktree")
+        if not path_text:
+            continue
+        candidate = Path(path_text).resolve()
+        if (candidate / ".git").is_dir():
+            return candidate
+    return project_root
+
+
 def _git_common_dir(project_root: Path) -> Path:
     raw = _run_git(project_root, "rev-parse", "--git-common-dir")
     candidate = Path(raw)
@@ -362,9 +393,15 @@ def _ensure_control_root_layout(paths: BlackdogPaths) -> None:
     _prune_stale_git_worktrees(paths.project_root)
 
 
-def _paths_from_raw(project_root: Path, raw_paths: dict[str, str]) -> BlackdogPaths:
+def _paths_from_raw(
+    project_root: Path,
+    raw_paths: dict[str, str],
+    *,
+    path_base: Path | None = None,
+) -> BlackdogPaths:
+    base_root = path_base or project_root
     if "control_dir" in raw_paths:
-        control_dir = _resolve_path_value(project_root, str(raw_paths["control_dir"]))
+        control_dir = _resolve_path_value(base_root, str(raw_paths["control_dir"]))
         defaults = _default_control_paths(control_dir)
     else:
         control_dir = None
@@ -372,7 +409,7 @@ def _paths_from_raw(project_root: Path, raw_paths: dict[str, str]) -> BlackdogPa
 
     def resolve_runtime_path(key: str) -> Path:
         if key in raw_paths:
-            return _resolve_path_value(project_root, str(raw_paths[key]))
+            return _resolve_path_value(base_root, str(raw_paths[key]))
         if key in defaults:
             return defaults[key]
         raise ConfigError(f"Profile is missing path keys: ['{key}']")
@@ -385,7 +422,10 @@ def _paths_from_raw(project_root: Path, raw_paths: dict[str, str]) -> BlackdogPa
         planning_file=resolve_runtime_path("planning_file"),
         runtime_file=resolve_runtime_path("runtime_file"),
         events_file=resolve_runtime_path("events_file"),
-        worktrees_dir=_resolve_path_value(project_root, str(raw_paths.get("worktrees_dir", DEFAULT_WORKTREES_DIR))),
+        worktrees_dir=_resolve_path_value(
+            base_root,
+            str(raw_paths.get("worktrees_dir", DEFAULT_WORKTREES_DIR)),
+        ),
     )
 
 
@@ -409,7 +449,11 @@ def load_profile(project_root: Path | None = None) -> RepoProfile:
                 + ", ".join(missing_runtime)
             )
 
-    paths = _paths_from_raw(root, {str(key): str(value) for key, value in raw_paths.items()})
+    paths = _paths_from_raw(
+        root,
+        {str(key): str(value) for key, value in raw_paths.items()},
+        path_base=_primary_worktree_root(root),
+    )
     _ensure_control_root_layout(paths)
 
     project_name = str(project.get("name") or root.name)

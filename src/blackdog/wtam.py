@@ -410,8 +410,7 @@ def _auto_task_workset_payload(profile: RepoProfile, *, prompt: str, title: str 
     resolved_title = str(title or "").strip() or _derive_task_title(prompt)
     title_slug = slugify(resolved_title) or "task"
     workset_id = f"task-{title_slug}-{uuid.uuid4().hex[:8]}"
-    primary_root = find_primary_worktree(profile.paths.project_root)
-    target_branch = _current_branch(primary_root)
+    target_branch = _target_branch_for_current_worktree(profile)
     return {
         "id": workset_id,
         "title": resolved_title,
@@ -687,6 +686,16 @@ def _is_task_branch(profile: RepoProfile, branch: str | None) -> bool:
     return False
 
 
+def _target_branch_for_current_worktree(profile: RepoProfile, *, repo_root: Path | None = None) -> str:
+    current_root = _repo_root(repo_root or profile.paths.project_root)
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    primary_branch = _current_branch(primary_root)
+    current_branch = _current_branch(current_root)
+    if not _is_primary_worktree(current_root) and not _is_task_branch(profile, current_branch):
+        return current_branch
+    return primary_branch
+
+
 def worktree_contract(
     profile: RepoProfile,
     *,
@@ -698,11 +707,12 @@ def worktree_contract(
     current_is_primary = _is_primary_worktree(resolved_workspace)
     workspace_blackdog = resolved_workspace / ".VE" / "bin" / "blackdog"
     workspace_has_local_blackdog = workspace_blackdog.is_file() and os.access(workspace_blackdog, os.X_OK)
-    target_branch = _current_branch(primary_root)
+    primary_branch = _current_branch(primary_root)
     current_branch = _run_git(resolved_workspace, "rev-parse", "--abbrev-ref", "HEAD")
     workspace_role = WORKTREE_ROLE_PRIMARY if current_is_primary else (
         WORKTREE_ROLE_TASK if _is_task_branch(profile, current_branch) else WORKTREE_ROLE_LINKED
     )
+    target_branch = current_branch if workspace_role == WORKTREE_ROLE_LINKED else primary_branch
     return {
         "workspace_mode": workspace_mode or WORKSPACE_MODE_GIT_WORKTREE,
         "current_worktree": str(resolved_workspace),
@@ -710,7 +720,7 @@ def worktree_contract(
         "current_is_primary": current_is_primary,
         "workspace_role": workspace_role,
         "primary_worktree": str(primary_root),
-        "primary_branch": target_branch,
+        "primary_branch": primary_branch,
         "target_branch": target_branch,
         "primary_dirty": _status_dirty(primary_root, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=primary_root)),
         "primary_dirty_paths": dirty_paths(

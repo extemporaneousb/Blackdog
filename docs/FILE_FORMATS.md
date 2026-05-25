@@ -4,6 +4,8 @@ The vNext Blackdog contract is machine-owned and JSON-first.
 
 By default `paths.control_dir = "@git-common/blackdog"` resolves to the shared
 git common directory, so all worktrees see the same planning and runtime state.
+Relative path settings resolve from the primary worktree, so linked worktrees
+reuse the same control and worktree locations as the primary checkout.
 
 `backlog.md` is not part of the vNext contract.
 backlog.md is not part of the vNext contract.

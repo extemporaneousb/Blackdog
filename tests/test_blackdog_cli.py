@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 from unittest.mock import patch
 
 from blackdog.contract import managed_skill_relative_path
@@ -569,6 +571,99 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["worktree_role"], "task")
         self.assertEqual(snapshot["runtime_model"]["worksets"][0]["attempts"][0]["landed_commit"], land_payload["landed_commit"])
         self.assertEqual((self.root / "notes.txt").read_text(encoding="utf-8"), "WTAM kept change\n")
+
+    def test_linked_worktree_preflight_and_task_begin_target_the_current_branch(self) -> None:
+        self.install_repo_runtime()
+        task_worktree_path: Path | None = None
+        task_branch: str | None = None
+        expected_worktrees_dir = (self.root.parent / f".worktrees-{self.root.name}").resolve()
+        with tempfile.TemporaryDirectory() as linked_base:
+            linked_worktree = Path(linked_base) / "wt-feature"
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.root),
+                    "worktree",
+                    "add",
+                    "-b",
+                    "feature/stable",
+                    str(linked_worktree),
+                    "main",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                exit_code, stdout, stderr = self.run_cli(
+                    "worktree",
+                    "preflight",
+                    "--project-root",
+                    str(linked_worktree),
+                    "--json",
+                    cwd=linked_worktree,
+                )
+                self.assertEqual(exit_code, 0, stderr)
+                preflight_payload = json.loads(stdout)
+                self.assertFalse(preflight_payload["current_is_primary"])
+                self.assertEqual(preflight_payload["workspace_role"], "linked")
+                self.assertEqual(preflight_payload["current_branch"], "feature/stable")
+                self.assertEqual(preflight_payload["primary_branch"], "main")
+                self.assertEqual(preflight_payload["target_branch"], "feature/stable")
+                self.assertEqual(Path(preflight_payload["worktrees_dir"]), expected_worktrees_dir)
+
+                subprocess.run(
+                    [sys.executable, "-m", "venv", str(linked_worktree / ".VE")],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                exit_code, stdout, stderr = self.run_cli(
+                    "task",
+                    "begin",
+                    "--project-root",
+                    str(linked_worktree),
+                    "--actor",
+                    "codex",
+                    "--prompt",
+                    "Exercise linked-branch task targeting.",
+                    "--json",
+                    cwd=linked_worktree,
+                )
+                self.assertEqual(exit_code, 0, stderr)
+                task_payload = json.loads(stdout)["task"]
+                self.assertEqual(task_payload["worktree"]["target_branch"], "feature/stable")
+                task_branch = task_payload["worktree"]["branch"]
+                task_worktree_path = Path(task_payload["worktree"]["worktree_path"])
+                self.assertEqual(task_worktree_path.parent, expected_worktrees_dir)
+            finally:
+                if task_worktree_path is not None:
+                    subprocess.run(
+                        ["git", "-C", str(self.root), "worktree", "remove", "--force", str(task_worktree_path)],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                subprocess.run(
+                    ["git", "-C", str(self.root), "worktree", "remove", "--force", str(linked_worktree)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if task_branch:
+                    subprocess.run(
+                        ["git", "-C", str(self.root), "branch", "-D", task_branch],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                subprocess.run(
+                    ["git", "-C", str(self.root), "branch", "-D", "feature/stable"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
 
     def test_task_begin_creates_a_single_task_envelope_and_lands_from_the_task_worktree(self) -> None:
         self.install_repo_runtime()
