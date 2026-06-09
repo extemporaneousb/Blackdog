@@ -85,8 +85,8 @@ Keep repo-specific requirements outside this block.
 - Use the repo-local `./.VE/bin/blackdog` when it exists instead of mutating Blackdog control files by hand.
 - `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.
 - Before any repo edit you intend to keep, run `./.VE/bin/blackdog worktree preflight --project-root .`.
-- If preflight reports `primary worktree: yes`, do not keep implementation edits in that checkout; start or enter a branch-backed task worktree first.
-- Analysis-only work may stay in the current checkout.
+- A primary-worktree result is a routing rule, not a reason to stop: if implementation work was requested and preflight reports `primary worktree: yes`, continue by starting or entering a branch-backed task worktree before editing.
+- Analysis-only work may stay in the current checkout, but it must not leave implementation edits there.
 - `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.
 - Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.
 - For new work, do not pass `--workset` or `--task`; `task begin` creates the task envelope and returns the task workspace.
