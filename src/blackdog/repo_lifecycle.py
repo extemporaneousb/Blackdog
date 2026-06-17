@@ -547,6 +547,8 @@ def _render_repo_agents_contract(profile: RepoProfile) -> str:
         "- `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.",
         "- Before any repo edit you intend to keep, run `./.VE/bin/blackdog worktree preflight --project-root .`.",
         "- A primary-worktree result is a routing rule, not a reason to stop: if implementation work was requested and preflight reports `primary worktree: yes`, continue by starting or entering a branch-backed task worktree before editing.",
+        "- Preflight's `workspace role` is the edit rule: implementation edits belong only in `workspace role: task`; if it reports `primary` or `linked`, start a branch-backed task worktree with `task begin` before editing.",
+        "- When `task begin` runs from a normal linked worktree, Blackdog treats that linked branch as the target branch and lands the task back there.",
         "- Analysis-only work may stay in the current checkout, but it must not leave implementation edits there.",
         "- `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.",
         "- Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT`.",

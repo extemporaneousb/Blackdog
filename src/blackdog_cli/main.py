@@ -824,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
                 branch=args.branch,
                 from_ref=args.from_ref,
                 path=args.path,
+                cwd=Path.cwd(),
                 note=args.note,
                 include_prompt=args.show_prompt,
             )
@@ -960,7 +961,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "worktree" and args.worktree_command == "preflight":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = worktree_preflight(profile, cwd=profile.paths.project_root)
+            payload = worktree_preflight(profile, cwd=Path.cwd())
             if args.json:
                 _emit_json(payload)
             else:
@@ -995,6 +996,7 @@ def main(argv: list[str] | None = None) -> int:
                 path=args.path,
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
+                cwd=Path.cwd(),
                 note=args.note,
                 include_prompt=args.show_prompt,
                 expand_contract=args.expand_contract,
@@ -1031,6 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
                 path=args.path,
                 model=args.model,
                 reasoning_effort=args.reasoning_effort,
+                cwd=Path.cwd(),
                 note=args.note,
             )
             if args.json:

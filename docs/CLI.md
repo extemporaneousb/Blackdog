@@ -460,6 +460,13 @@ execution prompt receipt, provisions the task worktree, and starts the WTAM
 attempt in one command. That envelope is runtime bookkeeping for attempt
 history and recovery, not a repo-facing planning workflow.
 
+`--project-root` identifies the Blackdog-managed repo and control state. When
+the command runs from a normal linked worktree for the same Git repository,
+`task begin` treats that linked branch as the target branch and provisions a
+separate task worktree that lands back to it. Running from the primary checkout
+targets the primary branch. Running from an existing task worktree targets the
+primary branch rather than nesting task semantics on top of that task branch.
+
 For normal new repo work, omit `--workset` and `--task`. Those flags are only
 for explicitly targeting an existing planned task; agents should not invent
 them from the user request.
@@ -686,9 +693,18 @@ operator intervention.
 
 ### `blackdog worktree preflight`
 
-Show the current WTAM contract for the checkout and primary worktree.
-When the current checkout is a normal linked worktree, preflight reports that
-linked branch as the target branch instead of the primary checkout branch.
+Show the current WTAM contract for the operator workspace and primary worktree.
+`--project-root` identifies the managed repo and control state. If the shell's
+current directory is inside another worktree for the same Git repository,
+preflight reports that worktree as the current workspace; otherwise it falls
+back to `--project-root`. When the current workspace is a normal linked
+worktree, preflight reports that linked branch as the target branch instead of
+the primary checkout branch.
+
+The `workspace role` field is the edit rule: implementation edits belong only
+in `workspace role: task`. A `primary` or `linked` workspace is a routing
+context for starting a branch-backed task worktree, not an implementation
+workspace.
 
 ```bash
 blackdog worktree preflight --project-root /path/to/repo

@@ -596,22 +596,24 @@ class BlackdogCliTests(CoreAuditTestCase):
                 text=True,
             )
             try:
-                exit_code, stdout, stderr = self.run_cli(
-                    "worktree",
-                    "preflight",
-                    "--project-root",
-                    str(linked_worktree),
-                    "--json",
-                    cwd=linked_worktree,
-                )
-                self.assertEqual(exit_code, 0, stderr)
-                preflight_payload = json.loads(stdout)
-                self.assertFalse(preflight_payload["current_is_primary"])
-                self.assertEqual(preflight_payload["workspace_role"], "linked")
-                self.assertEqual(preflight_payload["current_branch"], "feature/stable")
-                self.assertEqual(preflight_payload["primary_branch"], "main")
-                self.assertEqual(preflight_payload["target_branch"], "feature/stable")
-                self.assertEqual(Path(preflight_payload["worktrees_dir"]), expected_worktrees_dir)
+                for project_root in (linked_worktree, self.root):
+                    with self.subTest(project_root=project_root):
+                        exit_code, stdout, stderr = self.run_cli(
+                            "worktree",
+                            "preflight",
+                            "--project-root",
+                            str(project_root),
+                            "--json",
+                            cwd=linked_worktree,
+                        )
+                        self.assertEqual(exit_code, 0, stderr)
+                        preflight_payload = json.loads(stdout)
+                        self.assertFalse(preflight_payload["current_is_primary"])
+                        self.assertEqual(preflight_payload["workspace_role"], "linked")
+                        self.assertEqual(preflight_payload["current_branch"], "feature/stable")
+                        self.assertEqual(preflight_payload["primary_branch"], "main")
+                        self.assertEqual(preflight_payload["target_branch"], "feature/stable")
+                        self.assertEqual(Path(preflight_payload["worktrees_dir"]), expected_worktrees_dir)
 
                 subprocess.run(
                     [sys.executable, "-m", "venv", str(linked_worktree / ".VE")],
@@ -623,7 +625,7 @@ class BlackdogCliTests(CoreAuditTestCase):
                     "task",
                     "begin",
                     "--project-root",
-                    str(linked_worktree),
+                    str(self.root),
                     "--actor",
                     "codex",
                     "--prompt",
@@ -634,6 +636,7 @@ class BlackdogCliTests(CoreAuditTestCase):
                 self.assertEqual(exit_code, 0, stderr)
                 task_payload = json.loads(stdout)["task"]
                 self.assertEqual(task_payload["worktree"]["target_branch"], "feature/stable")
+                self.assertEqual(task_payload["worktree"]["current_worktree"], str(linked_worktree.resolve()))
                 task_branch = task_payload["worktree"]["branch"]
                 task_worktree_path = Path(task_payload["worktree"]["worktree_path"])
                 self.assertEqual(task_worktree_path.parent, expected_worktrees_dir)

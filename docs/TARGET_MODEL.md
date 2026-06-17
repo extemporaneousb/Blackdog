@@ -186,6 +186,11 @@ The minimum coherent shipped slice after the sweep is:
 - one summary surface: `blackdog summary`
 - one machine snapshot surface: `blackdog snapshot`
 
+Preflight's workspace role is the implementation boundary. `primary` and
+`linked` workspaces may route new work, but kept implementation edits belong in
+`task` workspaces. When a new `task begin` starts from a normal linked worktree,
+that linked branch is the target branch for the generated task worktree.
+
 Direct workset authoring and workset-scoped next-task selection remain
 low-level model capabilities for migration, repair, and future planned-task
 work. They are not part of the default repo-facing product surface.

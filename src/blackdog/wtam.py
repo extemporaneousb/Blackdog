@@ -374,6 +374,18 @@ def _current_branch(repo_root: Path) -> str:
     return branch
 
 
+def command_workspace_root(profile: RepoProfile, *, cwd: Path | None = None) -> Path:
+    candidate = (cwd or Path.cwd()).resolve()
+    try:
+        candidate_primary = find_primary_worktree(candidate)
+        profile_primary = find_primary_worktree(profile.paths.project_root)
+    except WorktreeError:
+        return profile.paths.project_root
+    if candidate_primary == profile_primary:
+        return candidate
+    return profile.paths.project_root
+
+
 _NEW_TASK_BEGIN_HINT = (
     "For new work, use `blackdog task begin` without --workset/--task; "
     "low-level worktree commands only target existing task ids from `task show`, "
@@ -406,11 +418,17 @@ def _derive_task_title(prompt: str) -> str:
     return title.rstrip(" .") or "Task"
 
 
-def _auto_task_workset_payload(profile: RepoProfile, *, prompt: str, title: str | None = None) -> dict[str, Any]:
+def _auto_task_workset_payload(
+    profile: RepoProfile,
+    *,
+    prompt: str,
+    title: str | None = None,
+    workspace_root: Path | None = None,
+) -> dict[str, Any]:
     resolved_title = str(title or "").strip() or _derive_task_title(prompt)
     title_slug = slugify(resolved_title) or "task"
     workset_id = f"task-{title_slug}-{uuid.uuid4().hex[:8]}"
-    target_branch = _target_branch_for_current_worktree(profile)
+    target_branch = _target_branch_for_current_worktree(profile, repo_root=workspace_root)
     return {
         "id": workset_id,
         "title": resolved_title,
@@ -584,12 +602,13 @@ def preview_task_worktree(
     branch: str | None = None,
     from_ref: str | None = None,
     path: str | None = None,
+    cwd: Path | None = None,
     note: str | None = None,
     include_prompt: bool = False,
     expand_contract: bool = False,
 ) -> WorktreePreview:
     workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
-    current_root = _repo_root(profile.paths.project_root)
+    current_root = _repo_root(command_workspace_root(profile, cwd=cwd))
     primary_root = find_primary_worktree(profile.paths.project_root)
     target_branch = str(workset.branch_intent.get("target_branch") or "").strip() or _current_branch(primary_root)
     base_ref = _resolve_from_ref(primary_root, from_ref, default_branch=target_branch)
@@ -735,7 +754,7 @@ def worktree_contract(
 
 
 def worktree_preflight(profile: RepoProfile, *, cwd: Path | None = None) -> dict[str, Any]:
-    resolved_cwd = (cwd or Path.cwd()).resolve()
+    resolved_cwd = command_workspace_root(profile, cwd=cwd).resolve()
     current_root = _repo_root(resolved_cwd)
     contract = worktree_contract(profile, workspace=current_root)
     primary_root = Path(contract["primary_worktree"]).resolve()
@@ -1379,6 +1398,7 @@ def start_task_worktree(
     branch: str | None = None,
     from_ref: str | None = None,
     path: str | None = None,
+    cwd: Path | None = None,
     note: str | None = None,
 ) -> WorktreeSpec:
     codex_context = current_codex_runtime_context()
@@ -1397,6 +1417,7 @@ def start_task_worktree(
         branch=branch,
         from_ref=from_ref,
         path=path,
+        cwd=cwd,
         note=note,
         include_prompt=False,
         expand_contract=False,
@@ -1535,6 +1556,7 @@ def begin_task_worktree(
     branch: str | None = None,
     from_ref: str | None = None,
     path: str | None = None,
+    cwd: Path | None = None,
     note: str | None = None,
     include_prompt: bool = False,
 ) -> TaskBeginSpec:
@@ -1558,7 +1580,13 @@ def begin_task_worktree(
     )
     created_workset = False
     if resolved_workset is None:
-        payload = _auto_task_workset_payload(profile, prompt=user_receipt.text, title=title)
+        workspace_root = command_workspace_root(profile, cwd=cwd)
+        payload = _auto_task_workset_payload(
+            profile,
+            prompt=user_receipt.text,
+            title=title,
+            workspace_root=workspace_root,
+        )
         payload["tasks"][0]["metadata"]["prompt_mode"] = prompt_mode
         workset = upsert_workset(profile, payload)
         resolved_workset = workset.workset_id
@@ -1579,6 +1607,7 @@ def begin_task_worktree(
         branch=branch,
         from_ref=from_ref,
         path=path,
+        cwd=cwd,
         note=note,
     )
     return TaskBeginSpec(
@@ -3127,6 +3156,7 @@ __all__ = [
     "cleanup_worktree_table",
     "close_task",
     "close_task_worktree",
+    "command_workspace_root",
     "default_task_branch",
     "default_task_worktree_path",
     "dirty_paths",

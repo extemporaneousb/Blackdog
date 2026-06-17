@@ -137,7 +137,10 @@ The current coherent product surface on top of the new core is:
 The `task` family is the default same-thread WTAM path and is what generated
 repo-local skills use for `$<repo-name> do ...` requests. The skill may compose
 an execution prompt and pass it with `prompt-mode=skill` while recording the raw
-user request as separate prompt lineage.
+user request as separate prompt lineage. `task begin` uses the operator's
+current workspace as the routing context when that workspace belongs to the
+managed Git repository, so normal linked worktrees become target branches and
+receive changes only through nested task worktrees.
 The `worktree` family remains the explicit low-level WTAM path when an operator
 needs preflight, preview, or recovery control. Direct workset authoring remains
 available only behind an explicit opt-in for planned-task migration and repair;
