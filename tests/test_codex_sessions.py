@@ -22,6 +22,8 @@ def _write_session(
     session_dir: str = "sessions",
     duration_ms: int | None = 42_000,
     tool_calls: int = 0,
+    tool_outputs: tuple[str, ...] = (),
+    assistant_text: str = "done",
     model: str | None = "gpt-5.5",
     reasoning_effort: str | None = "xhigh",
     originator: str = "Codex Desktop",
@@ -63,7 +65,11 @@ def _write_session(
         {
             "timestamp": "2026-05-04T19:00:03Z",
             "type": "response_item",
-            "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]},
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": assistant_text}],
+            },
         },
         {
             "timestamp": "2026-05-04T19:00:04Z",
@@ -93,8 +99,20 @@ def _write_session(
                 "call_id": f"call-{index}",
             },
         }
-        for index in range(tool_calls)
+        for index in range(max(tool_calls, len(tool_outputs)))
     )
+    for index, output in enumerate(tool_outputs):
+        rows.append(
+            {
+                "timestamp": "2026-05-04T19:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": f"call-{index}",
+                    "output": output,
+                },
+            }
+        )
     if duration_ms is not None:
         rows.append(
             {
@@ -108,6 +126,79 @@ def _write_session(
                     "time_to_first_token_ms": 1200,
                 },
             }
+        )
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_multi_turn_session(
+    home: Path,
+    *,
+    thread_id: str,
+    cwd: Path,
+    turns: tuple[dict[str, str], ...],
+) -> Path:
+    path = home / "sessions" / "2026" / "05" / "04" / f"rollout-2026-05-04T12-30-00-{thread_id}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "timestamp": "2026-05-04T19:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": "2026-05-04T19:00:00Z",
+                "cwd": str(cwd),
+                "originator": "Codex Desktop",
+                "model_provider": "openai",
+            },
+        },
+    ]
+    for index, turn in enumerate(turns):
+        turn_id = turn["turn_id"]
+        started_at = turn["started_at"]
+        rows.extend(
+            [
+                {
+                    "timestamp": started_at,
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": turn_id, "started_at": started_at},
+                },
+                {
+                    "timestamp": started_at,
+                    "type": "turn_context",
+                    "payload": {
+                        "turn_id": turn_id,
+                        "started_at": started_at,
+                        "cwd": str(cwd),
+                        "model": "gpt-5.5",
+                        "effort": "xhigh",
+                    },
+                },
+                {
+                    "timestamp": started_at,
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": turn["message"]},
+                },
+                {
+                    "timestamp": started_at,
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": turn.get("assistant_text", "done")}],
+                    },
+                },
+                {
+                    "timestamp": started_at,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "turn_id": turn_id,
+                        "completed_at": started_at,
+                        "duration_ms": 30_000 + index,
+                    },
+                },
+            ]
         )
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     return path
@@ -242,8 +333,12 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(coverage["counts"]["linked_attempts"], 1)
         linked_turn = next(row for row in coverage["turns"] if row["thread_id"] == "thread-linked")
         self.assertEqual(linked_turn["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(linked_turn["related_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(linked_turn["attempt_relationships"][0]["relationship"], "launch_turn")
         self.assertEqual(coverage["counts"]["analysis_only_turns"], 1)
         self.assertEqual(coverage["counts"]["unlinked_user_turns"], 1)
+        self.assertEqual(coverage["counts"]["related_user_turns"], 1)
+        self.assertEqual(coverage["counts"]["unrelated_user_turns"], 1)
         self.assertEqual(coverage["counts"]["input_tokens"], 200)
         self.assertEqual(coverage["counts"]["cached_input_tokens"], 50)
         self.assertEqual(coverage["counts"]["output_tokens"], 24)
@@ -253,12 +348,14 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(coverage["counts"]["longest_completed_turn_thread_id"], "thread-analysis")
         self.assertEqual(coverage["counts"]["longest_completed_turn_id"], "turn-analysis")
         self.assertEqual(history["counts"]["attempt_rows"], 1)
-        self.assertEqual(history["counts"]["codex_turn_rows"], 1)
+        self.assertEqual(history["counts"]["codex_turn_rows"], 2)
         rendered_rows = "\n".join(json.dumps(row, sort_keys=True) for row in history["rows"])
         self.assertIn('"kind": "attempt"', rendered_rows)
         self.assertIn('"kind": "codex_turn"', rendered_rows)
+        self.assertIn('"linked_attempt_ids": ["' + attempt.attempt_id + '"]', rendered_rows)
         self.assertIn('"input_tokens": 100', rendered_rows)
         self.assertIn('"duration_ms": 120000', rendered_rows)
+        self.assertNotIn(linked_message, rendered_rows)
         self.assertNotIn(analysis_message, rendered_rows)
         self.assertEqual(
             Path(history["history_path"]).resolve(),
@@ -323,6 +420,117 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(linked_turn["linked_attempt_ids"], [attempt.attempt_id])
         self.assertEqual(unlinked_turn["linked_attempt_ids"], [])
         self.assertEqual(coverage["counts"]["implementation_like_unlinked_turns"], 1)
+
+    def test_coverage_marks_same_session_followups_as_related_without_linking_them(self) -> None:
+        launch_message = "Implement the task launch."
+        followup_message = "Run the validation after the branch is ready."
+        session_path = _write_multi_turn_session(
+            self.codex_home,
+            thread_id="thread-episode",
+            cwd=self.root,
+            turns=(
+                {
+                    "turn_id": "turn-launch",
+                    "started_at": "2026-05-04T19:00:05+00:00",
+                    "message": launch_message,
+                },
+                {
+                    "turn_id": "turn-followup",
+                    "started_at": "2026-05-04T19:05:00+00:00",
+                    "message": followup_message,
+                    "assistant_text": "validation passed",
+                },
+            ),
+        )
+        upsert_workset(
+            self.profile,
+            {
+                "id": "codex-episode",
+                "title": "Codex episode",
+                "tasks": [{"id": "CE-1", "title": "Episode task", "intent": "relate follow-up turn"}],
+            },
+        )
+        receipt = create_prompt_receipt(launch_message, recorded_at="2026-05-04T19:00:02+00:00")
+        with patch("blackdog_core.backlog.now_iso", side_effect=["2026-05-04T19:00:00+00:00", "2026-05-04T19:10:00+00:00"]):
+            attempt = start_task(
+                self.profile,
+                workset_id="codex-episode",
+                task_id="CE-1",
+                actor="codex",
+                prompt_receipt=prompt_receipt_reference(receipt),
+                codex_session=CodexSessionRefRecord(
+                    thread_id="thread-episode",
+                    session_path=str(session_path.relative_to(self.codex_home)),
+                    turn_id="turn-launch",
+                    user_prompt_hash=receipt.prompt_hash,
+                    execution_prompt_hash=receipt.prompt_hash,
+                ),
+            )
+            finish_task(
+                self.profile,
+                workset_id="codex-episode",
+                task_id="CE-1",
+                attempt_id=attempt.attempt_id,
+                actor="codex",
+                status="success",
+                summary="related follow-up",
+            )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+            history = build_codex_history(self.profile)
+
+        self.assertEqual(coverage["counts"]["linked_user_turns"], 1)
+        self.assertEqual(coverage["counts"]["related_user_turns"], 2)
+        self.assertEqual(coverage["relationship_counts"]["launch_turn"], 1)
+        self.assertEqual(coverage["relationship_counts"]["active_attempt_window"], 1)
+        launch_turn = next(row for row in coverage["turns"] if row["turn_id"] == "turn-launch")
+        followup_turn = next(row for row in coverage["turns"] if row["turn_id"] == "turn-followup")
+        self.assertEqual(launch_turn["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(followup_turn["linked_attempt_ids"], [])
+        self.assertEqual(followup_turn["related_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(followup_turn["attempt_relationships"][0]["relationship"], "active_attempt_window")
+        attempt_row = next(row for row in coverage["attempts"] if row["attempt_id"] == attempt.attempt_id)
+        self.assertEqual(attempt_row["linked_codex_turn_ids"], ["turn-launch"])
+        self.assertEqual(attempt_row["related_codex_turn_ids"], ["turn-launch", "turn-followup"])
+        turn_history = [row for row in history["rows"] if row["kind"] == "codex_turn"]
+        self.assertEqual(len(turn_history), 2)
+        self.assertTrue(any(row["linked_attempt_ids"] == [attempt.attempt_id] for row in turn_history))
+        self.assertTrue(any(row["related_attempt_ids"] == [attempt.attempt_id] for row in turn_history))
+
+    def test_coverage_and_history_extract_environment_issue_classes_from_outputs(self) -> None:
+        prompt = "Implement the environment diagnosis."
+        _write_session(
+            self.codex_home,
+            thread_id="thread-env",
+            cwd=self.root,
+            turn_id="turn-env",
+            message=prompt,
+            assistant_text="The run failed with ModuleNotFoundError: No module named 'utter'.",
+            tool_outputs=(
+                "docker: command not found",
+                "zipfile.BadZipFile: File is not a zip file",
+            ),
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+            history = build_codex_history(self.profile)
+
+        self.assertEqual(coverage["counts"]["environment_issue_turns"], 1)
+        self.assertEqual(coverage["environment_issue_counts"]["missing_container_runtime"], 1)
+        self.assertEqual(coverage["environment_issue_counts"]["missing_python_module"], 1)
+        self.assertEqual(coverage["environment_issue_counts"]["source_file_bad_format"], 1)
+        env_turn = coverage["turns"][0]
+        self.assertEqual(env_turn["primary_environment_issue_class"], "missing_container_runtime")
+        self.assertEqual(
+            env_turn["environment_issue_classes"],
+            ["missing_container_runtime", "missing_python_module", "source_file_bad_format"],
+        )
+        self.assertGreaterEqual(len(env_turn["environment_issue_evidence"]), 3)
+        rendered_rows = "\n".join(json.dumps(row, sort_keys=True) for row in history["rows"])
+        self.assertIn('"environment_issue_classes": ["missing_container_runtime", "missing_python_module", "source_file_bad_format"]', rendered_rows)
+        self.assertNotIn(prompt, rendered_rows)
 
     def test_repo_matching_includes_git_worktree_cwds(self) -> None:
         worktree_path = self.root.parent / f"{self.root.name}-linked-worktree"

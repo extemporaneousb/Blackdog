@@ -1160,26 +1160,37 @@ blackdog codex coverage --project-root /path/to/repo --json
 ```
 
 The command scans `$CODEX_HOME/sessions`, maps sessions to the repo and its git
-worktrees by cwd, classifies user turns, and joins turns to Blackdog attempts
-by explicit turn refs, prompt hashes, and stored Codex session refs. Attempts
-with a stored `codex_session_path` can still link when `turn_id` is missing if
-the session ref plus prompt hash, or a safe single-turn session match, is
-available. It reports:
+worktrees by cwd, classifies user turns, and relates turns to Blackdog attempts
+by explicit turn refs, prompt hashes, stored Codex session refs, same-session
+episodes, and active attempt windows. The legacy linked/unlinked counters still
+mean strong launch relationships: explicit turn refs, prompt-hash matches, or a
+safe single-turn session match. Related/unrelated counters include advisory
+same-session and active-window evidence so older multi-turn Codex sessions can
+be analyzed retroactively without rewriting runtime state. It reports:
 
 - Codex sessions and user-turn counts
 - Blackdog attempt counts and active attempts
 - linked vs unlinked turns and attempts
+- related vs unrelated turns and attempts
+- relationship counts such as `launch_turn`, `prompt_hash`,
+  `active_attempt_window`, and `same_session`
 - analysis-only turns
 - unlinked implementation-like turns
+- environment issue turn counts, evidence-hit counts, and structured issue
+  classes such as `missing_cli`, `missing_venv`, `missing_container_runtime`,
+  `missing_python_module`, `missing_node_dependency`, `missing_credential`,
+  `source_file_bad_format`, and `wrong_worktree_env`
 - model/reasoning observability
 - longest completed Codex turn duration and turn identifiers
 
 Coverage output may show short prompt excerpts for operator diagnosis, but it
-does not persist transcript text.
+does not persist transcript text. Environment issue evidence is extracted from
+assistant/tool output and attempt summaries as bounded excerpts; it is a
+read-model annotation and does not change `failure_class`.
 
 ### `blackdog codex history`
 
-Emit compact history rows spanning Blackdog attempts and unlinked Codex turns.
+Emit compact history rows spanning Blackdog attempts and Codex user turns.
 
 ```bash
 blackdog codex history --project-root /path/to/repo --jsonl
@@ -1191,10 +1202,12 @@ blackdog codex history --project-root /path/to/repo --write
 `.blackdog/history.jsonl` under the project root. The file is a
 cleanup and migration bridge; it is not the live source of truth.
 
-Rows contain prompt hashes and Codex session refs, not full prompts or
-responses. Attempt rows carry task/result/git/validation metadata. Codex-turn
-rows cover unlinked user turns, including analysis-only work that never entered
-WTAM.
+Rows contain prompt hashes, Codex session refs, relationship labels, and bounded
+environment issue evidence, not full prompts or responses. Attempt rows carry
+task/result/git/validation metadata and inherit environment issue classes from
+related Codex turns. Codex-turn rows cover all repo-matched user turns,
+including linked Blackdog launches, same-session follow-ups, and analysis-only
+work that never entered WTAM.
 
 `execution_prompt_*` records the prompt Blackdog actually ran.
 `user_prompt_*` records the raw user request Blackdog received.

@@ -18,7 +18,7 @@ from .runtime_model import AttemptView, load_runtime_model
 from .state import CodexSessionRefRecord, atomic_write_text, now_iso, parse_iso
 
 
-CODEX_SESSION_HISTORY_SCHEMA_VERSION = 1
+CODEX_SESSION_HISTORY_SCHEMA_VERSION = 2
 HISTORY_DIR_NAME = ".blackdog"
 HISTORY_FILE_NAME = "history.jsonl"
 
@@ -63,6 +63,136 @@ _ANALYSIS_KEYWORDS = frozenset(
 )
 _WTAM_KEYWORDS = frozenset({"blackdog", "$blackdog", "wtam", "task begin", "worktree start"})
 
+RELATIONSHIP_LAUNCH_TURN = "launch_turn"
+RELATIONSHIP_PROMPT_HASH = "prompt_hash"
+RELATIONSHIP_SESSION_SINGLE_TURN = "session_single_turn"
+RELATIONSHIP_ACTIVE_ATTEMPT_WINDOW = "active_attempt_window"
+RELATIONSHIP_SAME_SESSION = "same_session"
+STRONG_ATTEMPT_RELATIONSHIPS = frozenset(
+    {
+        RELATIONSHIP_LAUNCH_TURN,
+        RELATIONSHIP_PROMPT_HASH,
+        RELATIONSHIP_SESSION_SINGLE_TURN,
+    }
+)
+_RELATIONSHIP_ORDER = {
+    RELATIONSHIP_LAUNCH_TURN: 0,
+    RELATIONSHIP_PROMPT_HASH: 1,
+    RELATIONSHIP_SESSION_SINGLE_TURN: 2,
+    RELATIONSHIP_ACTIVE_ATTEMPT_WINDOW: 3,
+    RELATIONSHIP_SAME_SESSION: 4,
+}
+
+_ENVIRONMENT_ISSUE_CLASSES = (
+    "missing_container_runtime",
+    "missing_venv",
+    "wrong_worktree_env",
+    "missing_python_module",
+    "missing_node_dependency",
+    "missing_credential",
+    "source_file_bad_format",
+    "missing_cli",
+    "unknown_environment_issue",
+)
+_MAX_ENVIRONMENT_ISSUE_SCAN_CHARS = 20_000
+_ENVIRONMENT_ISSUE_SCAN_EDGE_CHARS = 10_000
+_ENVIRONMENT_ISSUE_CLASS_ORDER = {issue_class: index for index, issue_class in enumerate(_ENVIRONMENT_ISSUE_CLASSES)}
+_ENVIRONMENT_ISSUE_SUPPRESSIONS = {
+    "missing_cli": frozenset({"missing_container_runtime", "missing_venv", "wrong_worktree_env"}),
+}
+_ENVIRONMENT_ISSUE_PATTERN_SPECS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "missing_container_runtime",
+        (
+            ("docker_command_not_found", r"\bdocker:\s+command not found\b"),
+            ("finch_command_not_found", r"\bfinch:\s+command not found\b"),
+            ("docker_not_on_path", r"\bdocker\b.{0,80}\bon PATH\b"),
+            ("docker_daemon_unavailable", r"\bcannot connect to the Docker daemon\b"),
+            ("no_container_runtime", r"\bno container runtime\b"),
+        ),
+    ),
+    (
+        "missing_venv",
+        (
+            ("ve_path_missing", r"(?:^|\s)\.?/?\.VE/bin/[^:\s]+:\s+No such file"),
+            ("ve_no_such_file", r"No such file or directory:\s*['\"]?\.?/\.VE\b"),
+            ("virtualenv_missing", r"\bvirtualenv\b.{0,80}\bmissing\b"),
+            ("venv_not_found", r"\bvenv\b.{0,40}\bnot found\b"),
+            ("ensure_ve_required", r"\bensure-ve\b"),
+        ),
+    ),
+    (
+        "wrong_worktree_env",
+        (
+            ("primary_worktree", r"\bprimary worktree:\s*yes\b"),
+            ("workspace_role_primary", r"\bworkspace role:\s*primary\b"),
+            ("ve_bound_other_worktree", r"\.VE\b.{0,80}\bbound to another worktree\b"),
+            ("wrong_project_root", r"\bwrong project root\b"),
+            ("not_task_worktree", r"\bnot in (?:a )?task worktree\b"),
+            ("managed_checkout_disappeared", r"\bmanaged task checkout disappeared\b"),
+        ),
+    ),
+    (
+        "missing_python_module",
+        (
+            ("module_not_found", r"\bModuleNotFoundError:\s+No module named\b"),
+            ("import_name_missing", r"\bImportError:\s+cannot import name\b"),
+        ),
+    ),
+    (
+        "missing_node_dependency",
+        (
+            ("cannot_find_module", r"\bCannot find module\b"),
+            ("cannot_find_package", r"\bCannot find package\b"),
+            ("err_module_not_found", r"\bERR_MODULE_NOT_FOUND\b"),
+            ("module_not_resolved", r"\bModule not found:\s+Can't resolve\b"),
+            ("missing_node_modules", r"\bnode_modules\b.{0,80}\b(?:missing|not found|does not exist)\b"),
+        ),
+    ),
+    (
+        "missing_credential",
+        (
+            ("unable_locate_credentials", r"\bUnable to locate credentials\b"),
+            ("no_credentials", r"\bNoCredentialsError\b"),
+            ("expired_token", r"\bExpiredToken\b"),
+            ("access_denied", r"\bAccessDenied\b"),
+            ("http_401_403", r"\b(?:401|403)\b.{0,80}\b(?:unauthorized|forbidden|permission|access)\b"),
+            ("openai_key_missing", r"\bOPENAI_API_KEY\b.{0,80}\b(?:not set|required|missing)\b"),
+            ("msgraph_token_required", r"\bMSGRAPH_TOKEN\b.{0,80}\brequired\b"),
+        ),
+    ),
+    (
+        "source_file_bad_format",
+        (
+            ("bad_zip_file", r"\bBadZipFile\b"),
+            ("not_zip_file", r"\bFile is not a zip file\b"),
+            ("ole_compound_file", r"\bOLE Compound File\b"),
+            ("invalid_xlsx", r"\bnot a valid xlsx\b"),
+        ),
+    ),
+    (
+        "missing_cli",
+        (
+            ("command_not_found", r"\bcommand not found\b"),
+            ("not_in_path", r"\bexecutable file not found in \$?PATH\b"),
+            ("missing_executable_path", r"No such file or directory:\s*['\"][^'\"]+['\"]"),
+        ),
+    ),
+    (
+        "unknown_environment_issue",
+        (
+            (
+                "generic_environment_failure",
+                r"\b(?:local environment|tooling|setup|preflight)\b.{0,120}\b(?:failed|failure|missing|unavailable|not found)\b",
+            ),
+        ),
+    ),
+)
+_ENVIRONMENT_ISSUE_PATTERNS = tuple(
+    (issue_class, tuple((name, re.compile(pattern, re.IGNORECASE)) for name, pattern in patterns))
+    for issue_class, patterns in _ENVIRONMENT_ISSUE_PATTERN_SPECS
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CodexRuntimeContext:
@@ -70,6 +200,22 @@ class CodexRuntimeContext:
     session_path: str | None
     model: str | None
     reasoning_effort: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentIssueEvidence:
+    issue_class: str
+    source: str
+    pattern: str
+    excerpt: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodexAttemptRelationship:
+    attempt_id: str
+    task_id: str
+    relationship: str
+    linked: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +237,9 @@ class CodexTurn:
     duration_ms: int | None
     time_to_first_token_ms: int | None
     tool_call_count: int
+    primary_environment_issue_class: str | None
+    environment_issue_classes: tuple[str, ...]
+    environment_issue_evidence: tuple[EnvironmentIssueEvidence, ...]
     input_tokens: int
     cached_input_tokens: int
     output_tokens: int
@@ -182,8 +331,9 @@ def current_codex_session_ref(
     )
 
 
-def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession | None:
+def read_codex_session(path: Path, *, home: Path | None = None, since: str | None = None) -> CodexSession | None:
     resolved_home = home or codex_home()
+    cutoff = _parse_since(since)
     session_path = _relative_session_path(path, resolved_home)
     thread_id = ""
     started_at: str | None = None
@@ -211,6 +361,7 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 "duration_ms": None,
                 "time_to_first_token_ms": None,
                 "tool_call_count": 0,
+                "environment_issue_evidence": [],
                 "input_tokens": 0,
                 "cached_input_tokens": 0,
                 "output_tokens": 0,
@@ -298,6 +449,15 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                     turn["fallback_user_messages"].append(text)
             elif item_type == "message" and role == "assistant":
                 turn["assistant_response_count"] += 1
+                if _turn_payload_in_scan_window(turn, cutoff):
+                    _add_environment_issue_evidence(turn, source="codex_session.assistant", text=_message_text(payload))
+            elif item_type and item_type.endswith("_output"):
+                if _turn_payload_in_scan_window(turn, cutoff):
+                    _add_environment_issue_evidence(
+                        turn,
+                        source="codex_session.tool_output",
+                        text=_response_output_text(payload),
+                    )
             elif item_type and ("tool_call" in item_type or item_type in {"function_call", "local_shell_call"}):
                 turn["tool_call_count"] += 1
 
@@ -310,13 +470,20 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
         if user_message is None and payload["fallback_user_messages"]:
             user_message = payload["fallback_user_messages"][-1]
         user_hash = _hash_text(user_message) if user_message else None
+        turn_started_at = payload["started_at"] or started_at
+        if cutoff is not None:
+            parsed_started_at = parse_iso(turn_started_at)
+            if parsed_started_at is None or parsed_started_at < cutoff:
+                continue
+        environment_evidence = _dedupe_environment_evidence(payload["environment_issue_evidence"])
+        environment_classes = _environment_classes_from_evidence(environment_evidence)
         codex_turns.append(
             CodexTurn(
                 thread_id=thread_id,
                 session_path=session_path,
                 turn_id=turn_id,
                 turn_index=int(payload["turn_index"]),
-                started_at=payload["started_at"] or started_at,
+                started_at=turn_started_at,
                 cwd=payload["cwd"] or session_cwd,
                 originator=originator,
                 model=payload["model"] or session_model,
@@ -329,6 +496,9 @@ def read_codex_session(path: Path, *, home: Path | None = None) -> CodexSession 
                 duration_ms=payload["duration_ms"],
                 time_to_first_token_ms=payload["time_to_first_token_ms"],
                 tool_call_count=int(payload["tool_call_count"]),
+                primary_environment_issue_class=environment_classes[0] if environment_classes else None,
+                environment_issue_classes=environment_classes,
+                environment_issue_evidence=environment_evidence,
                 input_tokens=int(payload["input_tokens"]),
                 cached_input_tokens=int(payload["cached_input_tokens"]),
                 output_tokens=int(payload["output_tokens"]),
@@ -363,11 +533,19 @@ def build_codex_coverage(
         for attempt in workset.attempts
         if _attempt_in_window(attempt, cutoff)
     )
-    linked = _link_turns_to_attempts(turns, attempts)
+    relationships = _relate_turns_to_attempts(turns, attempts)
+    linked = _strong_link_attempt_ids(relationships)
+    relationships_by_attempt = _relationships_by_attempt(relationships, turns)
     linked_attempt_ids = {attempt_id for attempt_ids in linked.values() for attempt_id in attempt_ids}
+    related_attempt_ids = {
+        relationship.attempt_id
+        for turn_relationships in relationships.values()
+        for relationship in turn_relationships
+    }
     rows = []
     for turn in turns:
         attempt_ids = linked.get(_turn_key(turn), ())
+        turn_relationships = relationships.get(_turn_key(turn), ())
         classification = "blackdog_attempt" if attempt_ids else turn.classification
         rows.append(
             {
@@ -384,11 +562,20 @@ def build_codex_coverage(
                 "message_excerpt": turn.message_excerpt,
                 "classification": classification,
                 "linked_attempt_ids": list(attempt_ids),
+                "related_attempt_ids": [relationship.attempt_id for relationship in turn_relationships],
+                "attempt_relationships": [
+                    _turn_relationship_row(relationship) for relationship in turn_relationships
+                ],
                 "has_assistant_response": turn.has_assistant_response,
                 "completed_at": turn.completed_at,
                 "duration_ms": turn.duration_ms,
                 "time_to_first_token_ms": turn.time_to_first_token_ms,
                 "tool_call_count": turn.tool_call_count,
+                "primary_environment_issue_class": turn.primary_environment_issue_class,
+                "environment_issue_classes": list(turn.environment_issue_classes),
+                "environment_issue_evidence": [
+                    _environment_issue_evidence_row(evidence) for evidence in turn.environment_issue_evidence
+                ],
                 "input_tokens": turn.input_tokens,
                 "cached_input_tokens": turn.cached_input_tokens,
                 "output_tokens": turn.output_tokens,
@@ -404,6 +591,9 @@ def build_codex_coverage(
     for attempt in attempts:
         attempt_status_counts[attempt.status] = attempt_status_counts.get(attempt.status, 0) + 1
     longest_completed_turn = _longest_completed_turn(turns)
+    relationship_counts = _relationship_counts(relationships)
+    environment_issue_counts = _environment_issue_counts(turns)
+    environment_issue_evidence_counts = _environment_issue_evidence_counts(turns)
     return {
         "project_name": profile.project_name,
         "project_root": str(profile.paths.project_root),
@@ -416,8 +606,14 @@ def build_codex_coverage(
             "active_attempts": len([attempt for attempt in attempts if attempt.is_active]),
             "linked_attempts": len(linked_attempt_ids),
             "unlinked_attempts": len(attempts) - len(linked_attempt_ids),
+            "related_attempts": len(related_attempt_ids),
+            "unrelated_attempts": len(attempts) - len(related_attempt_ids),
             "linked_user_turns": len([row for row in rows if row["linked_attempt_ids"]]),
             "unlinked_user_turns": len([row for row in rows if row["user_message_hash"] and not row["linked_attempt_ids"]]),
+            "related_user_turns": len([row for row in rows if row["user_message_hash"] and row["related_attempt_ids"]]),
+            "unrelated_user_turns": len(
+                [row for row in rows if row["user_message_hash"] and not row["related_attempt_ids"]]
+            ),
             "implementation_like_unlinked_turns": len(
                 [
                     row
@@ -426,6 +622,10 @@ def build_codex_coverage(
                 ]
             ),
             "analysis_only_turns": by_classification.get("analysis_only", 0),
+            "environment_issue_turns": len(
+                [turn for turn in turns if turn.user_message_hash and turn.environment_issue_classes]
+            ),
+            "environment_issue_evidence": sum(len(turn.environment_issue_evidence) for turn in turns),
             "model_known_turns": len([turn for turn in turns if turn.model]),
             "model_missing_turns": len([turn for turn in turns if not turn.model]),
             "reasoning_known_turns": len([turn for turn in turns if turn.reasoning_effort]),
@@ -448,9 +648,20 @@ def build_codex_coverage(
             "total_tokens": sum(turn.total_tokens for turn in turns),
         },
         "by_classification": by_classification,
+        "relationship_counts": relationship_counts,
+        "environment_issue_counts": environment_issue_counts,
+        "environment_issue_evidence_counts": environment_issue_evidence_counts,
         "attempt_status_counts": attempt_status_counts,
         "turns": rows,
-        "attempts": [_attempt_coverage_row(attempt, linked_attempt_ids) for attempt in attempts],
+        "attempts": [
+            _attempt_coverage_row(
+                attempt,
+                linked_attempt_ids,
+                relationships_by_attempt.get(attempt.attempt_id, ()),
+                _attempt_environment_classes(attempt, relationships_by_attempt.get(attempt.attempt_id, ())),
+            )
+            for attempt in attempts
+        ],
     }
 
 
@@ -469,18 +680,24 @@ def build_codex_history(
         for attempt in workset.attempts
         if _attempt_in_window(attempt, cutoff)
     )
-    linked = _link_turns_to_attempts(turns, attempts)
-    linked_turn_keys = {key for key, attempt_ids in linked.items() if attempt_ids}
+    relationships = _relate_turns_to_attempts(turns, attempts)
+    relationships_by_attempt = _relationships_by_attempt(relationships, turns)
     rows = [
-        _attempt_history_row(profile, workset.workset_id, attempt)
+        _attempt_history_row(
+            profile,
+            workset.workset_id,
+            attempt,
+            relationships_by_attempt.get(attempt.attempt_id, ()),
+            _attempt_environment_classes(attempt, relationships_by_attempt.get(attempt.attempt_id, ())),
+        )
         for workset in model.worksets
         for attempt in workset.attempts
         if _attempt_in_window(attempt, cutoff)
     ]
     rows.extend(
-        _turn_history_row(profile, turn)
+        _turn_history_row(profile, turn, relationships.get(_turn_key(turn), ()))
         for turn in turns
-        if turn.user_message_hash is not None and _turn_key(turn) not in linked_turn_keys
+        if turn.user_message_hash is not None
     )
     rows = sorted(rows, key=lambda row: (str(row.get("started_at") or ""), str(row.get("row_id") or "")))
     history_path = history_export_path(profile)
@@ -506,11 +723,11 @@ def history_export_path(profile: RepoProfile) -> Path:
     return profile.paths.project_root / HISTORY_DIR_NAME / HISTORY_FILE_NAME
 
 
-def collect_codex_turns(home: Path | None = None) -> tuple[CodexTurn, ...]:
+def collect_codex_turns(home: Path | None = None, *, since: str | None = None) -> tuple[CodexTurn, ...]:
     resolved_home = home or codex_home()
     turns: list[CodexTurn] = []
     for path in _session_files(resolved_home):
-        session = read_codex_session(path, home=resolved_home)
+        session = read_codex_session(path, home=resolved_home, since=since)
         if session is None:
             continue
         turns.extend(session.turns)
@@ -532,8 +749,18 @@ def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
             f"Unlinked turns={counts['unlinked_user_turns']} attempts={counts['unlinked_attempts']}"
         ),
         (
+            "Related: "
+            f"turns={counts['related_user_turns']} attempts={counts['related_attempts']} | "
+            f"Unrelated turns={counts['unrelated_user_turns']} attempts={counts['unrelated_attempts']}"
+        ),
+        (
             "Unlinked implementation-like turns: "
             f"{counts['implementation_like_unlinked_turns']} | Analysis-only turns: {counts['analysis_only_turns']}"
+        ),
+        (
+            "Environment issues: "
+            f"turns={counts['environment_issue_turns']} evidence={counts['environment_issue_evidence']} "
+            f"{_count_label(payload.get('environment_issue_counts', {})) or '-'}"
         ),
         (
             "Model signal: "
@@ -611,7 +838,7 @@ def _project_turns(
     roots = _project_roots(profile)
     cutoff = _parse_since(since)
     turns: list[CodexTurn] = []
-    candidate_turns = codex_turns if codex_turns is not None else collect_codex_turns()
+    candidate_turns = codex_turns if codex_turns is not None else collect_codex_turns(since=since)
     for turn in candidate_turns:
         if not _cwd_matches(roots, turn.cwd):
             continue
@@ -746,9 +973,21 @@ def _session_ref_matches(turn: CodexTurn, attempt: AttemptView) -> bool:
     return bool(ref.session_path or ref.thread_id)
 
 
-def _link_turns_to_attempts(turns: tuple[CodexTurn, ...], attempts: tuple[AttemptView, ...]) -> dict[tuple[str, str], tuple[str, ...]]:
+def _link_turns_to_attempts(
+    turns: tuple[CodexTurn, ...],
+    attempts: tuple[AttemptView, ...],
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    return _strong_link_attempt_ids(_relate_turns_to_attempts(turns, attempts))
+
+
+def _relate_turns_to_attempts(
+    turns: tuple[CodexTurn, ...],
+    attempts: tuple[AttemptView, ...],
+) -> dict[tuple[str, str], tuple[CodexAttemptRelationship, ...]]:
     attempts_by_hash: dict[str, list[str]] = {}
-    attempts_by_turn_ref: dict[tuple[str, str], list[str]] = {}
+    attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
+    attempts_by_turn_ref: dict[tuple[str, str], list[AttemptView]] = {}
+    attempts_by_turn_started_at: dict[tuple[str, str], list[AttemptView]] = {}
     attempts_by_session: dict[tuple[str, str], list[AttemptView]] = {}
     for attempt in attempts:
         for prompt_hash in _attempt_prompt_hashes(attempt):
@@ -756,34 +995,165 @@ def _link_turns_to_attempts(turns: tuple[CodexTurn, ...], attempts: tuple[Attemp
         if attempt.codex_session is not None:
             ref = attempt.codex_session
             if ref.turn_id:
-                attempts_by_turn_ref.setdefault((ref.thread_id, ref.turn_id), []).append(attempt.attempt_id)
+                attempts_by_turn_ref.setdefault((ref.thread_id, ref.turn_id), []).append(attempt)
+            if ref.turn_started_at:
+                attempts_by_turn_started_at.setdefault((ref.thread_id, ref.turn_started_at), []).append(attempt)
             if ref.session_path:
                 attempts_by_session.setdefault((ref.thread_id, ref.session_path), []).append(attempt)
     turns_by_session: dict[tuple[str, str], list[CodexTurn]] = {}
     for turn in turns:
         turns_by_session.setdefault((turn.thread_id, turn.session_path), []).append(turn)
-    linked: dict[tuple[str, str], tuple[str, ...]] = {}
+    relationships: dict[tuple[str, str], tuple[CodexAttemptRelationship, ...]] = {}
     for turn in turns:
-        matched_attempt_ids: set[str] = set(attempts_by_turn_ref.get(_turn_key(turn), ()))
+        candidate_attempts: dict[str, AttemptView] = {}
         if turn.user_message_hash is not None:
-            matched_attempt_ids.update(attempts_by_hash.get(turn.user_message_hash, ()))
+            for attempt_id in attempts_by_hash.get(turn.user_message_hash, ()):
+                attempt = attempts_by_id.get(attempt_id)
+                if attempt is not None:
+                    candidate_attempts[attempt_id] = attempt
+        for attempt in attempts_by_turn_ref.get(_turn_key(turn), ()):
+            candidate_attempts[attempt.attempt_id] = attempt
+        if turn.started_at:
+            for attempt in attempts_by_turn_started_at.get((turn.thread_id, turn.started_at), ()):
+                candidate_attempts[attempt.attempt_id] = attempt
         session_key = (turn.thread_id, turn.session_path)
         session_turns = tuple(turns_by_session.get(session_key, ()))
         for attempt in attempts_by_session.get(session_key, ()):
-            prompt_hashes = _attempt_prompt_hashes(attempt)
-            if prompt_hashes and turn.user_message_hash in prompt_hashes:
-                matched_attempt_ids.add(attempt.attempt_id)
-            elif not prompt_hashes and _session_ref_matches(turn, attempt) and len(session_turns) == 1:
-                matched_attempt_ids.add(attempt.attempt_id)
-            elif _session_ref_matches(turn, attempt) and len(session_turns) == 1:
-                matched_attempt_ids.add(attempt.attempt_id)
-        attempt_ids = tuple(sorted(matched_attempt_ids))
+            candidate_attempts[attempt.attempt_id] = attempt
+        turn_relationships: list[CodexAttemptRelationship] = []
+        for attempt in candidate_attempts.values():
+            relationship = _turn_attempt_relationship(turn, attempt, session_turn_count=len(session_turns))
+            if relationship is None:
+                continue
+            turn_relationships.append(
+                CodexAttemptRelationship(
+                    attempt_id=attempt.attempt_id,
+                    task_id=attempt.task_id,
+                    relationship=relationship,
+                    linked=relationship in STRONG_ATTEMPT_RELATIONSHIPS,
+                )
+            )
+        if turn_relationships:
+            relationships[_turn_key(turn)] = tuple(
+                sorted(
+                    turn_relationships,
+                    key=lambda item: (_RELATIONSHIP_ORDER.get(item.relationship, 99), item.attempt_id),
+                )
+            )
+    return relationships
+
+
+def _turn_attempt_relationship(
+    turn: CodexTurn,
+    attempt: AttemptView,
+    *,
+    session_turn_count: int,
+) -> str | None:
+    ref = attempt.codex_session
+    same_session = False
+    if ref is not None:
+        same_thread = not ref.thread_id or ref.thread_id == turn.thread_id
+        same_path = not ref.session_path or ref.session_path == turn.session_path
+        same_session = same_thread and same_path and bool(ref.thread_id or ref.session_path)
+        if same_thread and ref.turn_id and ref.turn_id == turn.turn_id:
+            return RELATIONSHIP_LAUNCH_TURN
+        if same_thread and ref.turn_started_at and turn.started_at and ref.turn_started_at == turn.started_at:
+            return RELATIONSHIP_LAUNCH_TURN
+    if turn.user_message_hash is not None and turn.user_message_hash in _attempt_prompt_hashes(attempt):
+        return RELATIONSHIP_PROMPT_HASH
+    if same_session:
+        if session_turn_count == 1 and _session_ref_matches(turn, attempt):
+            return RELATIONSHIP_SESSION_SINGLE_TURN
+        if _turn_in_attempt_window(turn, attempt):
+            return RELATIONSHIP_ACTIVE_ATTEMPT_WINDOW
+        return RELATIONSHIP_SAME_SESSION
+    return None
+
+
+def _turn_in_attempt_window(turn: CodexTurn, attempt: AttemptView) -> bool:
+    turn_started = parse_iso(turn.started_at)
+    attempt_started = parse_iso(attempt.started_at)
+    if turn_started is None or attempt_started is None:
+        return False
+    if turn_started < attempt_started:
+        return False
+    attempt_ended = parse_iso(attempt.ended_at)
+    if attempt_ended is None:
+        return attempt.is_active
+    return turn_started <= attempt_ended
+
+
+def _strong_link_attempt_ids(
+    relationships: Mapping[tuple[str, str], tuple[CodexAttemptRelationship, ...]],
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    linked: dict[tuple[str, str], tuple[str, ...]] = {}
+    for turn_key, turn_relationships in relationships.items():
+        attempt_ids = tuple(
+            sorted(
+                relationship.attempt_id
+                for relationship in turn_relationships
+                if relationship.relationship in STRONG_ATTEMPT_RELATIONSHIPS
+            )
+        )
         if attempt_ids:
-            linked[_turn_key(turn)] = attempt_ids
+            linked[turn_key] = attempt_ids
     return linked
 
 
-def _attempt_coverage_row(attempt: AttemptView, linked_attempt_ids: set[str]) -> dict[str, Any]:
+def _relationships_by_attempt(
+    relationships: Mapping[tuple[str, str], tuple[CodexAttemptRelationship, ...]],
+    turns: tuple[CodexTurn, ...],
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    turns_by_key = {_turn_key(turn): turn for turn in turns}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for turn_key, turn_relationships in relationships.items():
+        turn = turns_by_key.get(turn_key)
+        if turn is None:
+            continue
+        for relationship in turn_relationships:
+            grouped.setdefault(relationship.attempt_id, []).append(
+                {
+                    "codex_thread_id": turn.thread_id,
+                    "codex_session_path": turn.session_path,
+                    "codex_turn_id": turn.turn_id,
+                    "codex_turn_index": turn.turn_index,
+                    "started_at": turn.started_at,
+                    "relationship": relationship.relationship,
+                    "linked": relationship.linked,
+                    "environment_issue_classes": list(turn.environment_issue_classes),
+                }
+            )
+    return {
+        attempt_id: tuple(
+            sorted(
+                items,
+                key=lambda item: (
+                    _RELATIONSHIP_ORDER.get(str(item.get("relationship")), 99),
+                    str(item.get("started_at") or ""),
+                    str(item.get("codex_turn_id") or ""),
+                ),
+            )
+        )
+        for attempt_id, items in grouped.items()
+    }
+
+
+def _attempt_coverage_row(
+    attempt: AttemptView,
+    linked_attempt_ids: set[str],
+    turn_relationships: tuple[dict[str, Any], ...],
+    environment_issue_classes: tuple[str, ...],
+) -> dict[str, Any]:
+    linked_turn_ids = tuple(
+        str(relationship["codex_turn_id"])
+        for relationship in turn_relationships
+        if relationship.get("linked") and relationship.get("codex_turn_id")
+    )
+    related_turn_ids = tuple(
+        str(relationship["codex_turn_id"])
+        for relationship in turn_relationships
+        if relationship.get("codex_turn_id")
+    )
     return {
         "attempt_id": attempt.attempt_id,
         "task_id": attempt.task_id,
@@ -798,10 +1168,22 @@ def _attempt_coverage_row(attempt: AttemptView, linked_attempt_ids: set[str]) ->
         "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
         "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
         "linked_codex_turn": attempt.attempt_id in linked_attempt_ids,
+        "linked_codex_turn_ids": list(linked_turn_ids),
+        "related_codex_turn_ids": list(related_turn_ids),
+        "codex_turn_relationships": list(turn_relationships),
+        "primary_environment_issue_class": environment_issue_classes[0] if environment_issue_classes else None,
+        "environment_issue_classes": list(environment_issue_classes),
+        "environment_issue_count": len(environment_issue_classes),
     }
 
 
-def _attempt_history_row(profile: RepoProfile, workset_id: str, attempt: AttemptView) -> dict[str, Any]:
+def _attempt_history_row(
+    profile: RepoProfile,
+    workset_id: str,
+    attempt: AttemptView,
+    turn_relationships: tuple[dict[str, Any], ...],
+    environment_issue_classes: tuple[str, ...],
+) -> dict[str, Any]:
     prompt_hash = attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None
     user_prompt_hash = attempt.user_prompt_receipt.prompt_hash if attempt.user_prompt_receipt else None
     return {
@@ -824,6 +1206,20 @@ def _attempt_history_row(profile: RepoProfile, workset_id: str, attempt: Attempt
         "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
         "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
         "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
+        "linked_codex_turn_ids": [
+            str(relationship["codex_turn_id"])
+            for relationship in turn_relationships
+            if relationship.get("linked") and relationship.get("codex_turn_id")
+        ],
+        "related_codex_turn_ids": [
+            str(relationship["codex_turn_id"])
+            for relationship in turn_relationships
+            if relationship.get("codex_turn_id")
+        ],
+        "codex_turn_relationships": list(turn_relationships),
+        "primary_environment_issue_class": environment_issue_classes[0] if environment_issue_classes else None,
+        "environment_issue_classes": list(environment_issue_classes),
+        "environment_issue_count": len(environment_issue_classes),
         "execution_prompt_hash": prompt_hash,
         "user_prompt_hash": user_prompt_hash,
         "failure_class": attempt.failure_class,
@@ -841,7 +1237,14 @@ def _attempt_history_row(profile: RepoProfile, workset_id: str, attempt: Attempt
     }
 
 
-def _turn_history_row(profile: RepoProfile, turn: CodexTurn) -> dict[str, Any]:
+def _turn_history_row(
+    profile: RepoProfile,
+    turn: CodexTurn,
+    relationships: tuple[CodexAttemptRelationship, ...],
+) -> dict[str, Any]:
+    linked_attempt_ids = tuple(
+        relationship.attempt_id for relationship in relationships if relationship.relationship in STRONG_ATTEMPT_RELATIONSHIPS
+    )
     return {
         "schema_version": CODEX_SESSION_HISTORY_SCHEMA_VERSION,
         "kind": "codex_turn",
@@ -859,6 +1262,14 @@ def _turn_history_row(profile: RepoProfile, turn: CodexTurn) -> dict[str, Any]:
         "reasoning_effort": turn.reasoning_effort,
         "classification": turn.classification,
         "user_prompt_hash": turn.user_message_hash,
+        "linked_attempt_ids": list(linked_attempt_ids),
+        "related_attempt_ids": [relationship.attempt_id for relationship in relationships],
+        "attempt_relationships": [_turn_relationship_row(relationship) for relationship in relationships],
+        "primary_environment_issue_class": turn.primary_environment_issue_class,
+        "environment_issue_classes": list(turn.environment_issue_classes),
+        "environment_issue_evidence": [
+            _environment_issue_evidence_row(evidence) for evidence in turn.environment_issue_evidence
+        ],
         "has_assistant_response": turn.has_assistant_response,
         "completed_at": turn.completed_at,
         "duration_ms": turn.duration_ms,
@@ -870,6 +1281,184 @@ def _turn_history_row(profile: RepoProfile, turn: CodexTurn) -> dict[str, Any]:
         "reasoning_output_tokens": turn.reasoning_output_tokens,
         "total_tokens": turn.total_tokens,
     }
+
+
+def _turn_relationship_row(relationship: CodexAttemptRelationship) -> dict[str, Any]:
+    return {
+        "attempt_id": relationship.attempt_id,
+        "task_id": relationship.task_id,
+        "relationship": relationship.relationship,
+        "linked": relationship.linked,
+    }
+
+
+def _environment_issue_evidence_row(evidence: EnvironmentIssueEvidence) -> dict[str, Any]:
+    return {
+        "class": evidence.issue_class,
+        "source": evidence.source,
+        "pattern": evidence.pattern,
+        "excerpt": evidence.excerpt,
+    }
+
+
+def _relationship_counts(
+    relationships: Mapping[tuple[str, str], tuple[CodexAttemptRelationship, ...]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for turn_relationships in relationships.values():
+        for relationship in turn_relationships:
+            counts[relationship.relationship] = counts.get(relationship.relationship, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (_RELATIONSHIP_ORDER.get(item[0], 99), item[0])))
+
+
+def _environment_issue_counts(turns: Iterable[CodexTurn]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for turn in turns:
+        for issue_class in turn.environment_issue_classes:
+            counts[issue_class] = counts.get(issue_class, 0) + 1
+    return _sort_environment_issue_counts(counts)
+
+
+def _environment_issue_evidence_counts(turns: Iterable[CodexTurn]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for turn in turns:
+        for evidence in turn.environment_issue_evidence:
+            counts[evidence.issue_class] = counts.get(evidence.issue_class, 0) + 1
+    return _sort_environment_issue_counts(counts)
+
+
+def _attempt_environment_classes(
+    attempt: AttemptView,
+    turn_relationships: tuple[dict[str, Any], ...],
+) -> tuple[str, ...]:
+    classes: set[str] = set()
+    for relationship in turn_relationships:
+        for issue_class in relationship.get("environment_issue_classes") or ():
+            classes.add(str(issue_class))
+    classes.update(_classify_attempt_environment_issues(attempt))
+    return tuple(sorted(classes, key=_environment_issue_sort_key))
+
+
+def _classify_attempt_environment_issues(attempt: AttemptView) -> tuple[str, ...]:
+    evidence: list[EnvironmentIssueEvidence] = []
+    for source, text in (
+        ("attempt.summary", attempt.summary),
+        ("attempt.note", attempt.note),
+        ("attempt.recovery_action", attempt.recovery_action),
+    ):
+        evidence.extend(classify_environment_issue_text(text, source=source))
+    for residual in attempt.residuals:
+        evidence.extend(classify_environment_issue_text(residual, source="attempt.residual"))
+    return _environment_classes_from_evidence(tuple(evidence))
+
+
+def classify_environment_issue_text(
+    text: str | None,
+    *,
+    source: str,
+) -> tuple[EnvironmentIssueEvidence, ...]:
+    if not text:
+        return ()
+    matched: list[EnvironmentIssueEvidence] = []
+    text_value = _bounded_environment_issue_scan_text(str(text))
+    for issue_class, patterns in _ENVIRONMENT_ISSUE_PATTERNS:
+        if issue_class == "unknown_environment_issue" and matched:
+            continue
+        for pattern_name, pattern in patterns:
+            match = pattern.search(text_value)
+            if match is None:
+                continue
+            matched.append(
+                EnvironmentIssueEvidence(
+                    issue_class=issue_class,
+                    source=source,
+                    pattern=pattern_name,
+                    excerpt=_evidence_excerpt(text_value, match.start(), match.end()),
+                )
+            )
+            break
+    matched_classes = {evidence.issue_class for evidence in matched}
+    return tuple(
+        evidence
+        for evidence in matched
+        if not (_ENVIRONMENT_ISSUE_SUPPRESSIONS.get(evidence.issue_class, frozenset()) & matched_classes)
+    )
+
+
+def _add_environment_issue_evidence(turn: dict[str, Any], *, source: str, text: str | None) -> None:
+    if not text:
+        return
+    evidence = turn.setdefault("environment_issue_evidence", [])
+    if not isinstance(evidence, list):
+        return
+    evidence.extend(classify_environment_issue_text(text, source=source))
+
+
+def _turn_payload_in_scan_window(turn: Mapping[str, Any], cutoff: datetime | None) -> bool:
+    if cutoff is None:
+        return True
+    started_at = _optional_text(turn.get("started_at"))
+    if started_at is None:
+        return True
+    parsed = parse_iso(started_at)
+    return parsed is None or parsed >= cutoff
+
+
+def _dedupe_environment_evidence(items: Iterable[EnvironmentIssueEvidence]) -> tuple[EnvironmentIssueEvidence, ...]:
+    selected: list[EnvironmentIssueEvidence] = []
+    seen: set[tuple[str, str, str, str | None]] = set()
+    for evidence in items:
+        key = (evidence.issue_class, evidence.source, evidence.pattern, evidence.excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(evidence)
+        if len(selected) >= 12:
+            break
+    return tuple(sorted(selected, key=lambda item: (_environment_issue_sort_key(item.issue_class), item.source, item.pattern)))
+
+
+def _environment_classes_from_evidence(items: Iterable[EnvironmentIssueEvidence]) -> tuple[str, ...]:
+    return tuple(sorted({item.issue_class for item in items}, key=_environment_issue_sort_key))
+
+
+def _sort_environment_issue_counts(counts: Mapping[str, int]) -> dict[str, int]:
+    return dict(sorted(counts.items(), key=lambda item: (_environment_issue_sort_key(item[0]), item[0])))
+
+
+def _environment_issue_sort_key(issue_class: str) -> int:
+    return _ENVIRONMENT_ISSUE_CLASS_ORDER.get(issue_class, len(_ENVIRONMENT_ISSUE_CLASS_ORDER))
+
+
+def _response_output_text(payload: Mapping[str, Any]) -> str | None:
+    for key in ("output", "result", "text"):
+        text = _optional_text(payload.get(key))
+        if text:
+            return text
+    content = payload.get("content")
+    if isinstance(content, str):
+        return _optional_text(content)
+    return _message_text(payload)
+
+
+def _bounded_environment_issue_scan_text(text: str) -> str:
+    if len(text) <= _MAX_ENVIRONMENT_ISSUE_SCAN_CHARS:
+        return text
+    return (
+        text[:_ENVIRONMENT_ISSUE_SCAN_EDGE_CHARS]
+        + "\n...[blackdog truncated scan window]...\n"
+        + text[-_ENVIRONMENT_ISSUE_SCAN_EDGE_CHARS:]
+    )
+
+
+def _evidence_excerpt(text: str, start: int, end: int) -> str | None:
+    window_start = max(0, start - 80)
+    window_end = min(len(text), end + 80)
+    return _excerpt(text[window_start:window_end])
+
+
+def _count_label(counts: Mapping[str, int]) -> str:
+    return ", ".join(f"{key}={value}" for key, value in counts.items() if value)
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -1034,12 +1623,16 @@ __all__ = [
     "CODEX_SESSION_HISTORY_SCHEMA_VERSION",
     "HISTORY_DIR_NAME",
     "HISTORY_FILE_NAME",
+    "STRONG_ATTEMPT_RELATIONSHIPS",
+    "CodexAttemptRelationship",
     "CodexRuntimeContext",
     "CodexSession",
     "CodexSessionError",
     "CodexTurn",
+    "EnvironmentIssueEvidence",
     "build_codex_coverage",
     "build_codex_history",
+    "classify_environment_issue_text",
     "classify_user_message",
     "codex_home",
     "collect_codex_turns",

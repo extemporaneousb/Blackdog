@@ -321,7 +321,7 @@ files under `$CODEX_HOME/sessions`.
 
 Each row contains:
 
-- `schema_version = 1`
+- `schema_version = 2`
 - `kind = "attempt" | "codex_turn"`
 - stable `row_id`
 - `project_name`
@@ -329,17 +329,33 @@ Each row contains:
 - `started_at`
 - Codex thread/session/turn refs when known
 - prompt hashes, never full prompt or response text
+- relationship fields linking attempts to Codex turns:
+  `linked_*` for strong launch/prompt/single-turn matches and `related_*` for
+  same-session or active-window evidence
+- environment issue classes and bounded evidence excerpts extracted from
+  assistant/tool output or attempt summary fields
 - structured failure fields when present
 
 `attempt` rows also include workset/task/attempt identity, status, actor,
 model, reasoning effort, execution model, changed paths, validations,
-residuals, follow-up candidates, commit, landed commit, and elapsed seconds.
+residuals, follow-up candidates, commit, landed commit, elapsed seconds,
+related Codex turn ids, relationship labels, and environment issue classes
+inherited from related turns.
 
-`codex_turn` rows cover unlinked Codex user turns, including analysis-only
+`codex_turn` rows cover all repo-matched Codex user turns, including linked
+Blackdog launch turns, related same-session follow-up turns, and analysis-only
 turns. They include classification, cwd, originator, model, reasoning effort,
-user-prompt hash, assistant-response presence, completion timing when the
-session log reports it, tool-call count, and Codex token counters when the
-session log reports them.
+user-prompt hash, linked/related attempt ids, relationship labels, environment
+issue classes, assistant-response presence, completion timing when the session
+log reports it, tool-call count, and Codex token counters when the session log
+reports them.
+
+Environment issue fields are read-model annotations, not runtime failure
+classes. `failure_class` remains the WTAM recovery/status class; environment
+issue classes describe observable local setup/tooling/source-data evidence such
+as missing CLIs, missing virtualenvs, missing container runtimes, missing Python
+or Node dependencies, missing credentials, source file format problems, or
+wrong-worktree execution.
 
 ## `events.jsonl`
 
