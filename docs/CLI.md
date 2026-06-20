@@ -132,9 +132,35 @@ session logs and deduplicate repeated archived snapshots by thread and turn id.
 
 Discovery skips nested `.worktrees`, `.git`, `.VE`, `.venv`, `node_modules`,
 cache, and build-output directories. `blackdog.toml` remains the source of
-truth; there is no central repo registry. Archived repos are excluded unless
+truth for scanned membership; `repo table` does not read the user-local registry
+managed by `blackdog local-repo`. Archived repos are excluded unless
 `--include-archived` is set. With `--no-codex`, Codex columns are null in JSON
 and `-` in text.
+
+### `blackdog local-repo`
+
+Manage the user-local repo registry used by cross-repo commands when explicit
+project roots are not supplied.
+
+```bash
+blackdog local-repo add --project-root /path/to/repo
+blackdog local-repo list
+blackdog local-repo remove --project-root /path/to/repo
+blackdog local-repo list --json
+```
+
+Important flags:
+
+- `add --project-root` validates that the path is a Blackdog repo and records
+  its resolved project root
+- `remove --project-root` removes the resolved path without requiring the repo
+  to still exist or still be bound
+- optional `--json`
+
+The registry is user-local state, not checked-in repo state. `BLACKDOG_HOME`
+overrides its location. Without `BLACKDOG_HOME`, Blackdog uses
+`$CODEX_HOME/blackdog` when `CODEX_HOME` is set, otherwise
+`~/.codex/blackdog`.
 
 ### `blackdog repo scaffold`
 
@@ -1032,6 +1058,64 @@ Normal summary is task/attempt first. It hides canceled tasks by default; use
 `--include-canceled` for operator/debug views. JSON includes legacy workset
 lists only with `--include-legacy-worksets`.
 
+### `blackdog stats`
+
+Report task, attempt, and Codex-session metrics directly without composing
+`repo table`, `summary`, and Codex coverage by hand.
+
+```bash
+blackdog stats --project-root /Users/bullard/Work/Utter/utter-codex
+blackdog stats --project-root /path/a --project-root /path/b --since 2026-06-01 --until 2026-06-20
+blackdog stats --project-root /path/to/repo --by day --timezone America/Los_Angeles --json
+blackdog stats --project-root /path/to/repo --tsv
+```
+
+Important flags:
+
+- optional repeated `--project-root`; without it, stats uses the user-local
+  registry from `blackdog local-repo`
+- optional `--since` and `--until` as ISO timestamps or `YYYY-MM-DD` dates
+- optional `--by day`; day is the current shipped bucket granularity
+- optional `--timezone`, for example `America/Los_Angeles`
+- optional `--json`
+- optional `--tsv`
+
+Date-only `--since` resolves to local midnight in the selected timezone.
+Date-only `--until` is inclusive by date and resolves to the next local
+midnight. Attempt outcome metrics and Codex turn metrics are filtered by
+`started_at` inside that window; current task/attempt metrics describe the
+latest runtime state.
+
+Metric definitions:
+
+- `tasks_total`: all task runtime rows
+- `current_tasks`: tasks whose current runtime status is neither `done` nor
+  `canceled`
+- `current_done_tasks`: tasks whose current runtime status is `done`
+- `current_blocked_tasks`: tasks whose current runtime status is `blocked`
+- `canceled_tasks`: tasks whose current runtime status is `canceled`
+- `attempts_total`: all attempt rows
+- `current_attempts`: attempts whose status is active
+- `completed_attempts`: attempts in the selected window whose status is not
+  active
+- `success_attempts`, `abandoned_attempts`, `blocked_attempts`, and
+  `failed_attempts`: completed attempt counts by final status in the selected
+  window
+- `landed_attempts`: completed attempts in the selected window with
+  `landed_commit`
+- `not_landed_attempts`: completed attempts in the selected window without
+  `landed_commit`
+- `codex_user_turns`: repo-matched Codex user turns in the selected window
+- `codex_tool_calls`: tool/function-call items in those turns
+- `codex_*_tokens`: token counters reported by Codex session logs for those
+  turns
+
+Bucket rows are keyed by attempt or Codex turn `started_at` converted to the
+selected timezone. Explicit and registered project roots are deduplicated by
+their resolved Blackdog profile project root. A nested repo with its own
+`blackdog.toml` is counted separately when it is explicitly supplied or
+registered; path aliases for the same repo collapse into one repo row.
+
 ### `blackdog next`
 
 Low-level read surface for existing planned-task state. This command is hidden
@@ -1187,6 +1271,13 @@ Coverage output may show short prompt excerpts for operator diagnosis, but it
 does not persist transcript text. Environment issue evidence is extracted from
 assistant/tool output and attempt summaries as bounded excerpts; it is a
 read-model annotation and does not change `failure_class`.
+
+Parsed Codex sessions are cached under user-local Blackdog state and invalidated
+by session-file size and mtime. The cache stores parsed metadata, bounded
+excerpts, issue classes, tool counts, and token counters; it does not store full
+prompt/response transcripts. When `--since`/`--until` bounds are available,
+first-run parsing skips session files whose filename date cannot overlap the
+requested window.
 
 ### `blackdog codex history`
 

@@ -9,6 +9,12 @@ import sys
 from typing import Any
 
 from blackdog.handlers import HandlerError
+from blackdog.local_registry import (
+    add_local_repo,
+    list_local_repos,
+    remove_local_repo,
+    render_local_repo_registry_text,
+)
 from blackdog.prompting import preview_prompt, render_prompt_preview_text, tune_prompt
 from blackdog.repo_lifecycle import (
     RepoLifecycleError,
@@ -31,6 +37,7 @@ from blackdog.repo_membership import (
     unarchive_repo,
     unbind_repo,
 )
+from blackdog.stats import build_stats, render_stats_text, render_stats_tsv
 from blackdog.wtam import (
     WorktreeError,
     begin_task_worktree,
@@ -198,7 +205,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{init,summary,snapshot,prompt,attempts,codex,repo,task,worktree}",
+        metavar="{init,summary,snapshot,stats,local-repo,prompt,attempts,codex,repo,task,worktree}",
     )
 
     p_init = subparsers.add_parser("init", help="Write a default vNext Blackdog profile")
@@ -216,6 +223,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_snapshot.add_argument("--project-root", default=".")
     p_snapshot.add_argument("--workset")
     p_snapshot.add_argument("--include-legacy-worksets", action="store_true")
+
+    p_stats = subparsers.add_parser("stats", help="Report local Blackdog task/attempt/Codex stats")
+    p_stats.add_argument("--project-root", action="append", default=[])
+    p_stats.add_argument("--since")
+    p_stats.add_argument("--until")
+    p_stats.add_argument("--by", choices=["day"], default="day")
+    p_stats.add_argument("--timezone", default="UTC")
+    p_stats.add_argument("--json", action="store_true")
+    p_stats.add_argument("--tsv", action="store_true")
+
+    p_local_repo = subparsers.add_parser("local-repo", help="Manage the user-local Blackdog repo registry")
+    local_repo_subparsers = p_local_repo.add_subparsers(dest="local_repo_command", required=True)
+    p_local_repo_add = local_repo_subparsers.add_parser("add", help="Add a repo to the user-local registry")
+    p_local_repo_add.add_argument("--project-root", default=".")
+    p_local_repo_add.add_argument("--json", action="store_true")
+    p_local_repo_list = local_repo_subparsers.add_parser("list", help="List registered local repos")
+    p_local_repo_list.add_argument("--json", action="store_true")
+    p_local_repo_remove = local_repo_subparsers.add_parser("remove", help="Remove a repo from the user-local registry")
+    p_local_repo_remove.add_argument("--project-root", default=".")
+    p_local_repo_remove.add_argument("--json", action="store_true")
 
     p_next = subparsers.add_parser("next", help=argparse.SUPPRESS)
     p_next.add_argument("--project-root", default=".")
@@ -579,6 +606,46 @@ def main(argv: list[str] | None = None) -> int:
                     include_legacy_worksets=args.include_legacy_worksets,
                 )
             )
+            return 0
+
+        if args.command == "stats":
+            result = build_stats(
+                project_roots=tuple(Path(root).resolve() for root in args.project_root),
+                since=args.since,
+                until=args.until,
+                by=args.by,
+                timezone_name=args.timezone,
+            )
+            if args.json:
+                _emit_json({"stats": result.to_dict()})
+            elif args.tsv:
+                print(render_stats_tsv(result), end="")
+            else:
+                print(render_stats_text(result), end="")
+            return 0
+
+        if args.command == "local-repo" and args.local_repo_command == "add":
+            result = add_local_repo(Path(args.project_root).resolve())
+            if args.json:
+                _emit_json({"local_repos": result.to_dict()})
+            else:
+                print(render_local_repo_registry_text(result), end="")
+            return 0
+
+        if args.command == "local-repo" and args.local_repo_command == "list":
+            result = list_local_repos()
+            if args.json:
+                _emit_json({"local_repos": result.to_dict()})
+            else:
+                print(render_local_repo_registry_text(result), end="")
+            return 0
+
+        if args.command == "local-repo" and args.local_repo_command == "remove":
+            result = remove_local_repo(Path(args.project_root).resolve())
+            if args.json:
+                _emit_json({"local_repos": result.to_dict()})
+            else:
+                print(render_local_repo_registry_text(result), end="")
             return 0
 
         if args.command == "next":

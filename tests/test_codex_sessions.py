@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
-from blackdog_core.codex_sessions import build_codex_coverage, build_codex_history, current_codex_session_ref, read_codex_session
+from blackdog_core.codex_sessions import (
+    build_codex_coverage,
+    build_codex_history,
+    codex_session_cache_path,
+    collect_codex_turns,
+    current_codex_session_ref,
+    read_codex_session,
+)
 from blackdog_core.state import CodexSessionRefRecord, create_prompt_receipt, prompt_receipt_reference
 from tests.core_audit_support import CoreAuditTestCase
 
@@ -247,6 +254,41 @@ class CodexSessionTests(CoreAuditTestCase):
             hashlib.sha256("Analyze the repo and explain what changed.".encode("utf-8")).hexdigest(),
         )
         self.assertTrue(turn.has_assistant_response)
+
+    def test_collect_codex_turns_reuses_persistent_session_cache(self) -> None:
+        _write_session(
+            self.codex_home,
+            thread_id="thread-cache",
+            cwd=self.root,
+            turn_id="turn-cache",
+            message="Implement cached Codex parsing.",
+        )
+        blackdog_home = self.root / ".blackdog-home"
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home), "BLACKDOG_HOME": str(blackdog_home)}, clear=False):
+            turns = collect_codex_turns()
+            self.assertEqual(len(turns), 1)
+            self.assertTrue(codex_session_cache_path().is_file())
+            with patch("blackdog_core.codex_sessions.read_codex_session", side_effect=AssertionError("cache miss")):
+                cached_turns = collect_codex_turns()
+
+        self.assertEqual(len(cached_turns), 1)
+        self.assertEqual(cached_turns[0].turn_id, "turn-cache")
+
+    def test_collect_codex_turns_skips_files_outside_since_window_before_cache(self) -> None:
+        _write_session(
+            self.codex_home,
+            thread_id="thread-old",
+            cwd=self.root,
+            turn_id="turn-old",
+            message="Old session outside the stats window.",
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            with patch("blackdog_core.codex_sessions.read_codex_session", side_effect=AssertionError("parsed old file")):
+                turns = collect_codex_turns(since="2026-05-10T00:00:00+00:00", use_cache=False)
+
+        self.assertEqual(turns, ())
 
     def test_current_codex_session_ref_recovers_turn_fields_from_prompt_hash(self) -> None:
         message = "Implement the current turn capture."

@@ -23,8 +23,10 @@ development.
 - The active shipped CLI surface is:
   - `blackdog init`
   - `blackdog repo analyze|bind|table|install|update|refresh|archive|unarchive|unbind`
+  - `blackdog local-repo add|list|remove`
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
+  - `blackdog stats`
   - `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
   - `blackdog summary`
   - `blackdog snapshot`
@@ -46,9 +48,10 @@ development.
   supervisor flow, or the old bootstrap/tune implementations unless they are
   explicitly rebuilt on top of the vNext core model.
 - Repo lifecycle/operator surfaces such as `repo analyze|bind|table|install|update|refresh|archive|unarchive|unbind`,
-  `prompt preview|tune`, and `attempts summary|table` are distinct from
-  workset/task execution. Keep them in the product layer and do not encode them
-  as workset/task semantics.
+  `local-repo add|list|remove`, `prompt preview|tune`,
+  `attempts summary|table`, and `stats` are distinct from workset/task
+  execution. Keep them in the product layer and do not encode them as
+  workset/task semantics.
 - Keep `[taxonomy].doc_routing_defaults` pointed at the docs agents must review
   before editing.
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for

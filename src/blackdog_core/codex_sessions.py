@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 import hashlib
@@ -16,11 +16,14 @@ import tomllib
 from .profile import RepoProfile
 from .runtime_model import AttemptView, load_runtime_model
 from .state import CodexSessionRefRecord, atomic_write_text, now_iso, parse_iso
+from .user_state import user_state_file
 
 
 CODEX_SESSION_HISTORY_SCHEMA_VERSION = 2
+CODEX_SESSION_CACHE_SCHEMA_VERSION = 1
 HISTORY_DIR_NAME = ".blackdog"
 HISTORY_FILE_NAME = "history.jsonl"
+CODEX_SESSION_CACHE_FILE_NAME = "session-cache-v1.json"
 
 _IMPLEMENTATION_KEYWORDS = frozenset(
     {
@@ -524,7 +527,7 @@ def build_codex_coverage(
     since: str | None = None,
     codex_turns: Iterable[CodexTurn] | None = None,
 ) -> dict[str, Any]:
-    turns = _project_turns(profile, since=since, codex_turns=codex_turns)
+    turns = _project_turns(profile, since=since, until=None, codex_turns=codex_turns)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     attempts = tuple(
@@ -671,7 +674,7 @@ def build_codex_history(
     since: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    turns = _project_turns(profile, since=since)
+    turns = _project_turns(profile, since=since, until=None)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     attempts = tuple(
@@ -723,15 +726,73 @@ def history_export_path(profile: RepoProfile) -> Path:
     return profile.paths.project_root / HISTORY_DIR_NAME / HISTORY_FILE_NAME
 
 
-def collect_codex_turns(home: Path | None = None, *, since: str | None = None) -> tuple[CodexTurn, ...]:
+def collect_codex_turns(
+    home: Path | None = None,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    use_cache: bool = True,
+) -> tuple[CodexTurn, ...]:
+    return tuple(
+        turn
+        for session in collect_codex_sessions(home=home, since=since, until=until, use_cache=use_cache)
+        for turn in _filter_turns_by_window(session.turns, since=since, until=until)
+    )
+
+
+def collect_codex_sessions(
+    home: Path | None = None,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    use_cache: bool = True,
+) -> tuple[CodexSession, ...]:
     resolved_home = home or codex_home()
-    turns: list[CodexTurn] = []
+    cutoff = _parse_since(since)
+    upper = _parse_until(until)
+    cache = _load_codex_session_cache() if use_cache else {}
+    changed = False
+    sessions: list[CodexSession] = []
     for path in _session_files(resolved_home):
-        session = read_codex_session(path, home=resolved_home, since=since)
+        session_path = _relative_session_path(path, resolved_home)
+        session = None
+        cache_key = _codex_session_cache_key(resolved_home, session_path)
+        stat = _session_file_stat(path)
+        cached = cache.get(cache_key)
+        if use_cache and stat is not None and _cached_session_valid(cached, stat):
+            session = _codex_session_from_cache_payload(cached.get("session"))
+        if session is None:
+            if not _session_file_may_overlap_window(path, cutoff=cutoff, upper=upper):
+                continue
+            session = read_codex_session(path, home=resolved_home)
+            if use_cache and stat is not None and session is not None:
+                cache[cache_key] = {
+                    "schema_version": CODEX_SESSION_CACHE_SCHEMA_VERSION,
+                    "codex_home": str(resolved_home),
+                    "session_path": session_path,
+                    "size": stat["size"],
+                    "mtime_ns": stat["mtime_ns"],
+                    "parsed_at": now_iso(),
+                    "session": _codex_session_cache_payload(session),
+                }
+                changed = True
         if session is None:
             continue
-        turns.extend(session.turns)
-    return tuple(turns)
+        if _session_overlaps_window(session, cutoff=cutoff, upper=upper):
+            sessions.append(session)
+    if use_cache and changed:
+        _write_codex_session_cache(cache)
+    return tuple(sessions)
+
+
+def project_codex_turns(
+    profile: RepoProfile,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    codex_turns: Iterable[CodexTurn] | None = None,
+) -> tuple[CodexTurn, ...]:
+    return _project_turns(profile, since=since, until=until, codex_turns=codex_turns)
 
 
 def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
@@ -833,18 +894,24 @@ def _project_turns(
     profile: RepoProfile,
     *,
     since: str | None,
+    until: str | None,
     codex_turns: Iterable[CodexTurn] | None = None,
 ) -> tuple[CodexTurn, ...]:
     roots = _project_roots(profile)
     cutoff = _parse_since(since)
+    upper = _parse_until(until)
     turns: list[CodexTurn] = []
-    candidate_turns = codex_turns if codex_turns is not None else collect_codex_turns(since=since)
+    candidate_turns = codex_turns if codex_turns is not None else collect_codex_turns(since=since, until=until)
     for turn in candidate_turns:
         if not _cwd_matches(roots, turn.cwd):
             continue
         if cutoff is not None:
             started = parse_iso(turn.started_at)
             if started is None or started < cutoff:
+                continue
+        if upper is not None:
+            started = parse_iso(turn.started_at)
+            if started is None or started >= upper:
                 continue
         turns.append(turn)
     return tuple(
@@ -1461,6 +1528,249 @@ def _count_label(counts: Mapping[str, int]) -> str:
     return ", ".join(f"{key}={value}" for key, value in counts.items() if value)
 
 
+def codex_session_cache_path() -> Path:
+    return user_state_file("codex", CODEX_SESSION_CACHE_FILE_NAME)
+
+
+def _load_codex_session_cache() -> dict[str, dict[str, Any]]:
+    path = codex_session_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    if payload.get("schema_version") != CODEX_SESSION_CACHE_SCHEMA_VERSION:
+        return {}
+    sessions = payload.get("sessions")
+    if not isinstance(sessions, Mapping):
+        return {}
+    return {str(key): dict(value) for key, value in sessions.items() if isinstance(value, Mapping)}
+
+
+def _write_codex_session_cache(cache: Mapping[str, Mapping[str, Any]]) -> None:
+    path = codex_session_cache_path()
+    payload = {
+        "schema_version": CODEX_SESSION_CACHE_SCHEMA_VERSION,
+        "updated_at": now_iso(),
+        "sessions": dict(sorted(cache.items())),
+    }
+    atomic_write_text(path, json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _codex_session_cache_key(home: Path, session_path: str) -> str:
+    return hashlib.sha256(f"{home.resolve()}|{session_path}".encode("utf-8")).hexdigest()
+
+
+def _session_file_stat(path: Path) -> dict[str, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+
+
+def _cached_session_valid(cached: Any, stat: Mapping[str, int]) -> bool:
+    if not isinstance(cached, Mapping):
+        return False
+    if cached.get("schema_version") != CODEX_SESSION_CACHE_SCHEMA_VERSION:
+        return False
+    return cached.get("size") == stat.get("size") and cached.get("mtime_ns") == stat.get("mtime_ns")
+
+
+def _codex_session_cache_payload(session: CodexSession) -> dict[str, Any]:
+    return {
+        "thread_id": session.thread_id,
+        "session_path": session.session_path,
+        "started_at": session.started_at,
+        "cwd": session.cwd,
+        "originator": session.originator,
+        "model_provider": session.model_provider,
+        "model": session.model,
+        "turns": [_codex_turn_cache_payload(turn) for turn in session.turns],
+    }
+
+
+def _codex_turn_cache_payload(turn: CodexTurn) -> dict[str, Any]:
+    return {
+        "thread_id": turn.thread_id,
+        "session_path": turn.session_path,
+        "turn_id": turn.turn_id,
+        "turn_index": turn.turn_index,
+        "started_at": turn.started_at,
+        "cwd": turn.cwd,
+        "originator": turn.originator,
+        "model": turn.model,
+        "reasoning_effort": turn.reasoning_effort,
+        "user_message_hash": turn.user_message_hash,
+        "message_excerpt": turn.message_excerpt,
+        "classification": turn.classification,
+        "has_assistant_response": turn.has_assistant_response,
+        "completed_at": turn.completed_at,
+        "duration_ms": turn.duration_ms,
+        "time_to_first_token_ms": turn.time_to_first_token_ms,
+        "tool_call_count": turn.tool_call_count,
+        "primary_environment_issue_class": turn.primary_environment_issue_class,
+        "environment_issue_classes": list(turn.environment_issue_classes),
+        "environment_issue_evidence": [
+            _environment_issue_evidence_row(evidence) for evidence in turn.environment_issue_evidence
+        ],
+        "input_tokens": turn.input_tokens,
+        "cached_input_tokens": turn.cached_input_tokens,
+        "output_tokens": turn.output_tokens,
+        "reasoning_output_tokens": turn.reasoning_output_tokens,
+        "total_tokens": turn.total_tokens,
+    }
+
+
+def _codex_session_from_cache_payload(payload: Any) -> CodexSession | None:
+    if not isinstance(payload, Mapping):
+        return None
+    turns_payload = payload.get("turns")
+    if not isinstance(turns_payload, list):
+        return None
+    turns: list[CodexTurn] = []
+    for item in turns_payload:
+        turn = _codex_turn_from_cache_payload(item)
+        if turn is not None:
+            turns.append(turn)
+    return CodexSession(
+        thread_id=str(payload.get("thread_id") or ""),
+        session_path=str(payload.get("session_path") or ""),
+        started_at=_optional_text(payload.get("started_at")),
+        cwd=_optional_text(payload.get("cwd")),
+        originator=_optional_text(payload.get("originator")),
+        model_provider=_optional_text(payload.get("model_provider")),
+        model=_optional_text(payload.get("model")),
+        turns=tuple(turns),
+    )
+
+
+def _codex_turn_from_cache_payload(payload: Any) -> CodexTurn | None:
+    if not isinstance(payload, Mapping):
+        return None
+    evidence = tuple(
+        EnvironmentIssueEvidence(
+            issue_class=str(item.get("class") or ""),
+            source=str(item.get("source") or ""),
+            pattern=str(item.get("pattern") or ""),
+            excerpt=_optional_text(item.get("excerpt")),
+        )
+        for item in payload.get("environment_issue_evidence") or []
+        if isinstance(item, Mapping)
+    )
+    return CodexTurn(
+        thread_id=str(payload.get("thread_id") or ""),
+        session_path=str(payload.get("session_path") or ""),
+        turn_id=str(payload.get("turn_id") or ""),
+        turn_index=_non_negative_int(payload.get("turn_index")),
+        started_at=_optional_text(payload.get("started_at")),
+        cwd=_optional_text(payload.get("cwd")),
+        originator=_optional_text(payload.get("originator")),
+        model=_optional_text(payload.get("model")),
+        reasoning_effort=_optional_text(payload.get("reasoning_effort")),
+        user_message_hash=_optional_text(payload.get("user_message_hash")),
+        message_excerpt=_optional_text(payload.get("message_excerpt")),
+        classification=_optional_text(payload.get("classification")) or "unclassified",
+        has_assistant_response=bool(payload.get("has_assistant_response")),
+        completed_at=_optional_text(payload.get("completed_at")),
+        duration_ms=_non_negative_optional_int(payload.get("duration_ms")),
+        time_to_first_token_ms=_non_negative_optional_int(payload.get("time_to_first_token_ms")),
+        tool_call_count=_non_negative_int(payload.get("tool_call_count")),
+        primary_environment_issue_class=_optional_text(payload.get("primary_environment_issue_class")),
+        environment_issue_classes=tuple(str(item) for item in payload.get("environment_issue_classes") or ()),
+        environment_issue_evidence=evidence,
+        input_tokens=_non_negative_int(payload.get("input_tokens")),
+        cached_input_tokens=_non_negative_int(payload.get("cached_input_tokens")),
+        output_tokens=_non_negative_int(payload.get("output_tokens")),
+        reasoning_output_tokens=_non_negative_int(payload.get("reasoning_output_tokens")),
+        total_tokens=_non_negative_int(payload.get("total_tokens")),
+    )
+
+
+def _filter_turns_by_window(
+    turns: Iterable[CodexTurn],
+    *,
+    since: str | None,
+    until: str | None,
+) -> tuple[CodexTurn, ...]:
+    cutoff = _parse_since(since)
+    upper = _parse_until(until)
+    filtered: list[CodexTurn] = []
+    for turn in turns:
+        started = parse_iso(turn.started_at)
+        if cutoff is not None and (started is None or started < cutoff):
+            continue
+        if upper is not None and (started is None or started >= upper):
+            continue
+        filtered.append(turn)
+    return tuple(filtered)
+
+
+def _session_overlaps_window(
+    session: CodexSession,
+    *,
+    cutoff: datetime | None,
+    upper: datetime | None,
+) -> bool:
+    if cutoff is None and upper is None:
+        return True
+    if any(_datetime_in_window(parse_iso(turn.started_at), cutoff=cutoff, upper=upper) for turn in session.turns):
+        return True
+    return _datetime_in_window(parse_iso(session.started_at), cutoff=cutoff, upper=upper)
+
+
+def _session_file_may_overlap_window(
+    path: Path,
+    *,
+    cutoff: datetime | None,
+    upper: datetime | None,
+) -> bool:
+    if cutoff is None and upper is None:
+        return True
+    started = _session_datetime_from_filename(path)
+    if started is None:
+        return True
+    lower_bound = cutoff.astimezone(timezone.utc) - timedelta(days=1) if cutoff is not None else None
+    upper_bound = upper.astimezone(timezone.utc) + timedelta(days=1) if upper is not None else None
+    if lower_bound is not None and started < lower_bound:
+        return False
+    if upper_bound is not None and started >= upper_bound:
+        return False
+    return True
+
+
+def _datetime_in_window(
+    value: datetime | None,
+    *,
+    cutoff: datetime | None,
+    upper: datetime | None,
+) -> bool:
+    if value is None:
+        return False
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    if cutoff is not None and value < cutoff.astimezone(value.tzinfo or timezone.utc):
+        return False
+    if upper is not None and value >= upper.astimezone(value.tzinfo or timezone.utc):
+        return False
+    return True
+
+
+def _session_datetime_from_filename(path: Path) -> datetime | None:
+    match = re.search(
+        r"rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})",
+        path.name,
+    )
+    if not match:
+        return None
+    year, month, day, hour, minute, second = (int(group) for group in match.groups())
+    try:
+        return datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def _parse_since(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -1473,6 +1783,10 @@ def _parse_since(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _parse_until(value: str | None) -> datetime | None:
+    return _parse_since(value)
 
 
 def _attempt_in_window(attempt: AttemptView, cutoff: datetime | None) -> bool:
@@ -1620,6 +1934,8 @@ def _optional_text(value: Any) -> str | None:
 
 
 __all__ = [
+    "CODEX_SESSION_CACHE_FILE_NAME",
+    "CODEX_SESSION_CACHE_SCHEMA_VERSION",
     "CODEX_SESSION_HISTORY_SCHEMA_VERSION",
     "HISTORY_DIR_NAME",
     "HISTORY_FILE_NAME",
@@ -1635,10 +1951,13 @@ __all__ = [
     "classify_environment_issue_text",
     "classify_user_message",
     "codex_home",
+    "codex_session_cache_path",
+    "collect_codex_sessions",
     "collect_codex_turns",
     "current_codex_runtime_context",
     "current_codex_session_ref",
     "history_export_path",
+    "project_codex_turns",
     "read_codex_config",
     "read_codex_session",
     "render_codex_coverage_text",

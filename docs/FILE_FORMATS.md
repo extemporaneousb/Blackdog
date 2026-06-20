@@ -40,6 +40,71 @@ Generated repo contracts require a `git status --short` closeout after
 managed file changes are not durable until committed, landed, reverted, or
 explicitly reported.
 
+## User-Local State Files
+
+Blackdog keeps operator convenience state and parse caches outside checked-in
+repo state. `BLACKDOG_HOME` is the explicit override. Without it, Blackdog uses
+`$CODEX_HOME/blackdog` when `CODEX_HOME` is set, otherwise `~/.codex/blackdog`.
+
+Current user-local files:
+
+- `local-repos.json`
+- `codex/session-cache-v1.json`
+
+These files are not planning truth or runtime truth. They can be deleted and
+rebuilt from repo profiles and Codex session logs, except that deleting
+`local-repos.json` drops the user's explicit local registry selections.
+
+### `local-repos.json`
+
+User-local registry managed by `blackdog local-repo`.
+
+Top-level fields:
+
+- `schema_version = 1`
+- `updated_at`
+- `repos`
+
+Each repo row contains:
+
+- `project_name`
+- `project_root`
+- `status`
+- `added_at`
+- `updated_at`
+
+`add` validates that `project_root` is a Blackdog repo and stores the resolved
+profile project root. `remove` resolves the supplied path and removes the row
+without requiring the repo to still exist. `list` reads this file only; it does
+not scan the filesystem.
+
+### `codex/session-cache-v1.json`
+
+Persistent parsed-session cache for `$CODEX_HOME/sessions`.
+
+Top-level fields:
+
+- `schema_version = 1`
+- `updated_at`
+- `sessions`
+
+`sessions` is an object keyed by a SHA-256 digest of the resolved Codex home and
+relative session path. Each cache entry contains:
+
+- `schema_version = 1`
+- `codex_home`
+- `session_path`
+- `size`
+- `mtime_ns`
+- `parsed_at`
+- `session`
+
+Cache entries are valid only while the source session file's `size` and
+`mtime_ns` still match. `session` stores parsed session metadata, turn metadata,
+bounded message excerpts, environment issue classes/evidence excerpts, tool-call
+counts, timing, and token counters. It does not store full prompt or response
+transcripts.
+
 ## `blackdog.toml`
 
 Repo-local product contract and path/handler configuration.

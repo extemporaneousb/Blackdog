@@ -76,6 +76,25 @@ JSON file operations into every semantic function. The shipped implementation is
 runtime store. That keeps storage substitutable without reintroducing text-based
 plan editing.
 
+## User-Local State
+
+Blackdog also has user-local operator/read-model state outside checked-in repo
+state and outside each repo's control root. `BLACKDOG_HOME` is the explicit
+override. Without it, Blackdog uses `$CODEX_HOME/blackdog` when `CODEX_HOME` is
+set, otherwise `~/.codex/blackdog`.
+
+Current user-local files are:
+
+- `local-repos.json` for explicit local repo registry membership used by
+  cross-repo stats when `--project-root` is omitted
+- `codex/session-cache-v1.json` for parsed Codex session metadata used by
+  Codex coverage, history, repo table, and stats read models
+
+This state is not planning truth, runtime truth, or a repo membership authority
+for scanned commands. It is cache and operator convenience state. The durable
+repo contract remains `blackdog.toml` plus the control-root planning/runtime
+files.
+
 ## Workflow Families
 
 Blackdog has two product-layer workflow families:
@@ -84,12 +103,13 @@ Blackdog has two product-layer workflow families:
    (`workset`, `summary`, `next`, `task`, and `worktree`)
 2. repo lifecycle/operator-read workflows over repo analyze/bind/table/
    scaffold/install/update/refresh/archive/unarchive/unbind, prompt/skill
-   composition, and attempt inspection
+   composition, attempt inspection, user-local registry management, and stats
+   reporting
 
 The second family is intentionally not part of the workset/task durable model.
 Analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/unbind,
-prompt preview/tune, and attempts summary/table are product workflows, but
-they are not claims, tasks, or attempts.
+prompt preview/tune, attempts summary/table, local-repo registry commands, and
+stats are product workflows, but they are not claims, tasks, or attempts.
 
 Any future orchestration beyond the direct WTAM path still belongs in
 `blackdog`, not in `blackdog_core`. The core model should stay small while the
@@ -103,6 +123,9 @@ The current coherent product surface on top of the new core is:
 - `blackdog repo analyze`
 - `blackdog repo bind`
 - `blackdog repo table`
+- `blackdog local-repo add`
+- `blackdog local-repo list`
+- `blackdog local-repo remove`
 - `blackdog repo scaffold`
 - `blackdog repo update`
 - `blackdog repo refresh`
@@ -115,6 +138,7 @@ The current coherent product surface on top of the new core is:
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
+- `blackdog stats`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task recover`
@@ -185,7 +209,8 @@ under `current_*`, historical attempt diagnostics are reported under
 Codex turn coverage includes token totals plus the longest completed single
 turn for the repo, and legacy workset storage counts are hidden unless an
 operator explicitly asks for the migration/debug column. It deliberately does not
-introduce a central registry. Optional
+read the user-local registry; `local-repo` exists for explicit operator-curated
+repo sets used by stats when project roots are omitted. Optional
 `[project].status` in `blackdog.toml` controls membership visibility:
 missing means active, `archived` hides the repo from table output unless the
 operator asks for archived rows. `repo archive` and `repo unarchive` update
@@ -194,6 +219,13 @@ it previews by default, strips only the managed `AGENTS.md` block on confirm,
 removes Blackdog-managed profile/skill/launcher/control paths, preserves
 repo-owned text and unrelated dirty files, and preserves external control dirs
 outside the repo or git common dir.
+
+`stats` is the first-class cross-repo metric read model for task, attempt, and
+Codex-session counts. It accepts explicit project roots or the user-local
+registry, buckets attempt and Codex turn counts by `started_at` in a selected
+timezone, deduplicates exact aliases for the same resolved Blackdog project
+root, and keeps nested repos separate when they have distinct `blackdog.toml`
+profiles.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

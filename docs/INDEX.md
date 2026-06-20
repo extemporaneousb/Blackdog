@@ -23,6 +23,9 @@ CLI surfaces.
 - `blackdog repo analyze`
 - `blackdog repo bind`
 - `blackdog repo table`
+- `blackdog local-repo add`
+- `blackdog local-repo list`
+- `blackdog local-repo remove`
 - `blackdog repo install`
 - `blackdog repo scaffold`
 - `blackdog repo update`
@@ -36,6 +39,7 @@ CLI surfaces.
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
+- `blackdog stats`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task recover`
@@ -55,8 +59,9 @@ CLI surfaces.
 - `blackdog worktree cleanup`
 
 The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
-own repo lifecycle and operator-read workflows, `codex` owns Codex-session
-coverage/history indexing, `summary`/`snapshot` expose task-first current
+own repo lifecycle and operator-read workflows, `local-repo` owns user-local
+registry management, `codex` owns Codex-session coverage/history indexing,
+`stats` owns cross-repo metrics, `summary`/`snapshot` expose task-first current
 state, `task` is the default same-thread WTAM path, and `worktree` is the
 explicit planned-task WTAM path. Direct workset reads remain a migration/debug
 concern, not the default operator surface.
