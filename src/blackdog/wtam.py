@@ -327,6 +327,20 @@ def find_worktree_for_branch(profile: RepoProfile, branch: str) -> str | None:
     return str(resolved) if resolved is not None else None
 
 
+def _is_git_worktree_path(path: Path) -> bool:
+    return (path / ".git").exists()
+
+
+def _worktree_branch_map(repo_root: Path) -> dict[str, Path]:
+    rows: dict[str, Path] = {}
+    for row in _parse_worktree_list(repo_root):
+        branch = str(row.get("branch") or "")
+        worktree = row.get("worktree")
+        if branch and worktree:
+            rows[branch] = Path(str(worktree)).resolve()
+    return rows
+
+
 def _status_entries(repo_root: Path) -> list[list[str]]:
     completed = _run_git_no_check(repo_root, "status", "--porcelain")
     if completed.returncode != 0:
@@ -882,14 +896,27 @@ def dirty_primary_worktree_error(profile: RepoProfile, *, branch: str, target_br
     )
 
 
-def branch_changed_paths(profile: RepoProfile, *, branch: str, target_branch: str | None = None) -> list[str]:
-    primary_root = find_primary_worktree(profile.paths.project_root)
+def branch_changed_paths(
+    profile: RepoProfile,
+    *,
+    branch: str,
+    target_branch: str | None = None,
+    primary_root: Path | None = None,
+    changed_paths_cache: dict[tuple[str, str | None], list[str]] | None = None,
+) -> list[str]:
+    cache_key = (branch, target_branch)
+    if changed_paths_cache is not None and cache_key in changed_paths_cache:
+        return list(changed_paths_cache[cache_key])
+    primary_root = primary_root or find_primary_worktree(profile.paths.project_root)
     resolved_target = target_branch or _current_branch(primary_root)
     completed = _run_git_no_check(primary_root, "diff", "--name-only", f"{resolved_target}..{branch}")
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
         raise WorktreeError(f"git diff --name-only {resolved_target}..{branch} failed: {detail}")
-    return sorted({line.strip() for line in completed.stdout.splitlines() if line.strip()})
+    changed = sorted({line.strip() for line in completed.stdout.splitlines() if line.strip()})
+    if changed_paths_cache is not None:
+        changed_paths_cache[cache_key] = changed
+    return changed
 
 
 def branch_ahead_of_target(profile: RepoProfile, *, branch: str, target_branch: str | None = None) -> bool:
@@ -902,10 +929,10 @@ def branch_ahead_of_target(profile: RepoProfile, *, branch: str, target_branch: 
     return int(completed.stdout.strip() or "0") > 0
 
 
-def _ref_exists(repo_root: Path, ref: str | None) -> bool | None:
+def _ref_exists(repo_root: Path, ref: str | None, *, ref_cache: dict[str, str | None] | None = None) -> bool | None:
     if not ref:
         return None
-    return _resolve_commit(repo_root, ref) is not None
+    return _resolve_commit(repo_root, ref, ref_cache=ref_cache) is not None
 
 
 def _recovery_branch_state(
@@ -913,30 +940,50 @@ def _recovery_branch_state(
     *,
     branch: str | None,
     target_branch: str | None,
+    primary_root: Path | None = None,
+    ref_cache: dict[str, str | None] | None = None,
+    branch_ahead_cache: dict[tuple[str, str], tuple[bool, str | None]] | None = None,
 ) -> tuple[bool, bool | None, bool | None, str | None]:
-    primary_root = find_primary_worktree(profile.paths.project_root)
-    branch_exists = _ref_exists(primary_root, branch)
-    target_exists = _ref_exists(primary_root, target_branch)
+    primary_root = primary_root or find_primary_worktree(profile.paths.project_root)
+    branch_exists = _ref_exists(primary_root, branch, ref_cache=ref_cache)
+    target_exists = _ref_exists(primary_root, target_branch, ref_cache=ref_cache)
     if not branch or not target_branch:
         return False, branch_exists, target_exists, None
     if branch_exists is False:
         return False, branch_exists, target_exists, f"task branch {branch!r} is missing"
     if target_exists is False:
         return False, branch_exists, target_exists, f"target branch {target_branch!r} is missing"
+    cache_key = (target_branch, branch)
+    if branch_ahead_cache is not None and cache_key in branch_ahead_cache:
+        cached_ahead, cached_error = branch_ahead_cache[cache_key]
+        return cached_ahead, branch_exists, target_exists, cached_error
     completed = _run_git_no_check(primary_root, "rev-list", "--count", f"{target_branch}..{branch}")
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
-        return False, branch_exists, target_exists, f"git rev-list --count {target_branch}..{branch} failed: {detail}"
-    return int(completed.stdout.strip() or "0") > 0, branch_exists, target_exists, None
+        error = f"git rev-list --count {target_branch}..{branch} failed: {detail}"
+        if branch_ahead_cache is not None:
+            branch_ahead_cache[cache_key] = (False, error)
+        return False, branch_exists, target_exists, error
+    ahead = int(completed.stdout.strip() or "0") > 0
+    if branch_ahead_cache is not None:
+        branch_ahead_cache[cache_key] = (ahead, None)
+    return ahead, branch_exists, target_exists, None
 
 
-def _resolve_commit(repo_root: Path, ref: str | None) -> str | None:
+def _resolve_commit(repo_root: Path, ref: str | None, *, ref_cache: dict[str, str | None] | None = None) -> str | None:
     if not ref:
         return None
+    if ref_cache is not None and ref in ref_cache:
+        return ref_cache[ref]
     completed = _run_git_no_check(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
     if completed.returncode != 0:
+        if ref_cache is not None:
+            ref_cache[ref] = None
         return None
-    return completed.stdout.strip() or None
+    resolved = completed.stdout.strip() or None
+    if ref_cache is not None:
+        ref_cache[ref] = resolved
+    return resolved
 
 
 def _can_force_delete_landed_task_branch(
@@ -945,6 +992,7 @@ def _can_force_delete_landed_task_branch(
     branch: str,
     branch_tip: str,
     latest_attempt: TaskRuntimeRecord | None,
+    ref_cache: dict[str, str | None] | None = None,
 ) -> tuple[bool, str]:
     if latest_attempt is None:
         return False, "no runtime attempt metadata"
@@ -959,16 +1007,16 @@ def _can_force_delete_landed_task_branch(
     if not latest_attempt.target_branch:
         return False, "latest attempt is missing the target branch"
 
-    recorded_commit = _resolve_commit(primary_root, latest_attempt.commit)
+    recorded_commit = _resolve_commit(primary_root, latest_attempt.commit, ref_cache=ref_cache)
     if recorded_commit is None:
         return False, f"recorded task-branch commit {latest_attempt.commit} is missing"
     if recorded_commit != branch_tip:
         return False, "branch tip changed after the recorded landed attempt"
 
-    landed_commit = _resolve_commit(primary_root, latest_attempt.landed_commit)
+    landed_commit = _resolve_commit(primary_root, latest_attempt.landed_commit, ref_cache=ref_cache)
     if landed_commit is None:
         return False, f"landed commit {latest_attempt.landed_commit} is missing"
-    if _resolve_commit(primary_root, latest_attempt.target_branch) is None:
+    if _resolve_commit(primary_root, latest_attempt.target_branch, ref_cache=ref_cache) is None:
         return False, f"target branch {latest_attempt.target_branch} is missing"
 
     landed_reachable = _run_git_no_check(
@@ -993,8 +1041,9 @@ def _plan_task_branch_cleanup(
     *,
     branch: str,
     latest_attempt: TaskRuntimeRecord | None,
+    ref_cache: dict[str, str | None] | None = None,
 ) -> _BranchCleanupPlan:
-    branch_tip = _resolve_commit(primary_root, branch)
+    branch_tip = _resolve_commit(primary_root, branch, ref_cache=ref_cache)
     if branch_tip is None:
         return _BranchCleanupPlan(
             branch_exists=False,
@@ -1005,7 +1054,7 @@ def _plan_task_branch_cleanup(
         )
 
     target_branch = latest_attempt.target_branch if latest_attempt and latest_attempt.target_branch else _current_branch(primary_root)
-    target_commit = _resolve_commit(primary_root, target_branch)
+    target_commit = _resolve_commit(primary_root, target_branch, ref_cache=ref_cache)
     if target_commit is not None:
         if branch_tip == target_commit:
             return _BranchCleanupPlan(
@@ -1030,6 +1079,7 @@ def _plan_task_branch_cleanup(
         branch=branch,
         branch_tip=branch_tip,
         latest_attempt=latest_attempt,
+        ref_cache=ref_cache,
     )
     if can_force_delete:
         return _BranchCleanupPlan(
@@ -1044,12 +1094,24 @@ def _plan_task_branch_cleanup(
     )
 
 
-def _resolve_attempt_worktree(profile: RepoProfile, *, branch: str | None, worktree_path: str | None) -> Path | None:
+def _resolve_attempt_worktree(
+    profile: RepoProfile,
+    *,
+    branch: str | None,
+    worktree_path: str | None,
+    worktree_by_branch: dict[str, Path] | None = None,
+) -> Path | None:
     if worktree_path:
         candidate = Path(worktree_path).resolve()
-        if candidate.exists():
+        if candidate.exists() and _is_git_worktree_path(candidate):
             return candidate
     if branch:
+        branch_ref = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+        if worktree_by_branch is not None:
+            candidate = worktree_by_branch.get(branch_ref)
+            if candidate is not None and candidate.exists():
+                return candidate.resolve()
+            return None
         existing = find_worktree_for_branch(profile, branch)
         if existing:
             candidate = Path(existing).resolve()
@@ -1068,11 +1130,21 @@ def _attempt_changed_paths(
     branch: str | None,
     target_branch: str | None,
     worktree_path: Path | None,
+    primary_root: Path | None = None,
+    changed_paths_cache: dict[tuple[str, str | None], list[str]] | None = None,
 ) -> list[str]:
     changed: set[str] = set()
     if branch:
         try:
-            changed.update(branch_changed_paths(profile, branch=branch, target_branch=target_branch))
+            changed.update(
+                branch_changed_paths(
+                    profile,
+                    branch=branch,
+                    target_branch=target_branch,
+                    primary_root=primary_root,
+                    changed_paths_cache=changed_paths_cache,
+                )
+            )
         except WorktreeError:
             pass
     if worktree_path is not None and worktree_path.exists():
@@ -1126,11 +1198,13 @@ def _commit_metadata(repo_root: Path | None, ref: str = "HEAD") -> dict[str, str
 def _cleanup_classification(
     profile: RepoProfile,
     *,
+    primary_root: Path,
     branch: str | None,
     worktree_exists: bool,
     worktree_dirty_paths: list[str],
     active_attempt: bool,
     latest_attempt: TaskRuntimeRecord | None,
+    ref_cache: dict[str, str | None] | None = None,
 ) -> _CleanupClassification:
     if not worktree_exists:
         if active_attempt:
@@ -1139,9 +1213,10 @@ def _cleanup_classification(
             return _CleanupClassification("absent", "no branch or worktree remains", "absent")
         try:
             plan = _plan_task_branch_cleanup(
-                find_primary_worktree(profile.paths.project_root),
+                primary_root,
                 branch=branch,
                 latest_attempt=latest_attempt,
+                ref_cache=ref_cache,
             )
         except WorktreeError as exc:
             return _CleanupClassification("blocked_unlanded", str(exc), "unproven")
@@ -1156,9 +1231,10 @@ def _cleanup_classification(
         return _CleanupClassification("cleanup_ready", "no branch recorded", "no_branch")
     try:
         plan = _plan_task_branch_cleanup(
-            find_primary_worktree(profile.paths.project_root),
+            primary_root,
             branch=branch,
             latest_attempt=latest_attempt,
+            ref_cache=ref_cache,
         )
     except WorktreeError as exc:
         return _CleanupClassification("blocked_unlanded", str(exc), "unproven")
@@ -1171,15 +1247,35 @@ def _worktree_table_row(
     workset_id: str,
     task: TaskSpec,
     runtime_state: Any | None = None,
+    primary_root: Path | None = None,
+    primary_dirty: bool | None = None,
+    primary_dirty_paths: list[str] | None = None,
+    worktree_by_branch: dict[str, Path] | None = None,
+    ref_cache: dict[str, str | None] | None = None,
+    branch_ahead_cache: dict[tuple[str, str], tuple[bool, str | None]] | None = None,
+    changed_paths_cache: dict[tuple[str, str | None], list[str]] | None = None,
 ) -> dict[str, Any] | None:
     runtime_state = runtime_state or load_runtime_state(profile.paths)
+    primary_root = primary_root or find_primary_worktree(profile.paths.project_root)
     active_attempt = active_task_attempt(runtime_state, workset_id, task.task_id)
     latest_attempt = latest_task_attempt(runtime_state, workset_id, task.task_id)
     selected_attempt = active_attempt or latest_attempt
     if selected_attempt is None:
         return None
 
-    payload = _task_recovery_payload(profile, workset_id=workset_id, task_id=task.task_id, runtime_state=runtime_state)
+    payload = _task_recovery_payload(
+        profile,
+        workset_id=workset_id,
+        task_id=task.task_id,
+        runtime_state=runtime_state,
+        primary_root=primary_root,
+        primary_dirty=primary_dirty,
+        primary_dirty_paths=primary_dirty_paths,
+        worktree_by_branch=worktree_by_branch,
+        ref_cache=ref_cache,
+        branch_ahead_cache=branch_ahead_cache,
+        changed_paths_cache=changed_paths_cache,
+    )
 
     worktree_path = Path(payload["worktree_path"]).resolve() if payload["worktree_path"] else None
     worktree_dirty_paths = list(payload["worktree_dirty_paths"])
@@ -1190,11 +1286,13 @@ def _worktree_table_row(
     )
     cleanup = _cleanup_classification(
         profile,
+        primary_root=primary_root,
         branch=resolved_branch,
         worktree_exists=bool(payload["worktree_exists"]),
         worktree_dirty_paths=worktree_dirty_paths,
         active_attempt=bool(payload["active_attempt"]),
         latest_attempt=latest_attempt,
+        ref_cache=ref_cache,
     )
     if (
         not payload["worktree_exists"]
@@ -1203,9 +1301,7 @@ def _worktree_table_row(
         and cleanup.status == "absent"
     ):
         return None
-    commit_root = worktree_path if worktree_path is not None and worktree_path.exists() else find_primary_worktree(
-        profile.paths.project_root
-    )
+    commit_root = worktree_path if worktree_path is not None and worktree_path.exists() else primary_root
     commit_ref = "HEAD" if worktree_path is not None and worktree_path.exists() else resolved_branch or "HEAD"
     commit = _commit_metadata(commit_root, commit_ref)
     size_bytes = _path_size_bytes(worktree_path)
@@ -1250,9 +1346,28 @@ def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     planning_state = load_planning_state(profile.paths)
     runtime_state = load_runtime_state(profile.paths)
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    primary_dirty_paths = _managed_dirty_paths(profile, primary_root)
+    primary_dirty = bool(primary_dirty_paths)
+    worktree_by_branch = _worktree_branch_map(primary_root)
+    ref_cache: dict[str, str | None] = {}
+    branch_ahead_cache: dict[tuple[str, str], tuple[bool, str | None]] = {}
+    changed_paths_cache: dict[tuple[str, str | None], list[str]] = {}
     for workset in planning_state.worksets:
         for task in workset.tasks:
-            row = _worktree_table_row(profile, workset_id=workset.workset_id, task=task, runtime_state=runtime_state)
+            row = _worktree_table_row(
+                profile,
+                workset_id=workset.workset_id,
+                task=task,
+                runtime_state=runtime_state,
+                primary_root=primary_root,
+                primary_dirty=primary_dirty,
+                primary_dirty_paths=primary_dirty_paths,
+                worktree_by_branch=worktree_by_branch,
+                ref_cache=ref_cache,
+                branch_ahead_cache=branch_ahead_cache,
+                changed_paths_cache=changed_paths_cache,
+            )
             if row is not None:
                 rows.append(row)
     rows.sort(
@@ -1951,6 +2066,13 @@ def _task_recovery_payload(
     workset_id: str,
     task_id: str,
     runtime_state: Any | None = None,
+    primary_root: Path | None = None,
+    primary_dirty: bool | None = None,
+    primary_dirty_paths: list[str] | None = None,
+    worktree_by_branch: dict[str, Path] | None = None,
+    ref_cache: dict[str, str | None] | None = None,
+    branch_ahead_cache: dict[tuple[str, str], tuple[bool, str | None]] | None = None,
+    changed_paths_cache: dict[tuple[str, str | None], list[str]] | None = None,
 ) -> dict[str, Any]:
     _workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
     runtime_state = runtime_state or load_runtime_state(profile.paths)
@@ -1972,6 +2094,7 @@ def _task_recovery_payload(
             profile,
             branch=branch,
             worktree_path=recorded_worktree_path,
+            worktree_by_branch=worktree_by_branch,
         )
         if selected_attempt is not None
         else None
@@ -1982,9 +2105,15 @@ def _task_recovery_payload(
         profile,
         branch=branch,
         target_branch=target_branch,
+        primary_root=primary_root,
+        ref_cache=ref_cache,
+        branch_ahead_cache=branch_ahead_cache,
     )
-    primary_dirty = primary_worktree_is_dirty(profile, ignore_runtime=True)
-    primary_dirty_paths = primary_worktree_dirty_paths(profile, ignore_runtime=True)
+    primary_root = primary_root or find_primary_worktree(profile.paths.project_root)
+    if primary_dirty_paths is None:
+        primary_dirty_paths = _managed_dirty_paths(profile, primary_root)
+    if primary_dirty is None:
+        primary_dirty = bool(primary_dirty_paths)
     stale_claim = current_task_claim is not None and active_attempt is None
     recovery_state = _task_recovery_state(
         active_attempt=active_attempt is not None,
@@ -2064,6 +2193,8 @@ def _task_recovery_payload(
             branch=branch,
             target_branch=target_branch,
             worktree_path=task_worktree,
+            primary_root=primary_root,
+            changed_paths_cache=changed_paths_cache,
         ),
         "task_claim": (
             {
@@ -2134,7 +2265,7 @@ def _task_recovery_payload(
         ),
         "started_at": selected_attempt.started_at if selected_attempt is not None else None,
         "ended_at": selected_attempt.ended_at if selected_attempt is not None else None,
-        "primary_worktree": str(find_primary_worktree(profile.paths.project_root)),
+        "primary_worktree": str(primary_root),
         "primary_dirty": primary_dirty,
         "primary_dirty_paths": primary_dirty_paths,
         "recommended_actions": recommended_actions,
@@ -2806,11 +2937,12 @@ def cleanup_task_worktree(
         resolved_path = Path(latest_attempt.worktree_path).resolve()
     else:
         resolved_path = default_task_worktree_path(profile, workset_id=workset_id, task=task).resolve()
-    worktree_exists = resolved_path.exists()
+    path_exists = resolved_path.exists()
+    worktree_exists = path_exists and _is_git_worktree_path(resolved_path)
     active_attempt = active_task_attempt(runtime_state, workset_id, task_id)
     if active_attempt is not None:
         if not worktree_exists:
-            raise WorktreeError(f"active task worktree path not found: {resolved_path}")
+            raise WorktreeError(f"active task worktree path is missing or is not a git worktree: {resolved_path}")
         raise WorktreeError("refusing cleanup: active attempts must be landed or closed before cleanup")
     if worktree_exists and _managed_status_dirty(profile, resolved_path):
         raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {resolved_path}")

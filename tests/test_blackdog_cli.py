@@ -12,6 +12,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
+import blackdog.wtam as wtam
 from blackdog.contract import managed_skill_relative_path
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.profile import load_profile
@@ -1573,6 +1574,53 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         self.assertEqual(json.loads(stdout)["worktree_table"]["counts"]["rows"], 0)
 
+    def test_worktree_table_reuses_primary_worktree_lookup_for_multiple_rows(self) -> None:
+        self.install_repo_runtime()
+
+        for index in range(2):
+            exit_code, stdout, stderr = self.run_cli(
+                "task",
+                "begin",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "codex",
+                "--prompt",
+                f"Retain landed task worktree {index}.",
+                "--json",
+            )
+            self.assertEqual(exit_code, 0, stderr)
+            task_payload = json.loads(stdout)["task"]
+            worktree_path = Path(task_payload["worktree"]["worktree_path"])
+            (worktree_path / f"landed-{index}.txt").write_text(f"landed {index}\n", encoding="utf-8")
+
+            exit_code, _stdout, stderr = self.run_cli(
+                "task",
+                "land",
+                "--project-root",
+                str(self.root),
+                "--summary",
+                f"landed retained task {index}",
+                "--keep-worktree",
+                "--json",
+                cwd=worktree_path,
+            )
+            self.assertEqual(exit_code, 0, stderr)
+
+        with patch("blackdog.wtam.find_primary_worktree", wraps=wtam.find_primary_worktree) as find_primary:
+            exit_code, stdout, stderr = self.run_cli(
+                "worktree",
+                "table",
+                "--project-root",
+                str(self.root),
+                "--json",
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        table = json.loads(stdout)["worktree_table"]
+        self.assertEqual(table["counts"]["rows"], 2)
+        self.assertEqual(table["counts"]["cleanup_ready"], 2)
+        self.assertEqual(find_primary.call_count, 1)
+
     def test_worktree_cleanup_all_handles_missing_landed_worktree(self) -> None:
         self.install_repo_runtime()
 
@@ -1608,6 +1656,8 @@ class BlackdogCliTests(CoreAuditTestCase):
 
         subprocess.run(["git", "-C", str(self.root), "worktree", "remove", str(worktree_path)], check=True)
         self.assertFalse(worktree_path.exists())
+        worktree_path.mkdir(parents=True)
+        (worktree_path / "leftover.txt").write_text("not a git worktree\n", encoding="utf-8")
 
         exit_code, stdout, stderr = self.run_cli(
             "worktree",
