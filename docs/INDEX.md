@@ -51,6 +51,7 @@ CLI surfaces.
 - `blackdog summary`
 - `blackdog snapshot`
 - `blackdog worktree preflight`
+- `blackdog worktree table`
 - `blackdog worktree preview`
 - `blackdog worktree start`
 - `blackdog worktree show`
@@ -74,3 +75,5 @@ concern, not the default operator surface.
   surfaces on the new typed model.
 - Do not use architecture prose as the product workflow spec; use
   [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for that.
+- Keep task-class guard extension points in the product layer, with
+  `worktree preflight` remaining the WTAM workspace/readiness contract.

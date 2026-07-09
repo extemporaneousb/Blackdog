@@ -115,9 +115,15 @@ Text output is stable TSV. JSON output carries the same column names under
 `codex_longest_completed_turn_started_at`,
 `codex_longest_completed_turn_thread_id`,
 `codex_longest_completed_turn_id`,
-`implementation_like_unlinked_turns`, `linked_attempts`, `blackdog_version`,
-`profile_version`, `runtime_store_version`, `support_hash`, `docs_count`,
-`validation_count`, `prompt_modes`, `models`, `reasoning_efforts`, `error`.
+`implementation_like_unlinked_turns`, `linked_user_turns`,
+`unlinked_user_turns`, `linked_attempts`, `unlinked_attempts`,
+`cleanup_terminal_attempts`, `cleanup_retained_worktrees`,
+`cleanup_landed_retained_worktrees`,
+`cleanup_unlanded_terminal_attempts`, `blackdog_version`,
+`managed_source_mode`, `managed_source_status`, `managed_source_head`,
+`managed_source_origin`, `profile_version`, `runtime_store_version`,
+`support_hash`, `docs_count`, `validation_count`, `prompt_modes`, `models`,
+`reasoning_efforts`, `error`.
 
 `current_*` columns describe live task/attempt state now. `window_*` columns
 describe attempts whose start or end timestamp is inside the requested window;
@@ -129,13 +135,26 @@ that returned for that repo, measured from Codex `task_started` to
 `task_complete`. The companion `started_at`, `thread_id`, and `id` columns
 identify the turn. Codex turn metrics scan both active and archived Codex
 session logs and deduplicate repeated archived snapshots by thread and turn id.
+Linked/unlinked coverage columns are computed from the Codex coverage read
+model over the same session rows used for the repo table. Cleanup columns count
+terminal task attempts with recorded branch/worktree identity, retained
+worktree paths that still exist, retained worktrees after a landed attempt, and
+terminal branch/worktree attempts that have not recorded a `landed_commit`.
 
 Discovery skips nested `.worktrees`, `.git`, `.VE`, `.venv`, `node_modules`,
-cache, and build-output directories. `blackdog.toml` remains the source of
-truth for scanned membership; `repo table` does not read the user-local registry
-managed by `blackdog local-repo`. Archived repos are excluded unless
-`--include-archived` is set. With `--no-codex`, Codex columns are null in JSON
-and `-` in text.
+cache, and build-output directories. Once a `blackdog.toml` is discovered under
+a scanned root, discovery does not recurse below that repo; nested repos must be
+supplied explicitly if an operator wants them counted separately.
+`blackdog.toml` remains the source of truth for scanned membership; `repo table`
+does not read the user-local registry managed by `blackdog local-repo`.
+Archived repos are excluded unless `--include-archived` is set. With
+`--no-codex`, Codex columns are null in JSON and `-` in text.
+
+Managed-source columns report the configured Blackdog runtime handler state for
+the repo: `managed_source_mode` is the handler source mode, status is one of
+`missing`, `current`, `ahead`, `behind`, `diverged`, `no_origin`, `unknown`,
+`unconfigured`, or a non-managed source mode such as `target-repo`, and the
+head/origin columns show short commit ids when available.
 
 ### `blackdog local-repo`
 
@@ -243,6 +262,11 @@ note that the primary checkout remains dirty until those changes are committed,
 landed, reverted, or explicitly reported. Finish lifecycle runs with
 `git status --short`.
 
+Environment/launcher repair expectations for install are limited to the
+repo-root scope: validate or create the repo-root `.VE`, write the repo-local
+launcher, pin explicit handler blocks, and write the managed repo docs/skill
+surfaces when needed.
+
 ### `blackdog repo update`
 
 Refresh the repo-local `blackdog` launcher from a Blackdog source checkout.
@@ -265,6 +289,11 @@ config, but it does execute the configured handlers and report their actions.
 When update changes repo-visible managed files, it reports the same dirty
 primary checkout note; `.VE` and `.git` runtime repairs alone do not trigger
 that note.
+
+Environment/launcher repair expectations for update are also repo-root scoped:
+repair the configured source checkout/launcher path and handler-owned env
+artifacts, but do not rewrite repo-owned skill text or invent task-worktree
+state.
 
 ### `blackdog repo refresh`
 
@@ -609,6 +638,12 @@ delegates to the canonical `worktree land` success-closure path. Use
 through `task cleanup`. The canonical landed-commit trailers are the same ones
 documented under `worktree land`.
 
+Supervised integration closeout should use `task land` for successful worker
+slices and pass validation rows, residual risks, and follow-up candidates as
+explicit closure data. The final report should name the ownership slice and
+changed files, then point to these recorded closeout fields instead of relying
+only on chat context.
+
 ### `blackdog task close`
 
 Close the current task without landing code.
@@ -731,6 +766,13 @@ The `workspace role` field is the edit rule: implementation edits belong only
 in `workspace role: task`. A `primary` or `linked` workspace is a routing
 context for starting a branch-backed task worktree, not an implementation
 workspace.
+
+Task-class guard extension points should compose over this command instead of
+expanding it. `worktree preflight` answers whether the checkout is an allowed
+implementation workspace and whether the normal WTAM landing path is ready.
+Deployment, credential, external-service, or approval checks belong in
+product-layer task/repo-skill guard code or a future guard command that can use
+preflight output as one input.
 
 ```bash
 blackdog worktree preflight --project-root /path/to/repo
@@ -885,6 +927,11 @@ On the shipped handler path, `worktree start`:
 `worktree start` never fetches from network or repairs the managed source
 checkout. If the base env or managed source is missing, it fails explicitly and
 points back to `blackdog repo install` or `blackdog repo update`.
+
+Environment/launcher repair expectations for start are task-worktree scoped:
+create the worktree-local `.VE`, wire overlays and source paths, link root-bin
+fallback tools, and write the worktree-local launcher. Source-checkout repair
+stays with repo lifecycle commands.
 
 ### `blackdog worktree show`
 
@@ -1105,7 +1152,21 @@ Metric definitions:
   `landed_commit`
 - `not_landed_attempts`: completed attempts in the selected window without
   `landed_commit`
+- `cleanup_terminal_attempts`: terminal attempts with recorded branch or
+  worktree identity
+- `cleanup_retained_worktrees`: terminal attempts whose recorded worktree path
+  still exists
+- `cleanup_landed_retained_worktrees`: retained worktree paths for terminal
+  attempts that also recorded a `landed_commit`
+- `cleanup_unlanded_terminal_attempts`: terminal branch/worktree attempts
+  without a recorded `landed_commit`
 - `codex_user_turns`: repo-matched Codex user turns in the selected window
+- `codex_linked_user_turns` and `codex_unlinked_user_turns`: Codex user turns
+  with or without a strong Blackdog attempt relationship
+- `codex_implementation_like_unlinked_turns`: implementation-like Codex turns
+  that did not strongly link to a Blackdog attempt
+- `codex_linked_attempts` and `codex_unlinked_attempts`: Blackdog attempts with
+  or without a strong Codex turn relationship in the selected window
 - `codex_tool_calls`: tool/function-call items in those turns
 - `codex_*_tokens`: token counters reported by Codex session logs for those
   turns
@@ -1251,6 +1312,13 @@ mean strong launch relationships: explicit turn refs, prompt-hash matches, or a
 safe single-turn session match. Related/unrelated counters include advisory
 same-session and active-window evidence so older multi-turn Codex sessions can
 be analyzed retroactively without rewriting runtime state. It reports:
+
+Implementation-without-Blackdog detection is exposed here as
+`implementation_like_unlinked_turns`: Codex user turns that look like
+implementation work but are not strongly linked to a Blackdog attempt. This is
+one of Blackdog's learning/report outputs for tightening repo skills,
+task-class guard extension points, and operator training; it does not create or
+modify tasks.
 
 - Codex sessions and user-turn counts
 - Blackdog attempt counts and active attempts

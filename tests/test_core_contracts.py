@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+import argparse
 import tomllib
 
+from blackdog_cli.main import _build_parser
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
 class CoreContractTests(CoreAuditTestCase):
+    def _visible_subcommands(self, parser: argparse.ArgumentParser) -> tuple[str, ...]:
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return tuple(
+                    choice.dest
+                    for choice in action._choices_actions
+                    if choice.help != argparse.SUPPRESS
+                )
+        return ()
+
+    def _subparser(self, parser: argparse.ArgumentParser, command: str) -> argparse.ArgumentParser:
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return action.choices[command]
+        self.fail(f"{parser.prog} has no subparsers")
+
     def test_pyproject_and_makefile_keep_the_shipped_cli_surface(self) -> None:
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(pyproject["project"]["scripts"], {"blackdog": "blackdog_cli.main:main"})
@@ -139,6 +157,94 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertNotIn("supervisor", file_formats)
         self.assertNotIn("workset_manager", file_formats)
         self.assertNotIn("docs/SUPERVISED_EXECUTION_TARGET.md", index_doc)
+
+    def test_guardrail_reporting_contracts_are_documented(self) -> None:
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        product_spec = (REPO_ROOT / "docs" / "PRODUCT_SPEC.md").read_text(encoding="utf-8")
+        architecture = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        cli_doc = (REPO_ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
+        file_formats = (REPO_ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
+
+        for text in (product_spec, architecture, cli_doc, file_formats):
+            lower_text = text.lower()
+            with self.subTest(contract="task-class guards"):
+                self.assertIn("task-class guard extension points", lower_text)
+            with self.subTest(contract="implementation-without-Blackdog"):
+                self.assertIn("implementation-without-blackdog detection", lower_text)
+            with self.subTest(contract="learning reports"):
+                self.assertIn("learning/report outputs", lower_text)
+            with self.subTest(contract="supervised closeout"):
+                self.assertIn("supervised integration closeout", lower_text)
+
+        self.assertIn("environment/launcher repair expectations", product_spec.lower())
+        self.assertIn("environment/launcher repair expectations", architecture.lower())
+        self.assertIn("environment/launcher repair expectations", cli_doc.lower())
+        self.assertIn("handler_actions", file_formats)
+        self.assertIn("implementation_like_unlinked_turns", cli_doc)
+        self.assertIn("implementation_like_unlinked_turns", file_formats)
+        self.assertIn("blackdog codex coverage|history", agents)
+
+    def test_cli_help_docs_and_contracts_publish_the_same_visible_surface(self) -> None:
+        parser = _build_parser()
+        self.assertEqual(
+            self._visible_subcommands(parser),
+            (
+                "init",
+                "summary",
+                "snapshot",
+                "stats",
+                "local-repo",
+                "prompt",
+                "attempts",
+                "codex",
+                "repo",
+                "task",
+                "worktree",
+            ),
+        )
+        expected_nested = {
+            "local-repo": ("add", "list", "remove"),
+            "prompt": ("preview", "tune"),
+            "attempts": ("summary", "table"),
+            "codex": ("coverage", "history"),
+            "repo": (
+                "install",
+                "bind",
+                "table",
+                "archive",
+                "unarchive",
+                "unbind",
+                "analyze",
+                "scaffold",
+                "update",
+                "refresh",
+            ),
+            "task": ("begin", "show", "recover", "cancel", "reopen", "land", "close", "cleanup"),
+            "worktree": ("preflight", "table", "preview", "start", "show", "land", "close", "cleanup"),
+        }
+        index_doc = (REPO_ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
+        cli_doc = (REPO_ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        for parent, children in expected_nested.items():
+            with self.subTest(parent=parent):
+                self.assertEqual(self._visible_subcommands(self._subparser(parser, parent)), children)
+            for child in children:
+                command = f"blackdog {parent} {child}"
+                with self.subTest(command=command):
+                    self.assertIn(f"`{command}`", index_doc)
+                    if parent == "local-repo":
+                        self.assertIn(command, cli_doc)
+                    else:
+                        self.assertIn(f"### `{command}`", cli_doc)
+
+        for command in ("blackdog init", "blackdog summary", "blackdog snapshot", "blackdog stats"):
+            with self.subTest(command=command):
+                self.assertIn(f"`{command}`", index_doc)
+                self.assertIn(f"### `{command}`", cli_doc)
+
+        self.assertIn("blackdog codex coverage|history", agents)
+        self.assertIn("blackdog worktree preflight|table|preview|start|show|land|close|cleanup", agents)
 
     def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:
         removed_paths = [

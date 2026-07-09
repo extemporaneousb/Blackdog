@@ -9,8 +9,9 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from blackdog.local_registry import registered_project_roots
+from blackdog.repo_membership import attempt_cleanup_health_counts
 from blackdog.repo_lifecycle import RepoLifecycleError
-from blackdog_core.codex_sessions import CodexTurn, collect_codex_turns, project_codex_turns
+from blackdog_core.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
 from blackdog_core.profile import ConfigError, RepoProfile, load_profile
 from blackdog_core.runtime_model import AttemptView, RuntimeModel, load_runtime_model
 from blackdog_core.state import now_iso, parse_iso
@@ -28,6 +29,9 @@ STATS_BUCKET_COLUMNS = (
     "landed_attempts",
     "not_landed_attempts",
     "codex_user_turns",
+    "codex_linked_user_turns",
+    "codex_unlinked_user_turns",
+    "codex_implementation_like_unlinked_turns",
     "codex_tool_calls",
     "codex_input_tokens",
     "codex_cached_input_tokens",
@@ -99,13 +103,8 @@ def build_stats(
             until_dt=until_dt,
             local_tz=local_tz,
         )
-        turns = project_codex_turns(
-            profile,
-            since=codex_since,
-            until=codex_until,
-            codex_turns=all_codex_turns,
-        )
-        codex_summary, codex_buckets = _repo_codex_stats(profile, turns=turns, local_tz=local_tz)
+        coverage = build_codex_coverage(profile, since=codex_since, until=codex_until, codex_turns=all_codex_turns)
+        codex_summary, codex_buckets = _repo_codex_stats(profile, coverage=coverage, local_tz=local_tz)
         repo_row = _merge_counts(repo_summary, codex_summary)
         repo_row["project_name"] = profile.project_name
         repo_row["project_root"] = str(profile.paths.project_root)
@@ -150,8 +149,21 @@ def render_stats_text(result: StatsResult) -> str:
         ),
         f"Landing: landed={summary['landed_attempts']} not_landed={summary['not_landed_attempts']}",
         (
+            "Cleanup: "
+            f"terminal={summary['cleanup_terminal_attempts']} "
+            f"retained_worktrees={summary['cleanup_retained_worktrees']} "
+            f"landed_retained={summary['cleanup_landed_retained_worktrees']} "
+            f"unlanded_terminal={summary['cleanup_unlanded_terminal_attempts']}"
+        ),
+        (
             "Codex: "
-            f"turns={summary['codex_user_turns']} tools={summary['codex_tool_calls']} "
+            f"sessions={summary['codex_sessions']} turns={summary['codex_user_turns']} "
+            f"linked_turns={summary['codex_linked_user_turns']} "
+            f"unlinked_turns={summary['codex_unlinked_user_turns']} "
+            f"implementation_like_unlinked={summary['codex_implementation_like_unlinked_turns']} "
+            f"linked_attempts={summary['codex_linked_attempts']} "
+            f"unlinked_attempts={summary['codex_unlinked_attempts']} "
+            f"tools={summary['codex_tool_calls']} "
             f"tokens={summary['codex_total_tokens']}"
         ),
     ]
@@ -235,6 +247,7 @@ def _repo_runtime_stats(
     summary["canceled_tasks"] = sum(1 for task in tasks if task.runtime_status == "canceled")
     summary["current_attempts"] = sum(1 for attempt in attempts if attempt.is_active)
     summary["attempts_total"] = len(attempts)
+    summary.update(attempt_cleanup_health_counts(attempts))
 
     buckets: dict[str, dict[str, object]] = {}
     for attempt in attempts:
@@ -250,19 +263,23 @@ def _repo_runtime_stats(
 def _repo_codex_stats(
     profile: RepoProfile,
     *,
-    turns: tuple[CodexTurn, ...],
+    coverage: dict[str, Any],
     local_tz: ZoneInfo,
 ) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
     summary = _empty_summary()
+    coverage_counts = coverage.get("counts", {})
+    summary["codex_sessions"] = int(coverage_counts.get("codex_sessions") or 0)
+    summary["codex_linked_attempts"] = int(coverage_counts.get("linked_attempts") or 0)
+    summary["codex_unlinked_attempts"] = int(coverage_counts.get("unlinked_attempts") or 0)
     buckets: dict[str, dict[str, object]] = {}
-    for turn in turns:
-        if not turn.user_message_hash:
+    for turn in coverage.get("turns", ()):
+        if not isinstance(turn, dict) or not turn.get("user_message_hash"):
             continue
-        _add_turn_to_summary(summary, turn)
-        bucket_key = _bucket_for_started_at(turn.started_at, local_tz)
+        _add_turn_row_to_summary(summary, turn)
+        bucket_key = _bucket_for_started_at(str(turn.get("started_at") or ""), local_tz)
         bucket = buckets.setdefault(bucket_key, _empty_bucket(bucket_key))
         _add_bucket_repo(bucket, profile)
-        _add_turn_to_bucket(bucket, turn)
+        _add_turn_row_to_bucket(bucket, turn)
     return summary, tuple(row for _, row in sorted(buckets.items()))
 
 
@@ -309,7 +326,17 @@ def _empty_summary() -> dict[str, int]:
         "failed_attempts": 0,
         "landed_attempts": 0,
         "not_landed_attempts": 0,
+        "cleanup_terminal_attempts": 0,
+        "cleanup_retained_worktrees": 0,
+        "cleanup_landed_retained_worktrees": 0,
+        "cleanup_unlanded_terminal_attempts": 0,
+        "codex_sessions": 0,
         "codex_user_turns": 0,
+        "codex_linked_user_turns": 0,
+        "codex_unlinked_user_turns": 0,
+        "codex_implementation_like_unlinked_turns": 0,
+        "codex_linked_attempts": 0,
+        "codex_unlinked_attempts": 0,
         "codex_tool_calls": 0,
         "codex_input_tokens": 0,
         "codex_cached_input_tokens": 0,
@@ -378,6 +405,53 @@ def _add_turn_to_bucket(bucket: dict[str, object], turn: CodexTurn) -> None:
     bucket["codex_output_tokens"] = int(bucket["codex_output_tokens"]) + turn.output_tokens
     bucket["codex_reasoning_output_tokens"] = int(bucket["codex_reasoning_output_tokens"]) + turn.reasoning_output_tokens
     bucket["codex_total_tokens"] = int(bucket["codex_total_tokens"]) + turn.total_tokens
+
+
+def _add_turn_row_to_summary(summary: dict[str, int], turn: dict[str, Any]) -> None:
+    linked = bool(turn.get("linked_attempt_ids"))
+    summary["codex_user_turns"] += 1
+    if linked:
+        summary["codex_linked_user_turns"] += 1
+    else:
+        summary["codex_unlinked_user_turns"] += 1
+    if turn.get("classification") == "implementation_likely" and not linked:
+        summary["codex_implementation_like_unlinked_turns"] += 1
+    summary["codex_tool_calls"] += _int_value(turn.get("tool_call_count"))
+    summary["codex_input_tokens"] += _int_value(turn.get("input_tokens"))
+    summary["codex_cached_input_tokens"] += _int_value(turn.get("cached_input_tokens"))
+    summary["codex_output_tokens"] += _int_value(turn.get("output_tokens"))
+    summary["codex_reasoning_output_tokens"] += _int_value(turn.get("reasoning_output_tokens"))
+    summary["codex_total_tokens"] += _int_value(turn.get("total_tokens"))
+
+
+def _add_turn_row_to_bucket(bucket: dict[str, object], turn: dict[str, Any]) -> None:
+    linked = bool(turn.get("linked_attempt_ids"))
+    bucket["codex_user_turns"] = int(bucket["codex_user_turns"]) + 1
+    if linked:
+        bucket["codex_linked_user_turns"] = int(bucket["codex_linked_user_turns"]) + 1
+    else:
+        bucket["codex_unlinked_user_turns"] = int(bucket["codex_unlinked_user_turns"]) + 1
+    if turn.get("classification") == "implementation_likely" and not linked:
+        bucket["codex_implementation_like_unlinked_turns"] = (
+            int(bucket["codex_implementation_like_unlinked_turns"]) + 1
+        )
+    bucket["codex_tool_calls"] = int(bucket["codex_tool_calls"]) + _int_value(turn.get("tool_call_count"))
+    bucket["codex_input_tokens"] = int(bucket["codex_input_tokens"]) + _int_value(turn.get("input_tokens"))
+    bucket["codex_cached_input_tokens"] = int(bucket["codex_cached_input_tokens"]) + _int_value(
+        turn.get("cached_input_tokens")
+    )
+    bucket["codex_output_tokens"] = int(bucket["codex_output_tokens"]) + _int_value(turn.get("output_tokens"))
+    bucket["codex_reasoning_output_tokens"] = int(bucket["codex_reasoning_output_tokens"]) + _int_value(
+        turn.get("reasoning_output_tokens")
+    )
+    bucket["codex_total_tokens"] = int(bucket["codex_total_tokens"]) + _int_value(turn.get("total_tokens"))
+
+
+def _int_value(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _merge_counts(left: dict[str, object], right: dict[str, object]) -> dict[str, object]:

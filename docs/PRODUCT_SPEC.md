@@ -160,6 +160,41 @@ not exposed through the repo skill in v1. For multi-agent work, use the active
 Codex thread directly and let Blackdog capture the durable task attempt results
 it can measure.
 
+## Guardrail And Reporting Contracts
+
+`worktree preflight` is the WTAM workspace and branch-readiness contract.
+Task-class guard extension points are product-layer checks that compose over
+that contract when a request class needs additional prerequisites, such as a
+deployment route, credential, runtime, or approval check. They should run from
+repo skills, `task begin` preparation, prompt/contract preview, or a future
+product-layer guard command; they should not broaden `blackdog_core` or make
+`worktree preflight` responsible for every task-specific policy. If a guard
+needs durable configuration or persisted result fields, `docs/FILE_FORMATS.md`
+must define that schema before code writes it.
+
+Environment/launcher repair expectations are deliberately narrow. `repo
+install`, `repo update`, and `repo refresh` own repo-local handler validation
+and launcher repair. `worktree start` owns task-worktree setup: create the
+worktree-local `.VE`, wire the repo-root overlay and source paths, link
+root-bin fallback tools, and write the worktree-local `blackdog` launcher.
+When a required base env, managed source checkout, or launcher cannot be
+repaired in that command's scope, Blackdog should fail explicitly and point to
+the lifecycle command that owns the repair.
+
+Implementation-without-Blackdog detection is a reporting and learning signal,
+not task truth. `codex coverage`, `codex history`, `repo table`, and `stats`
+scan Codex sessions and attempt history to report implementation-like unlinked
+turns, environment issue classes, prompt lineage, token usage, and task/attempt
+outcomes. Those learning/report outputs help tune guardrails and repo skills
+without rewriting runtime state from chat logs.
+
+Supervised integration closeout uses the active Codex thread for coordination
+and Blackdog for durable task attempts. A closeout should report the worker
+ownership slice, changed files, validation commands and outcomes, blockers,
+residual risks, follow-ups, and whether the work was landed or intentionally
+left for integration. It is a reporting contract on top of task attempts, not
+a reason to restore removed orchestration surfaces.
+
 ## V1 Stories
 
 These stories define the v1 target.

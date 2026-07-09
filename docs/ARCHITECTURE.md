@@ -115,6 +115,38 @@ Any future orchestration beyond the direct WTAM path still belongs in
 `blackdog`, not in `blackdog_core`. The core model should stay small while the
 product layer owns higher-level operator policy.
 
+## Guardrails And Reporting
+
+Task-class guard extension points live in the `blackdog` product layer. They
+may consume `worktree preflight`, prompt preview, repo-skill context, handler
+preview output, and attempt history, but they do not change the core
+planning/runtime ownership boundary. The WTAM preflight surface stays focused
+on workspace role, branch, dirty state, landing readiness, worktree inventory,
+and the repo-local CLI path. Class-specific checks for deployment route,
+credentials, external services, or approvals should be layered around task
+start and closeout rather than embedded into `blackdog_core`.
+
+Environment/launcher repair expectations are owned by repo lifecycle and
+handler orchestration. `repo install`, `repo update`, and `repo refresh`
+validate configured handlers and repair repo-local runtime artifacts in the
+repo-root scope. `worktree start` executes the handler plan for the task
+workspace: worktree-local `.VE`, overlay/source-path wiring, root-bin fallback
+links, and the worktree-local launcher. Handler actions are reported by those
+commands and recorded on `worktree.start` events when task execution starts.
+
+Implementation-without-Blackdog detection lives in read models, not in runtime
+mutation. `codex coverage` and `codex history` compare Codex session logs
+against Blackdog attempts, classify implementation-like unlinked turns, attach
+environment issue evidence, and feed `repo table` and `stats`. Those
+learning/report outputs support product tuning and audit without copying full
+transcripts into Blackdog state.
+
+Supervised integration closeout is a coordination/reporting convention over
+the same task-attempt model. Multiple workers can use the active Codex thread
+for coordination, but durable state still flows through task begin/show/land/
+close, attempt history, validation rows, residuals, follow-ups, and changed
+paths. The architecture does not reintroduce a separate multi-agent runtime.
+
 ## Current Shipped Surface
 
 The current coherent product surface on top of the new core is:
@@ -224,8 +256,9 @@ outside the repo or git common dir.
 Codex-session counts. It accepts explicit project roots or the user-local
 registry, buckets attempt and Codex turn counts by `started_at` in a selected
 timezone, deduplicates exact aliases for the same resolved Blackdog project
-root, and keeps nested repos separate when they have distinct `blackdog.toml`
-profiles.
+root, reports cleanup health for terminal branch/worktree attempts, exposes
+linked/unlinked Codex coverage counts, and keeps nested repos separate when
+they have distinct `blackdog.toml` profiles.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

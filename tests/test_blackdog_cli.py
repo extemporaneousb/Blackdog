@@ -412,6 +412,54 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(any(item["path"] == str(agents_path.resolve()) for item in preview["contract_documents"]))
         self.assertTrue(any(item["text"] == "repo skill\n" for item in preview["contract_documents"]))
 
+    def test_worktree_preflight_ignores_configured_generated_primary_paths(self) -> None:
+        self.install_repo_runtime()
+        profile_path = self.root / "blackdog.toml"
+        profile_text = profile_path.read_text(encoding="utf-8")
+        profile_text = profile_text.replace('root_path = ".VE"', 'root_path = "generated-env"', 1)
+        profile_text = profile_text.replace('worktree_path = ".VE"', 'worktree_path = "generated-env"', 1)
+        profile_text = profile_text.replace('launcher_path = ".VE/bin/blackdog"', 'launcher_path = "generated-env/bin/blackdog"', 1)
+        profile_path.write_text(profile_text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "blackdog.toml"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Use visible generated handler path"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        generated_path = self.root / "generated-env" / "generated.txt"
+        generated_path.parent.mkdir(parents=True, exist_ok=True)
+        generated_path.write_text("generated\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "preflight",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        preflight_payload = json.loads(stdout)
+        self.assertTrue(preflight_payload["dirty"])
+        self.assertFalse(preflight_payload["primary_dirty"])
+        self.assertFalse(preflight_payload["implementation_dirty"])
+        self.assertEqual(preflight_payload["primary_dirty_paths"], [])
+
+        (self.root / "real-dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "preflight",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        preflight_payload = json.loads(stdout)
+        self.assertTrue(preflight_payload["primary_dirty"])
+        self.assertEqual(preflight_payload["primary_dirty_paths"], ["real-dirty.txt"])
+
     def test_worktree_start_land_and_cleanup_drive_the_kept_change_flow(self) -> None:
         payload = {
             "id": "direct-mode",
@@ -1104,10 +1152,113 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         cleanup_payload = json.loads(stdout)["cleanup"]
         self.assertEqual(cleanup_payload["worktree_path"], str(worktree_path))
+        self.assertTrue(cleanup_payload["worktree_existed"])
         self.assertTrue(cleanup_payload["deleted_branch"])
         self.assertTrue(cleanup_payload["force_deleted_branch"])
+        self.assertEqual(cleanup_payload["branch_cleanup_proof"], "patch_equivalent")
         self.assertIn("canonical landed commit", cleanup_payload["branch_cleanup_reason"])
         self.assertFalse(worktree_path.exists())
+
+    def test_task_cleanup_removes_missing_retained_workspace_when_branch_is_proven(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Land and retain a workspace that later disappears.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        branch = task_payload["worktree"]["branch"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "missing-cleanup.txt").write_text("cleanup\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "landed but retained before external cleanup",
+            "--keep-worktree",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        table = json.loads(stdout)["worktree_table"]
+        self.assertEqual(table["counts"]["rows"], 1)
+        row = table["rows"][0]
+        self.assertEqual(row["cleanup_status"], "cleanup_ready")
+        self.assertEqual(row["cleanup_proof"], "patch_equivalent")
+        self.assertIn("worktree already absent", row["cleanup_reason"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--all",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        cleanup = json.loads(stdout)["cleanup"]
+        self.assertEqual(len(cleanup["cleaned"]), 1)
+        self.assertFalse(cleanup["cleaned"][0]["worktree_existed"])
+        self.assertEqual(cleanup["cleaned"][0]["branch_cleanup_proof"], "patch_equivalent")
+        self.assertEqual(cleanup["remaining"]["counts"]["rows"], 0)
+        self.assertNotIn(branch, self.git_output("branch", "--format=%(refname:short)").splitlines())
+
+    def test_task_cleanup_refuses_active_attempt_even_when_worktree_is_clean(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Start active work that must not be cleaned directly.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        worktree_path = Path(json.loads(stdout)["task"]["worktree"]["worktree_path"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("active attempts must be landed or closed before cleanup", stderr)
+        self.assertTrue(worktree_path.exists())
 
     def test_task_cleanup_refuses_unproven_branch_after_landing(self) -> None:
         self.install_repo_runtime()
@@ -1240,6 +1391,118 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("last_commit_message", stdout.splitlines()[0])
         self.assertIn("size_bytes", stdout.splitlines()[0])
 
+    def test_worktree_table_reports_no_ahead_cleanup_proof(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Close a clean no-ahead task workspace.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        worktree_path = Path(json.loads(stdout)["task"]["worktree"]["worktree_path"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "blocked",
+            "--summary",
+            "closed without changes",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        row = json.loads(stdout)["worktree_table"]["rows"][0]
+        self.assertEqual(row["cleanup_status"], "cleanup_ready")
+        self.assertEqual(row["cleanup_proof"], "no_ahead")
+        self.assertIn("no commits ahead", row["cleanup_reason"])
+
+    def test_worktree_table_reports_contained_branch_cleanup_proof(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Close a branch already contained by main.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        branch = task_payload["worktree"]["branch"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        (worktree_path / "contained.txt").write_text("contained\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(worktree_path), "add", "contained.txt"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "commit", "-m", "Add contained work"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "merge", "--ff-only", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (self.root / "after-contained.txt").write_text("after\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "after-contained.txt"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance after contained work"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "blocked",
+            "--summary",
+            "closed after branch was already contained",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        row = json.loads(stdout)["worktree_table"]["rows"][0]
+        self.assertEqual(row["cleanup_status"], "cleanup_ready")
+        self.assertEqual(row["cleanup_proof"], "contained")
+        self.assertIn("already merged", row["cleanup_reason"])
+
     def test_worktree_cleanup_all_removes_cleanup_ready_rows_until_table_is_empty(self) -> None:
         self.install_repo_runtime()
 
@@ -1309,6 +1572,76 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         self.assertEqual(json.loads(stdout)["worktree_table"]["counts"]["rows"], 0)
+
+    def test_worktree_cleanup_all_handles_missing_landed_worktree(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Retain a landed task worktree, then lose the directory before cleanup.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        branch = task_payload["worktree"]["branch"]
+        (worktree_path / "landed.txt").write_text("landed\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "landed but retained before external cleanup",
+            "--keep-worktree",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        subprocess.run(["git", "-C", str(self.root), "worktree", "remove", str(worktree_path)], check=True)
+        self.assertFalse(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        table = json.loads(stdout)["worktree_table"]
+        self.assertEqual(table["counts"]["rows"], 1)
+        self.assertEqual(table["counts"]["cleanup_ready"], 1)
+        self.assertEqual(table["rows"][0]["cleanup_status"], "cleanup_ready")
+        self.assertIn("worktree already absent", table["rows"][0]["cleanup_reason"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--all",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        cleanup = json.loads(stdout)["cleanup"]
+        self.assertEqual(len(cleanup["cleaned"]), 1)
+        self.assertEqual(cleanup["remaining"]["counts"]["rows"], 0)
+        branch_list = subprocess.run(
+            ["git", "-C", str(self.root), "branch", "--list", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(branch_list, "")
 
     def test_task_recover_reports_dirty_same_thread_recovery_state(self) -> None:
         self.install_repo_runtime()
@@ -1954,6 +2287,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(land_payload["land_failure_disposition"], "retryable")
         self.assertEqual(land_payload["failure_class"], "stale_branch")
         self.assertEqual(land_payload["recovery_action"], "rebase_task_branch")
+        self.assertIn(f"git -C {worktree_path} rebase main", land_payload["error"])
+        self.assertIn(f"git -C {worktree_path} rebase main", land_payload["recommended_actions"][0])
 
         subprocess.run(
             ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],

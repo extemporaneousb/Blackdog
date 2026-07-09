@@ -525,16 +525,18 @@ def build_codex_coverage(
     profile: RepoProfile,
     *,
     since: str | None = None,
+    until: str | None = None,
     codex_turns: Iterable[CodexTurn] | None = None,
 ) -> dict[str, Any]:
-    turns = _project_turns(profile, since=since, until=None, codex_turns=codex_turns)
+    turns = _project_turns(profile, since=since, until=until, codex_turns=codex_turns)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
+    upper = _parse_until(until)
     attempts = tuple(
         attempt
         for workset in model.worksets
         for attempt in workset.attempts
-        if _attempt_in_window(attempt, cutoff)
+        if _attempt_in_bounds(attempt, cutoff=cutoff, upper=upper)
     )
     relationships = _relate_turns_to_attempts(turns, attempts)
     linked = _strong_link_attempt_ids(relationships)
@@ -602,6 +604,7 @@ def build_codex_coverage(
         "project_root": str(profile.paths.project_root),
         "generated_at": now_iso(),
         "since": since,
+        "until": until,
         "counts": {
             "codex_sessions": len({turn.session_path for turn in turns}),
             "codex_user_turns": len([turn for turn in turns if turn.user_message_hash is not None]),
@@ -1790,14 +1793,28 @@ def _parse_until(value: str | None) -> datetime | None:
 
 
 def _attempt_in_window(attempt: AttemptView, cutoff: datetime | None) -> bool:
+    return _attempt_in_bounds(attempt, cutoff=cutoff, upper=None)
+
+
+def _attempt_in_bounds(attempt: AttemptView, *, cutoff: datetime | None, upper: datetime | None) -> bool:
     if cutoff is None:
-        return True
+        lower_ok = True
+    else:
+        lower_ok = False
     started = parse_iso(attempt.started_at)
     ended = parse_iso(attempt.ended_at)
     anchor = ended or started
     if anchor is None:
         return False
-    return anchor >= cutoff
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+    if cutoff is not None:
+        lower_ok = anchor >= cutoff.astimezone(anchor.tzinfo or timezone.utc)
+    if not lower_ok:
+        return False
+    if upper is not None and anchor >= upper.astimezone(anchor.tzinfo or timezone.utc):
+        return False
+    return True
 
 
 def _turn_key(turn: CodexTurn) -> tuple[str, str]:

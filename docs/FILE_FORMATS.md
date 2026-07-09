@@ -146,6 +146,32 @@ the configured control directory when it is inside the repo or git common dir.
 It preserves repo-owned `AGENTS.md` text, unrelated dirty files, external
 control dirs, and `.blackdog/history.jsonl` by default.
 
+## Guardrail And Reporting Schema Notes
+
+Task-class guard extension points do not have a v1 durable schema field.
+Today they are product-layer policy that can read `blackdog.toml`, routed docs,
+prompt receipts, handler previews, preflight output, attempts, and Codex
+coverage/history rows. If a future guard writes durable configuration or
+results, this file must define the field names and allowed values before the
+implementation writes them.
+
+Environment/launcher repair expectations use existing handler and event
+payloads. Repo lifecycle commands report handler actions in command output.
+Task execution records `workspace_blackdog_path`, optional `runtime_mode`,
+optional `source_mode`, optional `script_policy`, and `handler_actions` on the
+`worktree.start` event. No separate env-repair state file exists.
+
+Implementation-without-Blackdog detection is represented only in read-model
+outputs: `codex coverage` counts `implementation_like_unlinked_turns`, `codex
+history` emits matching `codex_turn` rows with bounded prompt hashes/excerpts,
+and `repo table`/`stats` can surface those learning/report outputs. These rows
+do not create tasks or rewrite `runtime.json`.
+
+Supervised integration closeout uses existing attempt fields and landed-commit
+trailers: validations, residuals, follow-up candidates, changed paths, status,
+commit, landed commit, prompt lineage, and structured failure fields. There is
+no separate supervised integration closeout file in v1.
+
 ## `planning.json`
 
 Canonical planning truth.
@@ -202,6 +228,11 @@ Current version markers:
 
 Blackdog still reads v2 runtime files and migrates them to v3 on the next
 write.
+
+File-backed runtime mutations hold an adjacent interprocess lock across the
+load/merge/save transaction. The POSIX lock file is `runtime.json.lock`; the
+non-`fcntl` stdlib fallback uses `runtime.json.lockdir`. These are coordination
+artifacts only, not planning truth or runtime truth.
 
 Each runtime workset row contains:
 

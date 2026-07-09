@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 import hashlib
 import json
 import os
 import tempfile
+import time
 import uuid
+
+try:  # pragma: no cover - exercised through the locking behavior on platforms with fcntl.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from .profile import BlackdogPaths
 
@@ -266,6 +273,34 @@ def atomic_write_text(path: Path, text: str) -> None:
         handle.write(text)
         temp_path = Path(handle.name)
     os.replace(temp_path, path)
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[None]:
+    """Hold an interprocess lock next to a state file."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:
+        lock_dir = path.with_name(f"{path.name}.lockdir")
+        while True:
+            try:
+                lock_dir.mkdir()
+                break
+            except FileExistsError:
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            lock_dir.rmdir()
+        return
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
@@ -778,6 +813,11 @@ class JsonRuntimeStore:
         )
 
     def save(self, path: Path, state: RuntimeState) -> None:
+        with exclusive_file_lock(path):
+            state_to_write = _merge_runtime_save_state(path, state)
+            self._save_unlocked(path, state_to_write)
+
+    def _save_unlocked(self, path: Path, state: RuntimeState) -> None:
         atomic_write_text(path, json.dumps(runtime_state_to_payload(state), indent=2, sort_keys=True) + "\n")
 
 
@@ -787,6 +827,49 @@ def load_runtime_state(paths: BlackdogPaths, store: RuntimeStore | None = None) 
 
 def save_runtime_state(paths: BlackdogPaths, state: RuntimeState, store: RuntimeStore | None = None) -> None:
     (store or JsonRuntimeStore()).save(paths.runtime_file, state)
+
+
+def mutate_runtime_state(
+    paths: BlackdogPaths,
+    mutator: Callable[[RuntimeState], RuntimeState],
+    store: RuntimeStore | None = None,
+) -> RuntimeState:
+    """Load, mutate, and save runtime state while holding the runtime file lock."""
+    runtime_store = store or JsonRuntimeStore()
+    with exclusive_file_lock(paths.runtime_file):
+        current = runtime_store.load(paths.runtime_file)
+        next_state = mutator(current)
+        unlocked_save = getattr(runtime_store, "_save_unlocked", None)
+        if callable(unlocked_save):
+            unlocked_save(paths.runtime_file, next_state)
+        else:
+            runtime_store.save(paths.runtime_file, next_state)
+        return next_state
+
+
+def _merge_runtime_save_state(path: Path, incoming: RuntimeState) -> RuntimeState:
+    """Preserve worksets written by another process between this caller's load and save."""
+    try:
+        current = JsonRuntimeStore().load(path)
+    except FileNotFoundError:
+        current = default_runtime_state()
+    if not current.worksets:
+        return incoming
+    incoming_by_id = {workset.workset_id: workset for workset in incoming.worksets}
+    merged: list[WorksetRuntime] = []
+    seen: set[str] = set()
+    for workset in current.worksets:
+        replacement = incoming_by_id.get(workset.workset_id)
+        merged.append(replacement or workset)
+        seen.add(workset.workset_id)
+    for workset in incoming.worksets:
+        if workset.workset_id not in seen:
+            merged.append(workset)
+    return RuntimeState(
+        schema_version=incoming.schema_version,
+        store_version=incoming.store_version,
+        worksets=tuple(merged),
+    )
 
 
 def workset_runtime(state: RuntimeState, workset_id: str) -> WorksetRuntime | None:
@@ -1035,6 +1118,7 @@ __all__ = [
     "load_events",
     "load_runtime_state",
     "merge_workset_runtime",
+    "mutate_runtime_state",
     "now_iso",
     "parse_iso",
     "prompt_receipt_reference",

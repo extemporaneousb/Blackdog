@@ -463,6 +463,86 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(unlinked_turn["linked_attempt_ids"], [])
         self.assertEqual(coverage["counts"]["implementation_like_unlinked_turns"], 1)
 
+    def test_coverage_respects_until_bound_for_turns_and_attempts(self) -> None:
+        old_message = "Implement windowed coverage."
+        future_message = "Implement future coverage."
+        _write_multi_turn_session(
+            self.codex_home,
+            thread_id="thread-window",
+            cwd=self.root,
+            turns=(
+                {
+                    "turn_id": "turn-window",
+                    "started_at": "2026-05-04T19:00:00+00:00",
+                    "message": old_message,
+                },
+                {
+                    "turn_id": "turn-future",
+                    "started_at": "2026-05-06T19:00:00+00:00",
+                    "message": future_message,
+                },
+            ),
+        )
+        upsert_workset(
+            self.profile,
+            {
+                "id": "codex-window",
+                "title": "Codex window",
+                "tasks": [
+                    {"id": "CW-1", "title": "Window task", "intent": "inside window"},
+                    {"id": "CW-2", "title": "Future task", "intent": "outside window"},
+                ],
+            },
+        )
+        old_receipt = create_prompt_receipt(old_message, recorded_at="2026-05-04T19:00:00+00:00")
+        future_receipt = create_prompt_receipt(future_message, recorded_at="2026-05-06T19:00:00+00:00")
+        with patch("blackdog_core.backlog.now_iso", side_effect=["2026-05-04T19:00:00+00:00", "2026-05-04T19:05:00+00:00"]):
+            attempt = start_task(
+                self.profile,
+                workset_id="codex-window",
+                task_id="CW-1",
+                actor="codex",
+                prompt_receipt=prompt_receipt_reference(old_receipt),
+            )
+            finish_task(
+                self.profile,
+                workset_id="codex-window",
+                task_id="CW-1",
+                attempt_id=attempt.attempt_id,
+                actor="codex",
+                status="success",
+                summary="inside window",
+            )
+        with patch("blackdog_core.backlog.now_iso", side_effect=["2026-05-06T19:00:00+00:00", "2026-05-06T19:05:00+00:00"]):
+            attempt = start_task(
+                self.profile,
+                workset_id="codex-window",
+                task_id="CW-2",
+                actor="codex",
+                prompt_receipt=prompt_receipt_reference(future_receipt),
+            )
+            finish_task(
+                self.profile,
+                workset_id="codex-window",
+                task_id="CW-2",
+                attempt_id=attempt.attempt_id,
+                actor="codex",
+                status="success",
+                summary="outside window",
+            )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(
+                self.profile,
+                since="2026-05-04T00:00:00+00:00",
+                until="2026-05-05T00:00:00+00:00",
+            )
+
+        self.assertEqual(coverage["counts"]["codex_user_turns"], 1)
+        self.assertEqual(coverage["counts"]["blackdog_attempts"], 1)
+        self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        self.assertEqual(coverage["turns"][0]["turn_id"], "turn-window")
+
     def test_coverage_marks_same_session_followups_as_related_without_linking_them(self) -> None:
         launch_message = "Implement the task launch."
         followup_message = "Run the validation after the branch is ready."

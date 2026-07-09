@@ -251,6 +251,26 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertNotIn("legacy_worksets", payload["columns"])
         self.assertEqual([row["project_name"] for row in payload["rows"]], ["Active Repo"])
         self.assertIsNone(payload["rows"][0]["codex_sessions"])
+        self.assertIn("managed_source_status", payload["columns"])
+        self.assertEqual(payload["rows"][0]["managed_source_mode"], "managed-checkout")
+        self.assertEqual(payload["rows"][0]["managed_source_status"], "missing")
+
+    def test_repo_table_prunes_nested_profiles_under_discovered_repo(self) -> None:
+        fleet_root = self.root / "fleet"
+        self.make_member_repo(fleet_root, "outer-repo", project_name="Outer Repo")
+        self.make_member_repo(fleet_root / "outer-repo" / "work", "nested-repo", project_name="Nested Repo")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        rows = json.loads(stdout)["repo_table"]["rows"]
+        self.assertEqual([row["project_name"] for row in rows], ["Outer Repo"])
 
     def test_repo_table_excludes_archived_repos_by_default(self) -> None:
         fleet_root = self.root / "fleet"
@@ -428,6 +448,14 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_started_at"], "2026-05-04T19:00:01Z")
         self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_thread_id"], "thread-table")
         self.assertEqual(rows["Attempt Repo"]["codex_longest_completed_turn_id"], "turn-table")
+        self.assertEqual(rows["Attempt Repo"]["linked_user_turns"], 0)
+        self.assertEqual(rows["Attempt Repo"]["unlinked_user_turns"], 1)
+        self.assertEqual(rows["Attempt Repo"]["linked_attempts"], 0)
+        self.assertEqual(rows["Attempt Repo"]["unlinked_attempts"], 2)
+        self.assertEqual(rows["Attempt Repo"]["cleanup_terminal_attempts"], 1)
+        self.assertEqual(rows["Attempt Repo"]["cleanup_retained_worktrees"], 0)
+        self.assertEqual(rows["Attempt Repo"]["cleanup_landed_retained_worktrees"], 0)
+        self.assertEqual(rows["Attempt Repo"]["cleanup_unlanded_terminal_attempts"], 0)
         self.assertEqual(rows["Attempt Repo"]["prompt_modes"], "raw,skill")
         self.assertEqual(rows["Attempt Repo"]["models"], "gpt-5.5")
         self.assertEqual(rows["Attempt Repo"]["reasoning_efforts"], "xhigh=1")
@@ -488,6 +516,25 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(row["current_active_attempts"], 1)
         self.assertEqual(row["window_attempts"], 0)
         self.assertEqual(row["window_elapsed_seconds"], 0)
+
+    def test_repo_table_uses_since_bound_for_codex_scan(self) -> None:
+        fleet_root = self.root / "fleet"
+        self.make_member_repo(fleet_root, "active-repo", project_name="Active Repo")
+
+        with patch("blackdog.repo_membership.collect_codex_turns", return_value=()) as collect:
+            exit_code, stdout, stderr = self.run_cli(
+                "repo",
+                "table",
+                "--root",
+                str(fleet_root),
+                "--since",
+                "2026-05-01T00:00:00+00:00",
+                "--json",
+            )
+
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(len(json.loads(stdout)["repo_table"]["rows"]), 1)
+        collect.assert_called_once_with(since="2026-05-01T00:00:00+00:00")
 
     def test_repo_bind_creates_install_contract_with_bind_action(self) -> None:
         exit_code, stdout, stderr = self.run_cli(

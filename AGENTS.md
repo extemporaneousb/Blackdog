@@ -26,6 +26,7 @@ development.
   - `blackdog local-repo add|list|remove`
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
+  - `blackdog codex coverage|history`
   - `blackdog stats`
   - `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
   - `blackdog summary`
@@ -56,6 +57,11 @@ development.
   before editing.
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for
   planning, runtime, and event artifacts.
+- Keep task-class preflight/guard extensions in the product layer unless a
+  durable schema change is explicitly designed and documented first.
+- Use `blackdog codex coverage|history`, `repo table`, and `stats` as the
+  reporting surfaces for implementation-like Codex work that did not enter
+  Blackdog task execution.
 - Keep skills thin. If a change adds logic that belongs in the CLI or library,
   move it there instead of expanding prompt-only behavior.
 - Update docs in `docs/` when CLI behavior or file formats change.

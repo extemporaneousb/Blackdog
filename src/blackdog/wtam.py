@@ -52,10 +52,10 @@ from blackdog_core.state import (
     latest_task_attempt,
     load_runtime_state,
     merge_workset_runtime,
+    mutate_runtime_state,
     now_iso,
     parse_iso,
     prompt_receipt_reference,
-    save_runtime_state,
     task_claim_index,
     task_state_index,
     workset_claim,
@@ -199,6 +199,14 @@ class _BranchCleanupPlan:
     force_delete: bool
     branch_tip: str | None
     reason: str
+    proof_state: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CleanupClassification:
+    status: str
+    reason: str | None
+    proof_state: str | None
 
 
 WORKTREE_TABLE_COLUMNS = (
@@ -340,6 +348,47 @@ def _runtime_ignore_prefixes(profile: RepoProfile, *, repo_root: Path | None = N
     return (f"{relative}/",)
 
 
+def _configured_generated_ignores(profile: RepoProfile, *, repo_root: Path) -> tuple[frozenset[str], tuple[str, ...]]:
+    exact_paths: set[str] = set()
+    prefixes: set[str] = set()
+
+    def add_path(value: str | None, *, directory: bool) -> None:
+        if not value:
+            return
+        candidate = Path(value)
+        resolved = candidate.resolve() if candidate.is_absolute() else (repo_root / candidate).resolve()
+        if not _is_within(repo_root, resolved):
+            return
+        relative = resolved.relative_to(repo_root).as_posix().rstrip("/")
+        if not relative:
+            return
+        if directory:
+            prefixes.add(f"{relative}/")
+        exact_paths.add(relative)
+
+    for handler in profile.handlers:
+        if not handler.enabled:
+            continue
+        add_path(getattr(handler, "root_path", None), directory=True)
+        add_path(getattr(handler, "worktree_path", None), directory=True)
+        add_path(getattr(handler, "launcher_path", None), directory=False)
+    return frozenset(exact_paths), tuple(sorted(prefixes))
+
+
+def _status_ignores(
+    profile: RepoProfile,
+    *,
+    repo_root: Path,
+    include_generated: bool = True,
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    runtime_prefixes = set(_runtime_ignore_prefixes(profile, repo_root=repo_root))
+    if not include_generated:
+        return frozenset(), tuple(sorted(runtime_prefixes))
+    generated_paths, generated_prefixes = _configured_generated_ignores(profile, repo_root=repo_root)
+    runtime_prefixes.update(generated_prefixes)
+    return generated_paths, tuple(sorted(runtime_prefixes))
+
+
 def dirty_paths(
     repo_root: Path,
     *,
@@ -365,6 +414,19 @@ def _status_dirty(
     ignore_prefixes: tuple[str, ...] = (),
 ) -> bool:
     return bool(dirty_paths(repo_root, ignore_paths=ignore_paths, ignore_prefixes=ignore_prefixes))
+
+
+def _managed_dirty_paths(profile: RepoProfile, repo_root: Path, *, include_generated: bool = True) -> list[str]:
+    ignore_paths, ignore_prefixes = _status_ignores(
+        profile,
+        repo_root=repo_root,
+        include_generated=include_generated,
+    )
+    return dirty_paths(repo_root, ignore_paths=ignore_paths, ignore_prefixes=ignore_prefixes)
+
+
+def _managed_status_dirty(profile: RepoProfile, repo_root: Path, *, include_generated: bool = True) -> bool:
+    return bool(_managed_dirty_paths(profile, repo_root, include_generated=include_generated))
 
 
 def _current_branch(repo_root: Path) -> str:
@@ -741,11 +803,8 @@ def worktree_contract(
         "primary_worktree": str(primary_root),
         "primary_branch": primary_branch,
         "target_branch": target_branch,
-        "primary_dirty": _status_dirty(primary_root, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=primary_root)),
-        "primary_dirty_paths": dirty_paths(
-            primary_root,
-            ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=primary_root),
-        ),
+        "primary_dirty": _managed_status_dirty(profile, primary_root),
+        "primary_dirty_paths": _managed_dirty_paths(profile, primary_root),
         "workspace_ve": str(resolved_workspace / ".VE"),
         "workspace_blackdog_path": str(workspace_blackdog),
         "workspace_has_local_blackdog": workspace_has_local_blackdog,
@@ -781,7 +840,7 @@ def worktree_preflight(profile: RepoProfile, *, cwd: Path | None = None) -> dict
         "primary_worktree": contract["primary_worktree"],
         "primary_branch": contract["primary_branch"],
         "dirty": _status_dirty(current_root),
-        "implementation_dirty": _status_dirty(current_root, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=current_root)),
+        "implementation_dirty": _managed_status_dirty(profile, current_root),
         "workspace_mode": contract["workspace_mode"],
         "target_branch": contract["target_branch"],
         "primary_dirty": contract["primary_dirty"],
@@ -800,14 +859,16 @@ def worktree_preflight(profile: RepoProfile, *, cwd: Path | None = None) -> dict
 
 def primary_worktree_is_dirty(profile: RepoProfile, *, ignore_runtime: bool = True) -> bool:
     primary_root = find_primary_worktree(profile.paths.project_root)
-    ignore_prefixes = _runtime_ignore_prefixes(profile, repo_root=primary_root) if ignore_runtime else ()
-    return _status_dirty(primary_root, ignore_prefixes=ignore_prefixes)
+    if ignore_runtime:
+        return _managed_status_dirty(profile, primary_root)
+    return _status_dirty(primary_root)
 
 
 def primary_worktree_dirty_paths(profile: RepoProfile, *, ignore_runtime: bool = True) -> list[str]:
     primary_root = find_primary_worktree(profile.paths.project_root)
-    ignore_prefixes = _runtime_ignore_prefixes(profile, repo_root=primary_root) if ignore_runtime else ()
-    return dirty_paths(primary_root, ignore_prefixes=ignore_prefixes)
+    if ignore_runtime:
+        return _managed_dirty_paths(profile, primary_root)
+    return dirty_paths(primary_root)
 
 
 def dirty_primary_worktree_error(profile: RepoProfile, *, branch: str, target_branch: str | None = None) -> DirtyPrimaryWorktreeError:
@@ -924,7 +985,7 @@ def _can_force_delete_landed_task_branch(
     if same_tree.returncode != 0:
         return False, "recorded task-branch tree differs from the landed commit"
 
-    return True, "recorded task branch matches the canonical landed commit"
+    return True, "recorded task branch is patch-equivalent to the canonical landed commit"
 
 
 def _plan_task_branch_cleanup(
@@ -940,10 +1001,20 @@ def _plan_task_branch_cleanup(
             force_delete=False,
             branch_tip=None,
             reason="branch already absent",
+            proof_state="branch_absent",
         )
 
     target_branch = latest_attempt.target_branch if latest_attempt and latest_attempt.target_branch else _current_branch(primary_root)
-    if _resolve_commit(primary_root, target_branch) is not None:
+    target_commit = _resolve_commit(primary_root, target_branch)
+    if target_commit is not None:
+        if branch_tip == target_commit:
+            return _BranchCleanupPlan(
+                branch_exists=True,
+                force_delete=False,
+                branch_tip=branch_tip,
+                reason=f"branch has no commits ahead of {target_branch}",
+                proof_state="no_ahead",
+            )
         merged = _run_git_no_check(primary_root, "merge-base", "--is-ancestor", branch_tip, target_branch)
         if merged.returncode == 0:
             return _BranchCleanupPlan(
@@ -951,6 +1022,7 @@ def _plan_task_branch_cleanup(
                 force_delete=False,
                 branch_tip=branch_tip,
                 reason=f"branch is already merged into {target_branch}",
+                proof_state="contained",
             )
 
     can_force_delete, reason = _can_force_delete_landed_task_branch(
@@ -965,6 +1037,7 @@ def _plan_task_branch_cleanup(
             force_delete=True,
             branch_tip=branch_tip,
             reason=reason,
+            proof_state="patch_equivalent",
         )
     raise WorktreeError(
         f"refusing cleanup: branch {branch} has commits not proven landed on {target_branch} ({reason})"
@@ -986,10 +1059,7 @@ def _resolve_attempt_worktree(profile: RepoProfile, *, branch: str | None, workt
 
 
 def _worktree_changed_paths(profile: RepoProfile, worktree_path: Path) -> list[str]:
-    return dirty_paths(
-        worktree_path,
-        ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=worktree_path),
-    )
+    return _managed_dirty_paths(profile, worktree_path)
 
 
 def _attempt_changed_paths(
@@ -1061,15 +1131,29 @@ def _cleanup_classification(
     worktree_dirty_paths: list[str],
     active_attempt: bool,
     latest_attempt: TaskRuntimeRecord | None,
-) -> tuple[str, str | None]:
+) -> _CleanupClassification:
     if not worktree_exists:
-        return ("missing_worktree" if active_attempt else "absent"), None
+        if active_attempt:
+            return _CleanupClassification("missing_worktree", "active attempt workspace is missing", "missing_active")
+        if not branch:
+            return _CleanupClassification("absent", "no branch or worktree remains", "absent")
+        try:
+            plan = _plan_task_branch_cleanup(
+                find_primary_worktree(profile.paths.project_root),
+                branch=branch,
+                latest_attempt=latest_attempt,
+            )
+        except WorktreeError as exc:
+            return _CleanupClassification("blocked_unlanded", str(exc), "unproven")
+        if plan.branch_exists:
+            return _CleanupClassification("cleanup_ready", f"worktree already absent; {plan.reason}", plan.proof_state)
+        return _CleanupClassification("absent", "worktree and branch are already absent", plan.proof_state)
     if worktree_dirty_paths:
-        return "blocked_dirty", "worktree has uncommitted changes"
+        return _CleanupClassification("blocked_dirty", "worktree has uncommitted changes", "dirty")
     if active_attempt:
-        return "active", "active attempts must be landed or closed before cleanup"
+        return _CleanupClassification("active", "active attempts must be landed or closed before cleanup", "active")
     if not branch:
-        return "cleanup_ready", "no branch recorded"
+        return _CleanupClassification("cleanup_ready", "no branch recorded", "no_branch")
     try:
         plan = _plan_task_branch_cleanup(
             find_primary_worktree(profile.paths.project_root),
@@ -1077,8 +1161,8 @@ def _cleanup_classification(
             latest_attempt=latest_attempt,
         )
     except WorktreeError as exc:
-        return "blocked_unlanded", str(exc)
-    return "cleanup_ready", plan.reason
+        return _CleanupClassification("blocked_unlanded", str(exc), "unproven")
+    return _CleanupClassification("cleanup_ready", plan.reason, plan.proof_state)
 
 
 def _worktree_table_row(
@@ -1086,17 +1170,16 @@ def _worktree_table_row(
     *,
     workset_id: str,
     task: TaskSpec,
+    runtime_state: Any | None = None,
 ) -> dict[str, Any] | None:
-    runtime_state = load_runtime_state(profile.paths)
+    runtime_state = runtime_state or load_runtime_state(profile.paths)
     active_attempt = active_task_attempt(runtime_state, workset_id, task.task_id)
     latest_attempt = latest_task_attempt(runtime_state, workset_id, task.task_id)
     selected_attempt = active_attempt or latest_attempt
     if selected_attempt is None:
         return None
 
-    payload = _task_recovery_payload(profile, workset_id=workset_id, task_id=task.task_id)
-    if not (payload["worktree_exists"] or payload["active_attempt"] or payload["stale_claim"]):
-        return None
+    payload = _task_recovery_payload(profile, workset_id=workset_id, task_id=task.task_id, runtime_state=runtime_state)
 
     worktree_path = Path(payload["worktree_path"]).resolve() if payload["worktree_path"] else None
     worktree_dirty_paths = list(payload["worktree_dirty_paths"])
@@ -1105,7 +1188,7 @@ def _worktree_table_row(
         or (latest_attempt.branch if latest_attempt is not None else None)
         or default_task_branch(workset_id, task)
     )
-    cleanup_status, cleanup_reason = _cleanup_classification(
+    cleanup = _cleanup_classification(
         profile,
         branch=resolved_branch,
         worktree_exists=bool(payload["worktree_exists"]),
@@ -1113,6 +1196,13 @@ def _worktree_table_row(
         active_attempt=bool(payload["active_attempt"]),
         latest_attempt=latest_attempt,
     )
+    if (
+        not payload["worktree_exists"]
+        and not payload["active_attempt"]
+        and not payload["stale_claim"]
+        and cleanup.status == "absent"
+    ):
+        return None
     commit_root = worktree_path if worktree_path is not None and worktree_path.exists() else find_primary_worktree(
         profile.paths.project_root
     )
@@ -1121,14 +1211,14 @@ def _worktree_table_row(
     size_bytes = _path_size_bytes(worktree_path)
     cleanup_command = (
         f"blackdog task cleanup --project-root . --workset {workset_id} --task {task.task_id}"
-        if cleanup_status == "cleanup_ready"
+        if cleanup.status == "cleanup_ready"
         else None
     )
     recommended_action = cleanup_command
     if recommended_action is None and payload["recommended_actions"]:
         recommended_action = payload["recommended_actions"][0]
     if recommended_action is None:
-        recommended_action = cleanup_reason
+        recommended_action = cleanup.reason
     return {
         "workset_id": workset_id,
         "task_id": task.task_id,
@@ -1148,8 +1238,9 @@ def _worktree_table_row(
         "changed_paths_count": len(payload["changed_paths"]),
         "size_bytes": size_bytes,
         "size": _format_size(size_bytes),
-        "cleanup_status": cleanup_status,
-        "cleanup_reason": cleanup_reason,
+        "cleanup_status": cleanup.status,
+        "cleanup_reason": cleanup.reason,
+        "cleanup_proof": cleanup.proof_state,
         "cleanup_command": cleanup_command,
         "recommended_action": recommended_action,
     }
@@ -1158,9 +1249,10 @@ def _worktree_table_row(
 def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     planning_state = load_planning_state(profile.paths)
+    runtime_state = load_runtime_state(profile.paths)
     for workset in planning_state.worksets:
         for task in workset.tasks:
-            row = _worktree_table_row(profile, workset_id=workset.workset_id, task=task)
+            row = _worktree_table_row(profile, workset_id=workset.workset_id, task=task, runtime_state=runtime_state)
             if row is not None:
                 rows.append(row)
     rows.sort(
@@ -1366,7 +1458,7 @@ def _commit_dirty_attempt_worktree(
 ) -> str | None:
     if branch is None or worktree_path is None or not worktree_path.exists():
         return None
-    if not _status_dirty(worktree_path, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=worktree_path)):
+    if not _managed_status_dirty(profile, worktree_path):
         return None
     _run_git(worktree_path, "add", "-A")
     staged = _run_git_no_check(worktree_path, "diff", "--cached", "--quiet")
@@ -1858,9 +1950,10 @@ def _task_recovery_payload(
     *,
     workset_id: str,
     task_id: str,
+    runtime_state: Any | None = None,
 ) -> dict[str, Any]:
     _workset, task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
-    runtime_state = load_runtime_state(profile.paths)
+    runtime_state = runtime_state or load_runtime_state(profile.paths)
     runtime_task_claims = task_claim_index(runtime_state, workset_id)
     current_task_claim = runtime_task_claims.get(task_id)
     current_workset_claim = workset_claim(runtime_state, workset_id)
@@ -1873,11 +1966,12 @@ def _task_recovery_payload(
     selected_attempt = active_attempt or latest_attempt
     branch = selected_attempt.branch if selected_attempt is not None else None
     target_branch = selected_attempt.target_branch if selected_attempt is not None else None
+    recorded_worktree_path = selected_attempt.worktree_path if selected_attempt is not None else None
     task_worktree = (
         _resolve_attempt_worktree(
             profile,
             branch=branch,
-            worktree_path=selected_attempt.worktree_path if selected_attempt is not None else None,
+            worktree_path=recorded_worktree_path,
         )
         if selected_attempt is not None
         else None
@@ -1957,7 +2051,7 @@ def _task_recovery_payload(
         "actor": selected_attempt.actor if selected_attempt is not None else None,
         "branch": branch,
         "target_branch": target_branch,
-        "worktree_path": str(task_worktree) if task_worktree is not None else None,
+        "worktree_path": str(task_worktree) if task_worktree is not None else recorded_worktree_path,
         "worktree_exists": worktree_exists,
         "worktree_dirty": bool(worktree_dirty_paths),
         "worktree_dirty_paths": worktree_dirty_paths,
@@ -2057,52 +2151,59 @@ def _release_stale_task_claim(
     note: str | None = None,
 ) -> dict[str, Any]:
     workset, _task = _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
-    runtime_state = load_runtime_state(profile.paths)
-    if active_task_attempt(runtime_state, workset_id, task_id) is not None:
-        raise BacklogError("task recover can only release a stale claim when no active WTAM attempt exists")
-    runtime_task_claims = task_claim_index(runtime_state, workset_id)
-    stale_task_claim = runtime_task_claims.get(task_id)
-    if stale_task_claim is None:
-        raise BacklogError("task recover did not find a stale task claim to release")
     if status not in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED, ATTEMPT_STATUS_ABANDONED}:
         raise BacklogError("task recover stale-claim status must be one of blocked, failed, abandoned")
     resolved_summary = str(summary or "").strip()
     if not resolved_summary:
         raise BacklogError("task recover --release-stale-claim requires --summary")
-    released_at = now_iso()
-    current_task_state = task_state_index(runtime_state, workset_id).get(task_id)
+    released_at: str | None = None
+    stale_task_claim = None
+    current_workset_claim = None
     repaired_runtime_status: str | None = None
-    incoming_records: tuple[TaskRuntimeRecord, ...] | None = None
-    if current_task_state is not None and current_task_state.status == TASK_STATUS_IN_PROGRESS:
-        repaired_runtime_status = TASK_STATUS_CANCELED if status == ATTEMPT_STATUS_ABANDONED else TASK_STATUS_BLOCKED
-        failure_details = _failure_details_for_status(status, recovery_action="release_stale_claim")
-        incoming_records = (
-            TaskRuntimeRecord(
-                task_id=task_id,
-                status=repaired_runtime_status,
-                updated_at=released_at,
-                note=resolved_summary,
-                **failure_details,
-            ),
+    release_workset_claim = False
+    failure_details = _failure_details_for_status(status, recovery_action="release_stale_claim")
+
+    def mutate(runtime_state):
+        nonlocal released_at, stale_task_claim, current_workset_claim, repaired_runtime_status, release_workset_claim
+        if active_task_attempt(runtime_state, workset_id, task_id) is not None:
+            raise BacklogError("task recover can only release a stale claim when no active WTAM attempt exists")
+        runtime_task_claims = task_claim_index(runtime_state, workset_id)
+        stale_task_claim = runtime_task_claims.get(task_id)
+        if stale_task_claim is None:
+            raise BacklogError("task recover did not find a stale task claim to release")
+        released_at = now_iso()
+        current_task_state = task_state_index(runtime_state, workset_id).get(task_id)
+        incoming_records: tuple[TaskRuntimeRecord, ...] | None = None
+        if current_task_state is not None and current_task_state.status == TASK_STATUS_IN_PROGRESS:
+            repaired_runtime_status = TASK_STATUS_CANCELED if status == ATTEMPT_STATUS_ABANDONED else TASK_STATUS_BLOCKED
+            incoming_records = (
+                TaskRuntimeRecord(
+                    task_id=task_id,
+                    status=repaired_runtime_status,
+                    updated_at=released_at,
+                    note=resolved_summary,
+                    **failure_details,
+                ),
+            )
+        current_workset_claim = workset_claim(runtime_state, workset_id)
+        remaining_task_claims = tuple(
+            claim
+            for claim_task_id, claim in runtime_task_claims.items()
+            if claim_task_id != task_id
         )
-    else:
-        failure_details = _failure_details_for_status(status, recovery_action="release_stale_claim")
-    current_workset_claim = workset_claim(runtime_state, workset_id)
-    remaining_task_claims = tuple(
-        claim
-        for claim_task_id, claim in runtime_task_claims.items()
-        if claim_task_id != task_id
-    )
-    release_workset_claim = current_workset_claim is not None and not remaining_task_claims
-    next_runtime_state = merge_workset_runtime(
-        runtime_state,
-        workset_id=workset_id,
-        task_ids={item.task_id for item in workset.tasks},
-        incoming_records=incoming_records,
-        incoming_workset_claim=None if release_workset_claim else current_workset_claim,
-        released_task_claim_ids=(task_id,),
-    )
-    save_runtime_state(profile.paths, next_runtime_state)
+        release_workset_claim = current_workset_claim is not None and not remaining_task_claims
+        return merge_workset_runtime(
+            runtime_state,
+            workset_id=workset_id,
+            task_ids={item.task_id for item in workset.tasks},
+            incoming_records=incoming_records,
+            incoming_workset_claim=None if release_workset_claim else current_workset_claim,
+            released_task_claim_ids=(task_id,),
+        )
+
+    mutate_runtime_state(profile.paths, mutate)
+    if stale_task_claim is None or released_at is None:
+        raise BacklogError("task recover did not release a stale task claim")
     event_actor = str(stale_task_claim.actor or (current_workset_claim.actor if current_workset_claim is not None else "")).strip() or "blackdog"
     append_event(
         profile.paths.events_file,
@@ -2210,7 +2311,7 @@ def land_branch(
     created_landing = False
     try:
         if target_worktree is not None:
-            if _status_dirty(target_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=target_worktree)):
+            if _managed_status_dirty(profile, target_worktree):
                 if target_worktree == primary_root:
                     raise dirty_primary_worktree_error(profile, branch=resolved_branch, target_branch=resolved_target)
                 raise WorktreeError(f"target worktree has uncommitted changes: {target_worktree}")
@@ -2230,8 +2331,11 @@ def land_branch(
         head_commit = _run_git(target_worktree, "rev-parse", "HEAD")
         ancestor = _run_git_no_check(target_worktree, "merge-base", "--is-ancestor", head_commit, resolved_branch)
         if ancestor.returncode != 0:
+            branch_worktree = _find_worktree_for_branch(primary_root, f"refs/heads/{resolved_branch}")
+            rebase_location = f" -C {branch_worktree}" if branch_worktree is not None else ""
             raise WorktreeError(
-                f"cannot land: {resolved_branch} is not based on the current {resolved_target}; rebase it first"
+                f"cannot land: {resolved_branch} is not based on the current {resolved_target}; "
+                f"rebase it first with `git{rebase_location} rebase {resolved_target}`"
             )
 
         changed_paths = branch_changed_paths(profile, branch=resolved_branch, target_branch=resolved_target)
@@ -2268,7 +2372,7 @@ def land_branch(
         deleted_branch = False
         branch_worktree = _find_worktree_for_branch(primary_root, f"refs/heads/{resolved_branch}")
         if cleanup and branch_worktree is not None and branch_worktree != target_worktree:
-            if _status_dirty(branch_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=branch_worktree)):
+            if _managed_status_dirty(profile, branch_worktree):
                 raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {branch_worktree}")
             _run_git(primary_root, "worktree", "remove", str(branch_worktree))
             cleaned_worktree = str(branch_worktree)
@@ -2464,6 +2568,20 @@ def land_task_worktree(
             if not payload.get("cleanup_performed"):
                 payload["recommended_actions"].append("run `blackdog task cleanup` if the task workspace is no longer needed")
             return payload
+        recommended_actions = []
+        if failure_details["failure_class"] == FAILURE_CLASS_STALE_BRANCH:
+            rebase_location = f" -C {task_worktree}" if task_worktree is not None else ""
+            recommended_actions.append(
+                f"rebase the task branch onto {attempt.target_branch}: `git{rebase_location} rebase {attempt.target_branch}`"
+            )
+        recommended_actions.extend(
+            [
+                "fix the landing blocker and rerun `blackdog task land` from the task worktree, "
+                "or `blackdog worktree land` with --workset/--task",
+                "run `blackdog task close --status blocked|failed|abandoned` from the task worktree, "
+                "or `blackdog worktree close --status blocked|failed|abandoned` with --workset/--task",
+            ]
+        )
         return {
             "branch": attempt.branch,
             "target_branch": attempt.target_branch,
@@ -2489,12 +2607,7 @@ def land_task_worktree(
             "attempt_active": True,
             "land_failure_disposition": "retryable",
             **failure_details,
-            "recommended_actions": [
-                "fix the landing blocker and rerun `blackdog task land` from the task worktree, "
-                "or `blackdog worktree land` with --workset/--task",
-                "run `blackdog task close --status blocked|failed|abandoned` from the task worktree, "
-                "or `blackdog worktree close --status blocked|failed|abandoned` with --workset/--task",
-            ],
+            "recommended_actions": recommended_actions,
         }
 
     changed = tuple(landing["changed_paths"])
@@ -2616,7 +2729,7 @@ def close_task_worktree(
     cleanup_reason: str | None = None
     cleanup_payload: dict[str, Any] | None = None
     if cleanup and task_worktree is not None and task_worktree.exists():
-        if _status_dirty(task_worktree, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=task_worktree)):
+        if _managed_status_dirty(profile, task_worktree):
             cleanup_reason = f"cleanup skipped because the task worktree is dirty: {task_worktree}"
         else:
             try:
@@ -2693,9 +2806,13 @@ def cleanup_task_worktree(
         resolved_path = Path(latest_attempt.worktree_path).resolve()
     else:
         resolved_path = default_task_worktree_path(profile, workset_id=workset_id, task=task).resolve()
-    if not resolved_path.exists():
-        raise WorktreeError(f"worktree path not found: {resolved_path}")
-    if _status_dirty(resolved_path, ignore_prefixes=_runtime_ignore_prefixes(profile, repo_root=resolved_path)):
+    worktree_exists = resolved_path.exists()
+    active_attempt = active_task_attempt(runtime_state, workset_id, task_id)
+    if active_attempt is not None:
+        if not worktree_exists:
+            raise WorktreeError(f"active task worktree path not found: {resolved_path}")
+        raise WorktreeError("refusing cleanup: active attempts must be landed or closed before cleanup")
+    if worktree_exists and _managed_status_dirty(profile, resolved_path):
         raise WorktreeError(f"refusing cleanup: worktree has uncommitted changes: {resolved_path}")
     branch_cleanup = (
         _plan_task_branch_cleanup(
@@ -2709,9 +2826,11 @@ def cleanup_task_worktree(
             force_delete=False,
             branch_tip=None,
             reason="no branch recorded",
+            proof_state="no_branch",
         )
     )
-    _run_git(primary_root, "worktree", "remove", str(resolved_path))
+    if worktree_exists:
+        _run_git(primary_root, "worktree", "remove", str(resolved_path))
     deleted_branch = False
     if resolved_branch and branch_cleanup.branch_exists:
         current_tip = _resolve_commit(primary_root, resolved_branch)
@@ -2734,14 +2853,17 @@ def cleanup_task_worktree(
             "worktree_path": str(resolved_path),
             "deleted_branch": deleted_branch,
             "branch_cleanup_reason": branch_cleanup.reason,
+            "branch_cleanup_proof": branch_cleanup.proof_state,
             "force_deleted_branch": bool(deleted_branch and branch_cleanup.force_delete),
         },
     )
     return {
         "worktree_path": str(resolved_path),
+        "worktree_existed": worktree_exists,
         "branch": resolved_branch,
         "deleted_branch": deleted_branch,
         "branch_cleanup_reason": branch_cleanup.reason,
+        "branch_cleanup_proof": branch_cleanup.proof_state,
         "force_deleted_branch": bool(deleted_branch and branch_cleanup.force_delete),
     }
 

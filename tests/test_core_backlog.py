@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import queue
+import traceback
 from pathlib import Path
 
 from blackdog_core.backlog import (
@@ -17,14 +20,64 @@ from blackdog_core.backlog import (
     start_task,
     upsert_workset,
 )
+from blackdog_core.profile import load_profile
 from blackdog_core.state import (
     JsonRuntimeStore,
     RUNTIME_SCHEMA_VERSION,
     RUNTIME_STORE_VERSION,
     create_prompt_receipt,
     load_runtime_state,
+    save_runtime_state,
 )
 from tests.core_audit_support import CoreAuditTestCase
+
+
+def _finish_task_worker(
+    project_root: str,
+    workset_id: str,
+    task_id: str,
+    attempt_id: str,
+    start_event,
+    result_queue,
+) -> None:
+    try:
+        start_event.wait()
+        profile = load_profile(Path(project_root))
+        finish_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            actor="codex",
+            status="success",
+            summary=f"finished {task_id}",
+        )
+        result_queue.put(("ok", task_id, None))
+    except Exception:
+        result_queue.put(("error", task_id, traceback.format_exc()))
+
+
+def _cancel_task_worker(
+    project_root: str,
+    workset_id: str,
+    task_id: str,
+    start_event,
+    result_queue,
+) -> None:
+    try:
+        start_event.wait()
+        profile = load_profile(Path(project_root))
+        set_task_runtime_status(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="codex",
+            status="canceled",
+            summary=f"canceled {task_id}",
+        )
+        result_queue.put(("ok", task_id, None))
+    except Exception:
+        result_queue.put(("error", task_id, traceback.format_exc()))
 
 
 class _MemoryPlanningStore:
@@ -43,6 +96,27 @@ class CorePlanningTests(CoreAuditTestCase):
         super().setUp()
         self.write_profile("Demo")
         self.profile = self.load_test_profile()
+
+    def _run_workers(self, processes, start_event, result_queue) -> None:
+        for process in processes:
+            process.start()
+        start_event.set()
+        for process in processes:
+            process.join(timeout=20)
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+                self.fail(f"worker did not exit: pid={process.pid}")
+            self.assertEqual(process.exitcode, 0)
+        results = []
+        for _process in processes:
+            try:
+                results.append(result_queue.get(timeout=5))
+            except queue.Empty as exc:
+                raise AssertionError("worker did not report a result") from exc
+        errors = [result for result in results if result[0] != "ok"]
+        self.assertEqual(errors, [])
 
     def test_workset_round_trip_ignores_legacy_markdown_files(self) -> None:
         legacy_backlog = self.profile.paths.control_dir / "backlog.md"
@@ -115,6 +189,31 @@ class CorePlanningTests(CoreAuditTestCase):
 
         self.assertEqual(loaded.worksets[0].workset_id, "memory")
         self.assertEqual(loaded.worksets[0].tasks[0].task_id, "MEM-1")
+
+    def test_runtime_save_preserves_concurrently_added_worksets(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "first",
+                "title": "First",
+                "tasks": [{"id": "F-1", "title": "First task", "intent": "seed stale writer"}],
+            },
+        )
+        stale_state = load_runtime_state(self.profile.paths)
+
+        upsert_workset(
+            self.profile,
+            {
+                "id": "second",
+                "title": "Second",
+                "tasks": [{"id": "S-1", "title": "Second task", "intent": "concurrent writer"}],
+            },
+        )
+
+        save_runtime_state(self.profile.paths, stale_state)
+
+        current = load_runtime_state(self.profile.paths)
+        self.assertEqual({workset.workset_id for workset in current.worksets}, {"first", "second"})
 
     def test_next_ready_tasks_follow_workset_dag_and_runtime_state(self) -> None:
         payload = {
@@ -495,3 +594,80 @@ class CorePlanningTests(CoreAuditTestCase):
             [(workset.workset_id, task.task_id) for workset, task in next_ready_tasks(planning_state, runtime_state=runtime_state)],
             [("cancel", "CAN-1")],
         )
+
+    def test_concurrent_finish_and_cancel_preserve_same_workset_runtime_writes(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "concurrent-close-cancel",
+                "title": "Concurrent Close Cancel",
+                "tasks": [
+                    {"id": "CON-1", "title": "Close task", "intent": "finish this attempt"},
+                    {"id": "CON-2", "title": "Cancel task", "intent": "cancel this planned task"},
+                ],
+            },
+        )
+        attempt = start_task(
+            self.profile,
+            workset_id="concurrent-close-cancel",
+            task_id="CON-1",
+            actor="codex",
+            prompt_receipt=create_prompt_receipt("Finish one task while canceling another.", source="unit-test"),
+        )
+
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = [
+            ctx.Process(
+                target=_finish_task_worker,
+                args=(str(self.root), "concurrent-close-cancel", "CON-1", attempt.attempt_id, start_event, result_queue),
+            ),
+            ctx.Process(
+                target=_cancel_task_worker,
+                args=(str(self.root), "concurrent-close-cancel", "CON-2", start_event, result_queue),
+            ),
+        ]
+        self._run_workers(processes, start_event, result_queue)
+
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        runtime = runtime_state.worksets[0]
+        task_states = {task_state.task_id: task_state.status for task_state in runtime.task_states}
+        attempts = {task_attempt.attempt_id: task_attempt for task_attempt in runtime.attempts}
+
+        self.assertEqual(task_states["CON-1"], "done")
+        self.assertEqual(task_states["CON-2"], "canceled")
+        self.assertEqual(attempts[attempt.attempt_id].status, "success")
+        self.assertEqual(runtime.task_claims, ())
+        self.assertIsNone(runtime.workset_claim)
+
+    def test_concurrent_cancels_preserve_all_runtime_state_writes(self) -> None:
+        task_ids = tuple(f"CAN-{index}" for index in range(6))
+        upsert_workset(
+            self.profile,
+            {
+                "id": "concurrent-cancel",
+                "title": "Concurrent Cancel",
+                "tasks": [
+                    {"id": task_id, "title": f"Cancel {task_id}", "intent": "cancel planned work"}
+                    for task_id in task_ids
+                ],
+            },
+        )
+
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = [
+            ctx.Process(
+                target=_cancel_task_worker,
+                args=(str(self.root), "concurrent-cancel", task_id, start_event, result_queue),
+            )
+            for task_id in task_ids
+        ]
+        self._run_workers(processes, start_event, result_queue)
+
+        runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
+        task_states = {task_state.task_id: task_state.status for task_state in runtime_state.worksets[0].task_states}
+
+        self.assertEqual(task_states, {task_id: "canceled" for task_id in task_ids})

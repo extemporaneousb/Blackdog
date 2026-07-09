@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import hashlib
 import json
 import os
@@ -25,6 +25,8 @@ from blackdog.repo_lifecycle import (
 from blackdog_core.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
 from blackdog_core.profile import (
     DEFAULT_CONTROL_DIR,
+    HANDLER_KIND_BLACKDOG_RUNTIME,
+    HANDLER_SOURCE_MODE_MANAGED_CHECKOUT,
     PROFILE_FILE_NAME,
     PROJECT_STATUS_ACTIVE,
     PROJECT_STATUS_ARCHIVED,
@@ -73,8 +75,19 @@ REPO_TABLE_COLUMNS = (
     "codex_longest_completed_turn_thread_id",
     "codex_longest_completed_turn_id",
     "implementation_like_unlinked_turns",
+    "linked_user_turns",
+    "unlinked_user_turns",
     "linked_attempts",
+    "unlinked_attempts",
+    "cleanup_terminal_attempts",
+    "cleanup_retained_worktrees",
+    "cleanup_landed_retained_worktrees",
+    "cleanup_unlanded_terminal_attempts",
     "blackdog_version",
+    "managed_source_mode",
+    "managed_source_status",
+    "managed_source_head",
+    "managed_source_origin",
     "profile_version",
     "runtime_store_version",
     "support_hash",
@@ -401,6 +414,7 @@ def _discover_profile_dirs(root: Path) -> tuple[Path, ...]:
         dirnames[:] = sorted(name for name in dirnames if name not in _DISCOVERY_SKIP_DIRS)
         if PROFILE_FILE_NAME in filenames:
             discovered.append(Path(current_root).resolve())
+            dirnames[:] = []
     return tuple(discovered)
 
 
@@ -462,8 +476,19 @@ def _empty_table_row(project_root: Path) -> dict[str, object]:
         "codex_longest_completed_turn_thread_id": None,
         "codex_longest_completed_turn_id": None,
         "implementation_like_unlinked_turns": None,
+        "linked_user_turns": None,
+        "unlinked_user_turns": None,
         "linked_attempts": None,
+        "unlinked_attempts": None,
+        "cleanup_terminal_attempts": None,
+        "cleanup_retained_worktrees": None,
+        "cleanup_landed_retained_worktrees": None,
+        "cleanup_unlanded_terminal_attempts": None,
         "blackdog_version": None,
+        "managed_source_mode": None,
+        "managed_source_status": None,
+        "managed_source_head": None,
+        "managed_source_origin": None,
         "profile_version": None,
         "runtime_store_version": None,
         "support_hash": None,
@@ -586,6 +611,116 @@ def _support_hash(profile: RepoProfile) -> str:
     return hashlib.sha256("\n\n".join(chunks).encode("utf-8")).hexdigest()[:12]
 
 
+def attempt_cleanup_health_counts(attempts: Iterable[AttemptView]) -> dict[str, int]:
+    counts = {
+        "cleanup_terminal_attempts": 0,
+        "cleanup_retained_worktrees": 0,
+        "cleanup_landed_retained_worktrees": 0,
+        "cleanup_unlanded_terminal_attempts": 0,
+    }
+    for attempt in attempts:
+        if attempt.is_active or not (attempt.worktree_path or attempt.branch):
+            continue
+        counts["cleanup_terminal_attempts"] += 1
+        worktree_exists = _recorded_worktree_exists(attempt.worktree_path)
+        if worktree_exists:
+            counts["cleanup_retained_worktrees"] += 1
+            if attempt.landed_commit:
+                counts["cleanup_landed_retained_worktrees"] += 1
+        if not attempt.landed_commit:
+            counts["cleanup_unlanded_terminal_attempts"] += 1
+    return counts
+
+
+def _recorded_worktree_exists(worktree_path: str | None) -> bool:
+    if not worktree_path:
+        return False
+    try:
+        return Path(worktree_path).expanduser().exists()
+    except OSError:
+        return False
+
+
+def _git_ref(repo_root: Path, ref: str) -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--short", ref],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def _git_count(repo_root: Path, rev_range: str) -> int | None:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-list", "--count", rev_range],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    try:
+        return int(completed.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _managed_source_state(profile: RepoProfile) -> dict[str, object | None]:
+    for handler in profile.handlers:
+        if handler.kind != HANDLER_KIND_BLACKDOG_RUNTIME or not handler.enabled:
+            continue
+        source_mode = getattr(handler, "source_mode", None)
+        if source_mode != HANDLER_SOURCE_MODE_MANAGED_CHECKOUT:
+            return {
+                "managed_source_mode": source_mode,
+                "managed_source_status": source_mode,
+                "managed_source_head": None,
+                "managed_source_origin": None,
+            }
+        source_root = resolve_config_path(profile.paths.project_root, str(getattr(handler, "managed_source_dir")))
+        if not (source_root / ".git").exists():
+            return {
+                "managed_source_mode": source_mode,
+                "managed_source_status": "missing",
+                "managed_source_head": None,
+                "managed_source_origin": None,
+            }
+        head = _git_ref(source_root, "HEAD")
+        origin = _git_ref(source_root, "origin/main")
+        if head is None:
+            status = "unknown"
+        elif origin is None:
+            status = "no_origin"
+        else:
+            ahead = _git_count(source_root, "origin/main..HEAD")
+            behind = _git_count(source_root, "HEAD..origin/main")
+            if ahead == 0 and behind == 0:
+                status = "current"
+            elif ahead and behind:
+                status = "diverged"
+            elif ahead:
+                status = "ahead"
+            elif behind:
+                status = "behind"
+            else:
+                status = "unknown"
+        return {
+            "managed_source_mode": source_mode,
+            "managed_source_status": status,
+            "managed_source_head": head,
+            "managed_source_origin": origin,
+        }
+    return {
+        "managed_source_mode": None,
+        "managed_source_status": "unconfigured",
+        "managed_source_head": None,
+        "managed_source_origin": None,
+    }
+
+
 def _repo_table_row(
     profile_dir: Path,
     *,
@@ -609,6 +744,7 @@ def _repo_table_row(
     row["branch"] = _current_branch(profile.paths.project_root)
     row["dirty_count"] = _dirty_count(profile.paths.project_root)
     row["blackdog_version"] = BLACKDOG_VERSION
+    row.update(_managed_source_state(profile))
     row["profile_version"] = profile.profile_version
     row["runtime_store_version"] = _runtime_store_version(profile)
     row["support_hash"] = _support_hash(profile)
@@ -620,6 +756,7 @@ def _repo_table_row(
         model = hide_canceled_runtime_model(load_runtime_model(profile))
         counts = model.counts
         attempts = tuple(attempt for workset in model.worksets for attempt in workset.attempts)
+        row.update(attempt_cleanup_health_counts(attempts))
         now = datetime.now().astimezone()
         window_attempts = tuple(attempt for attempt in attempts if _attempt_in_window(attempt, cutoff, now))
         window_attempt_views = window_attempts
@@ -683,7 +820,10 @@ def _repo_table_row(
                 "implementation_like_unlinked_turns",
                 0,
             )
+            row["linked_user_turns"] = coverage_counts.get("linked_user_turns", 0)
+            row["unlinked_user_turns"] = coverage_counts.get("unlinked_user_turns", 0)
             row["linked_attempts"] = coverage_counts.get("linked_attempts", 0)
+            row["unlinked_attempts"] = coverage_counts.get("unlinked_attempts", 0)
             for turn in coverage.get("turns", ()):
                 model = turn.get("model")
                 if model:
@@ -708,7 +848,10 @@ def _repo_table_row(
         row["codex_longest_completed_turn_thread_id"] = None
         row["codex_longest_completed_turn_id"] = None
         row["implementation_like_unlinked_turns"] = None
+        row["linked_user_turns"] = None
+        row["unlinked_user_turns"] = None
         row["linked_attempts"] = None
+        row["unlinked_attempts"] = None
 
     row["prompt_modes"] = _string_set_label(prompt_modes)
     row["models"] = _string_set_label(models)
@@ -737,7 +880,7 @@ def build_repo_table(
     codex_read_error: str | None = None
     if include_codex:
         try:
-            codex_turns = collect_codex_turns()
+            codex_turns = collect_codex_turns(since=since)
         except Exception as exc:
             codex_read_error = str(exc)
     for profile_dir in sorted(dict.fromkeys(discovered)):
@@ -1043,6 +1186,7 @@ __all__ = [
     "RepoTableResult",
     "RepoUnbindResult",
     "archive_repo",
+    "attempt_cleanup_health_counts",
     "bind_repo",
     "build_repo_table",
     "render_repo_status_text",
