@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from blackdog_core import codex_sessions as codex_sessions_module
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.codex_sessions import (
     build_codex_coverage,
@@ -275,6 +276,34 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(len(cached_turns), 1)
         self.assertEqual(cached_turns[0].turn_id, "turn-cache")
 
+    def test_lightweight_collection_skips_environment_scan_without_poisoning_full_cache(self) -> None:
+        _write_session(
+            self.codex_home,
+            thread_id="thread-light-cache",
+            cwd=self.root,
+            turn_id="turn-light-cache",
+            message="Implement lightweight stats parsing.",
+            tool_outputs=("ModuleNotFoundError: No module named 'utter'",),
+        )
+        blackdog_home = self.root / ".blackdog-home"
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home), "BLACKDOG_HOME": str(blackdog_home)}, clear=False):
+            light_turns = collect_codex_turns(include_environment_evidence=False)
+            light_cache = json.loads(codex_session_cache_path().read_text(encoding="utf-8"))
+            full_turns = collect_codex_turns()
+            full_cache = json.loads(codex_session_cache_path().read_text(encoding="utf-8"))
+
+        self.assertEqual(len(light_turns), 1)
+        self.assertEqual(light_turns[0].environment_issue_classes, ())
+        light_entries = list(light_cache["sessions"].values())
+        self.assertEqual(len(light_entries), 1)
+        self.assertFalse(light_entries[0]["environment_scan"])
+        self.assertEqual(len(full_turns), 1)
+        self.assertEqual(full_turns[0].environment_issue_classes, ("missing_python_module",))
+        full_entries = list(full_cache["sessions"].values())
+        self.assertEqual(len(full_entries), 1)
+        self.assertTrue(full_entries[0]["environment_scan"])
+
     def test_collect_codex_turns_skips_files_outside_since_window_before_cache(self) -> None:
         _write_session(
             self.codex_home,
@@ -289,6 +318,67 @@ class CodexSessionTests(CoreAuditTestCase):
                 turns = collect_codex_turns(since="2026-05-10T00:00:00+00:00", use_cache=False)
 
         self.assertEqual(turns, ())
+
+    def test_collect_codex_turns_skips_files_outside_cwd_roots_before_full_parse(self) -> None:
+        other_root = self.root.parent / "other-repo"
+        other_root.mkdir(exist_ok=True)
+        _write_session(
+            self.codex_home,
+            thread_id="thread-other-root",
+            cwd=other_root,
+            turn_id="turn-other-root",
+            message="Implement unrelated repo work.",
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            with patch(
+                "blackdog_core.codex_sessions.read_codex_session",
+                side_effect=AssertionError("parsed unrelated file"),
+            ):
+                turns = collect_codex_turns(cwd_roots=(self.root,), use_cache=False)
+
+        self.assertEqual(turns, ())
+
+    def test_collect_codex_turns_prunes_unrelated_cached_sessions_before_materializing(self) -> None:
+        other_root = self.root.parent / "other-repo"
+        other_root.mkdir(exist_ok=True)
+        _write_session(
+            self.codex_home,
+            thread_id="thread-cache-local",
+            cwd=self.root,
+            turn_id="turn-cache-local",
+            message="Implement cached local work.",
+        )
+        _write_session(
+            self.codex_home,
+            thread_id="thread-cache-other",
+            cwd=other_root,
+            turn_id="turn-cache-other",
+            message="Implement cached unrelated work.",
+        )
+        blackdog_home = self.root / ".blackdog-home"
+
+        with patch.dict(
+            "os.environ",
+            {"CODEX_HOME": str(self.codex_home), "BLACKDOG_HOME": str(blackdog_home)},
+            clear=False,
+        ):
+            self.assertEqual(len(collect_codex_turns()), 2)
+            original_from_cache = codex_sessions_module._codex_session_from_cache_payload
+
+            def from_cache(payload: object) -> object:
+                if isinstance(payload, dict) and payload.get("thread_id") == "thread-cache-other":
+                    raise AssertionError("materialized unrelated cached session")
+                return original_from_cache(payload)
+
+            with patch(
+                "blackdog_core.codex_sessions._codex_session_from_cache_payload",
+                side_effect=from_cache,
+            ):
+                turns = collect_codex_turns(cwd_roots=(self.root,))
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].thread_id, "thread-cache-local")
 
     def test_current_codex_session_ref_recovers_turn_fields_from_prompt_hash(self) -> None:
         message = "Implement the current turn capture."

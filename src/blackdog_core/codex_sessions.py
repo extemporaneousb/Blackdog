@@ -334,7 +334,13 @@ def current_codex_session_ref(
     )
 
 
-def read_codex_session(path: Path, *, home: Path | None = None, since: str | None = None) -> CodexSession | None:
+def read_codex_session(
+    path: Path,
+    *,
+    home: Path | None = None,
+    since: str | None = None,
+    include_environment_evidence: bool = True,
+) -> CodexSession | None:
     resolved_home = home or codex_home()
     cutoff = _parse_since(since)
     session_path = _relative_session_path(path, resolved_home)
@@ -452,10 +458,10 @@ def read_codex_session(path: Path, *, home: Path | None = None, since: str | Non
                     turn["fallback_user_messages"].append(text)
             elif item_type == "message" and role == "assistant":
                 turn["assistant_response_count"] += 1
-                if _turn_payload_in_scan_window(turn, cutoff):
+                if include_environment_evidence and _turn_payload_in_scan_window(turn, cutoff):
                     _add_environment_issue_evidence(turn, source="codex_session.assistant", text=_message_text(payload))
             elif item_type and item_type.endswith("_output"):
-                if _turn_payload_in_scan_window(turn, cutoff):
+                if include_environment_evidence and _turn_payload_in_scan_window(turn, cutoff):
                     _add_environment_issue_evidence(
                         turn,
                         source="codex_session.tool_output",
@@ -734,11 +740,20 @@ def collect_codex_turns(
     *,
     since: str | None = None,
     until: str | None = None,
+    cwd_roots: Iterable[Path] = (),
     use_cache: bool = True,
+    include_environment_evidence: bool = True,
 ) -> tuple[CodexTurn, ...]:
     return tuple(
         turn
-        for session in collect_codex_sessions(home=home, since=since, until=until, use_cache=use_cache)
+        for session in collect_codex_sessions(
+            home=home,
+            since=since,
+            until=until,
+            cwd_roots=cwd_roots,
+            use_cache=use_cache,
+            include_environment_evidence=include_environment_evidence,
+        )
         for turn in _filter_turns_by_window(session.turns, since=since, until=until)
     )
 
@@ -748,11 +763,15 @@ def collect_codex_sessions(
     *,
     since: str | None = None,
     until: str | None = None,
+    cwd_roots: Iterable[Path] = (),
     use_cache: bool = True,
+    include_environment_evidence: bool = True,
 ) -> tuple[CodexSession, ...]:
     resolved_home = home or codex_home()
     cutoff = _parse_since(since)
     upper = _parse_until(until)
+    roots = _normalize_cwd_roots(cwd_roots)
+    root_strings = _cwd_root_strings(roots)
     cache = _load_codex_session_cache() if use_cache else {}
     changed = False
     sessions: list[CodexSession] = []
@@ -762,12 +781,21 @@ def collect_codex_sessions(
         cache_key = _codex_session_cache_key(resolved_home, session_path)
         stat = _session_file_stat(path)
         cached = cache.get(cache_key)
-        if use_cache and stat is not None and _cached_session_valid(cached, stat):
-            session = _codex_session_from_cache_payload(cached.get("session"))
+        if use_cache and stat is not None and _cached_session_valid(cached, stat, include_environment_evidence=include_environment_evidence):
+            cached_session = cached.get("session")
+            if root_strings and not _cached_session_payload_may_match_roots(cached_session, root_strings):
+                continue
+            session = _codex_session_from_cache_payload(cached_session)
         if session is None:
             if not _session_file_may_overlap_window(path, cutoff=cutoff, upper=upper):
                 continue
-            session = read_codex_session(path, home=resolved_home)
+            if root_strings and not _session_file_may_match_roots(path, root_strings):
+                continue
+            session = read_codex_session(
+                path,
+                home=resolved_home,
+                include_environment_evidence=include_environment_evidence,
+            )
             if use_cache and stat is not None and session is not None:
                 cache[cache_key] = {
                     "schema_version": CODEX_SESSION_CACHE_SCHEMA_VERSION,
@@ -776,16 +804,25 @@ def collect_codex_sessions(
                     "size": stat["size"],
                     "mtime_ns": stat["mtime_ns"],
                     "parsed_at": now_iso(),
+                    "environment_scan": include_environment_evidence,
                     "session": _codex_session_cache_payload(session),
                 }
                 changed = True
         if session is None:
             continue
-        if _session_overlaps_window(session, cutoff=cutoff, upper=upper):
+        if _session_matches_roots(session, roots) and _session_overlaps_window(
+            session,
+            cutoff=cutoff,
+            upper=upper,
+        ):
             sessions.append(session)
     if use_cache and changed:
         _write_codex_session_cache(cache)
     return tuple(sessions)
+
+
+def codex_project_roots(profile: RepoProfile) -> tuple[Path, ...]:
+    return _project_roots(profile)
 
 
 def project_codex_turns(
@@ -1573,12 +1610,20 @@ def _session_file_stat(path: Path) -> dict[str, int] | None:
     return {"size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
 
 
-def _cached_session_valid(cached: Any, stat: Mapping[str, int]) -> bool:
+def _cached_session_valid(
+    cached: Any,
+    stat: Mapping[str, int],
+    *,
+    include_environment_evidence: bool,
+) -> bool:
     if not isinstance(cached, Mapping):
         return False
     if cached.get("schema_version") != CODEX_SESSION_CACHE_SCHEMA_VERSION:
         return False
-    return cached.get("size") == stat.get("size") and cached.get("mtime_ns") == stat.get("mtime_ns")
+    if cached.get("size") != stat.get("size") or cached.get("mtime_ns") != stat.get("mtime_ns"):
+        return False
+    cached_environment_scan = bool(cached.get("environment_scan", True))
+    return cached_environment_scan or not include_environment_evidence
 
 
 def _codex_session_cache_payload(session: CodexSession) -> dict[str, Any]:
@@ -1741,6 +1786,87 @@ def _session_file_may_overlap_window(
     if upper_bound is not None and started >= upper_bound:
         return False
     return True
+
+
+def _normalize_cwd_roots(cwd_roots: Iterable[Path]) -> tuple[Path, ...]:
+    roots = {Path(root).expanduser().resolve() for root in cwd_roots}
+    return tuple(sorted(roots))
+
+
+def _cwd_root_strings(roots: Iterable[Path]) -> tuple[str, ...]:
+    return tuple(sorted((os.path.normpath(str(root)) for root in roots), key=len, reverse=True))
+
+
+def _cwd_text_matches_root_strings(cwd: str | None, root_strings: tuple[str, ...]) -> bool:
+    if cwd is None:
+        return False
+    candidate = os.path.normpath(os.path.realpath(os.path.expanduser(cwd)))
+    for root in root_strings:
+        if candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def _session_matches_roots(session: CodexSession, roots: tuple[Path, ...]) -> bool:
+    if not roots:
+        return True
+    if _cwd_matches(roots, session.cwd):
+        return True
+    return any(_cwd_matches(roots, turn.cwd) for turn in session.turns)
+
+
+def _cached_session_payload_may_match_roots(payload: Any, root_strings: tuple[str, ...]) -> bool:
+    if not isinstance(payload, Mapping):
+        return True
+    saw_cwd = False
+    for cwd in _session_payload_cwds(payload):
+        saw_cwd = True
+        if _cwd_text_matches_root_strings(cwd, root_strings):
+            return True
+    return not saw_cwd
+
+
+def _session_payload_cwds(payload: Mapping[str, Any]) -> Iterable[str]:
+    cwd = _optional_text(payload.get("cwd"))
+    if cwd is not None:
+        yield cwd
+    turns = payload.get("turns")
+    if isinstance(turns, list):
+        for turn in turns:
+            if not isinstance(turn, Mapping):
+                continue
+            turn_cwd = _optional_text(turn.get("cwd"))
+            if turn_cwd is not None:
+                yield turn_cwd
+
+
+def _session_file_may_match_roots(path: Path, root_strings: tuple[str, ...]) -> bool:
+    saw_cwd = False
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if '"cwd"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, Mapping):
+                    continue
+                if row.get("type") not in {"session_meta", "turn_context"}:
+                    continue
+                payload = row.get("payload")
+                if not isinstance(payload, Mapping):
+                    continue
+                cwd = _optional_text(payload.get("cwd"))
+                if cwd is None:
+                    continue
+                saw_cwd = True
+                if _cwd_text_matches_root_strings(cwd, root_strings):
+                    return True
+    except OSError:
+        return True
+    return not saw_cwd
 
 
 def _datetime_in_window(
@@ -1968,6 +2094,7 @@ __all__ = [
     "classify_environment_issue_text",
     "classify_user_message",
     "codex_home",
+    "codex_project_roots",
     "codex_session_cache_path",
     "collect_codex_sessions",
     "collect_codex_turns",

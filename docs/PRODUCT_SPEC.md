@@ -188,6 +188,26 @@ turns, environment issue classes, prompt lineage, token usage, and task/attempt
 outcomes. Those learning/report outputs help tune guardrails and repo skills
 without rewriting runtime state from chat logs.
 
+Unbounded stats must stay usable on the current local Codex corpus. The first
+performance layer is root/date pruning plus a lightweight parse mode for stats,
+so agent workflows can ask exact questions without full diagnostic evidence
+extraction. If fleet-wide exact stats still needs to be faster, the next
+product-layer seam is a user-local incremental Codex summary index keyed by
+session file identity, project/worktree root, local day, and counter family.
+That compressed summary would be cache/read-model state, rebuildable from
+Codex session logs, and separate from Blackdog runtime truth.
+
+Codex hooks are a useful forward-capture and guardrail layer, not a replacement
+for Blackdog's durable attempt model. Blackdog should use project-local hooks
+only as an additive product-layer integration: add task context at
+`SessionStart`/`SubagentStart`, stamp or classify prompt intent at
+`UserPromptSubmit`, warn or deny obvious wrong-worktree edits in `PreToolUse`,
+and provide conservative closeout reminders at `Stop`. Hooks must delegate to
+Blackdog's existing CLI/read models and should not create task truth directly.
+Codex local or cloud environments can improve convenience, but they should call
+Blackdog handler/preflight/test commands instead of duplicating `.VE`, WTAM, or
+managed-source setup policy.
+
 Supervised integration closeout uses the active Codex thread for coordination
 and Blackdog for durable task attempts. A closeout should report the worker
 ownership slice, changed files, validation commands and outcomes, blockers,

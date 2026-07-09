@@ -205,6 +205,28 @@ class StatsTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         self.assertIn("bucket\trepos\tattempts_started", stdout)
 
+    def test_stats_prunes_unrelated_codex_sessions_for_explicit_root(self) -> None:
+        other_root = self.root.parent / "other-repo"
+        other_root.mkdir(exist_ok=True)
+        _write_stats_session(
+            self.codex_home,
+            cwd=other_root,
+            thread_id="thread-unrelated-stats",
+            turn_id="turn-unrelated-stats",
+            started_at="2026-06-03T01:30:00+00:00",
+        )
+
+        with patch(
+            "blackdog_core.codex_sessions.read_codex_session",
+            side_effect=AssertionError("parsed unrelated session"),
+        ):
+            exit_code, stdout, stderr = self.run_cli("stats", "--project-root", str(self.root), "--json")
+
+        self.assertEqual(exit_code, 0, stderr)
+        stats = json.loads(stdout)["stats"]
+        self.assertEqual(stats["summary"]["codex_user_turns"], 0)
+        self.assertEqual(stats["summary"]["codex_sessions"], 0)
+
     def test_stats_reports_cleanup_and_codex_coverage_health(self) -> None:
         profile = self.load_test_profile()
         upsert_workset(

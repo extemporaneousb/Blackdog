@@ -11,7 +11,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from blackdog.local_registry import registered_project_roots
 from blackdog.repo_membership import attempt_cleanup_health_counts
 from blackdog.repo_lifecycle import RepoLifecycleError
-from blackdog_core.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
+from blackdog_core.codex_sessions import (
+    CodexTurn,
+    build_codex_coverage,
+    codex_project_roots,
+    collect_codex_turns,
+)
 from blackdog_core.profile import ConfigError, RepoProfile, load_profile
 from blackdog_core.runtime_model import AttemptView, RuntimeModel, load_runtime_model
 from blackdog_core.state import now_iso, parse_iso
@@ -89,7 +94,12 @@ def build_stats(
 
     codex_since = since_dt.astimezone(timezone.utc).isoformat() if since_dt else None
     codex_until = until_dt.astimezone(timezone.utc).isoformat() if until_dt else None
-    all_codex_turns = collect_codex_turns(since=codex_since, until=codex_until)
+    all_codex_turns = collect_codex_turns(
+        since=codex_since,
+        until=codex_until,
+        cwd_roots=_stats_codex_cwd_roots(profiles),
+        include_environment_evidence=False,
+    )
     repo_rows: list[dict[str, object]] = []
     bucket_rows: dict[str, dict[str, object]] = {}
     summary = _empty_summary()
@@ -227,6 +237,13 @@ def _load_stats_profiles(roots: Iterable[Path]) -> tuple[tuple[RepoProfile, ...]
             continue
         profiles_by_root[key] = profile
     return tuple(profiles_by_root[path] for path in sorted(profiles_by_root)), tuple(deduped)
+
+
+def _stats_codex_cwd_roots(profiles: Iterable[RepoProfile]) -> tuple[Path, ...]:
+    roots: set[Path] = set()
+    for profile in profiles:
+        roots.update(codex_project_roots(profile))
+    return tuple(sorted(roots))
 
 
 def _repo_runtime_stats(

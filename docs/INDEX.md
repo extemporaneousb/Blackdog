@@ -16,6 +16,8 @@ CLI surfaces.
 - [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
   `planning.json`, `runtime.json`, and `events.jsonl`
+- [docs/OPERATOR_NOTES.md](docs/OPERATOR_NOTES.md): retained cleanup decisions
+  and other operational breadcrumbs
 
 ## Current Product Surface
 

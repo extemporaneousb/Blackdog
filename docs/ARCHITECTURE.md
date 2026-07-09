@@ -141,6 +141,13 @@ environment issue evidence, and feed `repo table` and `stats`. Those
 learning/report outputs support product tuning and audit without copying full
 transcripts into Blackdog state.
 
+Codex hooks and environments belong in the `blackdog` product layer. Hook
+handlers may inspect preflight state, active attempts, prompt hashes, and Codex
+turn metadata to provide context or guardrails, but they must not bypass the
+typed planning/runtime mutation APIs. Codex environments should remain
+convenience wrappers around Blackdog handlers and validation commands; they are
+not the source of repo setup truth.
+
 Supervised integration closeout is a coordination/reporting convention over
 the same task-attempt model. Multiple workers can use the active Codex thread
 for coordination, but durable state still flows through task begin/show/land/

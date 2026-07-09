@@ -1176,6 +1176,12 @@ selected timezone. Explicit and registered project roots are deduplicated by
 their resolved Blackdog profile project root. A nested repo with its own
 `blackdog.toml` is counted separately when it is explicitly supplied or
 registered; path aliases for the same repo collapse into one repo row.
+Stats uses each target repo's project root and git worktree roots to prune
+unrelated Codex session logs before full parsing or cache materialization.
+It also uses a lightweight Codex parse mode that skips environment-issue
+evidence extraction because stats reports aggregate task/attempt/Codex counters,
+not diagnostic evidence excerpts. Use `blackdog codex coverage` or
+`blackdog codex history` when environment issue evidence is the subject.
 
 ### `blackdog next`
 

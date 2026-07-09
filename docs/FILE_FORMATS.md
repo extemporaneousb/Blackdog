@@ -97,13 +97,17 @@ relative session path. Each cache entry contains:
 - `size`
 - `mtime_ns`
 - `parsed_at`
+- `environment_scan`
 - `session`
 
 Cache entries are valid only while the source session file's `size` and
-`mtime_ns` still match. `session` stores parsed session metadata, turn metadata,
-bounded message excerpts, environment issue classes/evidence excerpts, tool-call
-counts, timing, and token counters. It does not store full prompt or response
-transcripts.
+`mtime_ns` still match. `environment_scan` is true when the cached session
+included environment issue evidence extraction. Lightweight stats parsing may
+write false; a later coverage/history read that needs evidence will reparse and
+replace that entry with a full scan. `session` stores parsed session metadata,
+turn metadata, bounded message excerpts, environment issue classes/evidence
+excerpts when scanned, tool-call counts, timing, and token counters. It does not
+store full prompt or response transcripts.
 
 ## `blackdog.toml`
 
