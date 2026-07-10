@@ -70,6 +70,11 @@ WORKSPACE_MODE_GIT_WORKTREE = "git-worktree"
 WORKTREE_ROLE_PRIMARY = "primary"
 WORKTREE_ROLE_TASK = "task"
 WORKTREE_ROLE_LINKED = "linked"
+TASK_CLASS_IMPLEMENTATION = "implementation"
+TASK_CLASS_DEPLOYMENT = "deployment"
+TASK_CLASS_DATA_REFRESH = "data_refresh"
+TASK_CLASS_ANALYSIS_PUBLISH = "analysis_publish"
+SETUP_RECEIPT_SCHEMA_VERSION = 1
 
 
 class WorktreeError(RuntimeError):
@@ -121,6 +126,7 @@ class WorktreeSpec:
     source_root: str | None
     source_mode: str | None
     script_policy: str | None
+    setup_receipt: dict[str, Any]
     handlers: HandlerPlanSummary
 
     def to_dict(self) -> dict[str, Any]:
@@ -492,6 +498,119 @@ def _derive_task_title(prompt: str) -> str:
     if len(normalized) > 72 and " " in title:
         title = title.rsplit(" ", 1)[0]
     return title.rstrip(" .") or "Task"
+
+
+def _classify_task_prompt(prompt: str) -> str:
+    normalized = f" {str(prompt).lower()} "
+    if any(token in normalized for token in (" deploy", " deployment", " production", " prod-", " release ")):
+        return TASK_CLASS_DEPLOYMENT
+    if any(token in normalized for token in (" publish", " sharepoint", " reportdog", " report ")):
+        return TASK_CLASS_ANALYSIS_PUBLISH
+    if any(token in normalized for token in (" refresh", " ingest", " ingestion", " sync", " data update")):
+        return TASK_CLASS_DATA_REFRESH
+    return TASK_CLASS_IMPLEMENTATION
+
+
+def _deployment_route_declared(prompt: str) -> bool:
+    normalized = str(prompt).lower()
+    route_markers = (
+        "github actions",
+        "ci route",
+        "ci-owned",
+        "workflow_dispatch",
+        "standard deploy path",
+        "approved local fallback",
+        "local fallback approved",
+        "emergency fallback",
+    )
+    return any(marker in normalized for marker in route_markers)
+
+
+def _task_start_guard_receipt(prompt: str) -> dict[str, Any]:
+    task_class = _classify_task_prompt(prompt)
+    probes: list[dict[str, Any]] = [
+        {
+            "name": "task_class",
+            "status": "ok",
+            "value": task_class,
+            "required": True,
+            "message": f"classified task as {task_class}",
+        }
+    ]
+    blockers: list[str] = []
+    if task_class == TASK_CLASS_DEPLOYMENT:
+        route_declared = _deployment_route_declared(prompt)
+        probes.append(
+            {
+                "name": "deployment_route",
+                "status": "ok" if route_declared else "blocked",
+                "required": True,
+                "message": (
+                    "deployment route or approved local fallback is explicit"
+                    if route_declared
+                    else "deployment tasks must name the CI/GitHub Actions route or explicitly approve local fallback"
+                ),
+            }
+        )
+        if not route_declared:
+            blockers.append("deployment_route")
+    return {
+        "schema_version": SETUP_RECEIPT_SCHEMA_VERSION,
+        "task_class": task_class,
+        "status": "blocked" if blockers else "ok",
+        "blockers": blockers,
+        "probes": probes,
+    }
+
+
+def _guard_task_start(prompt: str) -> dict[str, Any]:
+    receipt = _task_start_guard_receipt(prompt)
+    blockers = receipt.get("blockers") or []
+    if blockers:
+        messages = [
+            str(probe.get("message"))
+            for probe in receipt.get("probes", [])
+            if probe.get("status") == "blocked" and probe.get("message")
+        ]
+        detail = "; ".join(messages) or f"blocked setup probes: {', '.join(str(item) for item in blockers)}"
+        raise BacklogError(f"task start blocked by setup guard: {detail}")
+    return receipt
+
+
+def _handler_setup_receipt(guard_receipt: dict[str, Any], handlers: HandlerPlanSummary) -> dict[str, Any]:
+    probes = list(guard_receipt.get("probes") or [])
+    blockers = [str(item) for item in guard_receipt.get("blockers") or []]
+    for action in handlers.actions:
+        status = "ok" if action.status in {"validated", "created", "preserved", "skipped"} else "blocked"
+        probe_name = f"{action.handler_id}.{action.action}"
+        probes.append(
+            {
+                "name": probe_name,
+                "status": status,
+                "handler_id": action.handler_id,
+                "kind": action.kind,
+                "action": action.action,
+                "target_path": action.target_path,
+                "required": True,
+                "message": action.message,
+                "elapsed_ms": action.elapsed_ms,
+            }
+        )
+        if status == "blocked":
+            blockers.append(probe_name)
+    return {
+        "schema_version": SETUP_RECEIPT_SCHEMA_VERSION,
+        "checked_at": now_iso(),
+        "task_class": guard_receipt.get("task_class") or TASK_CLASS_IMPLEMENTATION,
+        "status": "ok" if handlers.ready and not blockers else "blocked",
+        "blockers": blockers,
+        "workspace_ve": handlers.worktree_ve_path,
+        "workspace_blackdog_path": handlers.blackdog_path,
+        "runtime_mode": handlers.runtime_mode,
+        "source_mode": handlers.source_mode,
+        "script_policy": handlers.script_policy,
+        "probes": probes,
+    }
 
 
 def _auto_task_workset_payload(
@@ -1611,6 +1730,7 @@ def start_task_worktree(
     codex_context = current_codex_runtime_context()
     resolved_model = model or codex_context.model
     resolved_reasoning_effort = reasoning_effort or codex_context.reasoning_effort
+    guard_receipt = _guard_task_start(prompt)
     preview = preview_task_worktree(
         profile,
         workset_id=workset_id,
@@ -1648,6 +1768,7 @@ def start_task_worktree(
         raise WorktreeError(f"git worktree add failed: {detail}")
     try:
         handlers = execute_worktree_handlers(profile, worktree_path=worktree_path)
+        setup_receipt = _handler_setup_receipt(guard_receipt, handlers)
         if not handlers.ready:
             blocked = [action.message for action in handlers.actions if action.status == "blocked"]
             detail = "; ".join(blocked)
@@ -1684,6 +1805,7 @@ def start_task_worktree(
             reasoning_effort=resolved_reasoning_effort,
             codex_session=codex_session,
             note=note,
+            setup_receipt=setup_receipt,
         )
     except Exception:
         _run_git_no_check(primary_root, "worktree", "remove", "--force", str(worktree_path))
@@ -1711,6 +1833,7 @@ def start_task_worktree(
         source_root=handlers.source_root,
         source_mode=handlers.source_mode,
         script_policy=handlers.script_policy,
+        setup_receipt=setup_receipt,
         handlers=handlers,
     )
     append_event(
@@ -1736,6 +1859,7 @@ def start_task_worktree(
             "runtime_mode": handlers.runtime_mode,
             "source_mode": handlers.source_mode,
             "script_policy": handlers.script_policy,
+            "setup_receipt": setup_receipt,
             "model": attempt.model,
             "reasoning_effort": attempt.reasoning_effort,
             "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session is not None else None,
@@ -1785,6 +1909,7 @@ def begin_task_worktree(
         user_prompt_source=user_prompt_source,
         prompt_mode=prompt_mode,
     )
+    _guard_task_start(execution_receipt.text)
     created_workset = False
     if resolved_workset is None:
         workspace_root = command_workspace_root(profile, cwd=cwd)
@@ -2060,6 +2185,14 @@ def _task_recovery_state(
     return "idle"
 
 
+def _command_row(command: str, *, reason: str, disposition: str) -> dict[str, str]:
+    return {
+        "command": command,
+        "reason": reason,
+        "disposition": disposition,
+    }
+
+
 def _task_recovery_payload(
     profile: RepoProfile,
     *,
@@ -2165,6 +2298,63 @@ def _task_recovery_payload(
         recommended_actions.append("inspect the retained task workspace and clean or discard its changes before cleanup")
     if task_worktree is not None and not worktree_dirty_paths:
         recommended_actions.append("run `blackdog task cleanup` if the task workspace is no longer needed")
+    recommended_commands: list[dict[str, str]] = []
+    if stale_claim:
+        recommended_commands.append(
+            _command_row(
+                'blackdog task recover --release-stale-claim --status blocked|failed|abandoned --summary "..."',
+                reason="release a stale task claim without deleting retained work",
+                disposition="retryable_after_operator_choice",
+            )
+        )
+    elif active_attempt is not None:
+        if worktree_dirty_paths or branch_ahead:
+            recommended_commands.append(
+                _command_row(
+                    "blackdog task land --summary \"...\"",
+                    reason="land the active task attempt through the canonical success path",
+                    disposition="auto_safe_after_validation",
+                )
+            )
+        recommended_commands.append(
+            _command_row(
+                "blackdog task close --status blocked|failed|abandoned --summary \"...\"",
+                reason="close the active attempt without landing code",
+                disposition="operator_choice",
+            )
+        )
+    elif selected_attempt is not None and (branch_exists is False or target_branch_exists is False or branch_ahead_error):
+        recommended_commands.append(
+            _command_row(
+                "blackdog task cancel --summary \"...\"",
+                reason="keep stale task state out of normal ready work",
+                disposition="operator_choice",
+            )
+        )
+    elif task_worktree is None:
+        recommended_commands.append(
+            _command_row(
+                "blackdog task begin --prompt \"...\"",
+                reason="start a new WTAM attempt for this task",
+                disposition="auto_safe",
+            )
+        )
+    if task_worktree is not None and not worktree_dirty_paths:
+        recommended_commands.append(
+            _command_row(
+                "blackdog task cleanup",
+                reason="remove retained task workspace after proving it is disposable",
+                disposition="auto_safe_if_cleanup_ready",
+            )
+        )
+    elif task_worktree is not None:
+        recommended_commands.append(
+            _command_row(
+                "git status --short",
+                reason="inspect retained task workspace before cleanup",
+                disposition="read_only",
+            )
+        )
     return {
         "workset_id": workset_id,
         "task_id": task_id,
@@ -2223,6 +2413,7 @@ def _task_recovery_payload(
         "recovery_action": recovery_action,
         "prompt_issue": prompt_issue,
         "operator_issue": operator_issue,
+        "setup_receipt": selected_attempt.setup_receipt if selected_attempt is not None else None,
         "execution_prompt_hash": (
             selected_attempt.prompt_receipt.prompt_hash
             if selected_attempt is not None and selected_attempt.prompt_receipt is not None
@@ -2269,6 +2460,7 @@ def _task_recovery_payload(
         "primary_dirty": primary_dirty,
         "primary_dirty_paths": primary_dirty_paths,
         "recommended_actions": recommended_actions,
+        "recommended_commands": recommended_commands,
     }
 
 
@@ -3110,6 +3302,7 @@ def render_start_text(spec: WorktreeSpec, *, surface: str = "worktree") -> str:
         f"{prefix} prompt mode: {spec.prompt_mode or 'unset'}",
         f"{prefix} workspace CLI: {spec.workspace_blackdog_path or 'missing'}",
         f"{prefix} runtime mode: {spec.runtime_mode or 'unset'}",
+        f"{prefix} setup: {spec.setup_receipt.get('status', 'unknown')} task_class={spec.setup_receipt.get('task_class', 'unknown')}",
     ]
     if spec.script_policy:
         lines.append(f"{prefix} script policy: {spec.script_policy}")

@@ -473,6 +473,13 @@ class CorePlanningTests(CoreAuditTestCase):
                 source="user-test",
                 mode="raw",
             ),
+            setup_receipt={
+                "schema_version": 1,
+                "status": "ok",
+                "task_class": "implementation",
+                "blockers": [],
+                "probes": [{"name": "task_class", "status": "ok", "value": "implementation"}],
+            },
             note="starting work",
         )
         self.assertEqual(attempt.status, "in_progress")
@@ -484,12 +491,15 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(attempt.execution_model, "direct_wtam")
         self.assertEqual(attempt.prompt_receipt.prompt_hash, create_prompt_receipt("Implement the direct slice and record runtime stats.").prompt_hash)
         self.assertEqual(attempt.user_prompt_receipt.source, "user-test")
+        self.assertEqual(attempt.setup_receipt["status"], "ok")
+        self.assertEqual(attempt.setup_receipt["task_class"], "implementation")
 
         runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
         self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "codex")
         self.assertEqual(runtime_state.worksets[0].workset_claim.execution_model, "direct_wtam")
         self.assertEqual(runtime_state.worksets[0].task_claims[0].task_id, "DIR-1")
         self.assertEqual(runtime_state.worksets[0].task_claims[0].attempt_id, attempt.attempt_id)
+        self.assertEqual(runtime_state.worksets[0].attempts[0].setup_receipt["status"], "ok")
 
         finished = finish_task(
             self.profile,
@@ -521,6 +531,14 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(runtime_state.worksets[0].attempts[0].prompt_receipt.mode, "tuned")
         self.assertEqual(runtime_state.worksets[0].attempts[0].user_prompt_receipt.source, "user-test")
         self.assertEqual(runtime_state.worksets[0].attempts[0].user_prompt_receipt.mode, "raw")
+        self.assertEqual(runtime_state.worksets[0].attempts[0].setup_receipt["status"], "ok")
+        events = [
+            json.loads(line)
+            for line in self.profile.paths.events_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        start_event = next(event for event in events if event["type"] == "task.start")
+        self.assertEqual(start_event["payload"]["setup_receipt"]["task_class"], "implementation")
 
     def test_abandoned_attempt_releases_claims_and_cancels_task(self) -> None:
         upsert_workset(

@@ -70,6 +70,7 @@ def _attempt_payload(
     *,
     include_legacy_worksets: bool = False,
 ) -> dict[str, Any]:
+    setup_receipt = attempt.setup_receipt or {}
     payload = {
         "task_ref": _task_ref(workset_id, attempt.task_id),
         "task_id": attempt.task_id,
@@ -99,6 +100,10 @@ def _attempt_payload(
         "recovery_action": attempt.recovery_action,
         "prompt_issue": attempt.prompt_issue,
         "operator_issue": attempt.operator_issue,
+        "setup_status": setup_receipt.get("status"),
+        "task_class": setup_receipt.get("task_class"),
+        "setup_blockers_count": len(setup_receipt.get("blockers") or ()),
+        "setup_receipt": attempt.setup_receipt,
         **_prompt_lineage_payload(attempt),
     }
     if include_legacy_worksets:
@@ -266,6 +271,9 @@ ATTEMPTS_TABLE_COLUMNS = (
     "recovery_action",
     "prompt_issue",
     "operator_issue",
+    "setup_status",
+    "task_class",
+    "setup_blockers_count",
     "summary",
 )
 LEGACY_ATTEMPTS_TABLE_COLUMNS = ("workset_id",)

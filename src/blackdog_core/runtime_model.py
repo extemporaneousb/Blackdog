@@ -130,6 +130,7 @@ class AttemptView:
     recovery_action: str | None
     prompt_issue: bool
     operator_issue: bool
+    setup_receipt: dict[str, Any] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +311,7 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
         recovery_action=attempt.recovery_action,
         prompt_issue=attempt.prompt_issue,
         operator_issue=attempt.operator_issue,
+        setup_receipt=dict(attempt.setup_receipt) if attempt.setup_receipt is not None else None,
     )
 
 

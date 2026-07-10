@@ -308,11 +308,17 @@ Each attempt row contains:
 - optional `recovery_action`
 - optional `prompt_issue`
 - optional `operator_issue`
+- optional `setup_receipt`
 
 `commit`, when present, is the task-branch head Blackdog landed or closed
 from. On successful `worktree land`, it may be an internal prep commit created
 after auto-staging dirty task-worktree changes. `landed_commit`, when present,
 is the canonical landed commit Blackdog created on the target branch.
+
+`setup_receipt`, when present, is a structured task-start receipt. It records
+`schema_version`, `status`, `task_class`, `blockers`, and `probes`. Start
+guards and handler setup probes use it to show which startup checks ran, what
+was blocked, and which worktree-local runtime paths were prepared.
 
 New runtime writes use only `direct_wtam` for `execution_model`. Older
 `runtime.json` files may still contain removed managed-claim values while
@@ -452,10 +458,13 @@ reports them.
 
 Environment issue fields are read-model annotations, not runtime failure
 classes. `failure_class` remains the WTAM recovery/status class; environment
-issue classes describe observable local setup/tooling/source-data evidence such
+issue classes describe observed local setup/tooling/source-data failures such
 as missing CLIs, missing virtualenvs, missing container runtimes, missing Python
 or Node dependencies, missing credentials, source file format problems, or
-wrong-worktree execution.
+wrong-worktree execution. Evidence rows include `evidence_kind`:
+`observed_failure` for tool-output failures and `operator_guidance` for
+assistant text, attempt summaries, residual notes, and recovery prose.
+Coverage counts keep observed failures separate from guidance-only evidence.
 
 ## `events.jsonl`
 
@@ -505,6 +514,7 @@ Current `worktree.start` payloads record:
 - optional `runtime_mode`
 - optional `source_mode`
 - optional `script_policy`
+- `setup_receipt`
 - `handler_actions`
 
 Current `worktree.land` payloads record:

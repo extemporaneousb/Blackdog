@@ -200,6 +200,7 @@ class TaskAttemptRecord:
     recovery_action: str | None = None
     prompt_issue: bool = False
     operator_issue: bool = False
+    setup_receipt: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +346,14 @@ def _normalize_string_list(value: Any, *, field: str, source: Path) -> tuple[str
         if text:
             items.append(text)
     return tuple(items)
+
+
+def _normalize_optional_mapping(value: Any, *, field: str, source: Path) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise StoreError(f"{field} must be an object in {source}")
+    return dict(value)
 
 
 def _normalize_bool(value: Any, *, field: str, source: Path) -> bool:
@@ -606,6 +615,7 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         recovery_action=_optional_text(payload.get("recovery_action")),
         prompt_issue=_normalize_bool(payload.get("prompt_issue"), field="attempt.prompt_issue", source=source),
         operator_issue=_normalize_bool(payload.get("operator_issue"), field="attempt.operator_issue", source=source),
+        setup_receipt=_normalize_optional_mapping(payload.get("setup_receipt"), field="attempt.setup_receipt", source=source),
     )
 
 
@@ -774,6 +784,7 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                         "recovery_action": attempt.recovery_action,
                         "prompt_issue": attempt.prompt_issue,
                         "operator_issue": attempt.operator_issue,
+                        "setup_receipt": attempt.setup_receipt,
                     }
                     for attempt in workset.attempts
                 ],

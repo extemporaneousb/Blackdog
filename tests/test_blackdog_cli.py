@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import blackdog.wtam as wtam
 from blackdog.contract import managed_skill_relative_path
-from blackdog_core.backlog import finish_task, start_task, upsert_workset
+from blackdog_core.backlog import finish_task, load_planning_state, start_task, upsert_workset
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
     ValidationRecord,
@@ -753,6 +753,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
         self.assertTrue(workset_id.startswith("task-"))
         self.assertTrue(worktree_path.exists())
+        self.assertEqual(task_payload["worktree"]["setup_receipt"]["status"], "ok")
+        self.assertEqual(task_payload["worktree"]["setup_receipt"]["task_class"], "implementation")
 
         exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
@@ -765,6 +767,11 @@ class BlackdogCliTests(CoreAuditTestCase):
             "sessions/2026/05/04/rollout-2026-05-04T12-00-00-thread-task-begin.jsonl",
         )
         self.assertIsNone(started_attempt["prompt_receipt"]["text"])
+        attempt_row = json.loads(stdout)["runtime_model"]["attempts"][0]
+        self.assertEqual(attempt_row["setup_status"], "ok")
+        self.assertEqual(attempt_row["task_class"], "implementation")
+        self.assertEqual(attempt_row["setup_blockers_count"], 0)
+        self.assertEqual(attempt_row["setup_receipt"]["status"], "ok")
 
         (worktree_path / "task-begin.txt").write_text("task begin\n", encoding="utf-8")
 
@@ -825,6 +832,78 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary_payload["counts"]["active_attempts"], 0)
         self.assertEqual(summary_payload["counts"]["claimed_tasks"], 0)
         self.assertEqual((self.root / "task-begin.txt").read_text(encoding="utf-8"), "task begin\n")
+
+    def test_task_begin_deployment_guard_blocks_before_auto_task_creation(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Deploy production now.",
+            "--json",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("task start blocked by setup guard", stderr)
+        self.assertIn("deployment tasks must name the CI/GitHub Actions route", stderr)
+        profile = load_profile(self.root)
+        self.assertEqual(load_planning_state(profile.paths).worksets, ())
+        self.assertEqual(load_runtime_state(profile.paths).worksets, ())
+
+    def test_task_begin_deployment_route_records_setup_receipt(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Deploy production through GitHub Actions workflow_dispatch.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        branch = task_payload["worktree"]["branch"]
+        setup_receipt = task_payload["worktree"]["setup_receipt"]
+        self.assertEqual(setup_receipt["status"], "ok")
+        self.assertEqual(setup_receipt["task_class"], "deployment")
+        self.assertEqual(setup_receipt["blockers"], [])
+        self.assertTrue(any(row["name"] == "deployment_route" and row["status"] == "ok" for row in setup_receipt["probes"]))
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "closed deployment route receipt smoke test",
+            "--cleanup",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(worktree_path.exists())
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(self.root), "branch", "--list", branch],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            "",
+        )
 
     def test_codex_coverage_and_history_cli_read_codex_sessions(self) -> None:
         codex_home = self.root / ".codex-home"
@@ -1731,6 +1810,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         actions = "\n".join(recovery_payload["recommended_actions"])
         self.assertIn("blackdog task land", actions)
         self.assertIn("blackdog task close", actions)
+        command_rows = recovery_payload["recommended_commands"]
+        commands = [row["command"] for row in command_rows]
+        self.assertIn('blackdog task land --summary "..."', commands)
+        self.assertIn('blackdog task close --status blocked|failed|abandoned --summary "..."', commands)
+        self.assertTrue(all(row["reason"] for row in command_rows))
+        self.assertTrue(all(row["disposition"] for row in command_rows))
 
         subprocess.run(
             ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],

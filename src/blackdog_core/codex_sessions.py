@@ -97,6 +97,8 @@ _ENVIRONMENT_ISSUE_CLASSES = (
     "missing_cli",
     "unknown_environment_issue",
 )
+ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE = "observed_failure"
+ENVIRONMENT_EVIDENCE_OPERATOR_GUIDANCE = "operator_guidance"
 _MAX_ENVIRONMENT_ISSUE_SCAN_CHARS = 20_000
 _ENVIRONMENT_ISSUE_SCAN_EDGE_CHARS = 10_000
 _ENVIRONMENT_ISSUE_CLASS_ORDER = {issue_class: index for index, issue_class in enumerate(_ENVIRONMENT_ISSUE_CLASSES)}
@@ -211,6 +213,7 @@ class EnvironmentIssueEvidence:
     source: str
     pattern: str
     excerpt: str | None
+    evidence_kind: str = ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +608,14 @@ def build_codex_coverage(
     relationship_counts = _relationship_counts(relationships)
     environment_issue_counts = _environment_issue_counts(turns)
     environment_issue_evidence_counts = _environment_issue_evidence_counts(turns)
+    environment_issue_observed_counts = _environment_issue_evidence_counts(
+        turns,
+        evidence_kind=ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE,
+    )
+    environment_issue_guidance_counts = _environment_issue_evidence_counts(
+        turns,
+        evidence_kind=ENVIRONMENT_EVIDENCE_OPERATOR_GUIDANCE,
+    )
     return {
         "project_name": profile.project_name,
         "project_root": str(profile.paths.project_root),
@@ -638,6 +649,18 @@ def build_codex_coverage(
                 [turn for turn in turns if turn.user_message_hash and turn.environment_issue_classes]
             ),
             "environment_issue_evidence": sum(len(turn.environment_issue_evidence) for turn in turns),
+            "observed_environment_issue_evidence": sum(
+                1
+                for turn in turns
+                for evidence in turn.environment_issue_evidence
+                if evidence.evidence_kind == ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE
+            ),
+            "operator_guidance_environment_issue_evidence": sum(
+                1
+                for turn in turns
+                for evidence in turn.environment_issue_evidence
+                if evidence.evidence_kind == ENVIRONMENT_EVIDENCE_OPERATOR_GUIDANCE
+            ),
             "model_known_turns": len([turn for turn in turns if turn.model]),
             "model_missing_turns": len([turn for turn in turns if not turn.model]),
             "reasoning_known_turns": len([turn for turn in turns if turn.reasoning_effort]),
@@ -663,6 +686,8 @@ def build_codex_coverage(
         "relationship_counts": relationship_counts,
         "environment_issue_counts": environment_issue_counts,
         "environment_issue_evidence_counts": environment_issue_evidence_counts,
+        "observed_environment_issue_evidence_counts": environment_issue_observed_counts,
+        "operator_guidance_environment_issue_evidence_counts": environment_issue_guidance_counts,
         "attempt_status_counts": attempt_status_counts,
         "turns": rows,
         "attempts": [
@@ -1405,6 +1430,7 @@ def _environment_issue_evidence_row(evidence: EnvironmentIssueEvidence) -> dict[
         "source": evidence.source,
         "pattern": evidence.pattern,
         "excerpt": evidence.excerpt,
+        "evidence_kind": evidence.evidence_kind,
     }
 
 
@@ -1426,10 +1452,16 @@ def _environment_issue_counts(turns: Iterable[CodexTurn]) -> dict[str, int]:
     return _sort_environment_issue_counts(counts)
 
 
-def _environment_issue_evidence_counts(turns: Iterable[CodexTurn]) -> dict[str, int]:
+def _environment_issue_evidence_counts(
+    turns: Iterable[CodexTurn],
+    *,
+    evidence_kind: str | None = None,
+) -> dict[str, int]:
     counts: dict[str, int] = {}
     for turn in turns:
         for evidence in turn.environment_issue_evidence:
+            if evidence_kind is not None and evidence.evidence_kind != evidence_kind:
+                continue
             counts[evidence.issue_class] = counts.get(evidence.issue_class, 0) + 1
     return _sort_environment_issue_counts(counts)
 
@@ -1453,9 +1485,21 @@ def _classify_attempt_environment_issues(attempt: AttemptView) -> tuple[str, ...
         ("attempt.note", attempt.note),
         ("attempt.recovery_action", attempt.recovery_action),
     ):
-        evidence.extend(classify_environment_issue_text(text, source=source))
+        evidence.extend(
+            classify_environment_issue_text(
+                text,
+                source=source,
+                evidence_kind=ENVIRONMENT_EVIDENCE_OPERATOR_GUIDANCE,
+            )
+        )
     for residual in attempt.residuals:
-        evidence.extend(classify_environment_issue_text(residual, source="attempt.residual"))
+        evidence.extend(
+            classify_environment_issue_text(
+                residual,
+                source="attempt.residual",
+                evidence_kind=ENVIRONMENT_EVIDENCE_OPERATOR_GUIDANCE,
+            )
+        )
     return _environment_classes_from_evidence(tuple(evidence))
 
 
@@ -1463,6 +1507,7 @@ def classify_environment_issue_text(
     text: str | None,
     *,
     source: str,
+    evidence_kind: str = ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE,
 ) -> tuple[EnvironmentIssueEvidence, ...]:
     if not text:
         return ()
@@ -1481,6 +1526,7 @@ def classify_environment_issue_text(
                     source=source,
                     pattern=pattern_name,
                     excerpt=_evidence_excerpt(text_value, match.start(), match.end()),
+                    evidence_kind=evidence_kind,
                 )
             )
             break
@@ -1498,7 +1544,13 @@ def _add_environment_issue_evidence(turn: dict[str, Any], *, source: str, text: 
     evidence = turn.setdefault("environment_issue_evidence", [])
     if not isinstance(evidence, list):
         return
-    evidence.extend(classify_environment_issue_text(text, source=source))
+    evidence.extend(
+        classify_environment_issue_text(
+            text,
+            source=source,
+            evidence_kind=_environment_evidence_kind_for_source(source),
+        )
+    )
 
 
 def _turn_payload_in_scan_window(turn: Mapping[str, Any], cutoff: datetime | None) -> bool:
@@ -1513,20 +1565,44 @@ def _turn_payload_in_scan_window(turn: Mapping[str, Any], cutoff: datetime | Non
 
 def _dedupe_environment_evidence(items: Iterable[EnvironmentIssueEvidence]) -> tuple[EnvironmentIssueEvidence, ...]:
     selected: list[EnvironmentIssueEvidence] = []
-    seen: set[tuple[str, str, str, str | None]] = set()
+    seen: set[tuple[str, str, str, str | None, str]] = set()
     for evidence in items:
-        key = (evidence.issue_class, evidence.source, evidence.pattern, evidence.excerpt)
+        key = (evidence.issue_class, evidence.source, evidence.pattern, evidence.excerpt, evidence.evidence_kind)
         if key in seen:
             continue
         seen.add(key)
         selected.append(evidence)
         if len(selected) >= 12:
             break
-    return tuple(sorted(selected, key=lambda item: (_environment_issue_sort_key(item.issue_class), item.source, item.pattern)))
+    return tuple(
+        sorted(
+            selected,
+            key=lambda item: (_environment_issue_sort_key(item.issue_class), item.evidence_kind, item.source, item.pattern),
+        )
+    )
 
 
-def _environment_classes_from_evidence(items: Iterable[EnvironmentIssueEvidence]) -> tuple[str, ...]:
-    return tuple(sorted({item.issue_class for item in items}, key=_environment_issue_sort_key))
+def _environment_evidence_kind_for_source(source: str) -> str:
+    if source == "codex_session.tool_output":
+        return ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE
+    return ENVIRONMENT_EVIDENCE_OPERATOR_GUIDANCE
+
+
+def _environment_classes_from_evidence(
+    items: Iterable[EnvironmentIssueEvidence],
+    *,
+    evidence_kind: str | None = ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE,
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                item.issue_class
+                for item in items
+                if evidence_kind is None or item.evidence_kind == evidence_kind
+            },
+            key=_environment_issue_sort_key,
+        )
+    )
 
 
 def _sort_environment_issue_counts(counts: Mapping[str, int]) -> dict[str, int]:
@@ -1703,6 +1779,7 @@ def _codex_turn_from_cache_payload(payload: Any) -> CodexTurn | None:
             source=str(item.get("source") or ""),
             pattern=str(item.get("pattern") or ""),
             excerpt=_optional_text(item.get("excerpt")),
+            evidence_kind=str(item.get("evidence_kind") or ENVIRONMENT_EVIDENCE_OBSERVED_FAILURE),
         )
         for item in payload.get("environment_issue_evidence") or []
         if isinstance(item, Mapping)

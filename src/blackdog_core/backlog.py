@@ -410,6 +410,7 @@ def start_task(
     prompt_receipt: PromptReceiptRecord | None = None,
     user_prompt_receipt: PromptReceiptRecord | None = None,
     note: str | None = None,
+    setup_receipt: Mapping[str, Any] | None = None,
     planning_store: PlanningStore | None = None,
     runtime_store: RuntimeStore | None = None,
 ) -> TaskAttemptRecord:
@@ -494,6 +495,7 @@ def start_task(
             prompt_receipt=prompt_receipt,
             user_prompt_receipt=resolved_user_prompt_receipt,
             note=note,
+            setup_receipt=dict(setup_receipt) if setup_receipt is not None else None,
         )
         next_workset_claim = reusable_workset_claim or WorksetClaimRecord(
             actor=actor,
@@ -588,6 +590,7 @@ def start_task(
             "user_prompt_mode": (
                 attempt.user_prompt_receipt.mode if attempt.user_prompt_receipt is not None else None
             ),
+            "setup_receipt": attempt.setup_receipt,
         },
     )
     return attempt
@@ -695,6 +698,7 @@ def finish_task(
             recovery_action=resolved_recovery_action,
             prompt_issue=resolved_prompt_issue,
             operator_issue=resolved_operator_issue,
+            setup_receipt=existing_attempt.setup_receipt,
         )
         if status == ATTEMPT_STATUS_SUCCESS:
             task_runtime_status = TASK_STATUS_DONE

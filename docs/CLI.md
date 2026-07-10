@@ -515,6 +515,13 @@ execution prompt receipt, provisions the task worktree, and starts the WTAM
 attempt in one command. That envelope is runtime bookkeeping for attempt
 history and recovery, not a repo-facing planning workflow.
 
+Before it creates a new task envelope, `task begin` runs task-class startup
+guards against the execution prompt. Deployment-class prompts must name the CI
+or GitHub Actions route, or explicitly state an approved local/emergency
+fallback, before Blackdog will create planning/runtime state. Successful starts
+record a `setup_receipt` on the attempt and start event with task class,
+guard probes, handler setup probes, blockers, and worktree-local runtime paths.
+
 `--project-root` identifies the Blackdog-managed repo and control state. When
 the command runs from a normal linked worktree for the same Git repository,
 `task begin` treats that linked branch as the target branch and provisions a
@@ -595,6 +602,8 @@ that worktree. It reports:
 - structured recovery fields such as `failure_class` and `recovery_action`
 - recommended next actions such as `task land`, `task close`, `task cleanup`,
   or stale-claim release
+- `recommended_commands`, a machine-readable list of concrete command strings,
+  reasons, and dispositions for the same recovery paths
 
 If a latest historical attempt references a missing task branch or missing
 target branch, recovery reads return `recovery_state="stale_reference"` with
@@ -910,6 +919,12 @@ handler plan, and records:
 - prompt source
 - prompt receipt hash
 - handler actions and timings
+- setup receipt status, task class, guard probes, handler probes, blockers,
+  and prepared worktree-local runtime paths
+
+`worktree start` applies the same task-class startup guard as `task begin`.
+Deployment-class prompts must name the CI/GitHub Actions route or explicitly
+approve local/emergency fallback before Blackdog starts the attempt.
 
 `worktree start` is a low-level existing-task command. Use `task begin` without
 `--workset` or `--task` for new work; do not invent workset or task ids.
@@ -1334,17 +1349,22 @@ modify tasks.
   `active_attempt_window`, and `same_session`
 - analysis-only turns
 - unlinked implementation-like turns
-- environment issue turn counts, evidence-hit counts, and structured issue
-  classes such as `missing_cli`, `missing_venv`, `missing_container_runtime`,
-  `missing_python_module`, `missing_node_dependency`, `missing_credential`,
-  `source_file_bad_format`, and `wrong_worktree_env`
+- environment issue turn counts, evidence-hit counts, observed-vs-guidance
+  evidence counts, and structured issue classes such as `missing_cli`,
+  `missing_venv`, `missing_container_runtime`, `missing_python_module`,
+  `missing_node_dependency`, `missing_credential`, `source_file_bad_format`,
+  and `wrong_worktree_env`
 - model/reasoning observability
 - longest completed Codex turn duration and turn identifiers
 
 Coverage output may show short prompt excerpts for operator diagnosis, but it
 does not persist transcript text. Environment issue evidence is extracted from
-assistant/tool output and attempt summaries as bounded excerpts; it is a
-read-model annotation and does not change `failure_class`.
+tool output as `observed_failure` and from assistant/attempt prose as
+`operator_guidance`; turn-level environment issue classes and the primary issue
+class are based on observed failures only, while guidance evidence remains
+available through the evidence rows and guidance-specific counts. Evidence is
+stored as bounded excerpts; it is a read-model annotation and does not change
+`failure_class`.
 
 Parsed Codex sessions are cached under user-local Blackdog state and invalidated
 by session-file size and mtime. The cache stores parsed metadata, bounded

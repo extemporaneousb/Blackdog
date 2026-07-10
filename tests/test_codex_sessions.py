@@ -731,17 +731,35 @@ class CodexSessionTests(CoreAuditTestCase):
 
         self.assertEqual(coverage["counts"]["environment_issue_turns"], 1)
         self.assertEqual(coverage["environment_issue_counts"]["missing_container_runtime"], 1)
-        self.assertEqual(coverage["environment_issue_counts"]["missing_python_module"], 1)
+        self.assertNotIn("missing_python_module", coverage["environment_issue_counts"])
         self.assertEqual(coverage["environment_issue_counts"]["source_file_bad_format"], 1)
+        self.assertEqual(coverage["environment_issue_evidence_counts"]["missing_python_module"], 1)
+        self.assertEqual(coverage["observed_environment_issue_evidence_counts"]["missing_container_runtime"], 1)
+        self.assertNotIn("missing_python_module", coverage["observed_environment_issue_evidence_counts"])
+        self.assertEqual(coverage["operator_guidance_environment_issue_evidence_counts"]["missing_python_module"], 1)
+        self.assertEqual(coverage["counts"]["observed_environment_issue_evidence"], 2)
+        self.assertEqual(coverage["counts"]["operator_guidance_environment_issue_evidence"], 1)
         env_turn = coverage["turns"][0]
         self.assertEqual(env_turn["primary_environment_issue_class"], "missing_container_runtime")
         self.assertEqual(
             env_turn["environment_issue_classes"],
-            ["missing_container_runtime", "missing_python_module", "source_file_bad_format"],
+            ["missing_container_runtime", "source_file_bad_format"],
         )
         self.assertGreaterEqual(len(env_turn["environment_issue_evidence"]), 3)
+        self.assertEqual(
+            {
+                (row["class"], row["evidence_kind"])
+                for row in env_turn["environment_issue_evidence"]
+            },
+            {
+                ("missing_container_runtime", "observed_failure"),
+                ("missing_python_module", "operator_guidance"),
+                ("source_file_bad_format", "observed_failure"),
+            },
+        )
         rendered_rows = "\n".join(json.dumps(row, sort_keys=True) for row in history["rows"])
-        self.assertIn('"environment_issue_classes": ["missing_container_runtime", "missing_python_module", "source_file_bad_format"]', rendered_rows)
+        self.assertIn('"environment_issue_classes": ["missing_container_runtime", "source_file_bad_format"]', rendered_rows)
+        self.assertIn('"evidence_kind": "operator_guidance"', rendered_rows)
         self.assertNotIn(prompt, rendered_rows)
 
     def test_repo_matching_includes_git_worktree_cwds(self) -> None:

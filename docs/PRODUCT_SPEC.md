@@ -421,6 +421,8 @@ V1 should include these product capabilities:
 - explicit workset/task claims
 - same-thread task begin/show/recover/land/close/cancel/reopen/cleanup
 - worktree-backed WTAM preflight/table/preview/start/show/land/close/cleanup
+- task-class startup guards for deployment-route safety before attempt start
+- structured setup receipts for guard and handler setup results
 - raw user-prompt and execution-prompt capture
 - prompt/contract preview before execution start
 - result/stat recording
@@ -477,6 +479,11 @@ This is the decision frame for the rest of the repo.
 - prompt shaping and prompt reuse:
   keep the capability, but ground it in stored prompt receipts and attempt
   history instead of ad hoc chat memory
+- task-class guardrails:
+  keep them product-layer and startup-focused. They should block starts only
+  when a task cannot safely enter the normal WTAM path, and they should record
+  probe evidence as setup receipts so later reporting can distinguish a hard
+  startup blocker from ordinary operator guidance.
 - repo lifecycle workflows:
   keep analyze/bind/table/scaffold/install/update/refresh/archive/unarchive/
   unbind/tune plus attempt inspection as first-class workflows, but rebuild

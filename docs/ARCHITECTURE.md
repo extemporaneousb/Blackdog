@@ -122,8 +122,11 @@ may consume `worktree preflight`, prompt preview, repo-skill context, handler
 preview output, and attempt history, but they do not change the core
 planning/runtime ownership boundary. The WTAM preflight surface stays focused
 on workspace role, branch, dirty state, landing readiness, worktree inventory,
-and the repo-local CLI path. Class-specific checks for deployment route,
-credentials, external services, or approvals should be layered around task
+and the repo-local CLI path. The shipped startup guard classifies task prompts
+before attempt start; deployment-class prompts must name the CI/GitHub Actions
+route or explicitly approve local/emergency fallback before Blackdog creates a
+new task envelope or starts an attempt. More class-specific checks for
+credentials, external services, or approvals should stay layered around task
 start and closeout rather than embedded into `blackdog_core`.
 
 Environment/launcher repair expectations are owned by repo lifecycle and
@@ -131,15 +134,16 @@ handler orchestration. `repo install`, `repo update`, and `repo refresh`
 validate configured handlers and repair repo-local runtime artifacts in the
 repo-root scope. `worktree start` executes the handler plan for the task
 workspace: worktree-local `.VE`, overlay/source-path wiring, root-bin fallback
-links, and the worktree-local launcher. Handler actions are reported by those
-commands and recorded on `worktree.start` events when task execution starts.
+links, and the worktree-local launcher. Handler actions and task-class guard
+results are recorded as the attempt `setup_receipt` and on `worktree.start`
+events when task execution starts.
 
 Implementation-without-Blackdog detection lives in read models, not in runtime
 mutation. `codex coverage` and `codex history` compare Codex session logs
 against Blackdog attempts, classify implementation-like unlinked turns, attach
-environment issue evidence, and feed `repo table` and `stats`. Those
-learning/report outputs support product tuning and audit without copying full
-transcripts into Blackdog state.
+observed-vs-guidance environment issue evidence, and feed `repo table` and
+`stats`. Those learning/report outputs support product tuning and audit without
+copying full transcripts into Blackdog state.
 
 Codex hooks and environments belong in the `blackdog` product layer. Hook
 handlers may inspect preflight state, active attempts, prompt hashes, and Codex
