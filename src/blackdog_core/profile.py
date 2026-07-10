@@ -29,9 +29,7 @@ HANDLER_INSTALL_MODE_LAUNCHER_SHIM = "launcher-shim"
 DEFAULT_DOC_ROUTING = (
     "AGENTS.md",
     "docs/INDEX.md",
-    "docs/PRODUCT_SPEC.md",
     "docs/ARCHITECTURE.md",
-    "docs/TARGET_MODEL.md",
     "docs/CLI.md",
     "docs/FILE_FORMATS.md",
 )
@@ -45,8 +43,6 @@ DEFAULT_DOC_ROUTING_CANDIDATES = (
     "docs/ARCHITECTURE.md",
     "docs/CLI.md",
     "docs/FILE_FORMATS.md",
-    "docs/PRODUCT_SPEC.md",
-    "docs/TARGET_MODEL.md",
 )
 DEFAULT_DOC_ROUTING_FALLBACK = "README.md"
 

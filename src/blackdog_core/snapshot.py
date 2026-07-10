@@ -1,4 +1,4 @@
-"""Read models and renderers for the vNext Blackdog runtime."""
+"""Read models and renderers for the Blackdog runtime."""
 
 from __future__ import annotations
 

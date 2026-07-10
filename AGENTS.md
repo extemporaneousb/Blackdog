@@ -47,7 +47,7 @@ development.
   fallback root-bin tools, and writing the worktree-local `blackdog` launcher.
 - Do not use or preserve deleted backlog/board/inbox/render flows, the removed
   supervisor flow, or the old bootstrap/tune implementations unless they are
-  explicitly rebuilt on top of the vNext core model.
+  explicitly rebuilt on top of the typed core model.
 - Repo lifecycle/operator surfaces such as `repo analyze|bind|table|install|update|refresh|archive|unarchive|unbind`,
   `local-repo add|list|remove`, `prompt preview|tune`,
   `attempts summary|table`, and `stats` are distinct from workset/task
@@ -109,9 +109,7 @@ Keep repo-specific requirements outside this block.
 
 Review these routed docs before editing when they apply:
 - `docs/INDEX.md`
-- `docs/PRODUCT_SPEC.md`
 - `docs/ARCHITECTURE.md`
-- `docs/TARGET_MODEL.md`
 - `docs/CLI.md`
 - `docs/FILE_FORMATS.md`
 

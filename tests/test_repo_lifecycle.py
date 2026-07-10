@@ -231,6 +231,33 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("without `--workset` or `--task`", skill_text)
         self.assertNotIn("planned execution", skill_text)
 
+    def test_repo_analyze_does_not_flag_blackdog_source_skill_as_legacy(self) -> None:
+        self.write_profile("Blackdog")
+        (self.root / "pyproject.toml").write_text('[project]\nname = "blackdog"\n', encoding="utf-8")
+        cli_dir = self.root / "src" / "blackdog_cli"
+        cli_dir.mkdir(parents=True)
+        (cli_dir / "main.py").write_text("# blackdog cli marker\n", encoding="utf-8")
+
+        profile = load_profile(self.root)
+        skill_path = self.root / managed_skill_relative_path(profile)
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text(render_repo_skill(profile), encoding="utf-8")
+        metadata_path = skill_path.parent / "agents" / "openai.yaml"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text('interface:\n  default_prompt: "Use $blackdog do <task-description>."\n', encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "analyze",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+
+        finding_codes = {row["code"] for row in json.loads(stdout)["repo_analysis"]["findings"]}
+        self.assertNotIn("legacy-managed-skill-path", finding_codes)
+
     def test_repo_table_discovers_members_and_skips_worktrees(self) -> None:
         fleet_root = self.root / "fleet"
         self.make_member_repo(fleet_root, "active-repo", project_name="Active Repo")

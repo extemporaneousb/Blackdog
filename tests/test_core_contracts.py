@@ -34,38 +34,28 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertNotIn("blackdog", pyproject.get("tool", {}))
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("python3 -m unittest discover", makefile)
+        self.assertIn("repo-acceptance:", makefile)
+        self.assertIn("tests.test_repo_acceptance", makefile)
         self.assertNotIn("coverage:", makefile)
         self.assertNotIn("test-emacs:", makefile)
 
     def test_core_import_boundaries_exclude_blackdog_product_code(self) -> None:
         self.assertEqual(self.core_import_boundary_violations(), [])
 
-    def test_docs_freeze_the_vnext_machine_owned_contract(self) -> None:
+    def test_docs_freeze_the_lean_machine_owned_contract(self) -> None:
         index_doc = (REPO_ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
         architecture = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        target_model = (REPO_ROOT / "docs" / "TARGET_MODEL.md").read_text(encoding="utf-8")
-        product_spec = (REPO_ROOT / "docs" / "PRODUCT_SPEC.md").read_text(encoding="utf-8")
         cli_doc = (REPO_ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
         file_formats = (REPO_ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
 
-        self.assertIn("[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)", index_doc)
-        self.assertIn("supported human/agent stories", architecture)
-        self.assertIn("[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md)", target_model)
-        self.assertIn("## V1 Stories", product_spec)
-        self.assertIn("## Keep / Change / Combine / Defer / Remove", product_spec)
-        self.assertIn("## Required Stats For Dogfooding", product_spec)
-        self.assertIn("prompt receipt", product_spec)
-        self.assertIn("prompt_source", product_spec)
-        self.assertIn("commit when applicable", product_spec)
-        self.assertIn("worktree-backed", product_spec)
-        self.assertIn("claims attach to both worksets and tasks", product_spec)
-        self.assertIn("direct_wtam", product_spec)
-        self.assertIn("repo lifecycle workflows", product_spec)
-        self.assertIn("install or update Blackdog in a repo", product_spec)
-        self.assertIn("worksets, tasks, claims, or attempts", product_spec)
-        self.assertNotIn("supervisor", index_doc)
-        self.assertNotIn("supervisor", product_spec)
-        self.assertNotIn("workset_manager", product_spec)
+        self.assertIn("[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)", index_doc)
+        self.assertIn("[docs/CLI.md](docs/CLI.md)", index_doc)
+        self.assertIn("[docs/FILE_FORMATS.md](docs/FILE_FORMATS.md)", index_doc)
+        self.assertIn("Validate repo installation and layering with `make repo-acceptance`", index_doc)
+        self.assertNotIn("PRODUCT_SPEC", index_doc)
+        self.assertNotIn("TARGET_MODEL", index_doc)
+        self.assertNotIn("OPERATOR_NOTES", index_doc)
+        self.assertIn("package boundaries, storage ownership, repo lifecycle", architecture)
         self.assertIn("planning.json", architecture)
         self.assertIn("runtime.json", architecture)
         self.assertIn("Agents mutate planning and runtime state", architecture)
@@ -80,12 +70,6 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("python-overlay-venv", architecture)
         self.assertIn("blackdog-runtime", architecture)
         self.assertIn("Older runtime files may still load one removed managed-claim token", architecture)
-        self.assertIn("Workset", target_model)
-        self.assertIn("TaskAttemptRecord", target_model)
-        self.assertIn("WorksetClaimRecord", target_model)
-        self.assertIn("TaskClaimRecord", target_model)
-        self.assertIn("epic", target_model)
-        self.assertIn("removed", target_model)
         self.assertIn("repo analyze", cli_doc)
         self.assertIn("repo install", cli_doc)
         self.assertIn("repo update", cli_doc)
@@ -149,7 +133,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("handler_actions", file_formats)
         self.assertIn("abandoned", file_formats)
         self.assertIn("worktree.close", file_formats)
-        self.assertIn("backlog.md is not part of the vNext contract", file_formats)
+        self.assertIn("backlog.md is not part of the current contract", file_formats)
         self.assertIn("New runtime writes use only `direct_wtam`", file_formats)
         self.assertNotIn("supervisor", architecture)
         self.assertNotIn("workset_manager", architecture)
@@ -160,12 +144,11 @@ class CoreContractTests(CoreAuditTestCase):
 
     def test_guardrail_reporting_contracts_are_documented(self) -> None:
         agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        product_spec = (REPO_ROOT / "docs" / "PRODUCT_SPEC.md").read_text(encoding="utf-8")
         architecture = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
         cli_doc = (REPO_ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
         file_formats = (REPO_ROOT / "docs" / "FILE_FORMATS.md").read_text(encoding="utf-8")
 
-        for text in (product_spec, architecture, cli_doc, file_formats):
+        for text in (architecture, cli_doc, file_formats):
             lower_text = text.lower()
             with self.subTest(contract="task-class guards"):
                 self.assertIn("task-class guard extension points", lower_text)
@@ -176,7 +159,6 @@ class CoreContractTests(CoreAuditTestCase):
             with self.subTest(contract="supervised closeout"):
                 self.assertIn("supervised integration closeout", lower_text)
 
-        self.assertIn("environment/launcher repair expectations", product_spec.lower())
         self.assertIn("environment/launcher repair expectations", architecture.lower())
         self.assertIn("environment/launcher repair expectations", cli_doc.lower())
         self.assertIn("handler_actions", file_formats)
@@ -268,12 +250,15 @@ class CoreContractTests(CoreAuditTestCase):
             "docs/INTEGRATION.md",
             "docs/MIGRATION.md",
             "docs/MODULE_INVENTORY.md",
+            "docs/OPERATOR_NOTES.md",
             "docs/OWNERSHIP_INVENTORY.md",
+            "docs/PRODUCT_SPEC.md",
             "docs/RELEASE_NOTES.md",
             "docs/REPO_LIFECYCLE_MVP.md",
             "docs/SINGLE_AGENT_AUDIT.md",
             "docs/SUPERVISED_EXECUTION_TARGET.md",
             "docs/TARGET_MODEL_EXECUTION_PLAN.md",
+            "docs/TARGET_MODEL.md",
             "docs/architecture-diagrams.html",
         ]
         for relative_path in removed_paths:
@@ -292,9 +277,7 @@ class CoreContractTests(CoreAuditTestCase):
             [
                 "AGENTS.md",
                 "docs/INDEX.md",
-                "docs/PRODUCT_SPEC.md",
                 "docs/ARCHITECTURE.md",
-                "docs/TARGET_MODEL.md",
                 "docs/CLI.md",
                 "docs/FILE_FORMATS.md",
             ],

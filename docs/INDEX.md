@@ -1,23 +1,17 @@
 # Blackdog Docs
 
-Blackdog vNext is a machine-native planning and runtime kernel for AI-first
-repo work. Humans author repo docs, design intent, approvals, and prompts.
-Agents mutate planning and runtime state through typed Blackdog operations and
-CLI surfaces.
+Blackdog is a machine-native task and attempt runtime for AI-driven local
+development. Keep the docs small and contract-oriented: each file below owns a
+distinct question.
 
-## Primary Docs
+## Source Of Truth
 
-- [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md): supported workflows, v1 target,
-  and keep/change/defer/remove decisions
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): package boundaries, storage
-  ownership, and the current shipped product surface
-- [docs/TARGET_MODEL.md](docs/TARGET_MODEL.md): the vNext object model and the
-  deliberate breaking changes that define it
-- [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`
-- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schema for
-  `planning.json`, `runtime.json`, and `events.jsonl`
-- [docs/OPERATOR_NOTES.md](docs/OPERATOR_NOTES.md): retained cleanup decisions
-  and other operational breadcrumbs
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): package boundaries, product
+  layers, repo install/layering, and shipped workflow ownership.
+- [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`.
+- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schemas for
+  `blackdog.toml`, `planning.json`, `runtime.json`, `events.jsonl`, history
+  rows, and managed repo artifacts.
 
 ## Current Product Surface
 
@@ -66,16 +60,15 @@ own repo lifecycle and operator-read workflows, `local-repo` owns user-local
 registry management, `codex` owns Codex-session coverage/history indexing,
 `stats` owns cross-repo metrics, `summary`/`snapshot` expose task-first current
 state, `task` is the default same-thread WTAM path, and `worktree` is the
-explicit planned-task WTAM path. Direct workset reads remain a migration/debug
-concern, not the default operator surface.
+explicit planned-task WTAM path.
 
 ## Direction
 
 - Do not author planning truth in markdown.
-- Do not treat `epic`, `lane`, or `wave` as durable concepts.
-- Do not preserve deleted backlog/board/bootstrap/inbox/render/multi-agent
-  surfaces on the new typed model.
-- Do not use architecture prose as the product workflow spec; use
-  [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) for that.
-- Keep task-class guard extension points in the product layer, with
-  `worktree preflight` remaining the WTAM workspace/readiness contract.
+- Do not use architecture prose as an alternate CLI or schema contract.
+- Do not preserve deleted backlog, board, bootstrap, inbox, render, or
+  multi-agent runtime surfaces on the typed model.
+- Keep task-class guard extensions in the product layer.
+- Keep generated repo skills thin: route work through the Blackdog CLI and
+  record durable attempts instead of encoding workflow logic in prompt prose.
+- Validate repo installation and layering with `make repo-acceptance`.

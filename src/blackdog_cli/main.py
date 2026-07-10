@@ -208,7 +208,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="{init,summary,snapshot,stats,local-repo,prompt,attempts,codex,repo,task,worktree}",
     )
 
-    p_init = subparsers.add_parser("init", help="Write a default vNext Blackdog profile")
+    p_init = subparsers.add_parser("init", help="Write a default Blackdog profile")
     p_init.add_argument("--project-root", default=".")
     p_init.add_argument("--project-name", required=True)
 
@@ -219,7 +219,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_summary.add_argument("--include-legacy-worksets", action="store_true")
     p_summary.add_argument("--json", action="store_true")
 
-    p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable vNext runtime snapshot")
+    p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable runtime snapshot")
     p_snapshot.add_argument("--project-root", default=".")
     p_snapshot.add_argument("--workset")
     p_snapshot.add_argument("--include-legacy-worksets", action="store_true")

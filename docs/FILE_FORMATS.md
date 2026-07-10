@@ -1,14 +1,14 @@
 # File Formats
 
-The vNext Blackdog contract is machine-owned and JSON-first.
+The Blackdog contract is machine-owned and JSON-first.
 
 By default `paths.control_dir = "@git-common/blackdog"` resolves to the shared
 git common directory, so all worktrees see the same planning and runtime state.
 Relative path settings resolve from the primary worktree, so linked worktrees
 reuse the same control and worktree locations as the primary checkout.
 
-`backlog.md` is not part of the vNext contract.
-backlog.md is not part of the vNext contract.
+`backlog.md` is not part of the current contract.
+backlog.md is not part of the current contract.
 
 ## Canonical Files
 
@@ -593,10 +593,10 @@ The following are intentionally removed from the canonical contract:
 - durable `wave`
 
 Those concepts may exist in old artifacts or old code, but they do not define
-Blackdog vNext behavior.
+current Blackdog behavior.
 
 Legacy backlog-era artifacts such as `backlog.md`, `backlog-state.json`,
 `inbox.jsonl`, `tracked-installs.json`, rendered backlog HTML, and old
-backlog-era task-result folders are not part of the vNext control-root
+backlog-era task-result folders are not part of the current control-root
 contract. The stale removed-orchestration run directory is outside the active
 contract as well and only survives as a `repo refresh` cleanup target.

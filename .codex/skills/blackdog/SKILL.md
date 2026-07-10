@@ -12,8 +12,14 @@ Use this repo-local skill for normal development requests. The skill is backed b
 
 - `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.
 - `$blackdog scaffold project <description>`: ask only for missing durable choices such as target path, project name, exemplar repo, validation commands, routed docs, local project access, and app/runtime needs; preview with `./.VE/bin/blackdog repo scaffold --target-root TARGET --like EXEMPLAR --project-name NAME --dry-run`, then apply without adding scaffold logic to the generated project skill.
-- `$blackdog do <task-description>`: build a concise execution prompt from the request and routed docs, run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT` without `--workset` or `--task`, make changes only in the returned task workspace, validate, then land with `./.VE/bin/blackdog task land --project-root . --summary "..."`.
+- `$blackdog do <task-description>`: build a concise execution prompt with goal, context, constraints, and done condition from the request plus routed docs; run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT` without `--workset` or `--task`; make changes only in the returned task workspace; validate; then land with `./.VE/bin/blackdog task land --project-root . --summary "..."`.
 - For multi-agent work, use the active Codex thread directly and keep Blackdog focused on the task execution and attempt history it can record through the normal `do` flow.
+
+## Execution Contract
+
+- Inputs: the user's task request, routed docs from `blackdog.toml`, and the repo-local managed AGENTS contract.
+- Output: one landed commit with Blackdog trailers, or an explicit `task close` result with status, summary, residuals, and follow-ups.
+- Keep this skill thin: delegate setup, state, recovery, and landing to the Blackdog CLI rather than encoding workflow state in prompt prose.
 
 ## Internal CLI Surface
 
@@ -32,8 +38,6 @@ Use this repo-local skill for normal development requests. The skill is backed b
 
 - `AGENTS.md`
 - `docs/INDEX.md`
-- `docs/PRODUCT_SPEC.md`
 - `docs/ARCHITECTURE.md`
-- `docs/TARGET_MODEL.md`
 - `docs/CLI.md`
 - `docs/FILE_FORMATS.md`

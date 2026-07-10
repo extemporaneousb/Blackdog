@@ -1401,7 +1401,7 @@ same; otherwise it is left empty so the split lineage stays explicit.
 
 ## Removed Or Deferred Commands
 
-The old backlog-centric commands are not part of the vNext shipped surface.
+The old backlog-centric commands are not part of the shipped surface.
 That includes the markdown planning, board, inbox, compatibility-plan, and
 multi-agent orchestration commands.
 

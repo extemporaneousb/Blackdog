@@ -1,4 +1,4 @@
-"""Typed runtime views projected from the vNext planning and runtime stores."""
+"""Typed runtime views projected from Blackdog planning and runtime stores."""
 
 from __future__ import annotations
 

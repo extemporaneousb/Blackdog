@@ -1,16 +1,17 @@
 # Architecture
 
-Blackdog vNext is organized around one durable idea: the machine-owned workset
-store is the semantic source of truth.
+Blackdog is organized around one durable idea: the machine-owned workset store
+is the semantic source of truth.
 
 Humans author repository docs, design docs, approvals, and prompts.
 Agents mutate planning and runtime state through typed Blackdog operations and
 CLI surfaces. Humans can inspect the resulting files, but they are not the
 preferred authoring plane.
 
-This document is about package and storage ownership, not product workflows.
-For the supported human/agent stories and the v1 target, use
-[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).
+This document owns package boundaries, storage ownership, repo lifecycle
+layering, and shipped workflow ownership. CLI syntax belongs in
+[docs/CLI.md](docs/CLI.md); JSON/TOML/event schemas belong in
+[docs/FILE_FORMATS.md](docs/FILE_FORMATS.md).
 
 ## Package Boundaries
 
@@ -25,7 +26,7 @@ other layer consumes it.
 
 ## Durable Contract
 
-The vNext durable contract under the control root is:
+The durable contract under the control root is:
 
 - `planning.json`
 - `runtime.json`

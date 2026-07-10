@@ -621,8 +621,12 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "## User Workflows\n\n"
         f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
-        f"- `${skill_name} do <task-description>`: build a concise execution prompt from the request and routed docs, run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT` without `--workset` or `--task`, make changes only in the returned task workspace, validate, then land with `./.VE/bin/blackdog task land --project-root . --summary \"...\"`.\n"
+        f"- `${skill_name} do <task-description>`: build a concise execution prompt with goal, context, constraints, and done condition from the request plus routed docs; run `./.VE/bin/blackdog task begin --project-root . --actor AGENT --prompt-file EXECUTION_PROMPT --prompt-mode skill --user-prompt-file USER_PROMPT` without `--workset` or `--task`; make changes only in the returned task workspace; validate; then land with `./.VE/bin/blackdog task land --project-root . --summary \"...\"`.\n"
         "- For multi-agent work, use the active Codex thread directly and keep Blackdog focused on the task execution and attempt history it can record through the normal `do` flow.\n\n"
+        "## Execution Contract\n\n"
+        "- Inputs: the user's task request, routed docs from `blackdog.toml`, and the repo-local managed AGENTS contract.\n"
+        "- Output: one landed commit with Blackdog trailers, or an explicit `task close` result with status, summary, residuals, and follow-ups.\n"
+        "- Keep this skill thin: delegate setup, state, recovery, and landing to the Blackdog CLI rather than encoding workflow state in prompt prose.\n\n"
         "## Internal CLI Surface\n\n"
         f"- repo lifecycle: {repo_lifecycle_surface}\n"
         "- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
@@ -998,7 +1002,7 @@ def analyze_repo(project_root: Path) -> RepoConversionAnalysis:
                 paths=tuple(skill.skill_path for skill in custom_skills),
             )
         )
-    if legacy_skill_path.is_file():
+    if legacy_skill_path != managed_skill_path and legacy_skill_path.is_file():
         findings.append(
             RepoConversionFinding(
                 code="legacy-managed-skill-path",
