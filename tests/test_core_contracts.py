@@ -34,9 +34,12 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertNotIn("blackdog", pyproject.get("tool", {}))
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("python3 -m unittest discover", makefile)
-        self.assertNotIn("repo-acceptance:", makefile)
-        self.assertNotIn("coverage:", makefile)
-        self.assertNotIn("test-emacs:", makefile)
+        make_targets = {
+            line.split(":", 1)[0]
+            for line in makefile.splitlines()
+            if line and not line.startswith((".", "\t")) and ":" in line
+        }
+        self.assertEqual(make_targets, {"acceptance", "test", "test-core"})
 
     def test_core_import_boundaries_exclude_blackdog_product_code(self) -> None:
         self.assertEqual(self.core_import_boundary_violations(), [])
