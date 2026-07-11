@@ -182,17 +182,55 @@ hook stamp` appends `codex.hook.task_context` events to
 - `cwd`
 - `context_found`
 - `hook`
+- optional `turn_classification`
 - optional `active_attempt`
 
 `hook` may include `hook_event_name`, `session_id`, `turn_id`,
 `transcript_path`, `model`, `permission_mode`, `source`, `tool_name`,
 `tool_use_id`, `prompt_hash`, and `tool_command_hash`. It must not store full
-prompt text or tool command text. `active_attempt`, when present, includes
-`workset_id`, `task_id`, `attempt_id`, current status/actor/start metadata,
-branch fields, worktree path, match reason, and any stored Codex session ref
-fields already present on the attempt. Coverage/history treat a stamp as the
-strong `hook_context` relationship when its `session_id`/`turn_id` matches a
-Codex turn and its attempt id exists in `runtime.json`.
+prompt text or tool command text.
+
+`turn_classification`, when present, is a bounded object derived from the
+transient hook `prompt` or `message`. It contains:
+
+- `intent = "implementation" | "analysis" | "question" | "status" | "unknown"`
+- `domains`, a unique list in this canonical order when values are present:
+  `ui`, `docs`, `tests`, `backend`, `data`, `repo_lifecycle`, `environment`,
+  `deployment`, `external_write`, `destructive`
+- `risk = "normal" | "guarded" | "unknown"`
+- `source = "heuristic"`
+- `confidence = "low" | "medium" | "high"`
+
+`guarded` is reported when the heuristic detects `deployment`,
+`external_write`, or `destructive`; it is descriptive observability, not proof
+that a task-class guard ran or passed. With no usable prompt/message, the
+classifier emits `intent = "unknown"`, an empty `domains` list,
+`risk = "unknown"`, and `confidence = "low"`. If classification itself cannot
+complete, new stamps still proceed with that same bounded unknown object; older
+stamps may omit the additive field. The classifier does not persist input text,
+matched terms, or excerpts; only these bounded labels and the existing hashes
+under `hook` cross the storage boundary.
+
+`active_attempt`, when present, includes `workset_id`, `task_id`, `attempt_id`,
+current status/actor/start metadata, branch fields, worktree path, match reason,
+and any stored Codex session ref fields already present on the attempt.
+Coverage/history treat a stamp as the strong `hook_context` relationship when
+its `session_id`/`turn_id` matches a Codex turn and its attempt id exists in
+`runtime.json`. Coverage and `codex_turn` history rows carry a stable
+`turn_classification` key containing the bounded object from a valid matching
+stamp, or `null` when no such classification exists; this does not replace the
+existing session-derived `classification` field. Coverage also reports
+deduplicated turn-level `turn_classification_counts` with `by_intent`,
+`by_domain`, and `by_risk` maps. Repeated hook stamps for one Codex turn do not
+multiply counts; each domain is counted at most once per turn, so a multi-domain
+turn contributes once to each matching domain. Only non-null classifications
+contribute to these maps; the explicit unknown fallback is a classification and
+is counted under `unknown`. When lifecycle hooks provide conflicting labels for
+one turn, a meaningful `UserPromptSubmit` classification takes precedence;
+otherwise Blackdog prefers the most informative, highest-confidence, latest
+stamp. A matching classification-only stamp does not need an active attempt to
+annotate or count the turn; only the `hook_context` relationship requires a
+corresponding attempt in `runtime.json`.
 
 Supervised integration closeout uses existing attempt fields and landed-commit
 trailers: validations, residuals, follow-up candidates, changed paths, status,

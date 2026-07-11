@@ -16,6 +16,7 @@ from blackdog_core.codex_sessions import (
     codex_task_context_path,
     collect_codex_turns,
     current_codex_session_ref,
+    load_codex_task_context_stamps,
     read_codex_session,
 )
 from blackdog_core.state import CodexSessionRefRecord, append_event, create_prompt_receipt, prompt_receipt_reference
@@ -469,6 +470,11 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(linked_turn["linked_attempt_ids"], [attempt.attempt_id])
         self.assertEqual(linked_turn["related_attempt_ids"], [attempt.attempt_id])
         self.assertEqual(linked_turn["attempt_relationships"][0]["relationship"], "launch_turn")
+        self.assertIsNone(linked_turn["turn_classification"])
+        self.assertEqual(
+            coverage["turn_classification_counts"],
+            {"by_intent": {}, "by_domain": {}, "by_risk": {}},
+        )
         self.assertEqual(coverage["counts"]["analysis_only_turns"], 1)
         self.assertEqual(coverage["counts"]["unlinked_user_turns"], 1)
         self.assertEqual(coverage["counts"]["related_user_turns"], 1)
@@ -489,6 +495,13 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertIn('"linked_attempt_ids": ["' + attempt.attempt_id + '"]', rendered_rows)
         self.assertIn('"input_tokens": 100', rendered_rows)
         self.assertIn('"duration_ms": 120000', rendered_rows)
+        self.assertTrue(
+            all(
+                row["turn_classification"] is None
+                for row in history["rows"]
+                if row["kind"] == "codex_turn"
+            )
+        )
         self.assertNotIn(linked_message, rendered_rows)
         self.assertNotIn(analysis_message, rendered_rows)
         self.assertEqual(
@@ -739,14 +752,49 @@ class CodexSessionTests(CoreAuditTestCase):
             branch="agent/hook-context",
             target_branch="main",
         )
-        append_event(
-            codex_task_context_path(self.profile),
-            event_type="codex.hook.task_context",
-            actor="codex-hook",
-            payload={
+        useful_classification = {
+            "intent": "implementation",
+            "domains": ["tests", "ui"],
+            "risk": "normal",
+            "source": "heuristic",
+            "confidence": "high",
+        }
+        unknown_classification = {
+            "intent": "unknown",
+            "domains": [],
+            "risk": "unknown",
+            "source": "heuristic",
+            "confidence": "low",
+        }
+        for hook_event_name, turn_classification in (
+            ("SessionStart", None),
+            (
+                "PreToolUse",
+                {
+                    "intent": "implementation",
+                    "domains": ["ui", "not-a-domain"],
+                    "risk": "normal",
+                    "source": "heuristic",
+                    "confidence": "high",
+                },
+            ),
+            ("PostToolUse", unknown_classification),
+            ("UserPromptSubmit", useful_classification),
+            (
+                "Stop",
+                {
+                    "intent": "analysis",
+                    "domains": ["ui", "tests", "backend"],
+                    "risk": "normal",
+                    "source": "heuristic",
+                    "confidence": "high",
+                },
+            ),
+        ):
+            payload = {
                 "schema_version": 1,
                 "hook": {
-                    "hook_event_name": "UserPromptSubmit",
+                    "hook_event_name": hook_event_name,
                     "session_id": "thread-hook",
                     "turn_id": "turn-hook",
                     "cwd": str(self.root),
@@ -757,6 +805,89 @@ class CodexSessionTests(CoreAuditTestCase):
                     "task_id": "TASK-1",
                     "attempt_id": attempt.attempt_id,
                 },
+            }
+            if turn_classification is not None:
+                payload["turn_classification"] = turn_classification
+            append_event(
+                codex_task_context_path(self.profile),
+                event_type="codex.hook.task_context",
+                actor="codex-hook",
+                payload=payload,
+            )
+
+        stamps = load_codex_task_context_stamps(self.profile)
+        self.assertEqual(len(stamps), 5)
+        self.assertIsNone(stamps[0].turn_classification)
+        self.assertIsNone(stamps[1].turn_classification)
+        self.assertEqual(stamps[2].turn_classification.intent, "unknown")
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+            history = build_codex_history(self.profile)
+
+        self.assertEqual(coverage["counts"]["hook_task_context_stamps"], 5)
+        self.assertEqual(coverage["relationship_counts"][RELATIONSHIP_HOOK_CONTEXT], 1)
+        self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        turn_row = coverage["turns"][0]
+        self.assertEqual(turn_row["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(turn_row["attempt_relationships"][0]["relationship"], RELATIONSHIP_HOOK_CONTEXT)
+        self.assertEqual(turn_row["classification"], "blackdog_attempt")
+        self.assertEqual(
+            turn_row["turn_classification"],
+            {
+                "intent": "implementation",
+                "domains": ["ui", "tests"],
+                "risk": "normal",
+                "source": "heuristic",
+                "confidence": "high",
+            },
+        )
+        self.assertEqual(
+            coverage["turn_classification_counts"],
+            {
+                "by_intent": {"implementation": 1},
+                "by_domain": {"ui": 1, "tests": 1},
+                "by_risk": {"normal": 1},
+            },
+        )
+        attempt_row = next(row for row in history["rows"] if row.get("kind") == "attempt")
+        self.assertEqual(attempt_row["linked_codex_turn_ids"], ["turn-hook"])
+        turn_history_row = next(row for row in history["rows"] if row.get("kind") == "codex_turn")
+        self.assertEqual(turn_history_row["classification"], "unclassified")
+        self.assertEqual(turn_history_row["turn_classification"], turn_row["turn_classification"])
+        self.assertNotIn(message, json.dumps(history, sort_keys=True))
+
+    def test_coverage_reads_hook_classification_without_active_attempt_context(self) -> None:
+        message = "What is the current deployment status?"
+        _write_session(
+            self.codex_home,
+            thread_id="thread-hook-unlinked",
+            cwd=self.root,
+            turn_id="turn-hook-unlinked",
+            message=message,
+        )
+        turn_classification = {
+            "intent": "status",
+            "domains": ["deployment"],
+            "risk": "guarded",
+            "source": "heuristic",
+            "confidence": "high",
+        }
+        append_event(
+            codex_task_context_path(self.profile),
+            event_type="codex.hook.task_context",
+            actor="codex-hook",
+            payload={
+                "schema_version": 1,
+                "hook": {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "thread-hook-unlinked",
+                    "turn_id": "turn-hook-unlinked",
+                    "cwd": str(self.root),
+                },
+                "context_found": False,
+                "turn_classification": turn_classification,
+                "active_attempt": None,
             },
         )
 
@@ -765,13 +896,22 @@ class CodexSessionTests(CoreAuditTestCase):
             history = build_codex_history(self.profile)
 
         self.assertEqual(coverage["counts"]["hook_task_context_stamps"], 1)
-        self.assertEqual(coverage["relationship_counts"][RELATIONSHIP_HOOK_CONTEXT], 1)
-        self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        self.assertEqual(coverage["counts"]["linked_user_turns"], 0)
+        self.assertNotIn(RELATIONSHIP_HOOK_CONTEXT, coverage["relationship_counts"])
         turn_row = coverage["turns"][0]
-        self.assertEqual(turn_row["linked_attempt_ids"], [attempt.attempt_id])
-        self.assertEqual(turn_row["attempt_relationships"][0]["relationship"], RELATIONSHIP_HOOK_CONTEXT)
-        attempt_row = next(row for row in history["rows"] if row.get("kind") == "attempt")
-        self.assertEqual(attempt_row["linked_codex_turn_ids"], ["turn-hook"])
+        self.assertEqual(turn_row["linked_attempt_ids"], [])
+        self.assertEqual(turn_row["turn_classification"], turn_classification)
+        self.assertEqual(
+            coverage["turn_classification_counts"],
+            {
+                "by_intent": {"status": 1},
+                "by_domain": {"deployment": 1},
+                "by_risk": {"guarded": 1},
+            },
+        )
+        history_turn = next(row for row in history["rows"] if row["kind"] == "codex_turn")
+        self.assertEqual(history_turn["turn_classification"], turn_classification)
+        self.assertNotIn(message, json.dumps(history, sort_keys=True))
 
     def test_coverage_and_history_extract_environment_issue_classes_from_outputs(self) -> None:
         prompt = "Implement the environment diagnosis."

@@ -1349,6 +1349,9 @@ modify tasks.
   `active_attempt_window`, and `same_session`
 - analysis-only turns
 - unlinked implementation-like turns
+- hook-stamped `turn_classification` on matching turn rows, plus deduplicated
+  `turn_classification_counts` maps named `by_intent`, `by_domain`, and
+  `by_risk`
 - environment issue turn counts, evidence-hit counts, observed-vs-guidance
   evidence counts, and structured issue classes such as `missing_cli`,
   `missing_venv`, `missing_container_runtime`, `missing_python_module`,
@@ -1392,7 +1395,10 @@ environment issue evidence, not full prompts or responses. Attempt rows carry
 task/result/git/validation metadata and inherit environment issue classes from
 related Codex turns. Codex-turn rows cover all repo-matched user turns,
 including linked Blackdog launches, same-session follow-ups, and analysis-only
-work that never entered WTAM.
+work that never entered WTAM. Every Codex-turn row also exposes a stable
+`turn_classification` key containing the bounded object from a valid matching
+hook stamp, or `null` when none exists. This does not replace the existing
+session-derived `classification` field.
 
 `execution_prompt_*` records the prompt Blackdog actually ran.
 `user_prompt_*` records the raw user request Blackdog received.
@@ -1413,13 +1419,27 @@ from `--event-json`/`--event-file`. It writes a bounded task-context stamp to
 the repo control root at `codex/task-context.jsonl`. The stamp includes hook
 metadata such as `session_id`, `turn_id`, `hook_event_name`, cwd, model, and
 permission mode, plus the active Blackdog attempt inferred from the hook cwd
-when one exists. Prompt text and tool command text are not stored; Blackdog
-records hashes for those fields when Codex supplies them.
+when one exists. When Codex supplies `prompt` or `message`, Blackdog also uses
+that text transiently to produce a coarse heuristic `turn_classification` with
+bounded intent, domain, risk, source, and confidence labels. The `--json` result
+includes the resulting classification.
+
+Prompt/message text, tool command text, matched classifier terms, and excerpts
+are not stored. Blackdog records prompt and tool-command hashes when Codex
+supplies those fields, then persists only those hashes and the bounded
+classification labels. Missing prompt/message input produces an unknown,
+low-confidence classification. Any other classification failure degrades to
+the same bounded unknown object so the task-context stamp can still be recorded.
 
 This is an additive observability layer. It does not create, claim, land, or
 close tasks. `runtime.json` remains the attempt source of truth. `codex
 coverage` and `codex history` consume hook stamps as the strong
-`hook_context` relationship when a turn id and active attempt id match.
+`hook_context` relationship when a turn id and active attempt id match. A
+classification risk of `guarded` only describes a deployment, external-write,
+or destructive signal. It cannot activate, satisfy, bypass, or otherwise affect
+the task-class guards that control task execution. A classification-only stamp
+without an active attempt can still annotate and count a matching Codex turn,
+but it does not create a `hook_context` relationship.
 
 Repo-local hooks should call the repo-local launcher using a git-root based
 path, for example:

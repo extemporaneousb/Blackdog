@@ -1003,8 +1003,10 @@ class BlackdogCliTests(CoreAuditTestCase):
         payload = json.loads(stdout)["codex_hook_stamp"]
         self.assertTrue(payload["context_found"])
         self.assertEqual(payload["active_attempt"]["attempt_id"], attempt.attempt_id)
+        self.assertEqual(payload["turn_classification"]["source"], "heuristic")
         rows = load_events(codex_task_context_path(profile))
         self.assertEqual(rows[0]["payload"]["hook"]["session_id"], "thread-cli-hook")
+        self.assertEqual(rows[0]["payload"]["turn_classification"], payload["turn_classification"])
         self.assertNotIn("this text", json.dumps(rows[0]["payload"]))
 
     def test_task_begin_can_tune_the_prompt_and_task_close_can_infer_the_current_attempt(self) -> None:

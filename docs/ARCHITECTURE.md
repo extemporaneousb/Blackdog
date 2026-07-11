@@ -152,8 +152,11 @@ turn metadata to provide context or guardrails, but they must not bypass the
 typed planning/runtime mutation APIs. `blackdog codex hook stamp` writes a
 bounded append-only task-context stream under `codex/task-context.jsonl`; it is
 observability evidence consumed by coverage/history, not the source of attempt
-truth. Codex environments should remain convenience wrappers around Blackdog
-handlers and validation commands; they are not the source of repo setup truth.
+truth. Best-effort turn classification derived from transient hook input is
+descriptive only: a `guarded` risk label cannot activate, satisfy, or bypass the
+task-class guards around task execution. Codex environments should remain
+convenience wrappers around Blackdog handlers and validation commands; they are
+not the source of repo setup truth.
 
 Supervised integration closeout is a coordination/reporting convention over
 the same task-attempt model. Multiple workers can use the active Codex thread
