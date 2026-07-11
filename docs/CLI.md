@@ -1399,6 +1399,62 @@ work that never entered WTAM.
 The stable `prompt_*` alias is populated only when those two lineages are the
 same; otherwise it is left empty so the split lineage stays explicit.
 
+### `blackdog codex hook`
+
+Record optional Codex hook observability. The current hook subcommand is:
+
+```bash
+blackdog codex hook stamp --project-root /path/to/repo
+blackdog codex hook stamp --project-root /path/to/repo --event-json '{"hook_event_name":"Stop"}' --json
+```
+
+`hook stamp` reads one Codex command-hook JSON object from stdin by default, or
+from `--event-json`/`--event-file`. It writes a bounded task-context stamp to
+the repo control root at `codex/task-context.jsonl`. The stamp includes hook
+metadata such as `session_id`, `turn_id`, `hook_event_name`, cwd, model, and
+permission mode, plus the active Blackdog attempt inferred from the hook cwd
+when one exists. Prompt text and tool command text are not stored; Blackdog
+records hashes for those fields when Codex supplies them.
+
+This is an additive observability layer. It does not create, claim, land, or
+close tasks. `runtime.json` remains the attempt source of truth. `codex
+coverage` and `codex history` consume hook stamps as the strong
+`hook_context` relationship when a turn id and active attempt id match.
+
+Repo-local hooks should call the repo-local launcher using a git-root based
+path, for example:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/.VE/bin/blackdog\" codex hook stamp --project-root \"$(git rev-parse --show-toplevel)\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/.VE/bin/blackdog\" codex hook stamp --project-root \"$(git rev-parse --show-toplevel)\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Blackdog does not install this hook automatically during `repo install`.
+Project-local hooks require Codex hook trust review and should be opted into by
+the repo/operator.
+
 ## Removed Or Deferred Commands
 
 The old backlog-centric commands are not part of the shipped surface.

@@ -53,13 +53,30 @@ resolves the source layer:
 - `--source-root /path/to/blackdog` is the explicit local override for testing
   or development.
 
+## Install And Update Runbook
+
+For an existing repo, run `blackdog repo analyze` first. If the repo is not
+installed, run `blackdog repo install`; if it is already installed and the
+Blackdog runtime should move forward, run `blackdog repo update` and then
+`blackdog repo refresh`.
+
+For a new repo, use `blackdog repo scaffold --target-root ...` when Blackdog
+should initialize the project and install the normal repo-local contract in one
+operation.
+
+After install, update, scaffold, or refresh, inspect `git status --short` and
+commit, land, or explicitly report the managed repo-visible changes. Operator
+acceptance is the product surface itself: `repo analyze` should report the repo
+as Blackdog-backed, and `worktree preflight` should report the expected
+workspace role before kept edits.
+
 ## Main Commands
 
 - `blackdog repo analyze|bind|table|scaffold|install|update|refresh|archive|unarchive|unbind`
 - `blackdog local-repo add|list|remove`
 - `blackdog prompt preview|tune`
 - `blackdog attempts summary|table`
-- `blackdog codex coverage|history`
+- `blackdog codex coverage|history|hook`
 - `blackdog stats`
 - `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
 - `blackdog worktree preflight|table|preview|start|show|land|close|cleanup`
@@ -70,11 +87,11 @@ resolves the source layer:
 
 ```bash
 make test
-make repo-acceptance
 ```
 
-`make repo-acceptance` checks the install/refresh/analyze path for a target
-repo and verifies that generated AGENTS/skill layering remains lean.
+The Makefile is a developer convenience for this package's test suite. It does
+not define the operator runbook for target repos; target repos use their
+repo-local `.VE/bin/blackdog` launcher and `blackdog repo ...` commands.
 
 ## Docs
 

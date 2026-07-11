@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from blackdog.codex_hooks import CodexHookError, load_codex_hook_payload, stamp_codex_task_context
 from blackdog.handlers import HandlerError
 from blackdog.local_registry import (
     add_local_repo,
@@ -152,6 +153,19 @@ def _load_json_payload(*, raw_json: str | None, file_path: str | None) -> dict[s
     return payload
 
 
+def _load_codex_hook_input(*, raw_json: str | None, file_path: str | None) -> dict[str, Any]:
+    if raw_json is not None and file_path is not None:
+        raise CodexHookError("codex hook stamp accepts only one of --event-json or --event-file")
+    if raw_json is not None:
+        text = raw_json
+    elif file_path is not None:
+        candidate = Path(file_path)
+        text = sys.stdin.read() if file_path == "-" else candidate.read_text(encoding="utf-8")
+    else:
+        text = sys.stdin.read()
+    return load_codex_hook_payload(text)
+
+
 def _load_text_input(
     *,
     label: str,
@@ -287,7 +301,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_attempts_table.add_argument("--include-legacy-worksets", action="store_true")
     p_attempts_table.add_argument("--json", action="store_true")
 
-    p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed session coverage and history")
+    p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed session coverage, history, and hooks")
     codex_subparsers = p_codex.add_subparsers(dest="codex_command", required=True)
 
     p_codex_coverage = codex_subparsers.add_parser("coverage", help="Compare Codex sessions to Blackdog attempts")
@@ -300,6 +314,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_codex_history.add_argument("--since")
     p_codex_history.add_argument("--jsonl", action="store_true")
     p_codex_history.add_argument("--write", action="store_true")
+
+    p_codex_hook = codex_subparsers.add_parser("hook", help="Record Codex hook observability")
+    codex_hook_subparsers = p_codex_hook.add_subparsers(dest="codex_hook_command", required=True)
+    p_codex_hook_stamp = codex_hook_subparsers.add_parser("stamp", help="Stamp active Blackdog task context from a Codex hook event")
+    p_codex_hook_stamp.add_argument("--project-root", default=".")
+    hook_input_group = p_codex_hook_stamp.add_mutually_exclusive_group()
+    hook_input_group.add_argument("--event-json")
+    hook_input_group.add_argument("--event-file")
+    p_codex_hook_stamp.add_argument("--json", action="store_true")
 
     p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
     repo_subparsers = p_repo.add_subparsers(dest="repo_command", required=True)
@@ -741,6 +764,14 @@ def main(argv: list[str] | None = None) -> int:
                     print(json.dumps(row, sort_keys=True))
             else:
                 print(render_codex_history_text(payload), end="")
+            return 0
+
+        if args.command == "codex" and args.codex_command == "hook" and args.codex_hook_command == "stamp":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            hook_payload = _load_codex_hook_input(raw_json=args.event_json, file_path=args.event_file)
+            payload = stamp_codex_task_context(profile, hook_payload=hook_payload, cwd=Path.cwd())
+            if args.json:
+                _emit_json({"codex_hook_stamp": payload})
             return 0
 
         if args.command == "repo" and args.repo_command == "install":
@@ -1194,6 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
         raise BacklogError(f"Unsupported command: {args.command}")
     except (
         BacklogError,
+        CodexHookError,
         CodexSessionError,
         ConfigError,
         HandlerError,

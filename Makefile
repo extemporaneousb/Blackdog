@@ -1,4 +1,4 @@
-.PHONY: acceptance test test-core repo-acceptance
+.PHONY: acceptance test test-core
 
 CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py'
 
@@ -10,6 +10,3 @@ test:
 
 test-core:
 	$(CORE_AUDIT_COMMAND)
-
-repo-acceptance:
-	PYTHONPATH=src python3 -m unittest tests.test_repo_acceptance -q

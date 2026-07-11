@@ -604,12 +604,12 @@ def render_repo_skill(profile: RepoProfile) -> str:
     skill_name = managed_skill_name(profile)
     blackdog_source_skill = _looks_like_blackdog_source_checkout(profile.paths.project_root)
     scaffold_workflow = ""
-    repo_lifecycle_surface = "`repo analyze`, `repo bind`, `repo table`, `repo install`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`"
+    repo_lifecycle_surface = "`repo analyze`, `repo bind`, `repo table`, `repo install`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`, `codex hook`"
     if blackdog_source_skill:
         scaffold_workflow = (
             f"- `${skill_name} scaffold project <description>`: ask only for missing durable choices such as target path, project name, exemplar repo, validation commands, routed docs, local project access, and app/runtime needs; preview with `./.VE/bin/blackdog repo scaffold --target-root TARGET --like EXEMPLAR --project-name NAME --dry-run`, then apply without adding scaffold logic to the generated project skill.\n"
         )
-        repo_lifecycle_surface = "`repo analyze`, `repo bind`, `repo table`, `repo install`, `repo scaffold`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`"
+        repo_lifecycle_surface = "`repo analyze`, `repo bind`, `repo table`, `repo install`, `repo scaffold`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`, `codex hook`"
     return (
         "---\n"
         f"name: {skill_name}\n"
@@ -630,7 +630,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "## Internal CLI Surface\n\n"
         f"- repo lifecycle: {repo_lifecycle_surface}\n"
         "- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
-        "- status and evidence: `summary`, `snapshot`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`\n"
+        "- status and evidence: `summary`, `snapshot`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`, `codex hook`\n"
         "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
         "## Operator Guardrails\n\n"
         "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser; prefer Codex in-app browser tools or headless evidence.\n"

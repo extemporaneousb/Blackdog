@@ -34,8 +34,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertNotIn("blackdog", pyproject.get("tool", {}))
         makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("python3 -m unittest discover", makefile)
-        self.assertIn("repo-acceptance:", makefile)
-        self.assertIn("tests.test_repo_acceptance", makefile)
+        self.assertNotIn("repo-acceptance:", makefile)
         self.assertNotIn("coverage:", makefile)
         self.assertNotIn("test-emacs:", makefile)
 
@@ -51,7 +50,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)", index_doc)
         self.assertIn("[docs/CLI.md](docs/CLI.md)", index_doc)
         self.assertIn("[docs/FILE_FORMATS.md](docs/FILE_FORMATS.md)", index_doc)
-        self.assertIn("Validate repo installation and layering with `make repo-acceptance`", index_doc)
+        self.assertIn("Validate repo installation and layering through the normal test suite", index_doc)
         self.assertNotIn("PRODUCT_SPEC", index_doc)
         self.assertNotIn("TARGET_MODEL", index_doc)
         self.assertNotIn("OPERATOR_NOTES", index_doc)
@@ -78,6 +77,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("prompt tune", cli_doc)
         self.assertIn("attempts summary", cli_doc)
         self.assertIn("attempts table", cli_doc)
+        self.assertIn("codex hook stamp", cli_doc)
         self.assertIn("workset put", cli_doc)
         self.assertIn("BLACKDOG_ENABLE_WORKSET_COMMANDS=1", cli_doc)
         self.assertIn("task begin", cli_doc)
@@ -164,7 +164,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("handler_actions", file_formats)
         self.assertIn("implementation_like_unlinked_turns", cli_doc)
         self.assertIn("implementation_like_unlinked_turns", file_formats)
-        self.assertIn("blackdog codex coverage|history", agents)
+        self.assertIn("blackdog codex coverage|history|hook", agents)
 
     def test_cli_help_docs_and_contracts_publish_the_same_visible_surface(self) -> None:
         parser = _build_parser()
@@ -188,7 +188,7 @@ class CoreContractTests(CoreAuditTestCase):
             "local-repo": ("add", "list", "remove"),
             "prompt": ("preview", "tune"),
             "attempts": ("summary", "table"),
-            "codex": ("coverage", "history"),
+            "codex": ("coverage", "history", "hook"),
             "repo": (
                 "install",
                 "bind",
@@ -225,7 +225,7 @@ class CoreContractTests(CoreAuditTestCase):
                 self.assertIn(f"`{command}`", index_doc)
                 self.assertIn(f"### `{command}`", cli_doc)
 
-        self.assertIn("blackdog codex coverage|history", agents)
+        self.assertIn("blackdog codex coverage|history|hook", agents)
         self.assertIn("blackdog worktree preflight|table|preview|start|show|land|close|cleanup", agents)
 
     def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:

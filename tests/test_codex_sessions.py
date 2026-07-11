@@ -9,14 +9,16 @@ from unittest.mock import patch
 from blackdog_core import codex_sessions as codex_sessions_module
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_core.codex_sessions import (
+    RELATIONSHIP_HOOK_CONTEXT,
     build_codex_coverage,
     build_codex_history,
     codex_session_cache_path,
+    codex_task_context_path,
     collect_codex_turns,
     current_codex_session_ref,
     read_codex_session,
 )
-from blackdog_core.state import CodexSessionRefRecord, create_prompt_receipt, prompt_receipt_reference
+from blackdog_core.state import CodexSessionRefRecord, append_event, create_prompt_receipt, prompt_receipt_reference
 from tests.core_audit_support import CoreAuditTestCase
 
 
@@ -709,6 +711,67 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(len(turn_history), 2)
         self.assertTrue(any(row["linked_attempt_ids"] == [attempt.attempt_id] for row in turn_history))
         self.assertTrue(any(row["related_attempt_ids"] == [attempt.attempt_id] for row in turn_history))
+
+    def test_coverage_links_attempts_from_hook_task_context_stamps(self) -> None:
+        message = "Continue the active task with hook context."
+        _write_session(
+            self.codex_home,
+            thread_id="thread-hook",
+            cwd=self.root,
+            turn_id="turn-hook",
+            message=message,
+        )
+        upsert_workset(
+            self.profile,
+            {
+                "id": "hook-context",
+                "title": "Hook context",
+                "tasks": [{"id": "TASK-1", "title": "Hook context task"}],
+            },
+        )
+        attempt = start_task(
+            self.profile,
+            workset_id="hook-context",
+            task_id="TASK-1",
+            actor="codex",
+            prompt_receipt=create_prompt_receipt("Different launch prompt."),
+            worktree_path=str(self.root),
+            branch="agent/hook-context",
+            target_branch="main",
+        )
+        append_event(
+            codex_task_context_path(self.profile),
+            event_type="codex.hook.task_context",
+            actor="codex-hook",
+            payload={
+                "schema_version": 1,
+                "hook": {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "thread-hook",
+                    "turn_id": "turn-hook",
+                    "cwd": str(self.root),
+                },
+                "context_found": True,
+                "active_attempt": {
+                    "workset_id": "hook-context",
+                    "task_id": "TASK-1",
+                    "attempt_id": attempt.attempt_id,
+                },
+            },
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+            history = build_codex_history(self.profile)
+
+        self.assertEqual(coverage["counts"]["hook_task_context_stamps"], 1)
+        self.assertEqual(coverage["relationship_counts"][RELATIONSHIP_HOOK_CONTEXT], 1)
+        self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        turn_row = coverage["turns"][0]
+        self.assertEqual(turn_row["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(turn_row["attempt_relationships"][0]["relationship"], RELATIONSHIP_HOOK_CONTEXT)
+        attempt_row = next(row for row in history["rows"] if row.get("kind") == "attempt")
+        self.assertEqual(attempt_row["linked_codex_turn_ids"], ["turn-hook"])
 
     def test_coverage_and_history_extract_environment_issue_classes_from_outputs(self) -> None:
         prompt = "Implement the environment diagnosis."

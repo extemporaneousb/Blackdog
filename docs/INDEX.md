@@ -35,6 +35,7 @@ distinct question.
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
+- `blackdog codex hook`
 - `blackdog stats`
 - `blackdog task begin`
 - `blackdog task show`
@@ -57,7 +58,8 @@ distinct question.
 
 The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
 own repo lifecycle and operator-read workflows, `local-repo` owns user-local
-registry management, `codex` owns Codex-session coverage/history indexing,
+registry management, `codex` owns Codex-session coverage/history indexing and
+hook-backed task-context observability,
 `stats` owns cross-repo metrics, `summary`/`snapshot` expose task-first current
 state, `task` is the default same-thread WTAM path, and `worktree` is the
 explicit planned-task WTAM path.
@@ -71,4 +73,5 @@ explicit planned-task WTAM path.
 - Keep task-class guard extensions in the product layer.
 - Keep generated repo skills thin: route work through the Blackdog CLI and
   record durable attempts instead of encoding workflow logic in prompt prose.
-- Validate repo installation and layering with `make repo-acceptance`.
+- Validate repo installation and layering through the normal test suite and
+  operator-facing `repo analyze`/`worktree preflight` checks.

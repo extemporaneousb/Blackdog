@@ -149,9 +149,11 @@ copying full transcripts into Blackdog state.
 Codex hooks and environments belong in the `blackdog` product layer. Hook
 handlers may inspect preflight state, active attempts, prompt hashes, and Codex
 turn metadata to provide context or guardrails, but they must not bypass the
-typed planning/runtime mutation APIs. Codex environments should remain
-convenience wrappers around Blackdog handlers and validation commands; they are
-not the source of repo setup truth.
+typed planning/runtime mutation APIs. `blackdog codex hook stamp` writes a
+bounded append-only task-context stream under `codex/task-context.jsonl`; it is
+observability evidence consumed by coverage/history, not the source of attempt
+truth. Codex environments should remain convenience wrappers around Blackdog
+handlers and validation commands; they are not the source of repo setup truth.
 
 Supervised integration closeout is a coordination/reporting convention over
 the same task-attempt model. Multiple workers can use the active Codex thread
@@ -182,6 +184,7 @@ The current coherent product surface on top of the new core is:
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
+- `blackdog codex hook`
 - `blackdog stats`
 - `blackdog task begin`
 - `blackdog task show`

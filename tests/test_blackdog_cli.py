@@ -15,10 +15,12 @@ from unittest.mock import patch
 import blackdog.wtam as wtam
 from blackdog.contract import managed_skill_relative_path
 from blackdog_core.backlog import finish_task, load_planning_state, start_task, upsert_workset
+from blackdog_core.codex_sessions import codex_task_context_path
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
     ValidationRecord,
     create_prompt_receipt,
+    load_events,
     load_runtime_state,
     merge_workset_runtime,
     now_iso,
@@ -956,6 +958,54 @@ class BlackdogCliTests(CoreAuditTestCase):
             exit_code, stdout, stderr = self.run_cli("codex", "history", "--project-root", str(self.root), "--write")
             self.assertEqual(exit_code, 0, stderr)
             self.assertTrue((self.root / ".blackdog" / "history.jsonl").exists())
+
+    def test_codex_hook_stamp_cli_records_active_task_context(self) -> None:
+        profile = load_profile(self.root)
+        upsert_workset(
+            profile,
+            {
+                "id": "hook-cli",
+                "title": "Hook CLI",
+                "tasks": [{"id": "TASK-1", "title": "Hook CLI task"}],
+            },
+        )
+        attempt = start_task(
+            profile,
+            workset_id="hook-cli",
+            task_id="TASK-1",
+            actor="codex",
+            prompt_receipt=create_prompt_receipt("Implement hook CLI stamping."),
+            worktree_path=str(self.root),
+            branch="main",
+            target_branch="main",
+        )
+        event_payload = {
+            "hook_event_name": "Stop",
+            "session_id": "thread-cli-hook",
+            "turn_id": "turn-cli-hook",
+            "cwd": str(self.root),
+            "prompt": "this text must not be persisted",
+        }
+
+        exit_code, stdout, stderr = self.run_cli(
+            "codex",
+            "hook",
+            "stamp",
+            "--project-root",
+            str(self.root),
+            "--event-json",
+            json.dumps(event_payload),
+            "--json",
+            cwd=self.root,
+        )
+
+        self.assertEqual(exit_code, 0, stderr)
+        payload = json.loads(stdout)["codex_hook_stamp"]
+        self.assertTrue(payload["context_found"])
+        self.assertEqual(payload["active_attempt"]["attempt_id"], attempt.attempt_id)
+        rows = load_events(codex_task_context_path(profile))
+        self.assertEqual(rows[0]["payload"]["hook"]["session_id"], "thread-cli-hook")
+        self.assertNotIn("this text", json.dumps(rows[0]["payload"]))
 
     def test_task_begin_can_tune_the_prompt_and_task_close_can_infer_the_current_attempt(self) -> None:
         self.install_repo_runtime()

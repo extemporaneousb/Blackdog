@@ -26,6 +26,7 @@ Optional product-layer control-root paths may also exist. The current shipped
 repo lifecycle family may create or manage:
 
 - `source/blackdog/`
+- `codex/task-context.jsonl`
 - `AGENTS.md` with a managed Blackdog contract section
 - `.codex/skills/<repo-slug>/SKILL.md`
 
@@ -170,6 +171,28 @@ outputs: `codex coverage` counts `implementation_like_unlinked_turns`, `codex
 history` emits matching `codex_turn` rows with bounded prompt hashes/excerpts,
 and `repo table`/`stats` can surface those learning/report outputs. These rows
 do not create tasks or rewrite `runtime.json`.
+
+Hook-backed task-context stamping is additive observability. `blackdog codex
+hook stamp` appends `codex.hook.task_context` events to
+`codex/task-context.jsonl` under the control root. Each event payload carries:
+
+- `schema_version = 1`
+- `project_name`
+- `project_root`
+- `cwd`
+- `context_found`
+- `hook`
+- optional `active_attempt`
+
+`hook` may include `hook_event_name`, `session_id`, `turn_id`,
+`transcript_path`, `model`, `permission_mode`, `source`, `tool_name`,
+`tool_use_id`, `prompt_hash`, and `tool_command_hash`. It must not store full
+prompt text or tool command text. `active_attempt`, when present, includes
+`workset_id`, `task_id`, `attempt_id`, current status/actor/start metadata,
+branch fields, worktree path, match reason, and any stored Codex session ref
+fields already present on the attempt. Coverage/history treat a stamp as the
+strong `hook_context` relationship when its `session_id`/`turn_id` matches a
+Codex turn and its attempt id exists in `runtime.json`.
 
 Supervised integration closeout uses existing attempt fields and landed-commit
 trailers: validations, residuals, follow-up candidates, changed paths, status,

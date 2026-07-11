@@ -21,9 +21,12 @@ from .user_state import user_state_file
 
 CODEX_SESSION_HISTORY_SCHEMA_VERSION = 2
 CODEX_SESSION_CACHE_SCHEMA_VERSION = 1
+CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION = 1
 HISTORY_DIR_NAME = ".blackdog"
 HISTORY_FILE_NAME = "history.jsonl"
 CODEX_SESSION_CACHE_FILE_NAME = "session-cache-v1.json"
+CODEX_HOOK_CONTEXT_DIR_NAME = "codex"
+CODEX_HOOK_TASK_CONTEXT_FILE_NAME = "task-context.jsonl"
 
 _IMPLEMENTATION_KEYWORDS = frozenset(
     {
@@ -71,19 +74,22 @@ RELATIONSHIP_PROMPT_HASH = "prompt_hash"
 RELATIONSHIP_SESSION_SINGLE_TURN = "session_single_turn"
 RELATIONSHIP_ACTIVE_ATTEMPT_WINDOW = "active_attempt_window"
 RELATIONSHIP_SAME_SESSION = "same_session"
+RELATIONSHIP_HOOK_CONTEXT = "hook_context"
 STRONG_ATTEMPT_RELATIONSHIPS = frozenset(
     {
         RELATIONSHIP_LAUNCH_TURN,
         RELATIONSHIP_PROMPT_HASH,
         RELATIONSHIP_SESSION_SINGLE_TURN,
+        RELATIONSHIP_HOOK_CONTEXT,
     }
 )
 _RELATIONSHIP_ORDER = {
     RELATIONSHIP_LAUNCH_TURN: 0,
     RELATIONSHIP_PROMPT_HASH: 1,
     RELATIONSHIP_SESSION_SINGLE_TURN: 2,
-    RELATIONSHIP_ACTIVE_ATTEMPT_WINDOW: 3,
-    RELATIONSHIP_SAME_SESSION: 4,
+    RELATIONSHIP_HOOK_CONTEXT: 3,
+    RELATIONSHIP_ACTIVE_ATTEMPT_WINDOW: 4,
+    RELATIONSHIP_SAME_SESSION: 5,
 }
 
 _ENVIRONMENT_ISSUE_CLASSES = (
@@ -222,6 +228,17 @@ class CodexAttemptRelationship:
     task_id: str
     relationship: str
     linked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodexHookTaskContextStamp:
+    thread_id: str
+    turn_id: str
+    workset_id: str
+    task_id: str
+    attempt_id: str
+    hook_event_name: str | None
+    stamped_at: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +555,7 @@ def build_codex_coverage(
     codex_turns: Iterable[CodexTurn] | None = None,
 ) -> dict[str, Any]:
     turns = _project_turns(profile, since=since, until=until, codex_turns=codex_turns)
+    hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     upper = _parse_until(until)
@@ -547,7 +565,7 @@ def build_codex_coverage(
         for attempt in workset.attempts
         if _attempt_in_bounds(attempt, cutoff=cutoff, upper=upper)
     )
-    relationships = _relate_turns_to_attempts(turns, attempts)
+    relationships = _relate_turns_to_attempts(turns, attempts, hook_stamps=hook_stamps)
     linked = _strong_link_attempt_ids(relationships)
     relationships_by_attempt = _relationships_by_attempt(relationships, turns)
     linked_attempt_ids = {attempt_id for attempt_ids in linked.values() for attempt_id in attempt_ids}
@@ -681,6 +699,7 @@ def build_codex_coverage(
             "output_tokens": sum(turn.output_tokens for turn in turns),
             "reasoning_output_tokens": sum(turn.reasoning_output_tokens for turn in turns),
             "total_tokens": sum(turn.total_tokens for turn in turns),
+            "hook_task_context_stamps": len(hook_stamps),
         },
         "by_classification": by_classification,
         "relationship_counts": relationship_counts,
@@ -709,6 +728,7 @@ def build_codex_history(
     write: bool = False,
 ) -> dict[str, Any]:
     turns = _project_turns(profile, since=since, until=None)
+    hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     attempts = tuple(
@@ -717,7 +737,7 @@ def build_codex_history(
         for attempt in workset.attempts
         if _attempt_in_window(attempt, cutoff)
     )
-    relationships = _relate_turns_to_attempts(turns, attempts)
+    relationships = _relate_turns_to_attempts(turns, attempts, hook_stamps=hook_stamps)
     relationships_by_attempt = _relationships_by_attempt(relationships, turns)
     rows = [
         _attempt_history_row(
@@ -758,6 +778,30 @@ def build_codex_history(
 
 def history_export_path(profile: RepoProfile) -> Path:
     return profile.paths.project_root / HISTORY_DIR_NAME / HISTORY_FILE_NAME
+
+
+def codex_task_context_path(profile: RepoProfile) -> Path:
+    return profile.paths.control_dir / CODEX_HOOK_CONTEXT_DIR_NAME / CODEX_HOOK_TASK_CONTEXT_FILE_NAME
+
+
+def load_codex_task_context_stamps(profile: RepoProfile) -> tuple[CodexHookTaskContextStamp, ...]:
+    path = codex_task_context_path(profile)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ()
+    rows: list[CodexHookTaskContextStamp] = []
+    for raw_line in text.splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            row = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        stamp = _hook_task_context_stamp_from_event(row)
+        if stamp is not None:
+            rows.append(stamp)
+    return tuple(rows)
 
 
 def collect_codex_turns(
@@ -893,6 +937,7 @@ def render_codex_coverage_text(payload: Mapping[str, Any]) -> str:
             f"known={counts['model_known_turns']} missing={counts['model_missing_turns']} | "
             f"Reasoning known={counts['reasoning_known_turns']} missing={counts['reasoning_missing_turns']}"
         ),
+        f"Hook task-context stamps: {counts.get('hook_task_context_stamps', 0)}",
         (
             "Longest completed turn: "
             f"{counts['longest_completed_turn_duration_ms'] or 0}ms "
@@ -1115,12 +1160,15 @@ def _link_turns_to_attempts(
 def _relate_turns_to_attempts(
     turns: tuple[CodexTurn, ...],
     attempts: tuple[AttemptView, ...],
+    *,
+    hook_stamps: tuple[CodexHookTaskContextStamp, ...] = (),
 ) -> dict[tuple[str, str], tuple[CodexAttemptRelationship, ...]]:
     attempts_by_hash: dict[str, list[str]] = {}
     attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
     attempts_by_turn_ref: dict[tuple[str, str], list[AttemptView]] = {}
     attempts_by_turn_started_at: dict[tuple[str, str], list[AttemptView]] = {}
     attempts_by_session: dict[tuple[str, str], list[AttemptView]] = {}
+    hook_relationships = _hook_relationships_by_turn(hook_stamps, attempts)
     for attempt in attempts:
         for prompt_hash in _attempt_prompt_hashes(attempt):
             attempts_by_hash.setdefault(prompt_hash, []).append(attempt.attempt_id)
@@ -1152,9 +1200,16 @@ def _relate_turns_to_attempts(
         session_turns = tuple(turns_by_session.get(session_key, ()))
         for attempt in attempts_by_session.get(session_key, ()):
             candidate_attempts[attempt.attempt_id] = attempt
+        forced_relationships = hook_relationships.get(_turn_key(turn), {})
+        for attempt_id in forced_relationships:
+            attempt = attempts_by_id.get(attempt_id)
+            if attempt is not None:
+                candidate_attempts[attempt.attempt_id] = attempt
         turn_relationships: list[CodexAttemptRelationship] = []
         for attempt in candidate_attempts.values():
-            relationship = _turn_attempt_relationship(turn, attempt, session_turn_count=len(session_turns))
+            relationship = forced_relationships.get(attempt.attempt_id)
+            if relationship is None:
+                relationship = _turn_attempt_relationship(turn, attempt, session_turn_count=len(session_turns))
             if relationship is None:
                 continue
             turn_relationships.append(
@@ -1172,6 +1227,19 @@ def _relate_turns_to_attempts(
                     key=lambda item: (_RELATIONSHIP_ORDER.get(item.relationship, 99), item.attempt_id),
                 )
             )
+    return relationships
+
+
+def _hook_relationships_by_turn(
+    hook_stamps: tuple[CodexHookTaskContextStamp, ...],
+    attempts: tuple[AttemptView, ...],
+) -> dict[tuple[str, str], dict[str, str]]:
+    attempts_by_id = {attempt.attempt_id: attempt for attempt in attempts}
+    relationships: dict[tuple[str, str], dict[str, str]] = {}
+    for stamp in hook_stamps:
+        if stamp.attempt_id not in attempts_by_id:
+            continue
+        relationships.setdefault((stamp.thread_id, stamp.turn_id), {})[stamp.attempt_id] = RELATIONSHIP_HOOK_CONTEXT
     return relationships
 
 
@@ -2020,6 +2088,44 @@ def _attempt_in_bounds(attempt: AttemptView, *, cutoff: datetime | None, upper: 
     return True
 
 
+def _filter_hook_task_context_stamps(
+    stamps: tuple[CodexHookTaskContextStamp, ...],
+    turns: tuple[CodexTurn, ...],
+) -> tuple[CodexHookTaskContextStamp, ...]:
+    turn_keys = {_turn_key(turn) for turn in turns}
+    return tuple(stamp for stamp in stamps if (stamp.thread_id, stamp.turn_id) in turn_keys)
+
+
+def _hook_task_context_stamp_from_event(row: Any) -> CodexHookTaskContextStamp | None:
+    if not isinstance(row, Mapping):
+        return None
+    if row.get("type") != "codex.hook.task_context":
+        return None
+    payload = row.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    hook = payload.get("hook")
+    active_attempt = payload.get("active_attempt")
+    if not isinstance(hook, Mapping) or not isinstance(active_attempt, Mapping):
+        return None
+    thread_id = _optional_text(hook.get("session_id")) or _optional_text(hook.get("thread_id"))
+    turn_id = _optional_text(hook.get("turn_id"))
+    workset_id = _optional_text(active_attempt.get("workset_id"))
+    task_id = _optional_text(active_attempt.get("task_id"))
+    attempt_id = _optional_text(active_attempt.get("attempt_id"))
+    if not all((thread_id, turn_id, workset_id, task_id, attempt_id)):
+        return None
+    return CodexHookTaskContextStamp(
+        thread_id=str(thread_id),
+        turn_id=str(turn_id),
+        workset_id=str(workset_id),
+        task_id=str(task_id),
+        attempt_id=str(attempt_id),
+        hook_event_name=_optional_text(hook.get("hook_event_name")),
+        stamped_at=_optional_text(row.get("at")),
+    )
+
+
 def _turn_key(turn: CodexTurn) -> tuple[str, str]:
     return (turn.thread_id, turn.turn_id)
 
@@ -2154,6 +2260,8 @@ def _optional_text(value: Any) -> str | None:
 
 
 __all__ = [
+    "CODEX_HOOK_TASK_CONTEXT_FILE_NAME",
+    "CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION",
     "CODEX_SESSION_CACHE_FILE_NAME",
     "CODEX_SESSION_CACHE_SCHEMA_VERSION",
     "CODEX_SESSION_HISTORY_SCHEMA_VERSION",
@@ -2161,6 +2269,7 @@ __all__ = [
     "HISTORY_FILE_NAME",
     "STRONG_ATTEMPT_RELATIONSHIPS",
     "CodexAttemptRelationship",
+    "CodexHookTaskContextStamp",
     "CodexRuntimeContext",
     "CodexSession",
     "CodexSessionError",
@@ -2173,11 +2282,13 @@ __all__ = [
     "codex_home",
     "codex_project_roots",
     "codex_session_cache_path",
+    "codex_task_context_path",
     "collect_codex_sessions",
     "collect_codex_turns",
     "current_codex_runtime_context",
     "current_codex_session_ref",
     "history_export_path",
+    "load_codex_task_context_stamps",
     "project_codex_turns",
     "read_codex_config",
     "read_codex_session",
