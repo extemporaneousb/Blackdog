@@ -835,6 +835,32 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary_payload["counts"]["claimed_tasks"], 0)
         self.assertEqual((self.root / "task-begin.txt").read_text(encoding="utf-8"), "task begin\n")
 
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            "TASK-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        completed_payload = json.loads(stdout)["task_show"]
+        self.assertFalse(completed_payload["active_attempt"])
+        self.assertEqual(completed_payload["latest_attempt_status"], "success")
+        self.assertEqual(completed_payload["task_runtime_status"], "done")
+        self.assertEqual(completed_payload["recovery_state"], "idle")
+        self.assertFalse(completed_payload["branch_exists"])
+        self.assertTrue(completed_payload["target_branch_exists"])
+        self.assertIsNone(completed_payload["branch_ahead_error"])
+        self.assertIsNone(completed_payload["failure_class"])
+        self.assertIsNone(completed_payload["recovery_action"])
+        self.assertFalse(completed_payload["operator_issue"])
+        self.assertEqual(completed_payload["recommended_actions"], [])
+        self.assertEqual(completed_payload["recommended_commands"], [])
+
     def test_task_begin_deployment_guard_blocks_before_auto_task_creation(self) -> None:
         self.install_repo_runtime()
 

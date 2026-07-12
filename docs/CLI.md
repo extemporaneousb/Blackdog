@@ -608,7 +608,10 @@ that worktree. It reports:
 If a latest historical attempt references a missing task branch or missing
 target branch, recovery reads return `recovery_state="stale_reference"` with
 `failure_class="stale_branch"` rather than failing on the underlying git
-inspection command.
+inspection command. A successful attempt with a recorded canonical
+`landed_commit`, an existing target branch, and no retained task worktree is
+the exception: canonical landing normally deletes that disposable task branch,
+so recovery reads report the completed task as idle without an operator issue.
 
 `--release-stale-claim` is intentionally narrow. It only applies when the task
 claim still exists but there is no active WTAM attempt to close. In that case

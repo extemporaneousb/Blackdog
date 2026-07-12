@@ -2305,6 +2305,22 @@ def _task_recovery_payload(
         ref_cache=ref_cache,
         branch_ahead_cache=branch_ahead_cache,
     )
+    landed_cleanup_complete = bool(
+        active_attempt is None
+        and selected_attempt is not None
+        and selected_attempt.status == ATTEMPT_STATUS_SUCCESS
+        and selected_attempt.landed_commit
+        and not worktree_exists
+        and branch_exists is False
+        and target_branch_exists is True
+    )
+    if landed_cleanup_complete:
+        branch_ahead_error = None
+    reference_issue = bool(
+        (branch_exists is False and not landed_cleanup_complete)
+        or target_branch_exists is False
+        or branch_ahead_error
+    )
     primary_root = primary_root or find_primary_worktree(profile.paths.project_root)
     if primary_dirty_paths is None:
         primary_dirty_paths = _managed_dirty_paths(profile, primary_root)
@@ -2317,7 +2333,7 @@ def _task_recovery_payload(
         worktree_exists=worktree_exists,
         worktree_dirty=bool(worktree_dirty_paths),
         branch_ahead_of_target=branch_ahead,
-        reference_issue=bool(branch_exists is False or target_branch_exists is False or branch_ahead_error),
+        reference_issue=reference_issue,
     )
     failure_class = runtime_task_state.failure_class
     recovery_action = runtime_task_state.recovery_action
@@ -2327,12 +2343,12 @@ def _task_recovery_payload(
         failure_class = FAILURE_CLASS_MISSING_WORKTREE
         recovery_action = "restore_or_cleanup_worktree"
         operator_issue = True
-    elif failure_class is None and (branch_exists is False or target_branch_exists is False or branch_ahead_error):
+    elif failure_class is None and reference_issue:
         failure_class = FAILURE_CLASS_STALE_BRANCH
         recovery_action = "restore_ref_or_cancel_task"
         operator_issue = True
     recommended_actions: list[str] = []
-    if branch_exists is False and branch:
+    if branch_exists is False and branch and not landed_cleanup_complete:
         recommended_actions.append(f"restore task branch `{branch}` before landing or close/cancel this stale task")
     if target_branch_exists is False and target_branch:
         recommended_actions.append(f"restore target branch `{target_branch}` or close/cancel this stale task if it is obsolete")
@@ -2353,9 +2369,9 @@ def _task_recovery_payload(
         if worktree_dirty_paths or branch_ahead:
             recommended_actions.append("run `blackdog worktree land` to create the canonical landed commit")
         recommended_actions.append("run `blackdog worktree close --status blocked|failed|abandoned` to close without landing")
-    elif selected_attempt is not None and (branch_exists is False or target_branch_exists is False or branch_ahead_error):
+    elif selected_attempt is not None and reference_issue:
         recommended_actions.append("use `blackdog task cancel` if this stale task should stay out of normal ready work")
-    elif task_worktree is None:
+    elif task_worktree is None and not landed_cleanup_complete:
         recommended_actions.append("start a new WTAM attempt for this task")
     elif worktree_dirty_paths or branch_ahead:
         recommended_actions.append("inspect the retained task workspace and clean or discard its changes before cleanup")
@@ -2386,7 +2402,7 @@ def _task_recovery_payload(
                 disposition="operator_choice",
             )
         )
-    elif selected_attempt is not None and (branch_exists is False or target_branch_exists is False or branch_ahead_error):
+    elif selected_attempt is not None and reference_issue:
         recommended_commands.append(
             _command_row(
                 "blackdog task cancel --summary \"...\"",
@@ -2394,7 +2410,7 @@ def _task_recovery_payload(
                 disposition="operator_choice",
             )
         )
-    elif task_worktree is None:
+    elif task_worktree is None and not landed_cleanup_complete:
         recommended_commands.append(
             _command_row(
                 "blackdog task begin --prompt \"...\"",
