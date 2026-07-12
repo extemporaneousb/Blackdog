@@ -156,7 +156,7 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("handler_actions", file_formats)
         self.assertIn("abandoned", file_formats)
         self.assertIn("worktree.close", file_formats)
-        self.assertIn("backlog.md is not part of the current contract", file_formats)
+        self.assertIn("`backlog.md` is not part of the current contract", file_formats)
         self.assertIn("New runtime writes use only `direct_wtam`", file_formats)
         self.assertNotIn("supervisor", architecture)
         self.assertNotIn("workset_manager", architecture)

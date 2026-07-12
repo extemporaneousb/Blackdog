@@ -8,7 +8,6 @@ Relative path settings resolve from the primary worktree, so linked worktrees
 reuse the same control and worktree locations as the primary checkout.
 
 `backlog.md` is not part of the current contract.
-backlog.md is not part of the current contract.
 
 ## Canonical Files
 
