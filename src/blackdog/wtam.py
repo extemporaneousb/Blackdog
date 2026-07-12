@@ -2885,6 +2885,8 @@ def land_task_worktree(
     attempt = active_task_attempt(runtime_state, workset_id, task_id)
     if attempt is None:
         raise BacklogError(f"No active WTAM attempt for task {task_id!r} in workset {workset_id!r}")
+    if attempt.actor != actor:
+        raise BacklogError(f"Attempt {attempt.attempt_id!r} is owned by {attempt.actor}, not {actor}")
     if attempt.branch is None:
         raise WorktreeError(f"active attempt {attempt.attempt_id} is missing its branch")
     if attempt.target_branch is None:

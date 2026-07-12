@@ -861,6 +861,67 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(completed_payload["recommended_actions"], [])
         self.assertEqual(completed_payload["recommended_commands"], [])
 
+    def test_task_land_rejects_wrong_actor_before_mutating_git(self) -> None:
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "owner",
+            "--prompt",
+            "Exercise task landing actor ownership.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        branch = task_payload["worktree"]["branch"]
+        primary_head = self.git_output("rev-parse", "HEAD")
+        branch_head = self.git_output("rev-parse", branch)
+        (worktree_path / "actor-owned.txt").write_text("owned\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "intruder",
+            "--summary",
+            "must not land",
+            "--json",
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("is owned by owner, not intruder", stderr)
+        self.assertEqual(self.git_output("rev-parse", "HEAD"), primary_head)
+        self.assertEqual(self.git_output("rev-parse", branch), branch_head)
+        self.assertTrue(worktree_path.exists())
+        self.assertIn("actor-owned.txt", self.git_output("-C", str(worktree_path), "status", "--short"))
+        (worktree_path / "actor-owned.txt").unlink()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "owner",
+            "--status",
+            "abandoned",
+            "--summary",
+            "ownership preflight test cleanup",
+            "--cleanup",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(worktree_path.exists())
+
     def test_task_begin_deployment_guard_blocks_before_auto_task_creation(self) -> None:
         self.install_repo_runtime()
 
