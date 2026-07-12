@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 import os
+import re
 import subprocess
 import time
 import uuid
@@ -500,13 +501,52 @@ def _derive_task_title(prompt: str) -> str:
     return title.rstrip(" .") or "Task"
 
 
+_NEGATED_TASK_SIGNAL = re.compile(
+    r"\b(?:avoid|avoiding|do\s+not|don't|never|no|not|without)\b(?:\W+\w+){0,4}\W*$"
+)
+
+
+def _has_positive_task_signal(prompt: str, patterns: tuple[str, ...]) -> bool:
+    normalized = " ".join(str(prompt).lower().split())
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized):
+            clause_prefix = re.split(r"[.;,:\n]", normalized[: match.start()])[-1]
+            if _NEGATED_TASK_SIGNAL.search(clause_prefix):
+                continue
+            return True
+    return False
+
+
 def _classify_task_prompt(prompt: str) -> str:
-    normalized = f" {str(prompt).lower()} "
-    if any(token in normalized for token in (" deploy", " deployment", " production", " prod-", " release ")):
+    if _has_positive_task_signal(
+        prompt,
+        (
+            r"\bdeploy(?:ed|ing|ment|ments|s)?\b",
+            r"\brelease\b(?!\s+(?:notes?|docs?|documentation)\b)",
+            r"\bproduction\b|\bprod-[a-z0-9_-]+\b",
+            r"\b(?:ship|promote|roll\s+out)\b[^.;,:\n]{0,32}\b(?:prod|production)\b",
+            r"\b(?:prod|production)\b[^.;,:\n]{0,32}\b(?:release|rollout)\b",
+        ),
+    ):
         return TASK_CLASS_DEPLOYMENT
-    if any(token in normalized for token in (" publish", " sharepoint", " reportdog", " report ")):
+    if _has_positive_task_signal(
+        prompt,
+        (
+            r"\bpublish(?:ed|es|ing)?\b",
+            r"\b(?:render|generate|write|create)\b[^.;,:\n]{0,24}\b(?:analysis\s+)?reports?\b",
+            r"\b(?:upload|send|sync)\b[^.;,:\n]{0,24}\bsharepoint\b",
+            r"\bsharepoint\b[^.;,:\n]{0,24}\b(?:upload|send|sync)\b",
+        ),
+    ):
         return TASK_CLASS_ANALYSIS_PUBLISH
-    if any(token in normalized for token in (" refresh", " ingest", " ingestion", " sync", " data update")):
+    if _has_positive_task_signal(
+        prompt,
+        (
+            r"\bingest(?:ed|ing|s)?\b",
+            r"\b(?:refresh|reload|reindex|sync)\b[^.;,:\n]{0,24}\b(?:data|database|dataset|warehouse|catalog|source)\b",
+            r"\b(?:data|database|dataset|warehouse|catalog|source)\b[^.;,:\n]{0,24}\b(?:refresh|reload|reindex|sync|update)\b",
+        ),
+    ):
         return TASK_CLASS_DATA_REFRESH
     return TASK_CLASS_IMPLEMENTATION
 

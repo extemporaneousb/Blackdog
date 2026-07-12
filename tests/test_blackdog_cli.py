@@ -945,6 +945,34 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(load_planning_state(profile.paths).worksets, ())
         self.assertEqual(load_runtime_state(profile.paths).worksets, ())
 
+    def test_task_prompt_classification_requires_positive_specific_signals(self) -> None:
+        implementation_prompts = (
+            "Correct stale guidance and avoid any deploy targets.",
+            "Deduplicate pairing stability report modules and refresh the managed skill.",
+            "Remove duplicate Reportdog helpers without publishing anything.",
+            "Update the release notes.",
+        )
+        for prompt in implementation_prompts:
+            with self.subTest(prompt=prompt):
+                receipt = wtam._task_start_guard_receipt(prompt)
+                self.assertEqual(receipt["task_class"], "implementation")
+                self.assertEqual(receipt["status"], "ok")
+                self.assertEqual(receipt["blockers"], [])
+
+        classified_prompts = (
+            ("Deploy production now.", "deployment", "blocked"),
+            ("Do not deploy manually; deploy through GitHub Actions workflow_dispatch.", "deployment", "ok"),
+            ("Publish the analysis report to SharePoint.", "analysis_publish", "ok"),
+            ("Refresh the production database from its source.", "deployment", "blocked"),
+            ("Refresh the local dataset from its source.", "data_refresh", "ok"),
+            ("Ingest the latest dataset.", "data_refresh", "ok"),
+        )
+        for prompt, expected_class, expected_status in classified_prompts:
+            with self.subTest(prompt=prompt):
+                receipt = wtam._task_start_guard_receipt(prompt)
+                self.assertEqual(receipt["task_class"], expected_class)
+                self.assertEqual(receipt["status"], expected_status)
+
     def test_task_begin_deployment_route_records_setup_receipt(self) -> None:
         self.install_repo_runtime()
 
