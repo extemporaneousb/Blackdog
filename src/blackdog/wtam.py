@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 from pathlib import Path
 from typing import Any
 import os
@@ -9,7 +10,7 @@ import subprocess
 import time
 import uuid
 
-from blackdog.contract import ContractDocument, contract_documents
+from blackdog.contract import ContractDocument, contract_documents, managed_skill_relative_path
 from blackdog.handlers import HandlerPlanSummary, execute_worktree_handlers, plan_worktree_handlers
 from blackdog.prompting import tune_prompt
 from blackdog_core.backlog import (
@@ -76,6 +77,8 @@ TASK_CLASS_DEPLOYMENT = "deployment"
 TASK_CLASS_DATA_REFRESH = "data_refresh"
 TASK_CLASS_ANALYSIS_PUBLISH = "analysis_publish"
 SETUP_RECEIPT_SCHEMA_VERSION = 1
+SKILL_PROVENANCE_SCHEMA_VERSION = 1
+SKILL_PROVENANCE_SOURCE = "repo_managed"
 
 
 class WorktreeError(RuntimeError):
@@ -197,6 +200,9 @@ class TaskBeginSpec:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["worktree"] = self.worktree.to_dict()
+        skill_provenance = _bounded_skill_provenance(self.worktree.setup_receipt)
+        if skill_provenance is not None:
+            payload["skill_provenance"] = skill_provenance
         return payload
 
 
@@ -617,7 +623,59 @@ def _guard_task_start(prompt: str) -> dict[str, Any]:
     return receipt
 
 
-def _handler_setup_receipt(guard_receipt: dict[str, Any], handlers: HandlerPlanSummary) -> dict[str, Any]:
+def _managed_skill_provenance(profile: RepoProfile, *, workspace_root: Path) -> dict[str, Any]:
+    relative_path = managed_skill_relative_path(profile)
+    skill_path = workspace_root / relative_path
+    try:
+        skill_bytes = skill_path.read_bytes()
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise BacklogError(
+            "task begin --prompt-mode skill requires a readable repo-managed skill at "
+            f"{relative_path.as_posix()}: {detail}"
+        ) from exc
+    return {
+        "schema_version": SKILL_PROVENANCE_SCHEMA_VERSION,
+        "path": relative_path.as_posix(),
+        "sha256": hashlib.sha256(skill_bytes).hexdigest(),
+        "source": SKILL_PROVENANCE_SOURCE,
+    }
+
+
+def _bounded_skill_provenance(setup_receipt: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(setup_receipt, dict):
+        return None
+    value = setup_receipt.get("skill_provenance")
+    if not isinstance(value, dict):
+        return None
+    path = value.get("path")
+    sha256 = value.get("sha256")
+    if (
+        value.get("schema_version") != SKILL_PROVENANCE_SCHEMA_VERSION
+        or value.get("source") != SKILL_PROVENANCE_SOURCE
+        or not isinstance(path, str)
+        or not path
+        or path.startswith("/")
+        or "\\" in path
+        or ".." in path.split("/")
+        or not isinstance(sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
+    ):
+        return None
+    return {
+        "schema_version": SKILL_PROVENANCE_SCHEMA_VERSION,
+        "path": path,
+        "sha256": sha256,
+        "source": SKILL_PROVENANCE_SOURCE,
+    }
+
+
+def _handler_setup_receipt(
+    guard_receipt: dict[str, Any],
+    handlers: HandlerPlanSummary,
+    *,
+    skill_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     probes = list(guard_receipt.get("probes") or [])
     blockers = [str(item) for item in guard_receipt.get("blockers") or []]
     for action in handlers.actions:
@@ -638,7 +696,7 @@ def _handler_setup_receipt(guard_receipt: dict[str, Any], handlers: HandlerPlanS
         )
         if status == "blocked":
             blockers.append(probe_name)
-    return {
+    receipt = {
         "schema_version": SETUP_RECEIPT_SCHEMA_VERSION,
         "checked_at": now_iso(),
         "task_class": guard_receipt.get("task_class") or TASK_CLASS_IMPLEMENTATION,
@@ -651,6 +709,9 @@ def _handler_setup_receipt(guard_receipt: dict[str, Any], handlers: HandlerPlanS
         "script_policy": handlers.script_policy,
         "probes": probes,
     }
+    if skill_provenance is not None:
+        receipt["skill_provenance"] = skill_provenance
+    return receipt
 
 
 def _auto_task_workset_payload(
@@ -1822,6 +1883,7 @@ def start_task_worktree(
     prompt_source: str | None = None,
     prompt_mode: str = PROMPT_MODE_RAW,
     user_prompt_receipt: PromptReceiptRecord | None = None,
+    skill_provenance: dict[str, Any] | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
     branch: str | None = None,
@@ -1871,7 +1933,11 @@ def start_task_worktree(
         raise WorktreeError(f"git worktree add failed: {detail}")
     try:
         handlers = execute_worktree_handlers(profile, worktree_path=worktree_path)
-        setup_receipt = _handler_setup_receipt(guard_receipt, handlers)
+        setup_receipt = _handler_setup_receipt(
+            guard_receipt,
+            handlers,
+            skill_provenance=skill_provenance,
+        )
         if not handlers.ready:
             blocked = [action.message for action in handlers.actions if action.status == "blocked"]
             detail = "; ".join(blocked)
@@ -2004,6 +2070,13 @@ def begin_task_worktree(
             "to target existing planning state, provide both."
         )
 
+    skill_provenance = None
+    if prompt_mode == PROMPT_MODE_SKILL:
+        skill_provenance = _managed_skill_provenance(
+            profile,
+            workspace_root=command_workspace_root(profile, cwd=cwd),
+        )
+
     user_receipt, execution_receipt = _resolve_task_begin_prompts(
         profile,
         prompt=prompt,
@@ -2037,6 +2110,7 @@ def begin_task_worktree(
         prompt_source=execution_receipt.source,
         prompt_mode=prompt_mode,
         user_prompt_receipt=user_receipt,
+        skill_provenance=skill_provenance,
         model=model,
         reasoning_effort=reasoning_effort,
         branch=branch,
@@ -2474,7 +2548,7 @@ def _task_recovery_payload(
                 disposition="read_only",
             )
         )
-    return {
+    payload = {
         "workset_id": workset_id,
         "task_id": task_id,
         "task_title": task.title,
@@ -2581,6 +2655,12 @@ def _task_recovery_payload(
         "recommended_actions": recommended_actions,
         "recommended_commands": recommended_commands,
     }
+    skill_provenance = _bounded_skill_provenance(
+        selected_attempt.setup_receipt if selected_attempt is not None else None
+    )
+    if skill_provenance is not None:
+        payload["skill_provenance"] = skill_provenance
+    return payload
 
 
 def _release_stale_task_claim(
@@ -3431,6 +3511,12 @@ def render_start_text(spec: WorktreeSpec, *, surface: str = "worktree") -> str:
         lines.append(f"{prefix} source mode: {spec.source_mode}")
     if spec.source_root:
         lines.append(f"{prefix} source root: {spec.source_root}")
+    skill_provenance = _bounded_skill_provenance(spec.setup_receipt)
+    if skill_provenance is not None:
+        lines.append(
+            f"{prefix} repo skill: {skill_provenance['path']} "
+            f"sha256={skill_provenance['sha256']} source={skill_provenance['source']}"
+        )
     if spec.handlers.actions:
         lines.append(f"{prefix} handler results:")
         for action in spec.handlers.actions:
@@ -3565,6 +3651,12 @@ def render_show_text(payload: dict[str, Any], *, surface: str = "worktree") -> s
         lines.append(f"{prefix} execution prompt source: {payload['execution_prompt_source']}")
     if payload["execution_prompt_mode"]:
         lines.append(f"{prefix} execution prompt mode: {payload['execution_prompt_mode']}")
+    skill_provenance = payload.get("skill_provenance")
+    if isinstance(skill_provenance, dict):
+        lines.append(
+            f"{prefix} repo skill: {skill_provenance['path']} "
+            f"sha256={skill_provenance['sha256']} source={skill_provenance['source']}"
+        )
     if payload.get("failure_class"):
         lines.append(f"{prefix} failure class: {payload['failure_class']}")
     if payload.get("recovery_action"):

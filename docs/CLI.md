@@ -539,7 +539,14 @@ tuned execution prompt as the attempt prompt receipt. The prompt receipt stores
 its hash, source, and `mode` as `raw` or `tuned`. New v3 runtime rows do not
 store full prompt text; they link to Codex session storage when that context is
 available. `--prompt-mode skill` records the supplied prompt as a
-repo-skill-composed execution prompt without running prompt tuning. When
+repo-skill-composed execution prompt without running prompt tuning. A successful
+skill-mode start also hashes the managed repo skill Blackdog read and records
+the bounded `setup_receipt.skill_provenance` object documented in
+`FILE_FORMATS.md`. The JSON result exposes the same object as
+`task.skill_provenance`; the setup receipt is its canonical durable copy.
+If that managed skill is missing or unreadable, a declared skill-mode start
+fails before creating the task envelope or runtime state.
+Raw-mode, tuned-mode, and older attempt rows have no skill provenance. When
 `--user-prompt` or `--user-prompt-file` is present, Blackdog stores that raw
 user request lineage separately from the execution prompt for later audit and
 repo-skill optimization.
@@ -563,7 +570,10 @@ Important flags:
 When `--workset` and `--task` are omitted, `task show` infers the task from the
 current task worktree. This is the same-thread recovery read surface that
 avoids repeating ids on every follow-on command. It reports both the raw user
-prompt lineage and the execution-prompt lineage when those differ.
+prompt lineage and the execution-prompt lineage when those differ. For an
+attempt with managed-skill provenance, JSON output also exposes the canonical
+setup-receipt object as top-level `skill_provenance`. Its absence means the
+attempt has no recorded assertion, as expected for raw, tuned, and older rows.
 
 ### `blackdog task recover`
 
@@ -1306,6 +1316,9 @@ columns plus row dictionaries. Current columns are:
 - `execution_prompt_mode`
 - `user_prompt_mode`
 - `prompt_mode`
+- `skill_path`
+- `skill_hash`
+- `skill_source`
 - `branch`
 - `target_branch`
 - `start_commit`
@@ -1321,6 +1334,13 @@ columns plus row dictionaries. Current columns are:
 - `prompt_issue`
 - `operator_issue`
 - `summary`
+
+The `skill_*` columns flatten `setup_receipt.skill_provenance` for skill-mode
+attempts: `skill_path` maps to `path`, `skill_hash` to `sha256`, and
+`skill_source` to `source`. They are empty for raw-mode, tuned-mode, and older
+attempts. The digest identifies the managed skill bytes Blackdog associated at
+task start; it is provenance evidence, not an attestation that a model consumed
+or followed the skill.
 
 `--include-legacy-worksets` prepends the legacy `workset_id` column for
 migration/debugging.

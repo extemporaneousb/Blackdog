@@ -377,9 +377,35 @@ after auto-staging dirty task-worktree changes. `landed_commit`, when present,
 is the canonical landed commit Blackdog created on the target branch.
 
 `setup_receipt`, when present, is a structured task-start receipt. It records
-`schema_version`, `status`, `task_class`, `blockers`, and `probes`. Start
-guards and handler setup probes use it to show which startup checks ran, what
-was blocked, and which worktree-local runtime paths were prepared.
+`schema_version`, `status`, `task_class`, `blockers`, and `probes`, plus optional
+`skill_provenance`. Start guards and handler setup probes use the receipt to
+show which startup checks ran, what was blocked, and which worktree-local
+runtime paths were prepared.
+
+New skill-mode task starts record `setup_receipt.skill_provenance` as:
+
+```json
+{
+  "schema_version": 1,
+  "path": ".codex/skills/example/SKILL.md",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "source": "repo_managed"
+}
+```
+
+`path` is the repository-relative POSIX path to the managed skill Blackdog read
+at task start. `sha256` is the lowercase 64-hex SHA-256 digest of those file
+bytes. `source` is currently the bounded value `repo_managed`. The object is
+absent from raw-mode and tuned-mode starts and from older runtime rows. Readers
+must treat absence as unknown, not as an invalid attempt.
+
+This provenance proves which managed skill revision Blackdog read and
+associated with the start. It does not attest that a model received, consumed,
+or followed the skill. The receipt stores no skill body, expanded contract
+document, or prompt text; it persists only the bounded path, digest, source,
+and schema version. `setup_receipt` remains product-layer durable evidence in
+the attempt and `worktree.start` event, not a new planning schema or typed core
+runtime record.
 
 New runtime writes use only `direct_wtam` for `execution_model`. Older
 `runtime.json` files may still contain removed managed-claim values while

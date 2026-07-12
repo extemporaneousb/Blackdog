@@ -757,6 +757,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(worktree_path.exists())
         self.assertEqual(task_payload["worktree"]["setup_receipt"]["status"], "ok")
         self.assertEqual(task_payload["worktree"]["setup_receipt"]["task_class"], "implementation")
+        self.assertNotIn("skill_provenance", task_payload)
+        self.assertNotIn("skill_provenance", task_payload["worktree"]["setup_receipt"])
 
         exit_code, stdout, stderr = self.run_cli("snapshot", "--project-root", str(self.root))
         self.assertEqual(exit_code, 0, stderr)
@@ -774,6 +776,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(attempt_row["task_class"], "implementation")
         self.assertEqual(attempt_row["setup_blockers_count"], 0)
         self.assertEqual(attempt_row["setup_receipt"]["status"], "ok")
+        self.assertIsNone(attempt_row["skill_path"])
+        self.assertIsNone(attempt_row["skill_hash"])
+        self.assertIsNone(attempt_row["skill_source"])
 
         (worktree_path / "task-begin.txt").write_text("task begin\n", encoding="utf-8")
 
@@ -793,6 +798,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("task-begin.txt", show_payload["changed_paths"])
         self.assertEqual(show_payload["user_prompt_hash"], task_payload["user_prompt_hash"])
         self.assertEqual(show_payload["execution_prompt_hash"], task_payload["execution_prompt_hash"])
+        self.assertNotIn("skill_provenance", show_payload)
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -1250,6 +1256,17 @@ class BlackdogCliTests(CoreAuditTestCase):
 
     def test_task_begin_accepts_skill_execution_prompt_and_user_prompt(self) -> None:
         self.install_repo_runtime()
+        profile = load_profile(self.root)
+        skill_relative_path = managed_skill_relative_path(profile)
+        skill_path = self.root / skill_relative_path
+        skill_bytes = skill_path.read_bytes()
+        skill_text = skill_bytes.decode("utf-8")
+        expected_skill_provenance = {
+            "schema_version": 1,
+            "path": skill_relative_path.as_posix(),
+            "sha256": hashlib.sha256(skill_bytes).hexdigest(),
+            "source": "repo_managed",
+        }
         user_prompt_path = self.root / "USER_PROMPT.txt"
         execution_prompt_path = self.root / "EXECUTION_PROMPT.txt"
         user_prompt_path.write_text("Add a repo-local feature.\n", encoding="utf-8")
@@ -1276,6 +1293,18 @@ class BlackdogCliTests(CoreAuditTestCase):
         worktree_path = Path(task_payload["worktree"]["worktree_path"])
         self.assertEqual(task_payload["prompt_mode"], "skill")
         self.assertNotEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+        self.assertEqual(task_payload["skill_provenance"], expected_skill_provenance)
+        self.assertEqual(
+            task_payload["worktree"]["setup_receipt"]["skill_provenance"],
+            expected_skill_provenance,
+        )
+        self.assertEqual(
+            set(task_payload["worktree"]["setup_receipt"]["skill_provenance"]),
+            {"schema_version", "path", "sha256", "source"},
+        )
+        self.assertNotIn(skill_text, stdout)
+        for durable_path in (profile.paths.runtime_file, profile.paths.events_file):
+            self.assertNotIn(skill_text, durable_path.read_text(encoding="utf-8"))
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -1291,6 +1320,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(show_payload["execution_prompt_mode"], "skill")
         self.assertEqual(show_payload["user_prompt_hash"], task_payload["user_prompt_hash"])
         self.assertEqual(show_payload["execution_prompt_hash"], task_payload["execution_prompt_hash"])
+        self.assertEqual(show_payload["skill_provenance"], expected_skill_provenance)
+        self.assertEqual(show_payload["setup_receipt"]["skill_provenance"], expected_skill_provenance)
+        self.assertNotIn(skill_text, stdout)
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -1309,6 +1341,24 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse(worktree_path.exists())
 
         exit_code, stdout, stderr = self.run_cli(
+            "attempts",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        table_payload = json.loads(stdout)
+        self.assertEqual(len(table_payload["rows"]), 1)
+        attempt_row = table_payload["rows"][0]
+        self.assertEqual(attempt_row["skill_path"], expected_skill_provenance["path"])
+        self.assertEqual(attempt_row["skill_hash"], expected_skill_provenance["sha256"])
+        self.assertEqual(attempt_row["skill_source"], expected_skill_provenance["source"])
+        self.assertNotIn(skill_text, stdout)
+
+        exit_code, stdout, stderr = self.run_cli(
             "snapshot",
             "--project-root",
             str(self.root),
@@ -1325,6 +1375,94 @@ class BlackdogCliTests(CoreAuditTestCase):
             snapshot_payload["runtime_model"]["recent_attempts"][0]["prompt_receipt"]["prompt_hash"],
             task_payload["execution_prompt_hash"],
         )
+
+    def test_skill_mode_task_begin_requires_the_managed_skill_without_affecting_raw_mode(self) -> None:
+        self.install_repo_runtime()
+        profile = load_profile(self.root)
+        skill_relative_path = managed_skill_relative_path(profile)
+        skill_path = self.root / skill_relative_path
+        skill_path.unlink()
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "-u", skill_relative_path.as_posix()],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Remove managed skill"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertFalse(skill_path.exists())
+
+        def optional_bytes(path: Path) -> bytes | None:
+            return path.read_bytes() if path.exists() else None
+
+        state_before = {
+            "planning": optional_bytes(profile.paths.planning_file),
+            "runtime": optional_bytes(profile.paths.runtime_file),
+            "events": optional_bytes(profile.paths.events_file),
+            "worktrees": self.git_output("worktree", "list", "--porcelain"),
+            "branches": self.git_output("branch", "--format=%(refname)"),
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Exercise missing managed skill handling.",
+            "--prompt-mode",
+            "skill",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("managed", stderr.lower())
+        self.assertIn("skill", stderr.lower())
+        self.assertIn(skill_relative_path.as_posix(), stderr)
+        self.assertEqual(load_planning_state(profile.paths).worksets, ())
+        self.assertEqual(load_runtime_state(profile.paths).worksets, ())
+        self.assertEqual(optional_bytes(profile.paths.planning_file), state_before["planning"])
+        self.assertEqual(optional_bytes(profile.paths.runtime_file), state_before["runtime"])
+        self.assertEqual(optional_bytes(profile.paths.events_file), state_before["events"])
+        self.assertEqual(self.git_output("worktree", "list", "--porcelain"), state_before["worktrees"])
+        self.assertEqual(self.git_output("branch", "--format=%(refname)"), state_before["branches"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Exercise raw task begin without a managed skill.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        self.assertNotIn("skill_provenance", task_payload)
+        self.assertNotIn("skill_provenance", task_payload["worktree"]["setup_receipt"])
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "closed the raw missing-skill compatibility smoke",
+            "--cleanup",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(worktree_path.exists())
 
     def test_task_land_records_user_and_execution_prompt_lineage_when_prompt_was_tuned(self) -> None:
         self.install_repo_runtime()
@@ -1346,6 +1484,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         task_payload = json.loads(stdout)["task"]
         worktree_path = Path(task_payload["worktree"]["worktree_path"])
         self.assertNotEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+        self.assertNotIn("skill_provenance", task_payload)
+        self.assertNotIn("skill_provenance", task_payload["worktree"]["setup_receipt"])
 
         (worktree_path / "tuned-land.txt").write_text("tuned land\n", encoding="utf-8")
 
@@ -2906,6 +3046,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("prompt_source", table["columns"])
         self.assertIn("user_prompt_source", table["columns"])
         self.assertIn("execution_prompt_hash", table["columns"])
+        self.assertIn("skill_path", table["columns"])
+        self.assertIn("skill_hash", table["columns"])
+        self.assertIn("skill_source", table["columns"])
         self.assertIn("commit", table["columns"])
         self.assertIn("failure_class", table["columns"])
         self.assertIn("summary", table["columns"])
@@ -2916,6 +3059,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIsNone(table["rows"][0]["prompt_hash"])
         self.assertEqual(table["rows"][0]["user_prompt_source"], "user-test")
         self.assertEqual(table["rows"][0]["user_prompt_hash"], table["rows"][0]["execution_prompt_hash"])
+        self.assertIsNone(table["rows"][0]["skill_path"])
+        self.assertIsNone(table["rows"][0]["skill_hash"])
+        self.assertIsNone(table["rows"][0]["skill_source"])
         self.assertIn(table["rows"][0]["validation_summary"], {"passed=1 failed=0 skipped=0", "passed=0 failed=1 skipped=0"})
         self.assertEqual(
             {row["landed_commit"] for row in table["rows"]},

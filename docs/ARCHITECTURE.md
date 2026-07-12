@@ -137,7 +137,12 @@ repo-root scope. `worktree start` executes the handler plan for the task
 workspace: worktree-local `.VE`, overlay/source-path wiring, root-bin fallback
 links, and the worktree-local launcher. Handler actions and task-class guard
 results are recorded as the attempt `setup_receipt` and on `worktree.start`
-events when task execution starts.
+events when task execution starts. For skill-mode task starts, the product
+layer also records bounded managed-skill provenance in that receipt: a
+repo-relative path, file digest, source label, and provenance schema version.
+This is additive durable evidence about the skill revision Blackdog read at
+start, not model-consumption attestation, a planning field, or a new typed core
+record.
 
 Implementation-without-Blackdog detection lives in read models, not in runtime
 mutation. `codex coverage` and `codex history` compare Codex session logs

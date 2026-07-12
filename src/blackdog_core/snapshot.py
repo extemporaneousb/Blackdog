@@ -39,6 +39,33 @@ def _task_ref(workset_id: str, task_id: str) -> str:
     return f"{workset_id}/{task_id}"
 
 
+def _bounded_skill_provenance(setup_receipt: dict[str, Any]) -> dict[str, Any] | None:
+    value = setup_receipt.get("skill_provenance")
+    if not isinstance(value, dict):
+        return None
+    path = value.get("path")
+    sha256 = value.get("sha256")
+    if (
+        value.get("schema_version") != 1
+        or value.get("source") != "repo_managed"
+        or not isinstance(path, str)
+        or not path
+        or path.startswith("/")
+        or "\\" in path
+        or ".." in path.split("/")
+        or not isinstance(sha256, str)
+        or len(sha256) != 64
+        or any(character not in "0123456789abcdef" for character in sha256)
+    ):
+        return None
+    return {
+        "schema_version": 1,
+        "path": path,
+        "sha256": sha256,
+        "source": "repo_managed",
+    }
+
+
 def _task_payload(task: TaskView, *, include_legacy_worksets: bool = False) -> dict[str, Any]:
     payload = {
         "task_ref": _task_ref(task.workset_id, task.task_id),
@@ -71,6 +98,7 @@ def _attempt_payload(
     include_legacy_worksets: bool = False,
 ) -> dict[str, Any]:
     setup_receipt = attempt.setup_receipt or {}
+    skill_provenance = _bounded_skill_provenance(setup_receipt)
     payload = {
         "task_ref": _task_ref(workset_id, attempt.task_id),
         "task_id": attempt.task_id,
@@ -103,6 +131,9 @@ def _attempt_payload(
         "setup_status": setup_receipt.get("status"),
         "task_class": setup_receipt.get("task_class"),
         "setup_blockers_count": len(setup_receipt.get("blockers") or ()),
+        "skill_path": skill_provenance["path"] if skill_provenance is not None else None,
+        "skill_hash": skill_provenance["sha256"] if skill_provenance is not None else None,
+        "skill_source": skill_provenance["source"] if skill_provenance is not None else None,
         "setup_receipt": attempt.setup_receipt,
         **_prompt_lineage_payload(attempt),
     }
@@ -257,6 +288,9 @@ ATTEMPTS_TABLE_COLUMNS = (
     "execution_prompt_mode",
     "user_prompt_mode",
     "prompt_mode",
+    "skill_path",
+    "skill_hash",
+    "skill_source",
     "branch",
     "target_branch",
     "start_commit",
