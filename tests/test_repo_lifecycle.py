@@ -737,6 +737,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertTrue(skill_path.is_file())
         self.assertTrue(skill_metadata_path.is_file())
         self.assertTrue(launcher_path.is_file())
+        self.assertFalse((self.root / ".codex" / "config.toml").exists())
+        self.assertFalse((self.root / ".codex" / "hooks.json").exists())
         self.assertIn("[[handlers]]", profile_path.read_text(encoding="utf-8"))
         self.assertEqual(profile.doc_routing_defaults, ("AGENTS.md",))
 

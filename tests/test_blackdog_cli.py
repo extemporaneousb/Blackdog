@@ -1009,6 +1009,25 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(rows[0]["payload"]["turn_classification"], payload["turn_classification"])
         self.assertNotIn("this text", json.dumps(rows[0]["payload"]))
 
+        silent_payload = {**event_payload, "turn_id": "turn-cli-hook-silent"}
+        exit_code, stdout, stderr = self.run_cli(
+            "codex",
+            "hook",
+            "stamp",
+            "--project-root",
+            str(self.root),
+            "--event-json",
+            json.dumps(silent_payload),
+            cwd=self.root,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            load_events(codex_task_context_path(profile))[-1]["payload"]["hook"]["turn_id"],
+            "turn-cli-hook-silent",
+        )
+
     def test_task_begin_can_tune_the_prompt_and_task_close_can_infer_the_current_attempt(self) -> None:
         self.install_repo_runtime()
 

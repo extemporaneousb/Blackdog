@@ -1442,38 +1442,34 @@ without an active attempt can still annotate and count a matching Codex turn,
 but it does not create a `hook_context` relationship.
 
 Repo-local hooks should call the repo-local launcher using a git-root based
-path, for example:
+path. Blackdog itself dogfoods the observability path with this tracked
+`.codex/config.toml` shape:
 
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$(git rev-parse --show-toplevel)/.VE/bin/blackdog\" codex hook stamp --project-root \"$(git rev-parse --show-toplevel)\""
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$(git rev-parse --show-toplevel)/.VE/bin/blackdog\" codex hook stamp --project-root \"$(git rev-parse --show-toplevel)\""
-          }
-        ]
-      }
-    ]
-  }
-}
+```toml
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/.VE/bin/blackdog" codex hook stamp --project-root "$(git rev-parse --show-toplevel)"'
+timeout = 5
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/.VE/bin/blackdog" codex hook stamp --project-root "$(git rev-parse --show-toplevel)"'
+timeout = 5
 ```
 
-Blackdog does not install this hook automatically during `repo install`.
+Do not add `--json` to lifecycle hook commands: a successful stamp is silent,
+which is valid for `Stop`, while `--json` is reserved for direct CLI callers.
+The short timeout bounds observability latency. Stamp failures remain hook
+failures and do not produce a guard decision, prompt block, or continuation.
+
+Blackdog does not install these hooks automatically during `repo install`.
 Project-local hooks require Codex hook trust review and should be opted into by
-the repo/operator.
+the repo/operator; the checked-in Blackdog configuration is that explicit
+repo-level opt-in.
 
 ## Removed Or Deferred Commands
 

@@ -24,6 +24,26 @@ class CoreContractTests(CoreAuditTestCase):
                 return action.choices[command]
         self.fail(f"{parser.prog} has no subparsers")
 
+    def test_blackdog_repo_opts_into_silent_bounded_codex_hooks(self) -> None:
+        config = tomllib.loads((REPO_ROOT / ".codex" / "config.toml").read_text(encoding="utf-8"))
+        expected_handler = {
+            "type": "command",
+            "command": (
+                '"$(git rev-parse --show-toplevel)/.VE/bin/blackdog" codex hook stamp '
+                '--project-root "$(git rev-parse --show-toplevel)"'
+            ),
+            "timeout": 5,
+        }
+
+        self.assertEqual(
+            config["hooks"],
+            {
+                "UserPromptSubmit": [{"hooks": [expected_handler]}],
+                "Stop": [{"hooks": [expected_handler]}],
+            },
+        )
+        self.assertNotIn("--json", expected_handler["command"])
+
     def test_pyproject_and_makefile_keep_the_shipped_cli_surface(self) -> None:
         pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(pyproject["project"]["scripts"], {"blackdog": "blackdog_cli.main:main"})

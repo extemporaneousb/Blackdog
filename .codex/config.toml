@@ -1,0 +1,13 @@
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/.VE/bin/blackdog" codex hook stamp --project-root "$(git rev-parse --show-toplevel)"'
+timeout = 5
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/.VE/bin/blackdog" codex hook stamp --project-root "$(git rev-parse --show-toplevel)"'
+timeout = 5
