@@ -1381,6 +1381,94 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(cleanup["remaining"]["counts"]["rows"], 0)
         self.assertNotIn(branch, self.git_output("branch", "--format=%(refname:short)").splitlines())
 
+    def test_task_cleanup_accepts_abandoned_branch_with_patches_already_on_target(self) -> None:
+        self.install_repo_runtime()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Create a task patch that is later landed outside the canonical Blackdog path.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+        branch = task_payload["worktree"]["branch"]
+        (worktree_path / "manual-equivalent.txt").write_text("landed manually\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "add", "manual-equivalent.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "commit", "-m", "Add manually landed cleanup fixture"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        branch_tip = self.git_output("rev-parse", branch)
+        subprocess.run(
+            ["git", "-C", str(self.root), "cherry-pick", "--no-commit", branch_tip],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Land task patch with an alternate commit"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "patch landed manually on the target branch",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["closure"]["status"], "abandoned")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        row = json.loads(stdout)["worktree_table"]["rows"][0]
+        self.assertEqual(row["cleanup_status"], "cleanup_ready")
+        self.assertEqual(row["cleanup_proof"], "patch_equivalent")
+        self.assertIn("all terminal task-branch patches", row["cleanup_reason"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        cleanup = json.loads(stdout)["cleanup"]
+        self.assertTrue(cleanup["deleted_branch"])
+        self.assertTrue(cleanup["force_deleted_branch"])
+        self.assertEqual(cleanup["branch_cleanup_proof"], "patch_equivalent")
+        self.assertFalse(worktree_path.exists())
+
     def test_task_cleanup_refuses_active_attempt_even_when_worktree_is_clean(self) -> None:
         self.install_repo_runtime()
 

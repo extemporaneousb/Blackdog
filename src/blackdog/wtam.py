@@ -1155,6 +1155,54 @@ def _can_force_delete_landed_task_branch(
     return True, "recorded task branch is patch-equivalent to the canonical landed commit"
 
 
+def _can_force_delete_terminal_patch_equivalent_branch(
+    primary_root: Path,
+    *,
+    branch: str,
+    latest_attempt: TaskRuntimeRecord | None,
+    ref_cache: dict[str, str | None] | None = None,
+) -> tuple[bool, str]:
+    if latest_attempt is None:
+        return False, "no runtime attempt metadata"
+    if latest_attempt.branch != branch:
+        return False, "latest attempt branch does not match the cleanup branch"
+    if latest_attempt.status not in {
+        ATTEMPT_STATUS_SUCCESS,
+        ATTEMPT_STATUS_BLOCKED,
+        ATTEMPT_STATUS_FAILED,
+        ATTEMPT_STATUS_ABANDONED,
+    }:
+        return False, f"latest attempt status {latest_attempt.status!r} is not terminal"
+    if not latest_attempt.target_branch:
+        return False, "latest attempt is missing the target branch"
+    if _resolve_commit(primary_root, latest_attempt.target_branch, ref_cache=ref_cache) is None:
+        return False, f"target branch {latest_attempt.target_branch!r} is missing"
+
+    merge_commits = _run_git_no_check(
+        primary_root,
+        "rev-list",
+        "--merges",
+        f"{latest_attempt.target_branch}..{branch}",
+    )
+    if merge_commits.returncode != 0:
+        detail = merge_commits.stderr.strip() or merge_commits.stdout.strip() or f"exit code {merge_commits.returncode}"
+        return False, f"could not inspect task-branch merge commits: {detail}"
+    if merge_commits.stdout.strip():
+        return False, "task branch contains merge commits that cannot be proven by patch equivalence"
+
+    cherry = _run_git_no_check(primary_root, "cherry", latest_attempt.target_branch, branch)
+    if cherry.returncode != 0:
+        detail = cherry.stderr.strip() or cherry.stdout.strip() or f"exit code {cherry.returncode}"
+        return False, f"git cherry patch-equivalence check failed: {detail}"
+    patch_rows = [line.strip() for line in cherry.stdout.splitlines() if line.strip()]
+    if not patch_rows:
+        return False, "task branch has no independently verifiable patch-equivalence rows"
+    unlanded_rows = [line for line in patch_rows if not line.startswith("- ")]
+    if unlanded_rows:
+        return False, f"{len(unlanded_rows)} task-branch patch(es) are not represented on {latest_attempt.target_branch}"
+    return True, f"all terminal task-branch patches are equivalent to patches on {latest_attempt.target_branch}"
+
+
 def _plan_task_branch_cleanup(
     primary_root: Path,
     *,
@@ -1208,8 +1256,23 @@ def _plan_task_branch_cleanup(
             reason=reason,
             proof_state="patch_equivalent",
         )
+    terminal_patch_equivalent, patch_reason = _can_force_delete_terminal_patch_equivalent_branch(
+        primary_root,
+        branch=branch,
+        latest_attempt=latest_attempt,
+        ref_cache=ref_cache,
+    )
+    if terminal_patch_equivalent:
+        return _BranchCleanupPlan(
+            branch_exists=True,
+            force_delete=True,
+            branch_tip=branch_tip,
+            reason=patch_reason,
+            proof_state="patch_equivalent",
+        )
     raise WorktreeError(
-        f"refusing cleanup: branch {branch} has commits not proven landed on {target_branch} ({reason})"
+        f"refusing cleanup: branch {branch} has commits not proven landed on {target_branch} "
+        f"({reason}; {patch_reason})"
     )
 
 

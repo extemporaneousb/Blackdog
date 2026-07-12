@@ -214,6 +214,14 @@ def _parse_validation_flags(values: list[str]) -> tuple[ValidationRecord, ...]:
     return tuple(rows)
 
 
+def _add_closeout_record_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--validation", action="append", default=[])
+    parser.add_argument("--residual", action="append", default=[])
+    parser.add_argument("--followup", action="append", default=[])
+    parser.add_argument("--note")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackdog")
     subparsers = parser.add_subparsers(
@@ -461,11 +469,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_land.add_argument("--workset")
     p_task_land.add_argument("--task")
     p_task_land.add_argument("--actor")
-    p_task_land.add_argument("--summary", required=True)
-    p_task_land.add_argument("--validation", action="append", default=[])
-    p_task_land.add_argument("--residual", action="append", default=[])
-    p_task_land.add_argument("--followup", action="append", default=[])
-    p_task_land.add_argument("--note")
+    _add_closeout_record_arguments(p_task_land)
     p_task_land.add_argument("--keep-worktree", action="store_true")
     p_task_land.add_argument("--json", action="store_true")
 
@@ -475,11 +479,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_close.add_argument("--task")
     p_task_close.add_argument("--actor")
     p_task_close.add_argument("--status", required=True, choices=["blocked", "failed", "abandoned"])
-    p_task_close.add_argument("--summary", required=True)
-    p_task_close.add_argument("--validation", action="append", default=[])
-    p_task_close.add_argument("--residual", action="append", default=[])
-    p_task_close.add_argument("--followup", action="append", default=[])
-    p_task_close.add_argument("--note")
+    _add_closeout_record_arguments(p_task_close)
     p_task_close.add_argument("--cleanup", action="store_true")
     p_task_close.add_argument("--json", action="store_true")
 
@@ -550,11 +550,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_land.add_argument("--workset", required=True)
     p_worktree_land.add_argument("--task", required=True)
     p_worktree_land.add_argument("--actor", required=True)
-    p_worktree_land.add_argument("--summary", required=True)
-    p_worktree_land.add_argument("--validation", action="append", default=[])
-    p_worktree_land.add_argument("--residual", action="append", default=[])
-    p_worktree_land.add_argument("--followup", action="append", default=[])
-    p_worktree_land.add_argument("--note")
+    _add_closeout_record_arguments(p_worktree_land)
     p_worktree_land.add_argument("--keep-worktree", action="store_true")
     p_worktree_land.add_argument("--json", action="store_true")
 
@@ -564,11 +560,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_worktree_close.add_argument("--task", required=True)
     p_worktree_close.add_argument("--actor", required=True)
     p_worktree_close.add_argument("--status", required=True, choices=["blocked", "failed", "abandoned"])
-    p_worktree_close.add_argument("--summary", required=True)
-    p_worktree_close.add_argument("--validation", action="append", default=[])
-    p_worktree_close.add_argument("--residual", action="append", default=[])
-    p_worktree_close.add_argument("--followup", action="append", default=[])
-    p_worktree_close.add_argument("--note")
+    _add_closeout_record_arguments(p_worktree_close)
     p_worktree_close.add_argument("--cleanup", action="store_true")
     p_worktree_close.add_argument("--json", action="store_true")
 

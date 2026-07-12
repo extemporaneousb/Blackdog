@@ -759,7 +759,12 @@ the retained task branch may point at an internal `blackdog-wip(...)` commit
 that was squash-landed into the canonical target commit. In that case cleanup
 uses the recorded task-branch commit, `landed_commit`, target branch, and tree
 equivalence to force-delete the local disposable task branch without requiring
-operator intervention.
+operator intervention. Closed attempts that were landed outside the canonical
+Blackdog landing path may lack `landed_commit`. Cleanup also accepts those
+branches when the attempt metadata still identifies the branch and target,
+the branch contains no merge commits, and every branch patch is independently
+reported as equivalent to a patch already on the target. Mixed or unproven
+patch sets remain blocked.
 
 ### `blackdog worktree preflight`
 
@@ -827,9 +832,11 @@ active, and missing-worktree rows. Current columns are:
 
 The table is intentionally empty when there are no active or retained task
 worktrees requiring operator attention. Retained worktrees whose branches are
-provably represented by the canonical landed commit are marked
-`cleanup_ready`. Dirty, active, missing, or unproven branch rows stay visible
-with a recommended next action instead of being silently removed.
+provably represented on the target branch are marked `cleanup_ready`. The
+proof may come from the canonical landed-commit record or independent
+patch-equivalence checks for a terminal attempt. Dirty, active, missing, or
+unproven branch rows stay visible with a recommended next action instead of
+being silently removed.
 
 ### `blackdog worktree preview`
 

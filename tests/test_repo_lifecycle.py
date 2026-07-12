@@ -765,6 +765,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertNotIn("workset put", skill_text)
         self.assertNotIn("next --workset", skill_text)
         self.assertIn("--prompt-mode skill", skill_text)
+        self.assertIn("--validation CHECK=passed", skill_text)
+        self.assertIn("attempt records the evidence", skill_text)
         self.assertIn("Operator Guardrails", skill_text)
         self.assertIn("Do not launch an external browser", skill_text)
         self.assertNotIn("Shipped Workflow Families", skill_text)
