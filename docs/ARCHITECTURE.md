@@ -149,7 +149,13 @@ mutation. `codex coverage` and `codex history` compare Codex session logs
 against Blackdog attempts, classify implementation-like unlinked turns, attach
 observed-vs-guidance environment issue evidence, and feed `repo table` and
 `stats`. Those learning/report outputs support product tuning and audit without
-copying full transcripts into Blackdog state.
+copying full transcripts into Blackdog state. Repo cwd remains the ordinary
+session-discovery boundary. When an attempt stores an exact Codex thread,
+session path, and turn id, reporting may additionally load that one referenced
+turn even if its session cwd belongs to another repo. The path must remain
+inside the active Codex session roots, the parsed identities must match, and
+sibling turns from that source session are not imported. Missing or invalid
+references are reported as bounded missingness and never affect task execution.
 
 Codex hooks and environments belong in the `blackdog` product layer. Hook
 handlers may inspect preflight state, active attempts, prompt hashes, and Codex
@@ -168,6 +174,16 @@ the same task-attempt model. Multiple workers can use the active Codex thread
 for coordination, but durable state still flows through task begin/show/land/
 close, attempt history, validation rows, residuals, follow-ups, and changed
 paths. The architecture does not reintroduce a separate multi-agent runtime.
+Task and attempt identity remain repo-local; a Codex thread/session/turn is
+invocation provenance and may relate one source turn to attempts in more than
+one target repo. It is not a global task owner or a second task envelope.
+
+Landing reconciliation is an exceptional repair path, not an alternate landing
+workflow. The product layer proves an already-reachable canonical Blackdog
+commit from Git and its trailers before the typed core changes a latest
+failed/blocked runtime attempt to success. Historical failure events remain
+append-only; the repair adds `task.landing.reconciled`. Deterministic correction
+identity makes a retry repair an event missing after a completed runtime write.
 
 ## Current Shipped Surface
 
@@ -198,6 +214,7 @@ The current coherent product surface on top of the new core is:
 - `blackdog task show`
 - `blackdog task recover`
 - `blackdog task land`
+- `blackdog task reconcile-landing`
 - `blackdog task close`
 - `blackdog task cancel`
 - `blackdog task reopen`
@@ -276,12 +293,16 @@ repo-owned text and unrelated dirty files, and preserves external control dirs
 outside the repo or git common dir.
 
 `stats` is the first-class cross-repo metric read model for task, attempt, and
-Codex-session counts. It accepts explicit project roots or the user-local
-registry, buckets attempt and Codex turn counts by `started_at` in a selected
-timezone, deduplicates exact aliases for the same resolved Blackdog project
-root, reports cleanup health for terminal branch/worktree attempts, exposes
-linked/unlinked Codex coverage counts, and keeps nested repos separate when
-they have distinct `blackdog.toml` profiles.
+Codex-session counts. It accepts explicit project roots, explicitly supplied
+discovery roots scanned for `blackdog.toml`, or the user-local registry as a
+fallback. Discovery is read-only and does not populate the registry. Stats
+buckets attempt and Codex turn counts by `started_at` in a selected timezone,
+deduplicates exact aliases for the same resolved Blackdog project root, reports
+cleanup health for terminal branch/worktree attempts, exposes linked/unlinked
+Codex coverage counts, and keeps nested repos separate when they have distinct
+profiles. Per-repo rows may each show a relationship to one shared source turn;
+fleet session, turn, tool, and token totals count its `(thread_id, turn_id)`
+identity once.
 
 Repo-local env/runtime setup is now owned by explicit handler blocks in
 `blackdog.toml`, not by skill text or ad hoc bootstrap code. The shipped v1

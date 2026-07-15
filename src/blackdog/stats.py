@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+import tomllib
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from blackdog.local_registry import registered_project_roots
-from blackdog.repo_membership import attempt_cleanup_health_counts
+from blackdog.repo_membership import attempt_cleanup_health_counts, discover_profile_dirs
 from blackdog.repo_lifecycle import RepoLifecycleError
 from blackdog_core.codex_sessions import (
     CodexTurn,
@@ -45,9 +46,27 @@ STATS_BUCKET_COLUMNS = (
     "codex_total_tokens",
 )
 
+_GLOBALLY_DEDUPED_CODEX_SUMMARY_KEYS = frozenset(
+    {
+        "codex_sessions",
+        "codex_user_turns",
+        "codex_linked_user_turns",
+        "codex_unlinked_user_turns",
+        "codex_implementation_like_unlinked_turns",
+        "codex_tool_calls",
+        "codex_input_tokens",
+        "codex_cached_input_tokens",
+        "codex_output_tokens",
+        "codex_reasoning_output_tokens",
+        "codex_total_tokens",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StatsResult:
+    scope_source: str
+    discovery_roots: tuple[str, ...]
     project_roots: tuple[str, ...]
     since: str | None
     until: str | None
@@ -61,6 +80,8 @@ class StatsResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "generated_at": now_iso(),
+            "scope_source": self.scope_source,
+            "discovery_roots": list(self.discovery_roots),
             "project_roots": list(self.project_roots),
             "since": self.since,
             "until": self.until,
@@ -76,6 +97,7 @@ class StatsResult:
 def build_stats(
     *,
     project_roots: tuple[Path, ...] = (),
+    discovery_roots: tuple[Path, ...] = (),
     since: str | None = None,
     until: str | None = None,
     by: str = "day",
@@ -88,9 +110,26 @@ def build_stats(
     until_dt = _parse_local_bound(until, local_tz, until=True)
     if since_dt is not None and until_dt is not None and since_dt >= until_dt:
         raise RepoLifecycleError("--since must be before --until")
-    profiles, deduped_roots = _load_stats_profiles(project_roots or registered_project_roots())
+    if project_roots and discovery_roots:
+        raise RepoLifecycleError("stats accepts either --project-root or --root, not both")
+    if project_roots:
+        scope_source = "explicit_project_roots"
+        profile_roots = project_roots
+    elif discovery_roots:
+        scope_source = "discovery_roots"
+        profile_roots = tuple(
+            profile_dir
+            for discovery_root in discovery_roots
+            for profile_dir in discover_profile_dirs(discovery_root)
+        )
+    else:
+        scope_source = "registry"
+        profile_roots = registered_project_roots()
+    profiles, deduped_roots = _load_stats_profiles(profile_roots)
     if not profiles:
-        raise RepoLifecycleError("stats requires --project-root or at least one registered local repo")
+        if discovery_roots:
+            raise RepoLifecycleError("stats found no Blackdog repos under the supplied --root values")
+        raise RepoLifecycleError("stats requires --project-root, --root, or at least one registered local repo")
 
     codex_since = since_dt.astimezone(timezone.utc).isoformat() if since_dt else None
     codex_until = until_dt.astimezone(timezone.utc).isoformat() if until_dt else None
@@ -103,6 +142,7 @@ def build_stats(
     repo_rows: list[dict[str, object]] = []
     bucket_rows: dict[str, dict[str, object]] = {}
     summary = _empty_summary()
+    global_codex_turn_rows: dict[tuple[str, str], dict[str, Any]] = {}
 
     for profile in profiles:
         model = load_runtime_model(profile)
@@ -113,20 +153,50 @@ def build_stats(
             until_dt=until_dt,
             local_tz=local_tz,
         )
-        coverage = build_codex_coverage(profile, since=codex_since, until=codex_until, codex_turns=all_codex_turns)
-        codex_summary, codex_buckets = _repo_codex_stats(profile, coverage=coverage, local_tz=local_tz)
+        coverage = build_codex_coverage(
+            profile,
+            since=codex_since,
+            until=codex_until,
+            codex_turns=all_codex_turns,
+            include_environment_evidence=False,
+            attempt_window_anchor="started_at",
+        )
+        codex_summary, _ = _repo_codex_stats(profile, coverage=coverage, local_tz=local_tz)
         repo_row = _merge_counts(repo_summary, codex_summary)
         repo_row["project_name"] = profile.project_name
         repo_row["project_root"] = str(profile.paths.project_root)
         repo_rows.append(repo_row)
-        _add_summary(summary, repo_row)
-        for bucket in (*repo_buckets, *codex_buckets):
+        _add_summary(summary, repo_row, exclude=_GLOBALLY_DEDUPED_CODEX_SUMMARY_KEYS)
+        for bucket in repo_buckets:
             key = str(bucket["bucket"])
             aggregate = bucket_rows.setdefault(key, _empty_bucket(key))
             _merge_bucket(aggregate, bucket)
+        for turn in coverage.get("turns", ()):
+            if not isinstance(turn, dict):
+                continue
+            turn_key = _turn_row_key(turn)
+            existing = global_codex_turn_rows.get(turn_key)
+            global_codex_turn_rows[turn_key] = (
+                dict(turn) if existing is None else _merge_global_turn_rows(existing, turn)
+            )
+            if turn.get("user_message_hash"):
+                bucket_key = _bucket_for_started_at(str(turn.get("started_at") or ""), local_tz)
+                aggregate = bucket_rows.setdefault(bucket_key, _empty_bucket(bucket_key))
+                _add_bucket_repo(aggregate, profile)
+
+    summary["codex_sessions"] = len({turn_key[0] for turn_key in global_codex_turn_rows})
+    for turn in global_codex_turn_rows.values():
+        if not turn.get("user_message_hash"):
+            continue
+        _add_turn_row_to_summary(summary, turn)
+        bucket_key = _bucket_for_started_at(str(turn.get("started_at") or ""), local_tz)
+        aggregate = bucket_rows.setdefault(bucket_key, _empty_bucket(bucket_key))
+        _add_turn_row_to_bucket(aggregate, turn)
 
     buckets = tuple(_clean_bucket(bucket_rows[key]) for key in sorted(bucket_rows))
     return StatsResult(
+        scope_source=scope_source,
+        discovery_roots=tuple(str(root.resolve()) for root in discovery_roots),
         project_roots=tuple(str(profile.paths.project_root) for profile in profiles),
         since=since_dt.isoformat() if since_dt else None,
         until=until_dt.isoformat() if until_dt else None,
@@ -229,7 +299,7 @@ def _load_stats_profiles(roots: Iterable[Path]) -> tuple[tuple[RepoProfile, ...]
     for root in roots:
         try:
             profile = load_profile(root.resolve())
-        except ConfigError as exc:
+        except (ConfigError, OSError, tomllib.TOMLDecodeError) as exc:
             raise RepoLifecycleError(f"{root.resolve()} is not a Blackdog repo: {exc}") from exc
         key = profile.paths.project_root.resolve()
         if key in profiles_by_root:
@@ -479,8 +549,50 @@ def _merge_counts(left: dict[str, object], right: dict[str, object]) -> dict[str
     return merged
 
 
-def _add_summary(summary: dict[str, int], row: dict[str, object]) -> None:
+def _turn_row_key(turn: dict[str, Any]) -> tuple[str, str]:
+    thread_id = str(turn.get("thread_id") or "")
+    turn_id = str(turn.get("turn_id") or "")
+    if not thread_id:
+        thread_id = f"session:{turn.get('session_path') or ''}"
+    if not turn_id:
+        turn_id = f"index:{turn.get('turn_index') or 0}"
+    return thread_id, turn_id
+
+
+def _merge_global_turn_rows(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    existing_attempt_ids = {str(item) for item in existing.get("linked_attempt_ids") or ()}
+    incoming_attempt_ids = {str(item) for item in incoming.get("linked_attempt_ids") or ()}
+    linked_attempt_ids = existing_attempt_ids | incoming_attempt_ids
+    merged["linked_attempt_ids"] = sorted(linked_attempt_ids)
+    if linked_attempt_ids:
+        merged["classification"] = "blackdog_attempt"
+    elif incoming.get("classification") == "implementation_likely":
+        merged["classification"] = "implementation_likely"
+    for key in (
+        "tool_call_count",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens",
+    ):
+        merged[key] = max(_int_value(existing.get(key)), _int_value(incoming.get(key)))
+    for key in ("user_message_hash", "started_at", "session_path"):
+        if not merged.get(key) and incoming.get(key):
+            merged[key] = incoming[key]
+    return merged
+
+
+def _add_summary(
+    summary: dict[str, int],
+    row: dict[str, object],
+    *,
+    exclude: frozenset[str] = frozenset(),
+) -> None:
     for key in summary:
+        if key in exclude:
+            continue
         summary[key] += int(row.get(key) or 0)
 
 

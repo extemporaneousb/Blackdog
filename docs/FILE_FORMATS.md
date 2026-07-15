@@ -374,6 +374,12 @@ Each attempt row contains:
 from. On successful `worktree land`, it may be an internal prep commit created
 after auto-staging dirty task-worktree changes. `landed_commit`, when present,
 is the canonical landed commit Blackdog created on the target branch.
+`task reconcile-landing --apply` may correct a latest failed or blocked attempt
+to `status = "success"`, populate its proven `landed_commit` and canonical
+changed paths, and change its task-state row to `done`. The correction preserves
+attempt timing, lineage, summary, validations, prompt/session references, and
+source commit. It clears failure/recovery flags only after product-layer Git
+proof succeeds; prior terminal events remain unchanged.
 
 `setup_receipt`, when present, is a structured task-start receipt. It records
 `schema_version`, `status`, `task_class`, `blockers`, and `probes`, plus optional
@@ -534,9 +540,10 @@ residuals, follow-up candidates, commit, landed commit, elapsed seconds,
 related Codex turn ids, relationship labels, and environment issue classes
 inherited from related turns.
 
-`codex_turn` rows cover all repo-matched Codex user turns, including linked
-Blackdog launch turns, related same-session follow-up turns, and analysis-only
-turns. They include classification, cwd, originator, model, reasoning effort,
+`codex_turn` rows cover all repo-matched Codex user turns plus exact
+attempt-referenced turns whose source-session cwd belongs to another repo.
+Only the exact referenced turn is added; sibling turns are not imported. Rows
+include classification, cwd, originator, model, reasoning effort,
 user-prompt hash, linked/related attempt ids, relationship labels, environment
 issue classes, assistant-response presence, completion timing when the session
 log reports it, tool-call count, and Codex token counters when the session log
@@ -575,6 +582,7 @@ Current shipped write path:
 - `task.release`
 - `task.start`
 - `task.finish`
+- `task.landing.reconciled`
 - `worktree.start`
 - `worktree.land`
 - `worktree.close`
@@ -626,6 +634,27 @@ lineage differs from the execution prompt lineage, it also carries
 `Blackdog-User-Prompt-Mode`; it always includes one `Blackdog-Changed-Path`
 trailer per changed path, plus any `Blackdog-Validation`/
 `Blackdog-Residual`/`Blackdog-Followup` trailers supplied at land time.
+
+Current `task.landing.reconciled` payloads record:
+
+- deterministic `reconciliation_id`
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `attempt_actor`
+- `previous_status`
+- `status = "success"`
+- proven `landed_commit`
+- `reconciled_at`
+- optional operator `reason`
+- bounded `proof` containing target reachability, canonical trailer values,
+  commit/attempt actor comparison and any required mismatch evidence, changed
+  paths, and source patch-equivalence status
+
+The event row's top-level `actor` is the reconciliation operator. The event is
+idempotent by `reconciliation_id`; a retry may append a missing event after an
+already-completed runtime correction but does not add a second matching event.
+Historical `task.finish` and `worktree.close` rows are retained unchanged.
 
 Current `worktree.close` payloads record:
 

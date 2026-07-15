@@ -19,7 +19,9 @@ from blackdog_core.backlog import (
     Workset,
     find_workset,
     finish_task,
+    landing_reconciliation_id,
     load_planning_state,
+    reconcile_landed_attempt,
     set_task_runtime_status,
     start_task,
     upsert_workset,
@@ -51,7 +53,9 @@ from blackdog_core.state import (
     active_task_attempt,
     append_event,
     create_prompt_receipt,
+    find_task_attempt,
     latest_task_attempt,
+    load_events,
     load_runtime_state,
     merge_workset_runtime,
     mutate_runtime_state,
@@ -2985,6 +2989,319 @@ def _terminal_land_failure_status(exc: Exception) -> str | None:
     if "has no changes relative to" in message:
         return ATTEMPT_STATUS_BLOCKED
     return None
+
+
+def _canonical_trailer_values(repo_root: Path, commit: str) -> dict[str, list[str]]:
+    message = _run_git(repo_root, "show", "-s", "--format=%B", commit)
+    parsed = _run_git_with_input(repo_root, "interpret-trailers", "--parse", input_text=message)
+    trailers: dict[str, list[str]] = {}
+    for raw_line in parsed.splitlines():
+        key, separator, value = raw_line.partition(":")
+        if not separator:
+            continue
+        trailers.setdefault(key.strip(), []).append(value.strip())
+    return trailers
+
+
+def _require_exact_canonical_trailer(
+    trailers: dict[str, list[str]],
+    *,
+    key: str,
+    expected: str,
+) -> None:
+    values = trailers.get(key, [])
+    if values != [expected]:
+        rendered = values if values else "missing"
+        raise WorktreeError(
+            f"landed commit canonical trailer {key} must be exactly {expected!r}; got {rendered!r}"
+        )
+
+
+def _stable_diff_patch_id(repo_root: Path, base_commit: str, head_commit: str) -> str:
+    diff = _run_git(repo_root, "diff", "--binary", base_commit, head_commit)
+    if not diff:
+        raise WorktreeError(f"commit range {base_commit[:12]}..{head_commit[:12]} has no patch")
+    patch_id_row = _run_git_with_input(repo_root, "patch-id", "--stable", input_text=diff)
+    patch_id = patch_id_row.split(maxsplit=1)[0] if patch_id_row else ""
+    if not patch_id:
+        raise WorktreeError(
+            f"could not compute a stable patch id for {base_commit[:12]}..{head_commit[:12]}"
+        )
+    return patch_id
+
+
+def _actor_mismatch_finalization_evidence(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    attempt_id: str,
+    attempt_actor: str,
+) -> dict[str, Any] | None:
+    for event in reversed(load_events(profile.paths.events_file)):
+        payload = event.get("payload")
+        if event.get("type") not in {"task.finish", "worktree.close"} or not isinstance(payload, dict):
+            continue
+        if (
+            payload.get("workset_id") != workset_id
+            or payload.get("task_id") != task_id
+            or payload.get("attempt_id") != attempt_id
+            or payload.get("status") not in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}
+            or event.get("actor") != attempt_actor
+        ):
+            continue
+        summary = str(payload.get("summary") or "").strip()
+        normalized = " ".join(summary.lower().split())
+        landing_succeeded = re.search(r"\bgit landing (?:completed|succeeded)\b", normalized) is not None
+        finalization_failed = (
+            re.search(r"\bruntime finalization (?:rejected|failed)\b", normalized) is not None
+        )
+        deliberate_actor_mismatch = (
+            re.search(r"\bdeliberately mismatched actor\b", normalized) is not None
+        )
+        after_mutation = re.search(r"\bafter mutation\b", normalized) is not None
+        contradiction = any(
+            marker in normalized
+            for marker in (
+                "actor mismatch did not occur",
+                "no actor mismatch",
+                "without actor mismatch",
+                "before git landing",
+                "git landing did not complete",
+                "git landing failed",
+            )
+        )
+        if (
+            landing_succeeded
+            and finalization_failed
+            and deliberate_actor_mismatch
+            and after_mutation
+            and not contradiction
+        ):
+            return {
+                "event_id": event.get("event_id"),
+                "event_type": event.get("type"),
+                "event_actor": event.get("actor"),
+                "status": payload.get("status"),
+                "summary": summary,
+            }
+    return None
+
+
+def reconcile_task_landing(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    attempt_id: str,
+    landed_commit: str,
+    actor: str,
+    apply: bool = False,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Prove and optionally reconcile a canonical Git landing into runtime state."""
+    _require_workset_and_task(profile, workset_id=workset_id, task_id=task_id)
+    runtime_state = load_runtime_state(profile.paths)
+    attempt = find_task_attempt(runtime_state, workset_id, attempt_id)
+    if attempt is None:
+        raise BacklogError(f"Unknown attempt {attempt_id!r} in workset {workset_id!r}")
+    if attempt.task_id != task_id:
+        raise BacklogError(f"Attempt {attempt_id!r} does not belong to task {task_id!r}")
+    latest_attempt = latest_task_attempt(runtime_state, workset_id, task_id)
+    if latest_attempt is None or latest_attempt.attempt_id != attempt_id:
+        latest_id = latest_attempt.attempt_id if latest_attempt is not None else "unknown"
+        raise BacklogError(
+            f"Attempt {attempt_id!r} is not the latest attempt for task {task_id!r}; latest is {latest_id!r}"
+        )
+    if task_id in task_claim_index(runtime_state, workset_id):
+        raise BacklogError(f"Task {task_id!r} has an active claim and cannot be reconciled")
+    if attempt.ended_at is None:
+        raise BacklogError(f"Attempt {attempt_id!r} is not terminal")
+    if attempt.status == ATTEMPT_STATUS_SUCCESS:
+        if str(attempt.landed_commit or "").strip().lower() != str(landed_commit).strip().lower():
+            raise BacklogError(f"Attempt {attempt_id!r} is already successful with a different landed commit")
+    elif attempt.status not in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}:
+        raise BacklogError(
+            f"Attempt {attempt_id!r} status {attempt.status!r} is not failed or blocked"
+        )
+    elif attempt.landed_commit:
+        raise BacklogError(
+            f"Attempt {attempt_id!r} already records landed commit {attempt.landed_commit!r}"
+        )
+    if not attempt.target_branch:
+        raise BacklogError(f"Attempt {attempt_id!r} is missing its target branch")
+
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    resolved_landed_commit = _resolve_commit(primary_root, landed_commit)
+    if resolved_landed_commit is None:
+        raise WorktreeError(f"landed commit {landed_commit!r} does not resolve to a commit")
+    resolved_target_commit = _resolve_commit(primary_root, attempt.target_branch)
+    if resolved_target_commit is None:
+        raise WorktreeError(f"target branch {attempt.target_branch!r} does not resolve to a commit")
+    reachable = _run_git_no_check(
+        primary_root,
+        "merge-base",
+        "--is-ancestor",
+        resolved_landed_commit,
+        resolved_target_commit,
+    )
+    if reachable.returncode != 0:
+        raise WorktreeError(
+            f"landed commit {resolved_landed_commit[:12]} is not reachable from {attempt.target_branch}"
+        )
+    landed_parent_row = _run_git(primary_root, "rev-list", "--parents", "-n", "1", resolved_landed_commit)
+    landed_parts = landed_parent_row.split()
+    if len(landed_parts) != 2:
+        raise WorktreeError(
+            f"landed commit {resolved_landed_commit[:12]} must have exactly one parent for reconciliation"
+        )
+    landed_parent_commit = landed_parts[1]
+
+    trailers = _canonical_trailer_values(primary_root, resolved_landed_commit)
+    expected_trailers = {
+        "Blackdog-Workset": workset_id,
+        "Blackdog-Task": task_id,
+        "Blackdog-Attempt": attempt_id,
+        "Blackdog-Status": ATTEMPT_STATUS_SUCCESS,
+        "Blackdog-Target-Branch": attempt.target_branch,
+    }
+    for key, expected in expected_trailers.items():
+        _require_exact_canonical_trailer(trailers, key=key, expected=expected)
+    commit_actor_values = trailers.get("Blackdog-Actor", [])
+    if len(commit_actor_values) != 1 or not commit_actor_values[0]:
+        raise WorktreeError(
+            "landed commit canonical trailer Blackdog-Actor must occur exactly once with a nonempty value"
+        )
+    commit_actor = commit_actor_values[0]
+    actor_matches_attempt = commit_actor == attempt.actor
+    actor_mismatch_evidence = None
+    if not actor_matches_attempt:
+        actor_mismatch_evidence = _actor_mismatch_finalization_evidence(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            attempt_actor=attempt.actor,
+        )
+        if actor_mismatch_evidence is None:
+            raise WorktreeError(
+                f"landed commit actor {commit_actor!r} does not match attempt actor {attempt.actor!r}, "
+                "and the terminal attempt history does not prove a post-Git actor-ownership finalization failure"
+            )
+
+    changed_paths = tuple(
+        sorted(
+            line.strip()
+            for line in _run_git(
+                primary_root,
+                "diff",
+                "--name-only",
+                landed_parent_commit,
+                resolved_landed_commit,
+            ).splitlines()
+            if line.strip()
+        )
+    )
+    trailer_changed_paths = tuple(sorted(trailers.get("Blackdog-Changed-Path", [])))
+    if trailer_changed_paths != changed_paths:
+        raise WorktreeError(
+            "landed commit Blackdog-Changed-Path trailers do not match the commit diff: "
+            f"trailers={list(trailer_changed_paths)!r}, diff={list(changed_paths)!r}"
+        )
+
+    resolved_source_commit = _resolve_commit(primary_root, attempt.commit)
+    source_patch_equivalent: bool | None = None
+    if resolved_source_commit is not None:
+        resolved_source_base = _resolve_commit(primary_root, attempt.start_commit)
+        if resolved_source_base is None:
+            raise WorktreeError(
+                f"recorded source commit {resolved_source_commit[:12]} resolves, but attempt start commit "
+                f"{attempt.start_commit!r} does not; patch equivalence cannot be proven"
+            )
+        source_patch_id = _stable_diff_patch_id(primary_root, resolved_source_base, resolved_source_commit)
+        landed_patch_id = _stable_diff_patch_id(primary_root, landed_parent_commit, resolved_landed_commit)
+        if source_patch_id != landed_patch_id:
+            raise WorktreeError(
+                f"recorded source commit {resolved_source_commit[:12]} is not patch-equivalent to "
+                f"landed commit {resolved_landed_commit[:12]}"
+            )
+        source_patch_equivalent = True
+
+    reconciliation_id = landing_reconciliation_id(
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        landed_commit=resolved_landed_commit,
+    )
+    proof = {
+        "target_branch": attempt.target_branch,
+        "target_commit": resolved_target_commit,
+        "landed_parent_commit": landed_parent_commit,
+        "reachable_from_target": True,
+        "canonical_trailers": {**expected_trailers, "Blackdog-Actor": commit_actor},
+        "commit_actor": commit_actor,
+        "attempt_actor": attempt.actor,
+        "actor_matches_attempt": actor_matches_attempt,
+        "actor_mismatch_evidence": actor_mismatch_evidence,
+        "changed_paths": list(changed_paths),
+        "changed_paths_match": True,
+        "source_commit": resolved_source_commit,
+        "source_start_commit": _resolve_commit(primary_root, attempt.start_commit),
+        "source_patch_equivalent": source_patch_equivalent,
+    }
+    payload: dict[str, Any] = {
+        "reconciliation_id": reconciliation_id,
+        "workset_id": workset_id,
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "attempt_actor": attempt.actor,
+        "operator_actor": actor,
+        "commit_actor": commit_actor,
+        "previous_status": attempt.status,
+        "status": "ready" if attempt.status != ATTEMPT_STATUS_SUCCESS else "already_reconciled",
+        "landed_commit": resolved_landed_commit,
+        "apply": apply,
+        "would_change_runtime": attempt.status != ATTEMPT_STATUS_SUCCESS,
+        "proof": proof,
+    }
+    if not apply:
+        return payload
+
+    correction = reconcile_landed_attempt(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        landed_commit=resolved_landed_commit,
+        actor=actor,
+        changed_paths=changed_paths,
+        reason=reason,
+        proof=proof,
+    )
+    payload.update(correction)
+    payload["apply"] = True
+    payload["status"] = ATTEMPT_STATUS_SUCCESS
+    payload["would_change_runtime"] = False
+    return payload
+
+
+def render_landing_reconciliation_text(payload: dict[str, Any]) -> str:
+    proof = payload["proof"]
+    action = "applied" if payload.get("apply") else "dry-run ready"
+    lines = [
+        f"Landing reconciliation: {action}",
+        f"Task: {payload['workset_id']}/{payload['task_id']} attempt={payload['attempt_id']}",
+        f"Commit: {payload['landed_commit']} target={proof['target_branch']}",
+        f"Changed paths: {len(proof['changed_paths'])}",
+    ]
+    if payload.get("apply"):
+        lines.append(
+            f"Runtime changed: {'yes' if payload.get('runtime_changed') else 'no'} | "
+            f"Event appended: {'yes' if payload.get('event_appended') else 'no'}"
+        )
+    else:
+        lines.append("No runtime, event, worktree, branch, or commit state was changed.")
+    return "\n".join(lines) + "\n"
 
 
 def land_task_worktree(

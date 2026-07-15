@@ -119,6 +119,10 @@ _RELATIONSHIP_ORDER = {
     RELATIONSHIP_SAME_SESSION: 5,
 }
 
+_ATTEMPT_WINDOW_ENDED_OR_STARTED = "ended_at_or_started_at"
+_ATTEMPT_WINDOW_STARTED = "started_at"
+_ATTEMPT_WINDOW_ANCHORS = frozenset({_ATTEMPT_WINDOW_ENDED_OR_STARTED, _ATTEMPT_WINDOW_STARTED})
+
 _ENVIRONMENT_ISSUE_CLASSES = (
     "missing_container_runtime",
     "missing_venv",
@@ -590,10 +594,11 @@ def build_codex_coverage(
     since: str | None = None,
     until: str | None = None,
     codex_turns: Iterable[CodexTurn] | None = None,
+    include_environment_evidence: bool = True,
+    attempt_window_anchor: str = _ATTEMPT_WINDOW_ENDED_OR_STARTED,
 ) -> dict[str, Any]:
-    turns = _project_turns(profile, since=since, until=until, codex_turns=codex_turns)
-    hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
-    turn_classifications = _hook_turn_classifications_by_turn(hook_stamps)
+    if attempt_window_anchor not in _ATTEMPT_WINDOW_ANCHORS:
+        raise CodexSessionError(f"unsupported attempt window anchor: {attempt_window_anchor!r}")
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     upper = _parse_until(until)
@@ -601,8 +606,23 @@ def build_codex_coverage(
         attempt
         for workset in model.worksets
         for attempt in workset.attempts
-        if _attempt_in_bounds(attempt, cutoff=cutoff, upper=upper)
+        if _attempt_in_bounds(
+            attempt,
+            cutoff=cutoff,
+            upper=upper,
+            anchor=attempt_window_anchor,
+        )
     )
+    turns, exact_reference_resolution_counts = _project_turns_with_exact_attempt_refs(
+        profile,
+        attempts,
+        since=since,
+        until=until,
+        codex_turns=codex_turns,
+        include_environment_evidence=include_environment_evidence,
+    )
+    hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
+    turn_classifications = _hook_turn_classifications_by_turn(hook_stamps)
     relationships = _relate_turns_to_attempts(turns, attempts, hook_stamps=hook_stamps)
     linked = _strong_link_attempt_ids(relationships)
     relationships_by_attempt = _relationships_by_attempt(relationships, turns)
@@ -744,6 +764,7 @@ def build_codex_coverage(
         },
         "by_classification": by_classification,
         "turn_classification_counts": _turn_classification_counts(turn_classifications.values()),
+        "exact_reference_resolution_counts": exact_reference_resolution_counts,
         "relationship_counts": relationship_counts,
         "environment_issue_counts": environment_issue_counts,
         "environment_issue_evidence_counts": environment_issue_evidence_counts,
@@ -769,9 +790,6 @@ def build_codex_history(
     since: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    turns = _project_turns(profile, since=since, until=None)
-    hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
-    turn_classifications = _hook_turn_classifications_by_turn(hook_stamps)
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
     attempts = tuple(
@@ -780,6 +798,15 @@ def build_codex_history(
         for attempt in workset.attempts
         if _attempt_in_window(attempt, cutoff)
     )
+    turns, exact_reference_resolution_counts = _project_turns_with_exact_attempt_refs(
+        profile,
+        attempts,
+        since=since,
+        until=None,
+        include_environment_evidence=True,
+    )
+    hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
+    turn_classifications = _hook_turn_classifications_by_turn(hook_stamps)
     relationships = _relate_turns_to_attempts(turns, attempts, hook_stamps=hook_stamps)
     relationships_by_attempt = _relationships_by_attempt(relationships, turns)
     rows = [
@@ -815,6 +842,7 @@ def build_codex_history(
         "since": since,
         "history_path": str(history_path),
         "written": write,
+        "exact_reference_resolution_counts": exact_reference_resolution_counts,
         "rows": rows,
         "counts": {
             "rows": len(rows),
@@ -1054,12 +1082,22 @@ def _project_turns(
     since: str | None,
     until: str | None,
     codex_turns: Iterable[CodexTurn] | None = None,
+    include_environment_evidence: bool = True,
 ) -> tuple[CodexTurn, ...]:
     roots = _project_roots(profile)
     cutoff = _parse_since(since)
     upper = _parse_until(until)
     turns: list[CodexTurn] = []
-    candidate_turns = codex_turns if codex_turns is not None else collect_codex_turns(since=since, until=until)
+    candidate_turns = (
+        codex_turns
+        if codex_turns is not None
+        else collect_codex_turns(
+            since=since,
+            until=until,
+            cwd_roots=roots,
+            include_environment_evidence=include_environment_evidence,
+        )
+    )
     for turn in candidate_turns:
         if not _cwd_matches(roots, turn.cwd):
             continue
@@ -1072,6 +1110,229 @@ def _project_turns(
             if started is None or started >= upper:
                 continue
         turns.append(turn)
+    return _sort_dedupe_turns(turns)
+
+
+def _project_turns_with_exact_attempt_refs(
+    profile: RepoProfile,
+    attempts: tuple[AttemptView, ...],
+    *,
+    since: str | None,
+    until: str | None,
+    codex_turns: Iterable[CodexTurn] | None = None,
+    include_environment_evidence: bool,
+) -> tuple[tuple[CodexTurn, ...], dict[str, int]]:
+    project_turns = _project_turns(
+        profile,
+        since=since,
+        until=until,
+        codex_turns=codex_turns,
+        include_environment_evidence=include_environment_evidence,
+    )
+    exact_turns, resolution_counts = _resolve_exact_attempt_turns(
+        attempts,
+        since=since,
+        until=until,
+        include_environment_evidence=include_environment_evidence,
+    )
+    return _sort_dedupe_turns((*project_turns, *exact_turns)), resolution_counts
+
+
+def _resolve_exact_attempt_turns(
+    attempts: tuple[AttemptView, ...],
+    *,
+    since: str | None,
+    until: str | None,
+    include_environment_evidence: bool,
+) -> tuple[tuple[CodexTurn, ...], dict[str, int]]:
+    """Resolve exact attempt references without widening repository cwd scope."""
+
+    home = codex_home()
+    cutoff = _parse_since(since)
+    upper = _parse_until(until)
+    cache = _load_codex_session_cache()
+    cache_changed = False
+    parsed_sessions: dict[Path, tuple[CodexSession | None, bool]] = {}
+    turns: list[CodexTurn] = []
+    counts: dict[str, int] = {}
+
+    def record(status: str) -> None:
+        counts[status] = counts.get(status, 0) + 1
+
+    for attempt in attempts:
+        ref = attempt.codex_session
+        if ref is None:
+            continue
+        if not ref.thread_id or not ref.session_path or not ref.turn_id:
+            record("incomplete_reference")
+            continue
+        session_candidates = _validated_session_candidates_from_ref(ref.session_path, home)
+        if session_candidates is None:
+            record("path_outside_codex_home")
+            continue
+        existing_candidates = tuple(path for path, _ in session_candidates if path.is_file())
+        if not existing_candidates:
+            record("session_missing")
+            continue
+
+        resolved_turn: CodexTurn | None = None
+        used_archived_copy = False
+        saw_unreadable = False
+        saw_thread_mismatch = False
+        saw_matching_thread = False
+        for candidate, archived_copy in session_candidates:
+            if not candidate.is_file():
+                continue
+            if candidate in parsed_sessions:
+                candidate_session, errored = parsed_sessions[candidate]
+            else:
+                candidate_session, changed, errored = _read_cached_codex_session(
+                    candidate,
+                    home=home,
+                    cache=cache,
+                    include_environment_evidence=include_environment_evidence,
+                )
+                parsed_sessions[candidate] = (candidate_session, errored)
+                cache_changed = cache_changed or changed
+            if candidate_session is None:
+                saw_unreadable = saw_unreadable or errored
+                continue
+            if candidate_session.thread_id != ref.thread_id:
+                saw_thread_mismatch = True
+                continue
+            saw_matching_thread = True
+            candidate_turn = next(
+                (item for item in candidate_session.turns if item.turn_id == ref.turn_id),
+                None,
+            )
+            if candidate_turn is None:
+                continue
+            resolved_turn = candidate_turn
+            used_archived_copy = archived_copy
+            break
+        if resolved_turn is None:
+            if saw_matching_thread:
+                record("turn_missing")
+            elif saw_thread_mismatch:
+                record("thread_mismatch")
+            elif saw_unreadable:
+                record("session_unreadable")
+            else:
+                record("session_missing")
+            continue
+        if not _turn_in_bounds(resolved_turn, cutoff=cutoff, upper=upper):
+            record("turn_outside_window")
+            continue
+        turns.append(resolved_turn)
+        record("resolved_archived_copy" if used_archived_copy else "resolved")
+
+    if cache_changed:
+        _write_codex_session_cache(cache)
+    return _sort_dedupe_turns(turns), dict(sorted(counts.items()))
+
+
+def _validated_session_candidates_from_ref(
+    session_path: str,
+    home: Path,
+) -> tuple[tuple[Path, bool], ...] | None:
+    candidate = Path(session_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = home / candidate
+    candidate = candidate.resolve()
+    roots = {
+        "sessions": (home / "sessions").resolve(),
+        "archived_sessions": (home / "archived_sessions").resolve(),
+    }
+    matched_root: str | None = None
+    relative: Path | None = None
+    for name, root in roots.items():
+        try:
+            relative = candidate.relative_to(root)
+            matched_root = name
+            break
+        except ValueError:
+            continue
+    if matched_root is None or relative is None:
+        return None
+    alternate_name = "archived_sessions" if matched_root == "sessions" else "sessions"
+    alternate = (roots[alternate_name] / relative).resolve()
+    candidates: list[tuple[Path, bool]] = [(candidate, False)]
+    try:
+        alternate.relative_to(roots[alternate_name])
+    except ValueError:
+        alternate = candidate
+    if alternate != candidate:
+        candidates.append((alternate, True))
+    if matched_root == "sessions":
+        flattened_archive = (roots["archived_sessions"] / candidate.name).resolve()
+        try:
+            flattened_archive.relative_to(roots["archived_sessions"])
+        except ValueError:
+            flattened_archive = candidate
+        if flattened_archive != candidate and all(path != flattened_archive for path, _ in candidates):
+            candidates.append((flattened_archive, True))
+    return tuple(candidates)
+
+
+def _read_cached_codex_session(
+    path: Path,
+    *,
+    home: Path,
+    cache: dict[str, dict[str, Any]],
+    include_environment_evidence: bool,
+) -> tuple[CodexSession | None, bool, bool]:
+    session_path = _relative_session_path(path, home)
+    cache_key = _codex_session_cache_key(home, session_path)
+    stat = _session_file_stat(path)
+    cached = cache.get(cache_key)
+    if stat is not None and _cached_session_valid(
+        cached,
+        stat,
+        include_environment_evidence=include_environment_evidence,
+    ):
+        return _codex_session_from_cache_payload(cached.get("session")), False, False
+    try:
+        session = read_codex_session(
+            path,
+            home=home,
+            include_environment_evidence=include_environment_evidence,
+        )
+    except CodexSessionError:
+        return None, False, True
+    if session is None or stat is None:
+        return session, False, False
+    cache[cache_key] = {
+        "schema_version": CODEX_SESSION_CACHE_SCHEMA_VERSION,
+        "codex_home": str(home),
+        "session_path": session_path,
+        "size": stat["size"],
+        "mtime_ns": stat["mtime_ns"],
+        "parsed_at": now_iso(),
+        "environment_scan": include_environment_evidence,
+        "session": _codex_session_cache_payload(session),
+    }
+    return session, True, False
+
+
+def _turn_in_bounds(
+    turn: CodexTurn,
+    *,
+    cutoff: datetime | None,
+    upper: datetime | None,
+) -> bool:
+    started = parse_iso(turn.started_at)
+    if started is None:
+        return cutoff is None and upper is None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if cutoff is not None and started < cutoff.astimezone(started.tzinfo):
+        return False
+    if upper is not None and started >= upper.astimezone(started.tzinfo):
+        return False
+    return True
+
+
+def _sort_dedupe_turns(turns: Iterable[CodexTurn]) -> tuple[CodexTurn, ...]:
     return tuple(
         sorted(
             _dedupe_turns(turns),
@@ -2155,23 +2416,29 @@ def _attempt_in_window(attempt: AttemptView, cutoff: datetime | None) -> bool:
     return _attempt_in_bounds(attempt, cutoff=cutoff, upper=None)
 
 
-def _attempt_in_bounds(attempt: AttemptView, *, cutoff: datetime | None, upper: datetime | None) -> bool:
+def _attempt_in_bounds(
+    attempt: AttemptView,
+    *,
+    cutoff: datetime | None,
+    upper: datetime | None,
+    anchor: str = _ATTEMPT_WINDOW_ENDED_OR_STARTED,
+) -> bool:
     if cutoff is None:
         lower_ok = True
     else:
         lower_ok = False
     started = parse_iso(attempt.started_at)
     ended = parse_iso(attempt.ended_at)
-    anchor = ended or started
-    if anchor is None:
+    anchor_time = started if anchor == _ATTEMPT_WINDOW_STARTED else ended or started
+    if anchor_time is None:
         return False
-    if anchor.tzinfo is None:
-        anchor = anchor.replace(tzinfo=timezone.utc)
+    if anchor_time.tzinfo is None:
+        anchor_time = anchor_time.replace(tzinfo=timezone.utc)
     if cutoff is not None:
-        lower_ok = anchor >= cutoff.astimezone(anchor.tzinfo or timezone.utc)
+        lower_ok = anchor_time >= cutoff.astimezone(anchor_time.tzinfo or timezone.utc)
     if not lower_ok:
         return False
-    if upper is not None and anchor >= upper.astimezone(anchor.tzinfo or timezone.utc):
+    if upper is not None and anchor_time >= upper.astimezone(anchor_time.tzinfo or timezone.utc):
         return False
     return True
 

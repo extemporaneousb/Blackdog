@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 import json
@@ -38,13 +39,17 @@ from .state import (
     atomic_write_text,
     coerce_task_runtime_records,
     default_runtime_state,
+    exclusive_file_lock,
     find_task_attempt,
     is_legacy_managed_execution_model,
+    latest_task_attempt,
+    load_events,
     merge_workset_runtime,
     mutate_runtime_state,
     now_iso,
     parse_iso,
     task_claim_index,
+    task_state_index,
     workset_claim,
 )
 
@@ -832,6 +837,214 @@ def finish_task(
     return finished_attempt
 
 
+def landing_reconciliation_id(
+    *,
+    workset_id: str,
+    task_id: str,
+    attempt_id: str,
+    landed_commit: str,
+) -> str:
+    """Return the stable identity for one landing correction.
+
+    The identity deliberately excludes operator-supplied prose and timestamps so a
+    retry after the runtime write but before the event append targets the same
+    correction.
+    """
+    parts = (
+        "blackdog.task.landing.reconciliation/v1",
+        str(workset_id).strip(),
+        str(task_id).strip(),
+        str(attempt_id).strip(),
+        str(landed_commit).strip().lower(),
+    )
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def reconcile_landed_attempt(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    attempt_id: str,
+    landed_commit: str,
+    actor: str,
+    changed_paths: tuple[str, ...],
+    reason: str | None = None,
+    proof: Mapping[str, Any] | None = None,
+    planning_store: PlanningStore | None = None,
+    runtime_store: RuntimeStore | None = None,
+) -> dict[str, Any]:
+    """Correct a terminal attempt after product-layer Git landing proof.
+
+    Runtime is the source of truth and is written before the append-only event.
+    The deterministic reconciliation id makes retries repair a missing event
+    without changing the corrected runtime a second time.
+    """
+    normalized_landed_commit = str(landed_commit).strip().lower()
+    if not normalized_landed_commit:
+        raise BacklogError("landed_commit is required for landing reconciliation")
+    planning_state = load_planning_state(profile.paths, planning_store)
+    workset, _ = _require_workset_and_task(planning_state, workset_id=workset_id, task_id=task_id)
+    reconciliation_id = landing_reconciliation_id(
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        landed_commit=normalized_landed_commit,
+    )
+    with exclusive_file_lock(profile.paths.events_file):
+        events_before = load_events(profile.paths.events_file)
+    matching_events = [
+        event
+        for event in events_before
+        if event.get("type") == "task.landing.reconciled"
+        and isinstance(event.get("payload"), Mapping)
+        and event["payload"].get("reconciliation_id") == reconciliation_id
+    ]
+    historical_terminal_status = next(
+        (
+            str(event["payload"].get("status"))
+            for event in reversed(events_before)
+            if event.get("type") in {"task.finish", "worktree.close"}
+            and isinstance(event.get("payload"), Mapping)
+            and event["payload"].get("workset_id") == workset_id
+            and event["payload"].get("task_id") == task_id
+            and event["payload"].get("attempt_id") == attempt_id
+            and event["payload"].get("status") in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}
+        ),
+        None,
+    )
+    reconciled_at = now_iso()
+    previous_status: str | None = None
+    corrected_attempt: TaskAttemptRecord | None = None
+    runtime_changed = False
+
+    def mutate(runtime_state):
+        nonlocal previous_status, corrected_attempt, runtime_changed
+        existing_attempt = find_task_attempt(runtime_state, workset_id, attempt_id)
+        if existing_attempt is None:
+            raise BacklogError(f"Unknown attempt {attempt_id!r} in workset {workset_id!r}")
+        if existing_attempt.task_id != task_id:
+            raise BacklogError(f"Attempt {attempt_id!r} does not belong to task {task_id!r}")
+        latest_attempt = latest_task_attempt(runtime_state, workset_id, task_id)
+        if latest_attempt is None or latest_attempt.attempt_id != attempt_id:
+            later_id = latest_attempt.attempt_id if latest_attempt is not None else "unknown"
+            raise BacklogError(
+                f"Attempt {attempt_id!r} is not the latest attempt for task {task_id!r}; latest is {later_id!r}"
+            )
+        if task_id in task_claim_index(runtime_state, workset_id):
+            raise BacklogError(f"Task {task_id!r} has an active claim and cannot be reconciled")
+        if existing_attempt.ended_at is None:
+            raise BacklogError(f"Attempt {attempt_id!r} is not terminal")
+
+        if existing_attempt.status == ATTEMPT_STATUS_SUCCESS:
+            if str(existing_attempt.landed_commit or "").strip().lower() != normalized_landed_commit:
+                raise BacklogError(
+                    f"Attempt {attempt_id!r} is already successful with a different landed commit"
+                )
+            if tuple(existing_attempt.changed_paths) != tuple(changed_paths):
+                raise BacklogError(
+                    f"Attempt {attempt_id!r} is already successful with different changed paths"
+                )
+            if not matching_events and historical_terminal_status is None:
+                raise BacklogError(
+                    f"Attempt {attempt_id!r} is already successful and has no landing-reconciliation retry evidence"
+                )
+            previous_status = (
+                str(matching_events[0]["payload"].get("previous_status"))
+                if matching_events
+                else historical_terminal_status
+            )
+            corrected_attempt = existing_attempt
+            return runtime_state
+        if existing_attempt.status not in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}:
+            raise BacklogError(
+                f"Attempt {attempt_id!r} status {existing_attempt.status!r} is not failed or blocked"
+            )
+        previous_status = existing_attempt.status
+        if existing_attempt.landed_commit:
+            raise BacklogError(
+                f"Attempt {attempt_id!r} already records landed commit {existing_attempt.landed_commit!r}"
+            )
+
+        corrected_attempt = replace(
+            existing_attempt,
+            status=ATTEMPT_STATUS_SUCCESS,
+            landed_commit=normalized_landed_commit,
+            changed_paths=tuple(changed_paths),
+            failure_class=None,
+            recovery_action=None,
+            prompt_issue=False,
+            operator_issue=False,
+        )
+        current_task_state = task_state_index(runtime_state, workset_id).get(task_id)
+        corrected_task_state = TaskRuntimeRecord(
+            task_id=task_id,
+            status=TASK_STATUS_DONE,
+            updated_at=reconciled_at,
+            note=current_task_state.note if current_task_state is not None else existing_attempt.summary,
+            failure_class=None,
+            recovery_action=None,
+            prompt_issue=False,
+            operator_issue=False,
+        )
+        runtime_changed = True
+        return merge_workset_runtime(
+            runtime_state,
+            workset_id=workset_id,
+            task_ids={item.task_id for item in workset.tasks},
+            incoming_records=(corrected_task_state,),
+            incoming_attempts=(corrected_attempt,),
+        )
+
+    mutate_runtime_state(profile.paths, mutate, store=runtime_store)
+    if corrected_attempt is None or previous_status is None:
+        raise BacklogError("landing reconciliation did not resolve the attempt")
+
+    event_appended = False
+    with exclusive_file_lock(profile.paths.events_file):
+        matching_events = [
+            event
+            for event in load_events(profile.paths.events_file)
+            if event.get("type") == "task.landing.reconciled"
+            and isinstance(event.get("payload"), Mapping)
+            and event["payload"].get("reconciliation_id") == reconciliation_id
+        ]
+        if not matching_events:
+            append_event(
+                profile.paths.events_file,
+                event_type="task.landing.reconciled",
+                actor=actor,
+                payload={
+                    "reconciliation_id": reconciliation_id,
+                    "workset_id": workset_id,
+                    "task_id": task_id,
+                    "attempt_id": attempt_id,
+                    "attempt_actor": corrected_attempt.actor,
+                    "previous_status": previous_status,
+                    "status": ATTEMPT_STATUS_SUCCESS,
+                    "landed_commit": normalized_landed_commit,
+                    "reconciled_at": reconciled_at,
+                    "reason": str(reason or "").strip() or None,
+                    "proof": dict(proof or {}),
+                },
+            )
+            event_appended = True
+
+    return {
+        "reconciliation_id": reconciliation_id,
+        "workset_id": workset_id,
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "attempt_actor": corrected_attempt.actor,
+        "previous_status": previous_status,
+        "status": corrected_attempt.status,
+        "landed_commit": corrected_attempt.landed_commit,
+        "runtime_changed": runtime_changed,
+        "event_appended": event_appended,
+        "event_repaired": event_appended and not runtime_changed,
+    }
+
+
 def set_task_runtime_status(
     profile: RepoProfile,
     *,
@@ -962,10 +1175,12 @@ __all__ = [
     "find_workset",
     "finish_task",
     "load_planning_state",
+    "landing_reconciliation_id",
     "next_ready_tasks",
     "normalize_failure_class",
     "planning_state_to_payload",
     "save_planning_state",
+    "reconcile_landed_attempt",
     "set_task_runtime_status",
     "start_task",
     "task_dependencies_ready",

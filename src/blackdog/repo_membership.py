@@ -403,10 +403,10 @@ def unarchive_repo(project_root: Path) -> RepoStatusResult:
     return set_repo_status(project_root, status=PROJECT_STATUS_ACTIVE, action="unarchive")
 
 
-def _discover_profile_dirs(root: Path) -> tuple[Path, ...]:
+def discover_profile_dirs(root: Path) -> tuple[Path, ...]:
     candidate = root.resolve()
     if not candidate.exists():
-        raise RepoLifecycleError(f"repo table root does not exist: {candidate}")
+        raise RepoLifecycleError(f"discovery root does not exist: {candidate}")
     if candidate.is_file():
         return (candidate.parent,) if candidate.name == PROFILE_FILE_NAME else ()
     discovered: list[Path] = []
@@ -872,7 +872,7 @@ def build_repo_table(
         raise RepoLifecycleError("repo table requires at least one --root")
     discovered: list[Path] = []
     for root in roots:
-        discovered.extend(_discover_profile_dirs(root))
+        discovered.extend(discover_profile_dirs(root))
 
     rows: list[dict[str, object]] = []
     seen_roots: set[Path] = set()
@@ -1189,6 +1189,7 @@ __all__ = [
     "attempt_cleanup_health_counts",
     "bind_repo",
     "build_repo_table",
+    "discover_profile_dirs",
     "render_repo_status_text",
     "render_repo_table_text",
     "render_repo_unbind_text",

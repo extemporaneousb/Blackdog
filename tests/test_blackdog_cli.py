@@ -19,6 +19,7 @@ from blackdog_core.codex_sessions import codex_task_context_path
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
     ValidationRecord,
+    append_event,
     create_prompt_receipt,
     load_events,
     load_runtime_state,
@@ -927,6 +928,315 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         self.assertFalse(worktree_path.exists())
+
+    def test_task_reconcile_landing_is_dry_run_first_and_allows_proven_actor_finalize_mismatch(self) -> None:
+        workset_id = "reconcile-landing"
+        task_id = "REC-1"
+        exit_code, _, stderr = self.put_workset(
+            {
+                "id": workset_id,
+                "title": "Reconcile landing",
+                "branch_intent": {"target_branch": "main", "integration_branch": "main"},
+                "tasks": [{"id": task_id, "title": "Repair ledger", "intent": "reconcile a landed commit"}],
+            }
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        profile = load_profile(self.root)
+        attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="AGENT",
+            target_branch="main",
+            prompt_receipt=create_prompt_receipt("Repair the historical ledger.", source="unit-test"),
+        )
+        (self.root / "reconciled.txt").write_text("landed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "reconciled.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commit_message = (
+            f"blackdog({workset_id}/{task_id}): Repair ledger\n\n"
+            "The Git landing completed before runtime finalization failed.\n\n"
+            f"Blackdog-Workset: {workset_id}\n"
+            f"Blackdog-Task: {task_id}\n"
+            f"Blackdog-Attempt: {attempt.attempt_id}\n"
+            "Blackdog-Actor: CODEX\n"
+            "Blackdog-Status: success\n"
+            "Blackdog-Target-Branch: main\n"
+            "Blackdog-Changed-Path: reconciled.txt\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "--quiet", "-F", "-"],
+            input=commit_message,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        landed_commit = self.git_output("rev-parse", "HEAD")
+        finish_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt.attempt_id,
+            actor="AGENT",
+            status="failed",
+            summary=(
+                "Git landing completed, but runtime finalization rejected the deliberately mismatched actor "
+                "after mutation."
+            ),
+            validations=(ValidationRecord(name="unit", status="passed"),),
+            failure_class="unknown",
+            recovery_action="inspect",
+        )
+        runtime_before = profile.paths.runtime_file.read_bytes()
+        events_before = profile.paths.events_file.read_bytes()
+        head_before = self.git_output("rev-parse", "HEAD")
+        arguments = (
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--attempt",
+            attempt.attempt_id,
+            "--landed-commit",
+            landed_commit,
+            "--actor",
+            "ledger-auditor",
+            "--json",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(*arguments)
+
+        self.assertEqual(exit_code, 0, stderr)
+        dry_run = json.loads(stdout)["landing_reconciliation"]
+        self.assertFalse(dry_run["apply"])
+        self.assertEqual(dry_run["status"], "ready")
+        self.assertEqual(dry_run["commit_actor"], "CODEX")
+        self.assertEqual(dry_run["operator_actor"], "ledger-auditor")
+        self.assertFalse(dry_run["proof"]["actor_matches_attempt"])
+        self.assertEqual(dry_run["proof"]["actor_mismatch_evidence"]["event_type"], "task.finish")
+        self.assertEqual(dry_run["proof"]["changed_paths"], ["reconciled.txt"])
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
+        self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
+        self.assertEqual(self.git_output("rev-parse", "HEAD"), head_before)
+
+        exit_code, stdout, stderr = self.run_cli(*arguments[:-1], "--reason", "repair post-Git finalization", "--apply", "--json")
+
+        self.assertEqual(exit_code, 0, stderr)
+        applied = json.loads(stdout)["landing_reconciliation"]
+        self.assertEqual(applied["status"], "success")
+        self.assertTrue(applied["runtime_changed"])
+        self.assertTrue(applied["event_appended"])
+        current = load_runtime_state(profile.paths)
+        corrected = current.worksets[0].attempts[0]
+        self.assertEqual(corrected.status, "success")
+        self.assertEqual(corrected.actor, "AGENT")
+        self.assertEqual(corrected.landed_commit, landed_commit)
+        self.assertEqual(corrected.changed_paths, ("reconciled.txt",))
+        self.assertEqual(current.worksets[0].task_states[0].status, "done")
+        reconciliation_events = [
+            event for event in load_events(profile.paths.events_file) if event["type"] == "task.landing.reconciled"
+        ]
+        self.assertEqual(len(reconciliation_events), 1)
+        self.assertEqual(reconciliation_events[0]["actor"], "ledger-auditor")
+        self.assertEqual(reconciliation_events[0]["payload"]["previous_status"], "failed")
+
+        exit_code, stdout, stderr = self.run_cli(*arguments[:-1], "--apply", "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        retried = json.loads(stdout)["landing_reconciliation"]
+        self.assertFalse(retried["runtime_changed"])
+        self.assertFalse(retried["event_appended"])
+        self.assertEqual(
+            len([event for event in load_events(profile.paths.events_file) if event["type"] == "task.landing.reconciled"]),
+            1,
+        )
+
+    def test_task_reconcile_landing_rejects_actor_mismatch_without_terminal_evidence(self) -> None:
+        workset_id = "reject-reconcile"
+        task_id = "REC-1"
+        exit_code, _, stderr = self.put_workset(
+            {
+                "id": workset_id,
+                "title": "Reject reconcile",
+                "branch_intent": {"target_branch": "main", "integration_branch": "main"},
+                "tasks": [{"id": task_id, "title": "Reject mismatch", "intent": "reject weak proof"}],
+            }
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        profile = load_profile(self.root)
+        attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="AGENT",
+            target_branch="main",
+            prompt_receipt=create_prompt_receipt("Reject weak proof.", source="unit-test"),
+        )
+        (self.root / "reject.txt").write_text("reject\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "reject.txt"], check=True, capture_output=True, text=True)
+        message = (
+            f"blackdog({workset_id}/{task_id}): Reject mismatch\n\nproof\n\n"
+            f"Blackdog-Workset: {workset_id}\nBlackdog-Task: {task_id}\n"
+            f"Blackdog-Attempt: {attempt.attempt_id}\nBlackdog-Actor: CODEX\n"
+            "Blackdog-Status: success\nBlackdog-Target-Branch: main\n"
+            "Blackdog-Changed-Path: reject.txt\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "--quiet", "-F", "-"],
+            input=message,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        landed_commit = self.git_output("rev-parse", "HEAD")
+        finish_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt.attempt_id,
+            actor="AGENT",
+            status="failed",
+            summary="Actor mismatch did not occur; failure before Git landing and runtime finalization.",
+        )
+        append_event(
+            profile.paths.events_file,
+            event_type="task.finish",
+            actor="INTRUDER",
+            payload={
+                "workset_id": workset_id,
+                "task_id": task_id,
+                "attempt_id": attempt.attempt_id,
+                "status": "failed",
+                "summary": (
+                    "Git landing completed, but runtime finalization rejected the deliberately mismatched actor "
+                    "after mutation."
+                ),
+            },
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--attempt",
+            attempt.attempt_id,
+            "--landed-commit",
+            landed_commit,
+            "--actor",
+            "auditor",
+            "--json",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("does not prove a post-Git actor-ownership finalization failure", stderr)
+        self.assertEqual(load_runtime_state(profile.paths).worksets[0].attempts[0].status, "failed")
+
+    def test_task_reconcile_landing_rejects_merge_when_source_commit_is_absent(self) -> None:
+        workset_id = "reject-merge-reconcile"
+        task_id = "REC-1"
+        exit_code, _, stderr = self.put_workset(
+            {
+                "id": workset_id,
+                "title": "Reject merge reconcile",
+                "branch_intent": {"target_branch": "main", "integration_branch": "main"},
+                "tasks": [{"id": task_id, "title": "Reject merge", "intent": "require a canonical commit"}],
+            }
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        profile = load_profile(self.root)
+        attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="AGENT",
+            target_branch="main",
+            prompt_receipt=create_prompt_receipt("Reject a merge landing.", source="unit-test"),
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "checkout", "-q", "-b", "merge-source"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (self.root / "merge.txt").write_text("merge\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "merge.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-q", "-m", "Prepare merge source"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "checkout", "-q", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        message = (
+            f"blackdog({workset_id}/{task_id}): Invalid merge landing\n\nproof\n\n"
+            f"Blackdog-Workset: {workset_id}\nBlackdog-Task: {task_id}\n"
+            f"Blackdog-Attempt: {attempt.attempt_id}\nBlackdog-Actor: AGENT\n"
+            "Blackdog-Status: success\nBlackdog-Target-Branch: main\n"
+            "Blackdog-Changed-Path: merge.txt\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "merge", "--no-ff", "merge-source", "-q", "-m", message],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        landed_commit = self.git_output("rev-parse", "HEAD")
+        finish_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt.attempt_id,
+            actor="AGENT",
+            status="failed",
+            summary="terminal runtime failure",
+        )
+        self.assertIsNone(load_runtime_state(profile.paths).worksets[0].attempts[0].commit)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--attempt",
+            attempt.attempt_id,
+            "--landed-commit",
+            landed_commit,
+            "--actor",
+            "auditor",
+            "--json",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("must have exactly one parent for reconciliation", stderr)
+        self.assertEqual(load_runtime_state(profile.paths).worksets[0].attempts[0].status, "failed")
 
     def test_task_begin_deployment_guard_blocks_before_auto_task_creation(self) -> None:
         self.install_repo_runtime()

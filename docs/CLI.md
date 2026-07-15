@@ -666,6 +666,44 @@ explicit closure data. The final report should name the ownership slice and
 changed files, then point to these recorded closeout fields instead of relying
 only on chat context.
 
+### `blackdog task reconcile-landing`
+
+Prove an already-landed canonical Blackdog commit and optionally correct a
+latest terminal attempt whose Git landing succeeded before runtime
+finalization.
+
+```bash
+blackdog task reconcile-landing \
+  --project-root /path/to/repo \
+  --workset WORKSET \
+  --task TASK \
+  --attempt ATTEMPT \
+  --landed-commit COMMIT \
+  --actor ledger-auditor \
+  --reason "repair post-Git finalization" \
+  --apply
+```
+
+The command is a dry run unless `--apply` is present. All task identities and
+the commit are required; it never infers a latest task from cwd. Before apply,
+Blackdog requires the attempt to be the latest failed or blocked terminal
+attempt for the task, with no active claim, later attempt, or recorded landing.
+The commit must be reachable from the recorded target branch and carry exact
+canonical workset, task, attempt, success-status, target-branch, actor, and
+changed-path evidence. When the recorded source commit still exists, Blackdog
+also requires stable patch equivalence.
+
+`--actor` identifies the operator performing the audit correction; it does not
+replace the attempt actor or the commit actor. A commit/attempt actor mismatch
+is rejected unless the same attempt's existing terminal events explicitly
+record the post-Git actor-ownership finalization failure. Apply changes no Git
+state. It corrects the runtime attempt to success, records the landed commit,
+marks the task done, clears failure flags, preserves existing attempt evidence,
+and appends one idempotent `task.landing.reconciled` event. Existing failure and
+close events are never rewritten or replaced. Re-running the same proven
+correction is safe and repairs a missing reconciliation event if a prior process
+stopped after the runtime write.
+
 ### `blackdog task close`
 
 Close the current task without landing code.
@@ -1148,14 +1186,19 @@ Report task, attempt, and Codex-session metrics directly without composing
 ```bash
 blackdog stats --project-root /Users/bullard/Work/Utter/utter-codex
 blackdog stats --project-root /path/a --project-root /path/b --since 2026-06-01 --until 2026-06-20
+blackdog stats --root /Users/bullard/Work --since 2026-06-01 --json
+blackdog stats --root /path/a --root /path/b --timezone America/Los_Angeles
 blackdog stats --project-root /path/to/repo --by day --timezone America/Los_Angeles --json
 blackdog stats --project-root /path/to/repo --tsv
 ```
 
 Important flags:
 
-- optional repeated `--project-root`; without it, stats uses the user-local
-  registry from `blackdog local-repo`
+- optional repeated `--project-root` for exact repo selection
+- optional repeated `--root` to scan explicitly supplied filesystem roots for
+  `blackdog.toml`; it is mutually exclusive with `--project-root`
+- without either scope flag, stats uses the user-local registry from
+  `blackdog local-repo`
 - optional `--since` and `--until` as ISO timestamps or `YYYY-MM-DD` dates
 - optional `--by day`; day is the current shipped bucket granularity
 - optional `--timezone`, for example `America/Los_Angeles`
@@ -1207,12 +1250,19 @@ Metric definitions:
   turns
 
 Bucket rows are keyed by attempt or Codex turn `started_at` converted to the
-selected timezone. Explicit and registered project roots are deduplicated by
-their resolved Blackdog profile project root. A nested repo with its own
-`blackdog.toml` is counted separately when it is explicitly supplied or
-registered; path aliases for the same repo collapse into one repo row.
+selected timezone. Explicit, discovered, and registered project roots are
+deduplicated by their resolved Blackdog profile project root. Root discovery is
+read-only, does not update the registry, stops below a discovered repo, and
+uses the same generated/worktree-directory exclusions as `repo table`. A nested
+repo with its own `blackdog.toml` is counted separately when it is independently
+in scope; path aliases for the same repo collapse into one repo row.
+
 Stats uses each target repo's project root and git worktree roots to prune
-unrelated Codex session logs before full parsing or cache materialization.
+unrelated Codex session logs before full parsing or cache materialization. An
+attempt's exact thread/session/turn reference may add only that source turn even
+when its session cwd belongs to another repo. Per-repo rows retain those
+relationships, while fleet session, user-turn, tool-call, token, and day-bucket
+metrics deduplicate shared turns by `(thread_id, turn_id)`.
 It also uses a lightweight Codex parse mode that skips environment-issue
 evidence extraction because stats reports aggregate task/attempt/Codex counters,
 not diagnostic evidence excerpts. Use `blackdog codex coverage` or
@@ -1355,14 +1405,22 @@ blackdog codex coverage --project-root /path/to/repo --since 2026-05-01
 blackdog codex coverage --project-root /path/to/repo --json
 ```
 
-The command scans `$CODEX_HOME/sessions`, maps sessions to the repo and its git
-worktrees by cwd, classifies user turns, and relates turns to Blackdog attempts
+The command scans active and archived Codex sessions, maps sessions to the repo
+and its git worktrees by cwd, classifies user turns, and relates turns to Blackdog attempts
 by explicit turn refs, prompt hashes, stored Codex session refs, same-session
 episodes, and active attempt windows. The legacy linked/unlinked counters still
 mean strong launch relationships: explicit turn refs, prompt-hash matches, or a
 safe single-turn session match. Related/unrelated counters include advisory
 same-session and active-window evidence so older multi-turn Codex sessions can
 be analyzed retroactively without rewriting runtime state. It reports:
+
+An attempt with an exact thread, session path, and turn id may add that one
+referenced turn even when the source session cwd belongs to another repo. The
+path must resolve inside the active Codex session roots and the parsed thread
+and turn must match. Session-only, missing, corrupt, escaped, mismatched, and
+out-of-window references remain nonfatal and are counted in
+`exact_reference_resolution_counts`; sibling turns are never imported by this
+overlay.
 
 Implementation-without-Blackdog detection is exposed here as
 `implementation_like_unlinked_turns`: Codex user turns that look like
@@ -1423,7 +1481,8 @@ cleanup and migration bridge; it is not the live source of truth.
 Rows contain prompt hashes, Codex session refs, relationship labels, and bounded
 environment issue evidence, not full prompts or responses. Attempt rows carry
 task/result/git/validation metadata and inherit environment issue classes from
-related Codex turns. Codex-turn rows cover all repo-matched user turns,
+related Codex turns. Codex-turn rows cover all repo-matched user turns plus any
+single exact attempt-referenced foreign-cwd turns,
 including linked Blackdog launches, same-session follow-ups, and analysis-only
 work that never entered WTAM. Every Codex-turn row also exposes a stable
 `turn_classification` key containing the bounded object from a valid matching

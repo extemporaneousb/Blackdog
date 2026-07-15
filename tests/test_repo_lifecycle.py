@@ -9,6 +9,7 @@ import subprocess
 from unittest.mock import patch
 
 from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_relative_path, managed_skill_name
+from blackdog.repo_membership import discover_profile_dirs
 from blackdog.repo_lifecycle import render_repo_skill
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_cli.main import main as blackdog_main
@@ -298,6 +299,17 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         rows = json.loads(stdout)["repo_table"]["rows"]
         self.assertEqual([row["project_name"] for row in rows], ["Outer Repo"])
+
+    def test_profile_discovery_resolves_symlinks_and_skips_worktree_and_nested_profiles(self) -> None:
+        fleet_root = self.root / "fleet"
+        member = self.make_member_repo(fleet_root, "member", project_name="Member")
+        self.make_member_repo(member / "nested", "nested-repo", project_name="Nested Repo")
+        self.make_member_repo(fleet_root / ".worktrees", "hidden-repo", project_name="Hidden Repo")
+        alias = self.root / "member-alias"
+        alias.symlink_to(member, target_is_directory=True)
+
+        self.assertEqual(discover_profile_dirs(fleet_root), (member.resolve(),))
+        self.assertEqual(discover_profile_dirs(alias), (member.resolve(),))
 
     def test_repo_table_excludes_archived_repos_by_default(self) -> None:
         fleet_root = self.root / "fleet"

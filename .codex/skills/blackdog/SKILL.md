@@ -24,7 +24,7 @@ Use this repo-local skill for normal development requests. The skill is backed b
 ## Internal CLI Surface
 
 - repo lifecycle: `repo analyze`, `repo bind`, `repo table`, `repo install`, `repo scaffold`, `repo update`, `repo refresh`, `repo archive`, `repo unarchive`, `repo unbind`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`, `codex hook`
-- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`
+- task execution/repair: `task begin`, `task show`, `task recover`, `task land`, `task reconcile-landing`, `task close`, `task cancel`, `task reopen`, `task cleanup`
 - status and evidence: `summary`, `snapshot`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`, `codex hook`
 - abandoned work is canceled by default; use `task reopen` only when it should return to normal execution
 

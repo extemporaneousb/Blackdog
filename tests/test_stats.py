@@ -8,7 +8,11 @@ from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
+from blackdog.repo_lifecycle import RepoLifecycleError
+from blackdog.stats import build_stats
 from blackdog_core.backlog import finish_task, set_task_runtime_status, start_task, upsert_workset
+from blackdog_core.codex_sessions import build_codex_coverage as build_core_codex_coverage
+from blackdog_core.profile import render_default_profile
 from blackdog_core.state import CodexSessionRefRecord, create_prompt_receipt, prompt_receipt_reference
 from blackdog_cli.main import main as blackdog_main
 from tests.core_audit_support import CoreAuditTestCase
@@ -205,6 +209,138 @@ class StatsTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         self.assertIn("bucket\trepos\tattempts_started", stdout)
 
+    def test_stats_windows_runtime_and_codex_attempts_by_started_at(self) -> None:
+        profile = self.load_test_profile()
+        foreign_root = self.root.parent / "source-repo"
+        inside_session = _write_stats_session(
+            self.codex_home,
+            cwd=foreign_root,
+            thread_id="thread-started-inside",
+            turn_id="turn-started-inside",
+            started_at="2026-06-02T12:00:00+00:00",
+        )
+        before_session = _write_stats_session(
+            self.codex_home,
+            cwd=foreign_root,
+            thread_id="thread-started-before",
+            turn_id="turn-started-before",
+            started_at="2026-06-01T12:00:00+00:00",
+        )
+        upsert_workset(
+            profile,
+            {
+                "id": "stats-window-anchor",
+                "title": "Stats window anchor",
+                "tasks": [
+                    {"id": "SWA-1", "title": "Starts inside and ends after"},
+                    {"id": "SWA-2", "title": "Starts before and ends inside"},
+                ],
+            },
+        )
+        receipt = prompt_receipt_reference(
+            create_prompt_receipt("Implement stats window anchor coverage.")
+        )
+        with patch(
+            "blackdog_core.backlog.now_iso",
+            side_effect=["2026-06-02T12:00:00+00:00", "2026-06-04T12:00:00+00:00"],
+        ):
+            inside_attempt = start_task(
+                profile,
+                workset_id="stats-window-anchor",
+                task_id="SWA-1",
+                actor="codex",
+                prompt_receipt=receipt,
+                codex_session=CodexSessionRefRecord(
+                    thread_id="thread-started-inside",
+                    session_path=str(inside_session.relative_to(self.codex_home)),
+                    turn_id="turn-started-inside",
+                ),
+            )
+            finish_task(
+                profile,
+                workset_id="stats-window-anchor",
+                task_id="SWA-1",
+                attempt_id=inside_attempt.attempt_id,
+                actor="codex",
+                status="success",
+                summary="finished after the window",
+            )
+        with patch(
+            "blackdog_core.backlog.now_iso",
+            side_effect=["2026-06-01T12:00:00+00:00", "2026-06-02T12:00:00+00:00"],
+        ):
+            before_attempt = start_task(
+                profile,
+                workset_id="stats-window-anchor",
+                task_id="SWA-2",
+                actor="codex",
+                prompt_receipt=receipt,
+                codex_session=CodexSessionRefRecord(
+                    thread_id="thread-started-before",
+                    session_path=str(before_session.relative_to(self.codex_home)),
+                    turn_id="turn-started-before",
+                ),
+            )
+            finish_task(
+                profile,
+                workset_id="stats-window-anchor",
+                task_id="SWA-2",
+                attempt_id=before_attempt.attempt_id,
+                actor="codex",
+                status="failed",
+                summary="finished inside the window",
+            )
+
+        coverage_calls: list[tuple[dict[str, object], dict[str, object]]] = []
+
+        def capture_coverage(*args, **kwargs):
+            payload = build_core_codex_coverage(*args, **kwargs)
+            coverage_calls.append((dict(kwargs), payload))
+            return payload
+
+        with (
+            patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(self.codex_home), "BLACKDOG_HOME": str(self.blackdog_home)},
+                clear=False,
+            ),
+            patch("blackdog.stats.build_codex_coverage", side_effect=capture_coverage),
+        ):
+            result = build_stats(
+                project_roots=(self.root,),
+                since="2026-06-02",
+                until="2026-06-03",
+                timezone_name="UTC",
+            )
+
+        self.assertEqual(len(coverage_calls), 1)
+        coverage_kwargs, coverage = coverage_calls[0]
+        self.assertEqual(coverage_kwargs["attempt_window_anchor"], "started_at")
+        self.assertEqual(coverage["counts"]["blackdog_attempts"], 1)
+        self.assertEqual(coverage["counts"]["linked_attempts"], 1)
+        self.assertEqual(coverage["counts"]["unlinked_attempts"], 0)
+        self.assertEqual(coverage["exact_reference_resolution_counts"], {"resolved": 1})
+        self.assertEqual([row["attempt_id"] for row in coverage["attempts"]], [inside_attempt.attempt_id])
+
+        summary = result.summary
+        self.assertEqual(summary["attempts_total"], 2)
+        self.assertEqual(summary["completed_attempts"], 1)
+        self.assertEqual(summary["success_attempts"], 1)
+        self.assertEqual(summary["failed_attempts"], 0)
+        self.assertEqual(summary["codex_linked_attempts"], 1)
+        self.assertEqual(summary["codex_unlinked_attempts"], 0)
+        self.assertEqual(summary["codex_linked_user_turns"], 1)
+        self.assertEqual(summary["codex_unlinked_user_turns"], 0)
+        self.assertEqual(len(result.buckets), 1)
+        bucket = result.buckets[0]
+        self.assertEqual(bucket["bucket"], "2026-06-02")
+        self.assertEqual(bucket["attempts_started"], 1)
+        self.assertEqual(bucket["completed_attempts"], 1)
+        self.assertEqual(bucket["success_attempts"], 1)
+        self.assertEqual(bucket["failed_attempts"], 0)
+        self.assertEqual(bucket["codex_user_turns"], 1)
+        self.assertEqual(bucket["codex_linked_user_turns"], 1)
+
     def test_stats_prunes_unrelated_codex_sessions_for_explicit_root(self) -> None:
         other_root = self.root.parent / "other-repo"
         other_root.mkdir(exist_ok=True)
@@ -226,6 +362,102 @@ class StatsTests(CoreAuditTestCase):
         stats = json.loads(stdout)["stats"]
         self.assertEqual(stats["summary"]["codex_user_turns"], 0)
         self.assertEqual(stats["summary"]["codex_sessions"], 0)
+
+    def test_stats_discovers_profiles_without_mutating_or_requiring_registry(self) -> None:
+        with patch("blackdog.stats.registered_project_roots", return_value=()):
+            result = build_stats(discovery_roots=(self.root,))
+
+        payload = result.to_dict()
+        self.assertEqual(payload["scope_source"], "discovery_roots")
+        self.assertEqual(payload["discovery_roots"], [str(self.root.resolve())])
+        self.assertEqual(payload["project_roots"], [str(self.root.resolve())])
+
+        deduped_result = build_stats(discovery_roots=(self.root, self.root / "blackdog.toml"))
+        self.assertEqual(deduped_result.project_roots, (str(self.root.resolve()),))
+        self.assertEqual(deduped_result.deduped_project_roots, (str(self.root.resolve()),))
+
+        exit_code, stdout, stderr = self.run_cli("stats", "--root", str(self.root), "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        cli_payload = json.loads(stdout)["stats"]
+        self.assertEqual(cli_payload["scope_source"], "discovery_roots")
+        self.assertEqual(cli_payload["discovery_roots"], [str(self.root.resolve())])
+        self.assertEqual(cli_payload["project_roots"], [str(self.root.resolve())])
+
+        with patch("blackdog.stats.registered_project_roots", return_value=(self.root,)):
+            registry_result = build_stats()
+        self.assertEqual(registry_result.scope_source, "registry")
+        self.assertEqual(registry_result.project_roots, (str(self.root.resolve()),))
+
+        explicit_result = build_stats(project_roots=(self.root,))
+        self.assertEqual(explicit_result.scope_source, "explicit_project_roots")
+        self.assertEqual(explicit_result.discovery_roots, ())
+
+    def test_stats_discovery_rejects_ambiguous_or_invalid_scope(self) -> None:
+        with self.assertRaisesRegex(RepoLifecycleError, "either --project-root or --root"):
+            build_stats(project_roots=(self.root,), discovery_roots=(self.root,))
+
+        missing = self.root / "missing-fleet"
+        with self.assertRaisesRegex(RepoLifecycleError, "discovery root does not exist"):
+            build_stats(discovery_roots=(missing,))
+
+        malformed_root = self.root / "malformed-fleet" / "bad-repo"
+        malformed_root.mkdir(parents=True)
+        (malformed_root / "blackdog.toml").write_text("[project\n", encoding="utf-8")
+        with self.assertRaisesRegex(RepoLifecycleError, "is not a Blackdog repo"):
+            build_stats(discovery_roots=(malformed_root.parent,))
+
+    def test_stats_deduplicates_shared_codex_turns_only_in_fleet_aggregates(self) -> None:
+        other_root = self.root / "other-repo"
+        other_root.mkdir()
+        self.init_git_repo(other_root)
+        (other_root / "blackdog.toml").write_text(render_default_profile("Other Stats"), encoding="utf-8")
+        shared_turn = {
+            "thread_id": "shared-thread",
+            "session_path": "sessions/shared.jsonl",
+            "turn_id": "shared-turn",
+            "turn_index": 0,
+            "started_at": "2026-06-03T01:30:00+00:00",
+            "user_message_hash": "hash",
+            "classification": "implementation_likely",
+            "linked_attempt_ids": [],
+            "tool_call_count": 2,
+            "input_tokens": 10,
+            "cached_input_tokens": 2,
+            "output_tokens": 3,
+            "reasoning_output_tokens": 4,
+            "total_tokens": 13,
+        }
+
+        def coverage_for(profile, **_kwargs):
+            self.assertFalse(_kwargs["include_environment_evidence"])
+            turn = dict(shared_turn)
+            if profile.project_name == "Stats Demo":
+                turn["linked_attempt_ids"] = ["attempt-in-stats-demo"]
+                turn["classification"] = "blackdog_attempt"
+            return {
+                "counts": {"codex_sessions": 1, "linked_attempts": 0, "unlinked_attempts": 0},
+                "turns": [turn],
+            }
+
+        with (
+            patch("blackdog.stats.collect_codex_turns", return_value=()),
+            patch("blackdog.stats.build_codex_coverage", side_effect=coverage_for),
+        ):
+            result = build_stats(project_roots=(self.root, other_root), timezone_name="UTC")
+
+        self.assertEqual(result.summary["codex_sessions"], 1)
+        self.assertEqual(result.summary["codex_user_turns"], 1)
+        self.assertEqual(result.summary["codex_linked_user_turns"], 1)
+        self.assertEqual(result.summary["codex_unlinked_user_turns"], 0)
+        self.assertEqual(result.summary["codex_tool_calls"], 2)
+        self.assertEqual(result.summary["codex_total_tokens"], 13)
+        repos = {str(row["project_name"]): row for row in result.repos}
+        self.assertEqual(repos["Stats Demo"]["codex_linked_user_turns"], 1)
+        self.assertEqual(repos["Other Stats"]["codex_unlinked_user_turns"], 1)
+        self.assertEqual(result.buckets[0]["repos"], 2)
+        self.assertEqual(result.buckets[0]["codex_user_turns"], 1)
+        self.assertEqual(result.buckets[0]["codex_tool_calls"], 2)
+        self.assertEqual(result.buckets[0]["codex_total_tokens"], 13)
 
     def test_stats_reports_cleanup_and_codex_coverage_health(self) -> None:
         profile = self.load_test_profile()

@@ -5,6 +5,7 @@ import multiprocessing
 import queue
 import traceback
 from pathlib import Path
+from unittest.mock import patch
 
 from blackdog_core.backlog import (
     JsonPlanningStore,
@@ -15,6 +16,7 @@ from blackdog_core.backlog import (
     finish_task,
     load_planning_state,
     next_ready_tasks,
+    reconcile_landed_attempt,
     save_planning_state,
     set_task_runtime_status,
     start_task,
@@ -25,7 +27,9 @@ from blackdog_core.state import (
     JsonRuntimeStore,
     RUNTIME_SCHEMA_VERSION,
     RUNTIME_STORE_VERSION,
+    ValidationRecord,
     create_prompt_receipt,
+    load_events,
     load_runtime_state,
     save_runtime_state,
 )
@@ -74,6 +78,31 @@ def _cancel_task_worker(
             actor="codex",
             status="canceled",
             summary=f"canceled {task_id}",
+        )
+        result_queue.put(("ok", task_id, None))
+    except Exception:
+        result_queue.put(("error", task_id, traceback.format_exc()))
+
+
+def _reconcile_landed_attempt_worker(
+    project_root: str,
+    workset_id: str,
+    task_id: str,
+    attempt_id: str,
+    start_event,
+    result_queue,
+) -> None:
+    try:
+        start_event.wait()
+        profile = load_profile(Path(project_root))
+        reconcile_landed_attempt(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            landed_commit="c" * 40,
+            actor="concurrent-auditor",
+            changed_paths=("concurrent.txt",),
         )
         result_queue.put(("ok", task_id, None))
     except Exception:
@@ -539,6 +568,209 @@ class CorePlanningTests(CoreAuditTestCase):
         ]
         start_event = next(event for event in events if event["type"] == "task.start")
         self.assertEqual(start_event["payload"]["setup_receipt"]["task_class"], "implementation")
+
+    def test_reconcile_landed_attempt_preserves_terminal_lineage_and_is_idempotent(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "reconcile",
+                "title": "Reconcile",
+                "tasks": [{"id": "REC-1", "title": "Repair ledger", "intent": "record the landed commit"}],
+            },
+        )
+        started = start_task(
+            self.profile,
+            workset_id="reconcile",
+            task_id="REC-1",
+            actor="attempt-owner",
+            prompt_receipt=create_prompt_receipt("Repair the ledger.", source="unit-test"),
+        )
+        failed = finish_task(
+            self.profile,
+            workset_id="reconcile",
+            task_id="REC-1",
+            attempt_id=started.attempt_id,
+            actor="attempt-owner",
+            status="failed",
+            summary="runtime finalization failed after Git landing",
+            validations=(ValidationRecord(name="unit", status="passed"),),
+            elapsed_seconds=17,
+            failure_class="unknown",
+            recovery_action="inspect",
+            operator_issue=True,
+        )
+
+        first = reconcile_landed_attempt(
+            self.profile,
+            workset_id="reconcile",
+            task_id="REC-1",
+            attempt_id=started.attempt_id,
+            landed_commit="a" * 40,
+            actor="commit-actor",
+            changed_paths=("src/repaired.py",),
+            reason="canonical commit proved reachable",
+            proof={"reachable_from_target": True},
+        )
+
+        self.assertTrue(first["runtime_changed"])
+        self.assertTrue(first["event_appended"])
+        current = load_runtime_state(self.profile.paths)
+        attempt = current.worksets[0].attempts[0]
+        self.assertEqual(attempt.status, "success")
+        self.assertEqual(attempt.actor, "attempt-owner")
+        self.assertEqual(attempt.started_at, failed.started_at)
+        self.assertEqual(attempt.ended_at, failed.ended_at)
+        self.assertEqual(attempt.summary, failed.summary)
+        self.assertEqual(attempt.validations, failed.validations)
+        self.assertEqual(attempt.elapsed_seconds, 17)
+        self.assertEqual(attempt.changed_paths, ("src/repaired.py",))
+        self.assertEqual(attempt.landed_commit, "a" * 40)
+        self.assertIsNone(attempt.failure_class)
+        self.assertIsNone(attempt.recovery_action)
+        self.assertFalse(attempt.operator_issue)
+        self.assertEqual(current.worksets[0].task_states[0].status, "done")
+        self.assertIsNone(current.worksets[0].task_states[0].failure_class)
+
+        second = reconcile_landed_attempt(
+            self.profile,
+            workset_id="reconcile",
+            task_id="REC-1",
+            attempt_id=started.attempt_id,
+            landed_commit="a" * 40,
+            actor="commit-actor",
+            changed_paths=("src/repaired.py",),
+            reason="retry",
+        )
+        self.assertFalse(second["runtime_changed"])
+        self.assertFalse(second["event_appended"])
+        reconciliation_events = [
+            row
+            for row in (
+                json.loads(line)
+                for line in self.profile.paths.events_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+            if row["type"] == "task.landing.reconciled"
+        ]
+        self.assertEqual(len(reconciliation_events), 1)
+        self.assertEqual(reconciliation_events[0]["actor"], "commit-actor")
+        self.assertEqual(reconciliation_events[0]["payload"]["attempt_actor"], "attempt-owner")
+
+    def test_reconcile_landed_attempt_retry_repairs_event_after_append_failure(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "repair-event",
+                "title": "Repair event",
+                "tasks": [{"id": "REC-1", "title": "Repair event", "intent": "exercise retry"}],
+            },
+        )
+        started = start_task(
+            self.profile,
+            workset_id="repair-event",
+            task_id="REC-1",
+            actor="owner",
+            prompt_receipt=create_prompt_receipt("Repair the event.", source="unit-test"),
+        )
+        finish_task(
+            self.profile,
+            workset_id="repair-event",
+            task_id="REC-1",
+            attempt_id=started.attempt_id,
+            actor="owner",
+            status="blocked",
+            summary="event append will fail",
+        )
+        with patch("blackdog_core.backlog.append_event", side_effect=OSError("disk unavailable")):
+            with self.assertRaisesRegex(OSError, "disk unavailable"):
+                reconcile_landed_attempt(
+                    self.profile,
+                    workset_id="repair-event",
+                    task_id="REC-1",
+                    attempt_id=started.attempt_id,
+                    landed_commit="b" * 40,
+                    actor="owner",
+                    changed_paths=("repaired.txt",),
+                )
+
+        current = load_runtime_state(self.profile.paths)
+        self.assertEqual(current.worksets[0].attempts[0].status, "success")
+        repaired = reconcile_landed_attempt(
+            self.profile,
+            workset_id="repair-event",
+            task_id="REC-1",
+            attempt_id=started.attempt_id,
+            landed_commit="b" * 40,
+            actor="owner",
+            changed_paths=("repaired.txt",),
+        )
+        self.assertFalse(repaired["runtime_changed"])
+        self.assertTrue(repaired["event_appended"])
+        self.assertTrue(repaired["event_repaired"])
+
+    def test_reconcile_landed_attempt_concurrent_apply_appends_exactly_one_event(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "concurrent-reconcile",
+                "title": "Concurrent reconcile",
+                "tasks": [{"id": "REC-1", "title": "Reconcile once", "intent": "serialize event append"}],
+            },
+        )
+        started = start_task(
+            self.profile,
+            workset_id="concurrent-reconcile",
+            task_id="REC-1",
+            actor="owner",
+            prompt_receipt=create_prompt_receipt("Reconcile concurrently.", source="unit-test"),
+        )
+        finish_task(
+            self.profile,
+            workset_id="concurrent-reconcile",
+            task_id="REC-1",
+            attempt_id=started.attempt_id,
+            actor="owner",
+            status="failed",
+            summary="runtime finalization failed after Git landing",
+        )
+        ctx = multiprocessing.get_context("spawn")
+        start_event = ctx.Event()
+        result_queue = ctx.Queue()
+        processes = [
+            ctx.Process(
+                target=_reconcile_landed_attempt_worker,
+                args=(
+                    str(self.root),
+                    "concurrent-reconcile",
+                    "REC-1",
+                    started.attempt_id,
+                    start_event,
+                    result_queue,
+                ),
+            )
+            for _ in range(4)
+        ]
+
+        self._run_workers(processes, start_event, result_queue)
+
+        reconciliation_events = [
+            event
+            for event in load_events(self.profile.paths.events_file)
+            if event["type"] == "task.landing.reconciled"
+        ]
+        self.assertEqual(len(reconciliation_events), 1)
+        self.assertEqual(
+            reconciliation_events[0]["payload"]["reconciliation_id"],
+            reconcile_landed_attempt(
+                self.profile,
+                workset_id="concurrent-reconcile",
+                task_id="REC-1",
+                attempt_id=started.attempt_id,
+                landed_commit="c" * 40,
+                actor="concurrent-auditor",
+                changed_paths=("concurrent.txt",),
+            )["reconciliation_id"],
+        )
 
     def test_abandoned_attempt_releases_claims_and_cancels_task(self) -> None:
         upsert_workset(

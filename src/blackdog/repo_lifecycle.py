@@ -629,7 +629,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "- Keep this skill thin: delegate setup, state, recovery, and landing to the Blackdog CLI rather than encoding workflow state in prompt prose.\n\n"
         "## Internal CLI Surface\n\n"
         f"- repo lifecycle: {repo_lifecycle_surface}\n"
-        "- task execution: `task begin`, `task show`, `task recover`, `task land`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
+        "- task execution/repair: `task begin`, `task show`, `task recover`, `task land`, `task reconcile-landing`, `task close`, `task cancel`, `task reopen`, `task cleanup`\n"
         "- status and evidence: `summary`, `snapshot`, `attempts summary`, `attempts table`, `codex coverage`, `codex history`, `codex hook`\n"
         "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
         "## Operator Guardrails\n\n"

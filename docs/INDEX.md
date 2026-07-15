@@ -41,6 +41,7 @@ distinct question.
 - `blackdog task show`
 - `blackdog task recover`
 - `blackdog task land`
+- `blackdog task reconcile-landing`
 - `blackdog task close`
 - `blackdog task cancel`
 - `blackdog task reopen`

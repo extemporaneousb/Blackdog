@@ -53,11 +53,13 @@ from blackdog.wtam import (
     land_task,
     land_task_worktree,
     recover_task,
+    reconcile_task_landing,
     reopen_task,
     render_task_begin_text,
     render_cleanup_text,
     render_close_text,
     render_land_text,
+    render_landing_reconciliation_text,
     render_preflight_text,
     render_preview_text,
     render_recover_text,
@@ -247,7 +249,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_snapshot.add_argument("--include-legacy-worksets", action="store_true")
 
     p_stats = subparsers.add_parser("stats", help="Report local Blackdog task/attempt/Codex stats")
-    p_stats.add_argument("--project-root", action="append", default=[])
+    stats_scope = p_stats.add_mutually_exclusive_group()
+    stats_scope.add_argument("--project-root", action="append", default=[])
+    stats_scope.add_argument("--root", action="append", default=[])
     p_stats.add_argument("--since")
     p_stats.add_argument("--until")
     p_stats.add_argument("--by", choices=["day"], default="day")
@@ -473,6 +477,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_land.add_argument("--keep-worktree", action="store_true")
     p_task_land.add_argument("--json", action="store_true")
 
+    p_task_reconcile_landing = task_subparsers.add_parser(
+        "reconcile-landing",
+        help="Prove and optionally correct a landed commit missing from terminal runtime state",
+    )
+    p_task_reconcile_landing.add_argument("--project-root", default=".")
+    p_task_reconcile_landing.add_argument("--workset", required=True)
+    p_task_reconcile_landing.add_argument("--task", required=True)
+    p_task_reconcile_landing.add_argument("--attempt", required=True)
+    p_task_reconcile_landing.add_argument("--landed-commit", required=True)
+    p_task_reconcile_landing.add_argument("--actor", required=True)
+    p_task_reconcile_landing.add_argument("--reason")
+    p_task_reconcile_landing.add_argument("--apply", action="store_true")
+    p_task_reconcile_landing.add_argument("--json", action="store_true")
+
     p_task_close = task_subparsers.add_parser("close", help="Close the current task without landing code")
     p_task_close.add_argument("--project-root", default=".")
     p_task_close.add_argument("--workset")
@@ -626,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stats":
             result = build_stats(
                 project_roots=tuple(Path(root).resolve() for root in args.project_root),
+                discovery_roots=tuple(Path(root).resolve() for root in args.root),
                 since=args.since,
                 until=args.until,
                 by=args.by,
@@ -1010,6 +1029,24 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(render_land_text(payload, surface="task"), end="")
             return 0 if payload.get("status") == "success" else 1
+
+        if args.command == "task" and args.task_command == "reconcile-landing":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            payload = reconcile_task_landing(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                attempt_id=args.attempt,
+                landed_commit=args.landed_commit,
+                actor=args.actor,
+                apply=args.apply,
+                reason=args.reason,
+            )
+            if args.json:
+                _emit_json({"landing_reconciliation": payload})
+            else:
+                print(render_landing_reconciliation_text(payload), end="")
+            return 0
 
         if args.command == "task" and args.task_command == "close":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)

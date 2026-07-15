@@ -78,7 +78,7 @@ workspace role before kept edits.
 - `blackdog attempts summary|table`
 - `blackdog codex coverage|history|hook`
 - `blackdog stats`
-- `blackdog task begin|show|recover|land|close|cancel|reopen|cleanup`
+- `blackdog task begin|show|recover|land|reconcile-landing|close|cancel|reopen|cleanup`
 - `blackdog worktree preflight|table|preview|start|show|land|close|cleanup`
 - `blackdog summary`
 - `blackdog snapshot`

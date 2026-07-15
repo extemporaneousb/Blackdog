@@ -222,6 +222,31 @@ class CodexSessionTests(CoreAuditTestCase):
         self.profile = self.load_test_profile()
         self.codex_home = self.root / ".codex-home"
 
+    def _start_referenced_attempts(
+        self,
+        workset_id: str,
+        refs: tuple[CodexSessionRefRecord, ...],
+    ):
+        tasks = [
+            {"id": f"TASK-{index}", "title": f"Referenced task {index}"}
+            for index in range(1, len(refs) + 1)
+        ]
+        upsert_workset(
+            self.profile,
+            {"id": workset_id, "title": "Referenced attempts", "tasks": tasks},
+        )
+        return tuple(
+            start_task(
+                self.profile,
+                workset_id=workset_id,
+                task_id=task["id"],
+                actor="codex",
+                prompt_receipt=create_prompt_receipt(f"Start {workset_id} {task['id']}"),
+                codex_session=ref,
+            )
+            for task, ref in zip(tasks, refs, strict=True)
+        )
+
     def test_read_codex_session_extracts_turn_context_and_hashes(self) -> None:
         session_path = _write_session(
             self.codex_home,
@@ -509,6 +534,289 @@ class CodexSessionTests(CoreAuditTestCase):
             (self.root / ".blackdog" / "history.jsonl").resolve(),
         )
         self.assertTrue(Path(history["history_path"]).is_file())
+
+    def test_exact_reference_attributes_only_foreign_cwd_launch_turn(self) -> None:
+        foreign_root = self.root.parent / "source-repo"
+        session_path = _write_multi_turn_session(
+            self.codex_home,
+            thread_id="thread-foreign",
+            cwd=foreign_root,
+            turns=(
+                {
+                    "turn_id": "turn-launch",
+                    "started_at": "2026-05-04T19:00:00+00:00",
+                    "message": "Implement a task in the target repository.",
+                },
+                {
+                    "turn_id": "turn-sibling",
+                    "started_at": "2026-05-04T19:05:00+00:00",
+                    "message": "Continue unrelated work in the source repository.",
+                },
+            ),
+        )
+        attempt = self._start_referenced_attempts(
+            "cross-repo",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-foreign",
+                    session_path=str(session_path.relative_to(self.codex_home)),
+                    turn_id="turn-launch",
+                ),
+            ),
+        )[0]
+        runtime_before = self.profile.paths.runtime_file.read_bytes()
+        events_before = self.profile.paths.events_file.read_bytes()
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+            history = build_codex_history(self.profile)
+
+        self.assertEqual([row["turn_id"] for row in coverage["turns"]], ["turn-launch"])
+        self.assertEqual(coverage["turns"][0]["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(coverage["relationship_counts"], {"launch_turn": 1})
+        self.assertEqual(coverage["exact_reference_resolution_counts"], {"resolved": 1})
+        history_turns = [row for row in history["rows"] if row["kind"] == "codex_turn"]
+        self.assertEqual([row["codex_turn_id"] for row in history_turns], ["turn-launch"])
+        self.assertEqual(history["exact_reference_resolution_counts"], {"resolved": 1})
+        self.assertEqual(self.profile.paths.runtime_file.read_bytes(), runtime_before)
+        self.assertEqual(self.profile.paths.events_file.read_bytes(), events_before)
+
+    def test_exact_reference_uses_archived_copy_of_live_session_path(self) -> None:
+        archived_path = _write_session(
+            self.codex_home,
+            thread_id="thread-archived-ref",
+            cwd=self.root.parent / "source-repo",
+            turn_id="turn-archived-ref",
+            message="Implement through an archived source session.",
+            session_dir="archived_sessions",
+        )
+        archived_relative = archived_path.relative_to(self.codex_home)
+        stale_live_path = Path("sessions", *archived_relative.parts[1:]).as_posix()
+        flattened_archive = self.codex_home / "archived_sessions" / archived_path.name
+        archived_path.replace(flattened_archive)
+        attempt = self._start_referenced_attempts(
+            "archived-ref",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-archived-ref",
+                    session_path=stale_live_path,
+                    turn_id="turn-archived-ref",
+                ),
+            ),
+        )[0]
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(coverage["exact_reference_resolution_counts"], {"resolved_archived_copy": 1})
+        self.assertEqual(coverage["turns"][0]["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertTrue(coverage["turns"][0]["session_path"].startswith("archived_sessions/"))
+
+    def test_exact_reference_uses_archive_when_live_copy_is_truncated(self) -> None:
+        live_path = _write_session(
+            self.codex_home,
+            thread_id="thread-truncated-live",
+            cwd=self.root.parent / "source-repo",
+            turn_id="turn-before-truncation",
+            message="A surviving turn before the referenced turn.",
+        )
+        archived_path = _write_session(
+            self.codex_home,
+            thread_id="thread-truncated-live",
+            cwd=self.root.parent / "source-repo",
+            turn_id="turn-after-truncation",
+            message="The referenced turn retained in the archive.",
+            session_dir="archived_sessions",
+        )
+        flattened_archive = self.codex_home / "archived_sessions" / archived_path.name
+        archived_path.replace(flattened_archive)
+        attempt = self._start_referenced_attempts(
+            "truncated-live",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-truncated-live",
+                    session_path=str(live_path.relative_to(self.codex_home)),
+                    turn_id="turn-after-truncation",
+                ),
+            ),
+        )[0]
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(coverage["exact_reference_resolution_counts"], {"resolved_archived_copy": 1})
+        self.assertEqual([row["turn_id"] for row in coverage["turns"]], ["turn-after-truncation"])
+        self.assertEqual(coverage["turns"][0]["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(coverage["relationship_counts"], {"launch_turn": 1})
+
+    def test_exact_reference_missingness_is_nonfatal_and_path_bounded(self) -> None:
+        foreign_root = self.root.parent / "source-repo"
+        mismatched_path = _write_session(
+            self.codex_home,
+            thread_id="thread-actual",
+            cwd=foreign_root,
+            turn_id="turn-actual",
+            message="Implement from a mismatched thread.",
+        )
+        corrupt_path = self.codex_home / "sessions" / "corrupt" / "rollout-thread-corrupt.jsonl"
+        corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+        corrupt_path.write_text("not-json\n", encoding="utf-8")
+        outside_path = self.root / "outside-session.jsonl"
+        outside_path.write_text("", encoding="utf-8")
+        self._start_referenced_attempts(
+            "unresolved-refs",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-missing",
+                    session_path="sessions/missing/rollout-thread-missing.jsonl",
+                    turn_id="turn-missing",
+                ),
+                CodexSessionRefRecord(
+                    thread_id="thread-expected",
+                    session_path=str(mismatched_path.relative_to(self.codex_home)),
+                    turn_id="turn-actual",
+                ),
+                CodexSessionRefRecord(
+                    thread_id="thread-actual",
+                    session_path=str(mismatched_path.relative_to(self.codex_home)),
+                    turn_id="turn-not-present",
+                ),
+                CodexSessionRefRecord(
+                    thread_id="thread-escaped",
+                    session_path=str(outside_path),
+                    turn_id="turn-escaped",
+                ),
+                CodexSessionRefRecord(
+                    thread_id="thread-incomplete",
+                    session_path=str(mismatched_path.relative_to(self.codex_home)),
+                ),
+                CodexSessionRefRecord(
+                    thread_id="corrupt",
+                    session_path=str(corrupt_path.relative_to(self.codex_home)),
+                    turn_id="turn-corrupt",
+                ),
+            ),
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(coverage["counts"]["codex_user_turns"], 0)
+        self.assertEqual(
+            coverage["exact_reference_resolution_counts"],
+            {
+                "incomplete_reference": 1,
+                "path_outside_codex_home": 1,
+                "session_missing": 1,
+                "thread_mismatch": 1,
+                "turn_missing": 2,
+            },
+        )
+
+    def test_exact_reference_dedupes_turn_and_parses_session_once(self) -> None:
+        session_path = _write_session(
+            self.codex_home,
+            thread_id="thread-shared-ref",
+            cwd=self.root.parent / "source-repo",
+            turn_id="turn-shared-ref",
+            message="Implement two target tasks from one source turn.",
+        )
+        ref = CodexSessionRefRecord(
+            thread_id="thread-shared-ref",
+            session_path=str(session_path.relative_to(self.codex_home)),
+            turn_id="turn-shared-ref",
+        )
+        attempts = self._start_referenced_attempts("shared-ref", (ref, ref))
+
+        with (
+            patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False),
+            patch(
+                "blackdog_core.codex_sessions.read_codex_session",
+                wraps=codex_sessions_module.read_codex_session,
+            ) as read_session,
+        ):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(read_session.call_count, 1)
+        self.assertEqual(coverage["counts"]["codex_user_turns"], 1)
+        self.assertEqual(coverage["exact_reference_resolution_counts"], {"resolved": 2})
+        self.assertEqual(
+            coverage["turns"][0]["linked_attempt_ids"],
+            sorted(attempt.attempt_id for attempt in attempts),
+        )
+
+    def test_exact_reference_respects_turn_window(self) -> None:
+        session_path = _write_multi_turn_session(
+            self.codex_home,
+            thread_id="thread-outside-window",
+            cwd=self.root.parent / "source-repo",
+            turns=(
+                {
+                    "turn_id": "turn-outside-window",
+                    "started_at": "2026-05-06T19:00:00+00:00",
+                    "message": "Implement after the reporting window.",
+                },
+            ),
+        )
+        with patch("blackdog_core.backlog.now_iso", return_value="2026-05-04T19:00:00+00:00"):
+            self._start_referenced_attempts(
+                "outside-window",
+                (
+                    CodexSessionRefRecord(
+                        thread_id="thread-outside-window",
+                        session_path=str(session_path.relative_to(self.codex_home)),
+                        turn_id="turn-outside-window",
+                    ),
+                ),
+            )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(
+                self.profile,
+                since="2026-05-04T00:00:00+00:00",
+                until="2026-05-05T00:00:00+00:00",
+            )
+
+        self.assertEqual(coverage["counts"]["blackdog_attempts"], 1)
+        self.assertEqual(coverage["counts"]["codex_user_turns"], 0)
+        self.assertEqual(
+            coverage["exact_reference_resolution_counts"],
+            {"turn_outside_window": 1},
+        )
+
+    def test_coverage_rejects_unknown_attempt_window_anchor(self) -> None:
+        with self.assertRaisesRegex(codex_sessions_module.CodexSessionError, "attempt window anchor"):
+            build_codex_coverage(self.profile, attempt_window_anchor="unknown")
+
+    def test_exact_reference_can_skip_environment_evidence_scan(self) -> None:
+        session_path = _write_session(
+            self.codex_home,
+            thread_id="thread-lightweight-ref",
+            cwd=self.root.parent / "source-repo",
+            turn_id="turn-lightweight-ref",
+            message="Implement with lightweight reporting.",
+            tool_outputs=("ModuleNotFoundError: No module named 'example'",),
+        )
+        self._start_referenced_attempts(
+            "lightweight-ref",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-lightweight-ref",
+                    session_path=str(session_path.relative_to(self.codex_home)),
+                    turn_id="turn-lightweight-ref",
+                ),
+            ),
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(
+                self.profile,
+                include_environment_evidence=False,
+            )
+
+        self.assertEqual(coverage["exact_reference_resolution_counts"], {"resolved": 1})
+        self.assertEqual(coverage["counts"]["environment_issue_evidence"], 0)
+        self.assertEqual(coverage["turns"][0]["environment_issue_classes"], [])
 
     def test_coverage_links_attempt_by_prompt_hash_and_session_ref_without_turn_id(self) -> None:
         linked_message = "Implement recoverable linked task."

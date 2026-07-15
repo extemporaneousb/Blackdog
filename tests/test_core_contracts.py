@@ -224,7 +224,17 @@ class CoreContractTests(CoreAuditTestCase):
                 "update",
                 "refresh",
             ),
-            "task": ("begin", "show", "recover", "cancel", "reopen", "land", "close", "cleanup"),
+            "task": (
+                "begin",
+                "show",
+                "recover",
+                "cancel",
+                "reopen",
+                "land",
+                "reconcile-landing",
+                "close",
+                "cleanup",
+            ),
             "worktree": ("preflight", "table", "preview", "start", "show", "land", "close", "cleanup"),
         }
         index_doc = (REPO_ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
