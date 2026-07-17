@@ -22,6 +22,24 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.handlers[0].kind, profile_module.HANDLER_KIND_PYTHON_OVERLAY_VENV)
         self.assertEqual(profile.handlers[1].kind, profile_module.HANDLER_KIND_BLACKDOG_RUNTIME)
 
+    def test_load_profile_read_only_does_not_prepare_control_layout(self) -> None:
+        self.write_profile("Demo")
+        control_dir = (self.root / ".git" / "blackdog").resolve()
+        self.assertFalse(control_dir.exists())
+
+        with patch("blackdog_core.profile._prune_stale_git_worktrees") as prune:
+            profile = profile_module.load_profile(self.root, read_only=True)
+
+        self.assertEqual(profile.paths.control_dir, control_dir)
+        self.assertFalse(control_dir.exists())
+        prune.assert_not_called()
+
+        with patch("blackdog_core.profile._prune_stale_git_worktrees") as prune:
+            profile_module.load_profile(self.root)
+
+        self.assertTrue(control_dir.is_dir())
+        prune.assert_called_once_with(self.root.resolve())
+
     def test_load_profile_accepts_explicit_runtime_paths_without_control_dir(self) -> None:
         (self.root / "blackdog.toml").write_text(
             "[project]\nname = \"Demo\"\n\n"

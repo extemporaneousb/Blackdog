@@ -18,6 +18,21 @@ from blackdog_cli.main import main as blackdog_main
 from tests.core_audit_support import CoreAuditTestCase
 
 
+_SCOPE_METADATA_KEYS = (
+    "scope_source",
+    "supplied_roots",
+    "discovery_roots",
+    "project_roots",
+    "deduped_project_roots",
+    "scope_evidence",
+    "scope_notes",
+)
+
+
+def _scope_metadata(payload: dict[str, object]) -> dict[str, object]:
+    return {key: payload[key] for key in _SCOPE_METADATA_KEYS}
+
+
 def _write_stats_session(
     home: Path,
     *,
@@ -209,6 +224,10 @@ class StatsTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         self.assertIn("bucket\trepos\tattempts_started", stdout)
 
+        exit_code, stdout, stderr = self.run_cli("stats", "--project-root", str(self.root))
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(stdout.count("write_failures="), 1, stdout)
+
     def test_stats_windows_runtime_and_codex_attempts_by_started_at(self) -> None:
         profile = self.load_test_profile()
         foreign_root = self.root.parent / "source-repo"
@@ -369,12 +388,16 @@ class StatsTests(CoreAuditTestCase):
 
         payload = result.to_dict()
         self.assertEqual(payload["scope_source"], "discovery_roots")
+        self.assertEqual(payload["supplied_roots"], [str(self.root.resolve())])
         self.assertEqual(payload["discovery_roots"], [str(self.root.resolve())])
         self.assertEqual(payload["project_roots"], [str(self.root.resolve())])
+        self.assertEqual(payload["scope_evidence"], [])
+        self.assertEqual(payload["scope_notes"], [])
 
         deduped_result = build_stats(discovery_roots=(self.root, self.root / "blackdog.toml"))
         self.assertEqual(deduped_result.project_roots, (str(self.root.resolve()),))
         self.assertEqual(deduped_result.deduped_project_roots, (str(self.root.resolve()),))
+        self.assertEqual(deduped_result.scope_evidence[0]["kind"], "duplicate_project_root")
 
         exit_code, stdout, stderr = self.run_cli("stats", "--root", str(self.root), "--json")
         self.assertEqual(exit_code, 0, stderr)
@@ -387,23 +410,211 @@ class StatsTests(CoreAuditTestCase):
             registry_result = build_stats()
         self.assertEqual(registry_result.scope_source, "registry")
         self.assertEqual(registry_result.project_roots, (str(self.root.resolve()),))
+        self.assertEqual(len(registry_result.scope_notes), 1)
+        self.assertIn("--registry", registry_result.scope_notes[0])
+
+        with patch("blackdog.stats.registered_project_roots", return_value=(self.root,)):
+            explicit_registry_result = build_stats(registry=True)
+        self.assertEqual(explicit_registry_result.scope_source, "registry")
+        self.assertEqual(explicit_registry_result.scope_notes, ())
+
+        with patch("blackdog.stats.registered_project_roots", return_value=(self.root,)):
+            exit_code, stdout, stderr = self.run_cli("stats", "--registry", "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        registry_payload = json.loads(stdout)["stats"]
+        self.assertEqual(registry_payload["scope_source"], "registry")
+        self.assertEqual(registry_payload["scope_notes"], [])
 
         explicit_result = build_stats(project_roots=(self.root,))
         self.assertEqual(explicit_result.scope_source, "explicit_project_roots")
         self.assertEqual(explicit_result.discovery_roots, ())
 
+    def test_stats_scope_reads_do_not_prepare_repo_control_layout(self) -> None:
+        control_dir = (self.root / ".git" / "blackdog").resolve()
+        self.assertFalse(control_dir.exists())
+
+        with patch("blackdog_core.profile._prune_stale_git_worktrees") as prune:
+            result = build_stats(discovery_roots=(self.root,))
+
+        self.assertEqual(result.project_roots, (str(self.root.resolve()),))
+        self.assertFalse(control_dir.exists())
+        prune.assert_not_called()
+
+    def test_stats_and_repo_table_share_canonical_alias_metadata_for_all_scope_modes(self) -> None:
+        repo_alias = self.root / "docs"
+        repo_alias.mkdir()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "stats",
+            "--project-root",
+            str(self.root),
+            "--project-root",
+            str(repo_alias),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        exact_stats = json.loads(stdout)["stats"]
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--project-root",
+            str(repo_alias),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        exact_table = json.loads(stdout)["repo_table"]
+        self.assertEqual(_scope_metadata(exact_stats), _scope_metadata(exact_table))
+        self.assertEqual(exact_stats["deduped_project_roots"], [str(repo_alias.resolve())])
+        self.assertEqual(exact_stats["scope_evidence"][0]["canonical_project_root"], str(self.root.resolve()))
+
+        discovery_alias = self.root / "blackdog.toml"
+        exit_code, stdout, stderr = self.run_cli(
+            "stats",
+            "--root",
+            str(self.root),
+            "--root",
+            str(discovery_alias),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        discovery_stats = json.loads(stdout)["stats"]
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(self.root),
+            "--root",
+            str(discovery_alias),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        discovery_table = json.loads(stdout)["repo_table"]
+        self.assertEqual(_scope_metadata(discovery_stats), _scope_metadata(discovery_table))
+        self.assertEqual(
+            discovery_stats["scope_evidence"][0]["canonical_project_root"],
+            str(self.root.resolve()),
+        )
+
+        registry_roots = (self.root, repo_alias)
+        with (
+            patch("blackdog.stats.registered_project_roots", return_value=registry_roots),
+            patch("blackdog.repo_scope.registered_project_roots", return_value=registry_roots),
+        ):
+            exit_code, stdout, stderr = self.run_cli("stats", "--registry", "--json")
+            self.assertEqual(exit_code, 0, stderr)
+            registry_stats = json.loads(stdout)["stats"]
+            exit_code, stdout, stderr = self.run_cli(
+                "repo",
+                "table",
+                "--registry",
+                "--no-codex",
+                "--json",
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        registry_table = json.loads(stdout)["repo_table"]
+        self.assertEqual(_scope_metadata(registry_stats), _scope_metadata(registry_table))
+        self.assertEqual(registry_stats["deduped_project_roots"], [str(repo_alias.resolve())])
+
+    def test_stats_discovery_skips_malformed_profile_when_valid_profile_remains(self) -> None:
+        fleet_root = self.root / "mixed-discovery-fleet"
+        valid_root = fleet_root / "valid"
+        malformed_root = fleet_root / "malformed"
+        missing_discovery_root = fleet_root / "missing"
+        valid_root.mkdir(parents=True)
+        malformed_root.mkdir(parents=True)
+        self.init_git_repo(valid_root)
+        (valid_root / "blackdog.toml").write_text(render_default_profile("Valid"), encoding="utf-8")
+        (malformed_root / "blackdog.toml").write_text("[project\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "stats",
+            "--root",
+            str(fleet_root),
+            "--root",
+            str(missing_discovery_root),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        stats = json.loads(stdout)["stats"]
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--root",
+            str(fleet_root),
+            "--root",
+            str(missing_discovery_root),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        repo_table = json.loads(stdout)["repo_table"]
+
+        self.assertEqual(stats["project_roots"], [str(valid_root.resolve())])
+        self.assertEqual(_scope_metadata(stats), _scope_metadata(repo_table))
+        profile_errors = [row for row in stats["scope_evidence"] if row["kind"] == "profile_error"]
+        self.assertEqual(len(profile_errors), 1)
+        self.assertEqual(profile_errors[0]["path"], str(malformed_root.resolve()))
+        discovery_errors = [row for row in stats["scope_evidence"] if row["kind"] == "discovery_root_error"]
+        self.assertEqual(len(discovery_errors), 1)
+        self.assertEqual(discovery_errors[0]["path"], str(missing_discovery_root.resolve()))
+        self.assertEqual({row["project_name"] for row in repo_table["rows"]}, {"Valid", "malformed"})
+
+    def test_stats_registry_skips_stale_profile_when_valid_profile_remains(self) -> None:
+        missing_root = self.root.parent / f"{self.root.name}-missing-registry-repo"
+        registry_roots = (self.root, missing_root)
+        with (
+            patch("blackdog.stats.registered_project_roots", return_value=registry_roots),
+            patch("blackdog.repo_scope.registered_project_roots", return_value=registry_roots),
+        ):
+            exit_code, stdout, stderr = self.run_cli("stats", "--registry", "--json")
+            self.assertEqual(exit_code, 0, stderr)
+            stats = json.loads(stdout)["stats"]
+            exit_code, stdout, stderr = self.run_cli(
+                "repo",
+                "table",
+                "--registry",
+                "--no-codex",
+                "--json",
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        repo_table = json.loads(stdout)["repo_table"]
+
+        self.assertEqual(stats["project_roots"], [str(self.root.resolve())])
+        self.assertEqual(_scope_metadata(stats), _scope_metadata(repo_table))
+        profile_errors = [row for row in stats["scope_evidence"] if row["kind"] == "profile_error"]
+        self.assertEqual(len(profile_errors), 1)
+        self.assertEqual(profile_errors[0]["path"], str(missing_root.resolve()))
+
     def test_stats_discovery_rejects_ambiguous_or_invalid_scope(self) -> None:
-        with self.assertRaisesRegex(RepoLifecycleError, "either --project-root or --root"):
+        with self.assertRaisesRegex(RepoLifecycleError, "exactly one repository scope"):
             build_stats(project_roots=(self.root,), discovery_roots=(self.root,))
+        with self.assertRaisesRegex(RepoLifecycleError, "exactly one repository scope"):
+            build_stats(project_roots=(self.root,), registry=True)
+
+        with patch("blackdog.stats.registered_project_roots", return_value=()):
+            with self.assertRaisesRegex(RepoLifecycleError, "--registry found no registered local repos"):
+                build_stats(registry=True)
+            with self.assertRaisesRegex(RepoLifecycleError, "defaulted to the user-local registry"):
+                build_stats()
+
+        with self.assertRaises(SystemExit):
+            self.run_cli("stats", "--root", str(self.root), "--registry", "--json")
 
         missing = self.root / "missing-fleet"
         with self.assertRaisesRegex(RepoLifecycleError, "discovery root does not exist"):
             build_stats(discovery_roots=(missing,))
+        missing_exact_root = self.root.parent / f"{self.root.name}-missing-exact-repo"
+        with self.assertRaisesRegex(RepoLifecycleError, "exact project root"):
+            build_stats(project_roots=(missing_exact_root,))
 
         malformed_root = self.root / "malformed-fleet" / "bad-repo"
         malformed_root.mkdir(parents=True)
         (malformed_root / "blackdog.toml").write_text("[project\n", encoding="utf-8")
-        with self.assertRaisesRegex(RepoLifecycleError, "is not a Blackdog repo"):
+        with self.assertRaisesRegex(RepoLifecycleError, "no usable Blackdog repos"):
             build_stats(discovery_roots=(malformed_root.parent,))
 
     def test_stats_deduplicates_shared_codex_turns_only_in_fleet_aggregates(self) -> None:

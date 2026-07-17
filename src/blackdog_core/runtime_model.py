@@ -64,6 +64,7 @@ class PromptReceiptView:
     recorded_at: str
     source: str | None
     mode: str | None
+    replay_artifact_path: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,9 @@ class CodexSessionRefView:
     turn_started_at: str | None
     user_prompt_hash: str | None
     execution_prompt_hash: str | None
+    capture_status: str | None
+    capture_method: str | None
+    capture_missing_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,14 +215,6 @@ def _default_runtime(task_id: str) -> TaskRuntimeRecord:
     return TaskRuntimeRecord(task_id=task_id, status=TASK_STATUS_PLANNED)
 
 
-def _attempt_sort_key(attempt: TaskAttemptRecord) -> tuple[float, str]:
-    ended_at = parse_iso(attempt.ended_at)
-    started_at = parse_iso(attempt.started_at)
-    anchor = ended_at or started_at
-    timestamp = anchor.timestamp() if anchor is not None else 0.0
-    return (timestamp, attempt.attempt_id)
-
-
 def _validation_view(validation: ValidationRecord) -> ValidationView:
     return ValidationView(name=validation.name, status=validation.status)
 
@@ -232,6 +228,7 @@ def _prompt_receipt_view(prompt_receipt) -> PromptReceiptView | None:
         recorded_at=prompt_receipt.recorded_at,
         source=prompt_receipt.source,
         mode=prompt_receipt.mode,
+        replay_artifact_path=prompt_receipt.replay_artifact_path,
     )
 
 
@@ -245,6 +242,9 @@ def _codex_session_ref_view(codex_session) -> CodexSessionRefView | None:
         turn_started_at=codex_session.turn_started_at,
         user_prompt_hash=codex_session.user_prompt_hash,
         execution_prompt_hash=codex_session.execution_prompt_hash,
+        capture_status=codex_session.capture_status,
+        capture_method=codex_session.capture_method,
+        capture_missing_reason=codex_session.capture_missing_reason,
     )
 
 
@@ -413,10 +413,8 @@ def _count_workset(tasks: tuple[TaskView, ...], attempts: tuple[AttemptView, ...
 def _workset_view(workset: Workset, runtime_state: RuntimeState) -> WorksetView:
     runtime_index = task_state_index(runtime_state, workset.workset_id)
     runtime_task_claims = task_claim_index(runtime_state, workset.workset_id)
-    raw_attempts = sorted(
-        task_attempts_for_workset(runtime_state, workset.workset_id),
-        key=_attempt_sort_key,
-        reverse=True,
+    raw_attempts = tuple(
+        reversed(task_attempts_for_workset(runtime_state, workset.workset_id))
     )
     attempts_by_task: dict[str, list[TaskAttemptRecord]] = {}
     for attempt in raw_attempts:

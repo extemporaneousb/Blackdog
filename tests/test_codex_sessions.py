@@ -431,6 +431,8 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(ref.turn_id, "turn-current")
         self.assertIsNotNone(ref.turn_started_at)
         self.assertEqual(ref.user_prompt_hash, prompt_hash)
+        self.assertEqual(ref.capture_status, "captured")
+        self.assertEqual(ref.capture_method, "exact_prompt_hash")
 
     def test_coverage_and_history_join_attempts_without_copying_prompt_text(self) -> None:
         linked_message = "Implement linked task."
@@ -705,10 +707,9 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(
             coverage["exact_reference_resolution_counts"],
             {
-                "incomplete_reference": 1,
                 "path_outside_codex_home": 1,
                 "session_missing": 1,
-                "thread_mismatch": 1,
+                "thread_mismatch": 2,
                 "turn_missing": 2,
             },
         )
@@ -875,6 +876,101 @@ class CodexSessionTests(CoreAuditTestCase):
         self.assertEqual(linked_turn["linked_attempt_ids"], [attempt.attempt_id])
         self.assertEqual(unlinked_turn["linked_attempt_ids"], [])
         self.assertEqual(coverage["counts"]["implementation_like_unlinked_turns"], 1)
+        self.assertEqual(
+            coverage["exact_reference_resolution_counts"],
+            {"resolved_legacy_prompt_hash": 1},
+        )
+
+    def test_legacy_foreign_session_ref_recovers_only_one_unique_hash_match(self) -> None:
+        message = "Recover only this legacy foreign turn."
+        session_path = _write_multi_turn_session(
+            self.codex_home,
+            thread_id="thread-legacy-foreign",
+            cwd=self.root.parent / "source-repo",
+            turns=(
+                {
+                    "turn_id": "turn-legacy-match",
+                    "started_at": "2026-05-04T19:00:00+00:00",
+                    "message": message,
+                },
+                {
+                    "turn_id": "turn-legacy-sibling",
+                    "started_at": "2026-05-04T19:05:00+00:00",
+                    "message": "Do not import this sibling turn.",
+                },
+            ),
+        )
+        receipt = create_prompt_receipt(message)
+        attempt = self._start_referenced_attempts(
+            "legacy-foreign",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-legacy-foreign",
+                    session_path=str(session_path.relative_to(self.codex_home)),
+                    user_prompt_hash=receipt.prompt_hash,
+                ),
+            ),
+        )[0]
+
+        # The helper's generated attempt receipt differs, so use the durable
+        # session-ref hash as the only legacy recovery key.
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual([row["turn_id"] for row in coverage["turns"]], ["turn-legacy-match"])
+        self.assertEqual(coverage["turns"][0]["linked_attempt_ids"], [attempt.attempt_id])
+        self.assertEqual(
+            coverage["exact_reference_resolution_counts"],
+            {"resolved_legacy_prompt_hash": 1},
+        )
+        self.assertEqual(
+            coverage["attempts"][0]["exact_reference_resolution"],
+            "resolved_legacy_prompt_hash",
+        )
+
+    def test_legacy_foreign_session_ref_imports_zero_turns_when_hash_is_ambiguous(self) -> None:
+        message = "A duplicated legacy prompt is ambiguous."
+        session_path = _write_multi_turn_session(
+            self.codex_home,
+            thread_id="thread-legacy-ambiguous",
+            cwd=self.root.parent / "source-repo",
+            turns=(
+                {
+                    "turn_id": "turn-legacy-ambiguous-a",
+                    "started_at": "2026-05-04T19:00:00+00:00",
+                    "message": message,
+                },
+                {
+                    "turn_id": "turn-legacy-ambiguous-b",
+                    "started_at": "2026-05-04T19:05:00+00:00",
+                    "message": message,
+                },
+            ),
+        )
+        receipt = create_prompt_receipt(message)
+        self._start_referenced_attempts(
+            "legacy-ambiguous",
+            (
+                CodexSessionRefRecord(
+                    thread_id="thread-legacy-ambiguous",
+                    session_path=str(session_path.relative_to(self.codex_home)),
+                    execution_prompt_hash=receipt.prompt_hash,
+                ),
+            ),
+        )
+
+        with patch.dict("os.environ", {"CODEX_HOME": str(self.codex_home)}, clear=False):
+            coverage = build_codex_coverage(self.profile)
+
+        self.assertEqual(coverage["counts"]["codex_user_turns"], 0)
+        self.assertEqual(
+            coverage["exact_reference_resolution_counts"],
+            {"legacy_prompt_hash_ambiguous": 1},
+        )
+        self.assertEqual(
+            coverage["attempts"][0]["exact_reference_resolution"],
+            "legacy_prompt_hash_ambiguous",
+        )
 
     def test_coverage_respects_until_bound_for_turns_and_attempts(self) -> None:
         old_message = "Implement windowed coverage."

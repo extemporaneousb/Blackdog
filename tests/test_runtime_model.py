@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
-from blackdog_core.backlog import finish_task, start_task, upsert_workset
+from blackdog_core.backlog import (
+    finish_task,
+    start_task,
+    task_resume_attempt_id,
+    upsert_workset,
+)
 from blackdog_core.runtime_model import load_runtime_model, scope_runtime_model
 from blackdog_core.snapshot import build_runtime_snapshot
-from blackdog_core.state import create_prompt_receipt, load_runtime_state, save_runtime_state
+from blackdog_core.state import (
+    create_prompt_receipt,
+    latest_task_attempt,
+    load_runtime_state,
+    save_runtime_state,
+)
 from tests.core_audit_support import CoreAuditTestCase
 
 
@@ -251,6 +262,119 @@ class RuntimeModelTests(CoreAuditTestCase):
         self.assertIsNone(model.worksets[0].claim)
         self.assertEqual(model.worksets[0].task_claims, ())
         self.assertEqual(model.worksets[0].attempts[0].elapsed_seconds, 15)
+
+    def test_latest_same_task_attempt_uses_durable_append_order(self) -> None:
+        upsert_workset(
+            self.profile,
+            {
+                "id": "attempt-order",
+                "title": "Attempt order",
+                "tasks": [
+                    {
+                        "id": "ORDER-1",
+                        "title": "Keep durable retry order",
+                        "intent": "select the last appended same-task attempt",
+                    }
+                ],
+            },
+        )
+        prompt_receipt = create_prompt_receipt(
+            "durable retry order",
+            source="unit-test",
+            mode="raw",
+        )
+        predecessor = None
+        for summary in ("older", "newer"):
+            resume_guards = {}
+            if predecessor is not None:
+                runtime = load_runtime_state(self.profile.paths)
+                runtime_workset = next(
+                    row for row in runtime.worksets if row.workset_id == "attempt-order"
+                )
+                task_state = next(
+                    row for row in runtime_workset.task_states if row.task_id == "ORDER-1"
+                )
+                self.assertIsNotNone(task_state.updated_at)
+                successor_id = task_resume_attempt_id(
+                    workset_id="attempt-order",
+                    task_id="ORDER-1",
+                    predecessor_attempt_id=predecessor.attempt_id,
+                    actor="codex",
+                    execution_prompt_hash=prompt_receipt.prompt_hash,
+                    execution_prompt_mode="raw",
+                    request_prompt_hash=prompt_receipt.prompt_hash,
+                    request_prompt_mode="raw",
+                )
+                resume_guards = {
+                    "attempt_id": successor_id,
+                    "expected_predecessor_attempt_id": predecessor.attempt_id,
+                    "atomic_start_kind": "resume",
+                    "expected_task_actor": "codex",
+                    "expected_execution_prompt_hash": prompt_receipt.prompt_hash,
+                    "expected_execution_prompt_mode": "raw",
+                    "expected_request_prompt_hash": prompt_receipt.prompt_hash,
+                    "expected_request_prompt_mode": "raw",
+                    "expected_task_updated_at": task_state.updated_at,
+                }
+            attempt = start_task(
+                self.profile,
+                workset_id="attempt-order",
+                task_id="ORDER-1",
+                actor="codex",
+                prompt_receipt=prompt_receipt,
+                **resume_guards,
+            )
+            finish_task(
+                self.profile,
+                workset_id="attempt-order",
+                task_id="ORDER-1",
+                attempt_id=attempt.attempt_id,
+                actor="codex",
+                status="failed",
+                summary=summary,
+            )
+            predecessor = attempt
+        state = load_runtime_state(self.profile.paths)
+        stored_workset = state.worksets[0]
+        shared_started_at = stored_workset.attempts[0].started_at
+        shared_ended_at = stored_workset.attempts[0].ended_at
+        rewritten_attempts = (
+            replace(
+                stored_workset.attempts[0],
+                attempt_id="ZZZ-older-attempt",
+                started_at=shared_started_at,
+                ended_at=shared_ended_at,
+            ),
+            replace(
+                stored_workset.attempts[1],
+                attempt_id="AAA-newer-attempt",
+                started_at=shared_started_at,
+                ended_at=shared_ended_at,
+            ),
+        )
+        rewritten_state = replace(
+            state,
+            worksets=(replace(stored_workset, attempts=rewritten_attempts),),
+        )
+        save_runtime_state(self.profile.paths, rewritten_state)
+
+        latest = latest_task_attempt(
+            rewritten_state,
+            "attempt-order",
+            "ORDER-1",
+        )
+        self.assertIsNotNone(latest)
+        assert latest is not None
+        self.assertEqual(latest.attempt_id, "AAA-newer-attempt")
+        model = load_runtime_model(self.profile)
+        self.assertEqual(
+            model.worksets[0].tasks[0].latest_attempt_id,
+            "AAA-newer-attempt",
+        )
+        self.assertEqual(
+            model.worksets[0].attempts[0].attempt_id,
+            "AAA-newer-attempt",
+        )
 
     def test_runtime_model_can_scope_to_one_workset(self) -> None:
         upsert_workset(

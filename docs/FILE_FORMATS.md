@@ -26,6 +26,8 @@ repo lifecycle family may create or manage:
 
 - `source/blackdog/`
 - `codex/task-context.jsonl`
+- `observability/lifecycle-v1.jsonl`
+- `prompts/sha256/<prompt-sha256>.txt`
 - `AGENTS.md` with a managed Blackdog contract section
 - `.codex/skills/<repo-slug>/SKILL.md`
 
@@ -39,6 +41,102 @@ Generated repo contracts require a `git status --short` closeout after
 `repo bind`, `repo install`, `repo update`, or `repo refresh`; repo-visible
 managed file changes are not durable until committed, landed, reverted, or
 explicitly reported.
+
+### `observability/lifecycle-v1.jsonl`
+
+Optional, product-layer, append-only lifecycle observations. This file is
+descriptive evidence only: it is not planning truth, runtime truth, task state,
+or a prerequisite for any operation. Prompt, repo lifecycle, fleet reporting,
+and task call sites may attempt to append after completing an operation. Every
+write boundary is best-effort; directory, lock, open, serialization, write,
+flush, fsync, capacity, and contention failures must leave the caller's result
+unchanged.
+
+Each JSONL row has:
+
+- `schema_version = 1`
+- `project_id`: SHA-256 identity for the canonical project root
+- `surface`: one shipped bounded command surface such as `prompt.preview`,
+  `repo.refresh`, `stats.read`, `task.land`, or `worktree.start`
+- `operation_key_hash`: SHA-256 of a bounded semantic operation key
+- `outcome = success | failed | blocked | partial | abandoned | unknown`
+- `reason = none | capacity | contention | io | operator | system |
+  validation | unknown`
+- `labels`: at most eight keys from the implementation-owned bounded label
+  registry
+- `unknown_label_count`: bounded count of dropped or normalized labels
+- `observation_id`: SHA-256 of the schema, project, surface, operation-key
+  hash, outcome, reason, normalized labels, and unknown-label count
+- `observed_at`
+
+`observed_at` is excluded from `observation_id`, so retrying the same semantic
+observation deduplicates instead of manufacturing another identity. Labels are
+enumerated, not free text. The `failure_class` label uses exactly the core
+runtime failure-class set; product observability does not invent a parallel
+failure taxonomy. Other bounded labels include normalized mutation phase,
+retryability, operation/task/attempt status, and applied/noop/dry-run result.
+Prompt/request/summary/note/error/command text and raw paths must never cross
+this storage boundary. When useful as identity, those values are represented
+only by bounded SHA-256 digests.
+
+The product adapter for typed or mapping-style operation results derives its
+stable key only from bounded operation, workset, task, attempt, action, next
+action, and status identities. It ignores prose, timestamps, commands, argv,
+branches, changed paths, and workspace/repo paths. It normalizes the richer
+runtime mutation phases into `none | pre_git | post_git | runtime | unknown`
+and returns the original operation result object unchanged. The actual landing
+repair surface is spelled `task.reconcile-landing`, matching the operation
+contract. The mapping is exhaustive against the product operation-result phase
+set: incomplete branch cleanup after worktree removal remains `post_git`, while
+runtime/event finalization phases remain `runtime`.
+
+`operation_status="closed"` is a structured non-success operation result, not
+a synonym for success. Observability reports it as `blocked` by default and
+uses a terminal `attempt_status` of `failed` or `abandoned` when that supplies a
+more precise bounded outcome. The successful `task.close` command emits
+`operation_status="succeeded"` and remains a successful observation even when
+it is closing a previously failed attempt.
+
+Rows are at most 1,024 bytes. The artifact is capped at 1,048,576 bytes and a
+write that would exceed the cap is skipped and reported as bounded in-process
+write-failure evidence. Writers use a product-local nonblocking lock; lock
+contention skips the observation immediately rather than waiting on the core
+runtime lock. Under the lock, writers reject duplicates, append one JSON row,
+flush, and fsync. Those bounded regular-file operations are synchronous; this
+contract guarantees fail-open result semantics and immediate lock contention,
+not a universal wall-clock latency bound for filesystem I/O. Process-local
+write-failure evidence is limited to 16 enum/hash-only rows and never includes
+exception text. Scalar process-health counters retain at most the 256 most
+recently observed project identities, so repeated missing or broken targets
+cannot grow memory without bound. When a project counter is evicted, its
+retained evidence is evicted with it; the smaller evidence ring may discard
+detail while preserving scalar counts. The process-health recorder is itself
+best-effort: a failure while recording a write failure or missing target is
+absorbed at the same fail-open boundary. A failure reading that process-local
+health also leaves reporting available, but increments bounded `read_failures`
+and degrades stream health rather than being interpreted as a healthy stream.
+
+Readers are bounded to the artifact cap and classify duplicate, malformed,
+oversized, old/future-schema, foreign-project, unknown-surface/outcome/label,
+truncated, permission, and other read failures without making `stats`
+unavailable. Valid rows are counted by bounded surface, outcome, reason, and
+label; raw row text is not copied into the stats read model.
+`stream_health = missing | degraded | healthy` describes only the
+readability and schema health of the pre-existing stream. It is not operation
+coverage: one valid `stats.read` row can make a stream healthy but cannot prove
+that task or repo operations were observed. Stats reads this report before
+best-effort stamping the current stats call. Duplicate rows are degraded rather
+than healthy. `capacity_pressure = 1` is derived from persisted size whenever
+the artifact is over cap or has less than one maximum row plus newline of
+remaining headroom; it therefore survives process restart even though the
+individual refused-write evidence is process-local.
+
+There is no rotation or schema migration in v1. An operator who no longer
+wants the optional evidence may remove the JSONL file and its adjacent lock
+file (or fallback lock directory); later successful writers recreate them.
+Capacity pressure remains visible until the artifact is deliberately removed
+or reduced. A future schema may add retention or rotation, but v1 does not
+silently discard or rotate observations.
 
 ## User-Local State Files
 
@@ -108,6 +206,157 @@ replace that entry with a full scan. `session` stores parsed session metadata,
 turn metadata, bounded message excerpts, environment issue classes/evidence
 excerpts when scanned, tool-call counts, timing, and token counters. It does not
 store full prompt or response transcripts.
+
+## Task Lifecycle Command Results
+
+Task lifecycle command results are product-layer read/output schemas. They are
+not stored as another canonical file and do not replace `runtime.json` or
+`events.jsonl`. JSON retains each command's established top-level wrapper
+(`task`, `task_show`, `recovery`, `landing`, `landing_reconciliation`,
+`closure`, `task_state`, or `cleanup`) and adds one uniform result inside it.
+
+Uniform fields are:
+
+- `operation`: stable task surface, such as `task.show` or `task.land`
+- `operation_status`: observed or mutation outcome, including `succeeded`,
+  `blocked`, `closed`, or `partial` where applicable
+- `task_status` and `attempt_status`: state after the operation
+- `disposition`: disposition of the post-operation `next_action`
+- `mutation_started`, `mutation_completed`, and `mutation_phase`
+- `failure_code`: a bounded operation failure code or null. Normal durable
+  attempt failures use the runtime failure classes; a pre-attempt `task begin`
+  refusal may additionally use `setup_guard` or `managed_skill_missing`.
+- `next_action`: exactly one typed next-action object
+
+`next_action` fields are:
+
+- `action_id`, `kind`, `disposition`, `reason_code`, `reason_detail`, and
+  `display`
+- `argv` and `command` for a primary executable command
+- `safety_class` and `mutation_class`
+- `choices`, a bounded list of complete action objects for `kind="choice"`
+- `alternatives`, complete non-primary action objects allowed only for
+  `kind="command"`
+- `required_inputs`, bounded input names present only for `kind="blocked"`
+
+Allowed kinds are `command`, `choice`, `complete`, and `blocked`. A `command`
+has exactly one nonempty argv. A `choice` has no primary argv and contains only
+complete choices. `complete` and `blocked` contain no executable argv, choices,
+or alternatives. `command` is the exact `shlex.join(argv)` rendering; `argv`
+remains authoritative. `display` and reason fields are not executable.
+
+`recommended_actions` and `recommended_commands` remain compatibility fields.
+They are not the typed execution contract. Legacy command templates preserve
+their former `command`, `reason`, and `disposition` keys and additionally carry
+`argv=null`, `executable=false`, `template=true`, and `deprecated=true`.
+Placeholders, combined status alternatives, and the legacy
+`task begin --prompt "..."` row must never be executed. Consumers execute only
+`next_action.argv`, or one complete argv from `choices` or `alternatives`.
+For every structured begin, show, recover, cancel, reopen, land,
+reconcile-landing, close, or cleanup result, `next_action` is the sole authority
+regardless of `operation_status`. Consumers execute exact argv or one complete
+bounded choice or alternative, stop for blocked or complete actions, and never
+guess from `display`, reason or error prose, summaries, or compatibility fields.
+Normal task text suppresses these compatibility fields and renders the
+operation result plus authoritative `next_action` before diagnostics; JSON
+retains them for older consumers.
+
+The `target_branch` selected and recorded in task state is the authority for
+landing and verification; consumers never assume it is `main` or replace it
+with the repository's primary branch.
+
+Mutation fields describe what actually happened. A runtime close followed by
+refused or skipped requested cleanup is a partial operation with phase
+`runtime_finalized_cleanup_pending`; it does not claim full completion. A
+cleanup no-op that proves both workspace and branch already absent reports that
+no mutation started or completed. This output truth does not rewrite historical
+attempt evidence. Cleanup that removes the workspace but cannot delete its
+proven task branch reports `operation_status="partial"`,
+`mutation_started=true`, `mutation_completed=false`, and phase
+`worktree_removed_branch_cleanup_pending`; the returned cleanup command is safe
+to retry. A completed Git/filesystem cleanup with an unconfirmed audit append
+uses `cleanup_event_finalization_pending`; its exact retry deterministically
+appends the missing event or proves the same event already exists. A successful
+cleanup that changed Git/filesystem state and appended evidence uses
+`git_and_filesystem_and_event_finalized`; an event-only retry uses
+`event_finalized`. Landing reconciliation uses `event_finalized` for event-only
+repair and `runtime_and_event_finalized` when both durable stores changed.
+
+`task.begin` may also return a typed partial after owned state was retained. A
+pre-attempt retained-envelope result has null task/attempt status,
+`mutation_started=true`, `mutation_completed=false`, phase `preflight`, the
+created workset/task ids, private prompt-artifact references, and a complete
+`retry_reserved_task_begin` next action. Its argv preserves supplied branch,
+base ref, path, model, reasoning-effort, and note overrides. It includes a
+separate request artifact whenever request and execution receipts differ in
+hash, mode, source, or artifact identity; hash equality alone does not collapse
+the roles. A post-reservation partial includes a bounded `worktree` identity
+with attempt id, branch, target, start commit, path, and
+`workspace_action="reserved"`. Its next action is derived from current
+durable evidence, normally `repair_task_start_evidence` when a deterministic
+row is missing. Diagnostic `error` and `error_type` fields contain no prompt
+body. Compatibility recommendations remain non-authoritative.
+
+Dirty or branch-ahead active tasks use blocked action
+`landing_evidence_required` until both `completion_summary` and
+`validation_evidence` are supplied. The action has no argv. A first
+`task land` request missing a nonblank summary or at least one validation row
+(`passed`, `failed`, or `skipped`) returns the same action with
+`mutation_started=false`, `mutation_completed=false`, and
+`mutation_phase="none"`; it creates no landing transaction and changes no
+canonical event, runtime, or Git state. Validation rows are caller evidence and
+are never synthesized.
+
+Durable landing reports the latest completed transaction phase as
+`mutation_phase`. The nine normal values are `landing_intent_recorded`,
+`landing_source_prepared`, `landing_canonical_commit_created`,
+`landing_target_updated`, `landing_temporary_cleanup_complete`,
+`landing_runtime_finalized`, `landing_land_event_recorded`,
+`landing_task_cleanup_complete`, and `landing_complete`. Abort progress uses
+`landing_abort_intent_recorded`,
+`landing_abort_temporary_cleanup_complete`, `landing_abort_superseded`,
+`landing_abort_runtime_finalized`, `landing_abort_close_event_recorded`, and
+`landing_abort_complete`.
+
+The canonical transaction `outcome` is `landing_in_progress`,
+`landed_complete`, `abort_in_progress`, or `abort_complete`. A normal
+in-progress transaction returns the exact `task land` argv built from its
+immutable intent. An abort-in-progress transaction returns the exact
+`task close` argv built from its immutable close request. A superseded abort
+re-enters the normal landing phase ledger. Terminal outcomes route through the
+post-operation task state; an `abort_complete` whose exact recorded candidate
+later becomes reachable from the target may route to bounded reconciliation
+proof. A retry verifies the appropriate ledger and its Git/runtime/event
+postconditions before advancing; an exact completed retry does not create a
+commit, rewrite runtime, or append event bytes.
+
+Once a landing transaction exists, `task land` may omit closeout fields and
+replay the complete immutable request from the transaction. This is distinct
+from a first request, which must supply its own summary and validation evidence;
+Blackdog never reconstructs those values from task titles or diagnostic prose.
+
+Task recovery payloads include typed `branch_reference` and
+`target_branch_reference` evidence with `state` (`exists`, `missing`,
+`metadata_missing`, or `error`), inspected ref, argv, return code, and bounded
+detail. `reference_issue_code`/`reference_issue_detail` determine the blocked
+repair action. Commit proof uses the same typed distinction: Git's explicit
+missing result is not collapsed with repository, input, or execution errors.
+Cleanup and landing reconciliation stop before mutation when required
+inspection evidence is in the `error` state. Resume payloads keep both execution
+and request hashes, sources, and modes plus `resume_lineage`; only verified
+replayable files can produce a same-envelope begin argv. That argv carries
+expected actor/hash/mode values, and existing-envelope begin independently
+compares incoming receipts with durable lineage before mutation even when those
+flags are omitted. New task-state writes persist the current envelope `actor`;
+older rows without it remain readable and fall back to the latest task-state
+event or predecessor attempt for attribution. Cancel and reopen require an
+explicit actor and update that durable owner; active-attempt close and land
+remain owned by the attempt actor.
+
+Lifecycle Git/worktree errors are typed in the product layer and map to the
+bounded core failure-class values. Classification is based on exception type,
+not diagnostic text. A generic or legacy error maps to `unknown` even if its
+message happens to contain words used by an older classifier.
 
 ## `blackdog.toml`
 
@@ -297,6 +546,12 @@ File-backed runtime mutations hold an adjacent interprocess lock across the
 load/merge/save transaction. The POSIX lock file is `runtime.json.lock`; the
 non-`fcntl` stdlib fallback uses `runtime.json.lockdir`. These are coordination
 artifacts only, not planning truth or runtime truth.
+The lock resolves directory and file symlinks before choosing both its
+reentrancy identity and adjacent lock location. It is reentrant only for the
+same resolved target path and thread, allowing a conforming `RuntimeStore.save`
+implementation to delegate to `JsonRuntimeStore.save` without recursively
+deadlocking. The outermost acquisition retains the real interprocess lock, so
+other threads and processes remain serialized.
 
 Each runtime workset row contains:
 
@@ -326,6 +581,7 @@ Each task-state row contains:
 
 - `task_id`
 - `status`
+- optional `actor`
 - optional `updated_at`
 - optional `note`
 - optional `failure_class`
@@ -370,22 +626,113 @@ Each attempt row contains:
 - optional `operator_issue`
 - optional `setup_receipt`
 
+Within one runtime workset, `attempts` is append ordered. The last matching row
+is the authoritative latest attempt for one task, including when multiple
+attempts share the same second-resolution timestamps or have lexically
+inverted generated ids. Updating an existing attempt preserves its position;
+creating a successor appends a new row. Task recovery, reconciliation
+eligibility, and runtime-model task views use this same order.
+
 `commit`, when present, is the task-branch head Blackdog landed or closed
 from. On successful `worktree land`, it may be an internal prep commit created
 after auto-staging dirty task-worktree changes. `landed_commit`, when present,
 is the canonical landed commit Blackdog created on the target branch.
-`task reconcile-landing --apply` may correct a latest failed or blocked attempt
-to `status = "success"`, populate its proven `landed_commit` and canonical
-changed paths, and change its task-state row to `done`. The correction preserves
-attempt timing, lineage, summary, validations, prompt/session references, and
-source commit. It clears failure/recovery flags only after product-layer Git
-proof succeeds; prior terminal events remain unchanged.
+`task reconcile-landing --apply` may correct a latest historical failed or
+blocked attempt to `status = "success"`, populate its proven `landed_commit` and
+canonical changed paths, and change its task-state row to `done`. A terminal
+native `abort_complete` may use the narrower exact-candidate path described
+under landing events; that is the only reconciliation eligibility for an
+abandoned attempt. The correction preserves attempt timing, lineage, summary,
+validations, prompt/session references, and source commit. It clears
+failure/recovery flags only after product-layer Git proof succeeds; prior
+terminal events remain unchanged.
+
+Landing transaction progress is not added to an attempt row. It is reconstructed
+from `worktree.landing.phase` events keyed to the attempt, so
+`runtime.json` remains schema v3. An incomplete transaction may already have a
+terminal successful runtime row after `runtime_finalized`; `task land` may
+re-enter that same attempt to finish its event and cleanup phases even though
+the task/workset claims have been released.
 
 `setup_receipt`, when present, is a structured task-start receipt. It records
-`schema_version`, `status`, `task_class`, `blockers`, and `probes`, plus optional
-`skill_provenance`. Start guards and handler setup probes use the receipt to
-show which startup checks ran, what was blocked, and which worktree-local
-runtime paths were prepared.
+`schema_version`, `status`, `task_class`, `blockers`, and `probes`, plus handler
+summary paths/modes and optional `skill_provenance`, `atomic_start`, and
+`worktree_start`. Start guards and handler setup probes use the receipt to show
+which startup checks ran, what was blocked, and which worktree-local runtime
+paths were prepared.
+
+Normal initial and ordinary-resume starts record `setup_receipt.worktree_start`
+as:
+
+```json
+{
+  "schema_version": 1,
+  "base_ref": "main",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "primary_worktree": "/absolute/canonical/repo"
+}
+```
+
+The object has exactly these four fields. `base_commit` equals the attempt's
+`start_commit`; `primary_worktree` must already be an absolute canonical path,
+not merely resolve to one through `..` or a symlink. `base_ref` preserves the
+operator-selected ref even when repair happens after that ref moves. A missing
+or malformed receipt is not guessed from current Git state.
+
+Deterministic successor starts record `setup_receipt.atomic_start` as:
+
+```json
+{
+  "schema_version": 2,
+  "attempt_id": "task-1-resume-0123456789ab",
+  "expected_predecessor_attempt_id": "task-1-abcdef012345",
+  "start_kind": "resume",
+  "expected_task_actor": "codex",
+  "expected_execution_prompt_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "expected_execution_prompt_mode": "skill",
+  "expected_request_prompt_hash": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "expected_request_prompt_mode": "raw",
+  "expected_task_updated_at": "2026-07-16T12:00:00+00:00",
+  "workset_claim_created": true
+}
+```
+
+`start_kind` is `resume` for an ordinary same-envelope restart and `adoption`
+for a retained-workspace successor. Ordinary resume ids are derived from the
+workset, task, predecessor, durable actor, and execution/request prompt lineage;
+adoption keeps its adoption-derived successor id. `expected_task_updated_at`
+is the guarded task-state generation. `workset_claim_created` distinguishes a
+claim created by this start from an exact compatible claim it reused. Every
+retry independently derives that boolean from the canonical runtime claim's
+timestamp and note; the receipt is evidence to verify, not an authority to
+trust.
+
+For ordinary resume, one exact predecessor `task.finish` row is the native
+append-order boundary. Only scoped `task.cancel`/`task.reopen` rows after that
+boundary may update the resume actor and task generation, so transitions that
+share the predecessor's second-precision timestamp remain unambiguous. More
+than one matching finish row is conflicting proof and blocks before successor
+reservation. Zero matching rows alone selects the bounded legacy timestamp
+fallback for historical ledgers.
+
+The core checks this receipt's inputs inside the same runtime mutation that
+reserves the successor. The predecessor must still be the latest appended
+same-task attempt and terminal, the task must still be restartable with the
+same durable actor and `updated_at`, both predecessor and incoming prompt
+receipts must match the guarded hashes and modes, and an ordinary resume id
+must match its deterministic derivation. An exact retry validates and reuses
+the successor, claims, and append-once start events. A conflict fails before
+any attempt, claim, or core start-event mutation; the product layer then removes
+the new worktree and branch it created for that failed start.
+
+Exact start repair is append-only and serialized by the attempt lifecycle
+lock. Before core event, workspace, handler, or Git mutation, product preflight
+compares canonical paths, worktree registration, branch/HEAD/start commit,
+clean status, and the live handler plan with the receipt. Handler comparison
+normalizes transient create/ensure/validate verbs and ignores action order, but
+preserves multiplicity, handler id and kind, target, status, and summary paths.
+A conflict leaves planning, runtime, events, prompt artifacts, handler outputs,
+refs, registrations, and worktrees unchanged.
 
 New skill-mode task starts record `setup_receipt.skill_provenance` as:
 
@@ -467,6 +814,33 @@ Codex's own dialogue/session storage:
 - optional `turn_started_at`
 - optional `user_prompt_hash`
 - optional `execution_prompt_hash`
+- optional `capture`
+
+New normal `task begin` rows with `CODEX_THREAD_ID` record `capture` as:
+
+```json
+{
+  "status": "captured",
+  "method": "exact_active_turn",
+  "missing_reason": null
+}
+```
+
+`status` is `captured` or `missing`. A captured row has one method,
+`exact_prompt_hash` or `exact_active_turn`, plus an exact `session_path` and
+`turn_id`. A missing row has no method or turn id and one bounded reason:
+`session_path_missing`, `session_missing`, `session_unreadable`,
+`thread_mismatch`, `prompt_hash_ambiguous`, `no_open_turn`,
+`multiple_open_turns`, or `capture_error`. Older rows without `capture` remain
+valid legacy references.
+
+Capture examines only the current `CODEX_THREAD_ID` and its exact live session
+path. One current open turn wins over a completed sibling that happens to match
+the prompt receipt. Otherwise a unique prompt-hash match is accepted when it
+identifies the open turn, or when the session has no open turn. Blackdog never
+falls back to the latest completed turn and never copies sibling turns into the
+attempt. Every lookup and parse failure is fail-open: the bounded missing row
+is evidence only and cannot block or roll back task creation.
 
 `session_path` is relative to `$CODEX_HOME` when Blackdog can resolve it.
 Blackdog does not copy Codex prompt/response transcripts into runtime state.
@@ -478,6 +852,7 @@ lineage Blackdog actually ran:
 - `recorded_at`
 - optional `source`
 - optional `mode`
+- optional `replay_artifact_path`
 - optional `text`
 
 `user_prompt_receipt`, when present, is one JSON object with the raw user
@@ -487,10 +862,44 @@ request lineage Blackdog received before any prompt tuning:
 - `recorded_at`
 - optional `source`
 - optional `mode`
+- optional `replay_artifact_path`
 - optional `text`
 
-New v3 attempt writes normally omit `text` and keep only hashes, sources, and
-Codex session refs. Legacy v2 rows with stored `text` remain readable.
+New task starts omit `text` from `runtime.json` and persist the normalized full
+request and execution text as immutable content-addressed files under the
+configured shared control root. `replay_artifact_path` is the control-root-
+relative `prompts/sha256/<prompt_hash>.txt` address; equal normalized content
+deduplicates even when the prompt modes or original sources differ. Each file
+is UTF-8, contains no added trailing newline, is at most 1,048,576 bytes, and is
+created atomically with mode `0600`; its artifact directories use mode `0700`.
+An existing address is verified rather than overwritten. Replay re-verifies
+the relative address, regular/private file shape, size, UTF-8 normalization,
+and SHA-256 content before emitting an executable resume command.
+
+The structured `task begin` result exposes
+`execution_prompt_replay_artifact_path` and
+`user_prompt_replay_artifact_path`. Agent-owned request and execution temporary
+inputs may both be deleted only when both fields are nonempty. If either field
+is absent or empty, both inputs must be preserved; operation status or prose is
+not a substitute for that two-field proof.
+
+These files intentionally contain full local prompt text, including the raw
+user request and any separately composed or tuned execution prompt. They can
+therefore contain secrets or other sensitive input. They are control state,
+not Git content: Blackdog never writes them into a source or task worktree and
+does not include their text in runtime/events, observability, or attempt-table
+output. Task/worktree cleanup retains them so a terminal task can be resumed.
+There is no automatic prompt-artifact garbage collection or expiry; confirmed
+`repo unbind` removes them only when it removes the configured control
+directory, while `--keep-control-dir` and protected external control dirs
+retain them. Deliberate control-directory removal is the other deletion path.
+
+Older rows without `replay_artifact_path` remain valid and may use their
+original verified source file for compatibility. Once an artifact path is
+recorded, a missing, non-private, malformed, oversized, or hash-mismatched
+artifact is a typed lineage failure; Blackdog does not fall back to the
+original source or reconstruct the file. Legacy v2 rows with stored `text`
+also remain readable.
 
 Allowed prompt modes:
 
@@ -579,14 +988,153 @@ Current shipped write path:
 - `task.claim`
 - `task.cancel`
 - `task.reopen`
+- `task.runtime-transition.request`
+- `task.runtime-transition.decision`
 - `task.release`
+- `task.stale-claim-release.request`
+- `task.stale-claim-release.decision`
 - `task.start`
+- `task.finalization.request`
+- `task.finalization.decision`
 - `task.finish`
 - `task.landing.reconciled`
 - `worktree.start`
+- `worktree.landing.phase`
+- `worktree.landing.abort`
+- `worktree.landing.abort-cleanup`
+- `worktree.landing.abort-superseded`
+- `worktree.landing.abort-runtime-finalized`
+- `worktree.landing.abort-close-event-recorded`
+- `worktree.landing.abort-complete`
+- `worktree.adoption.completion.intent`
+- `worktree.adoption.complete`
 - `worktree.land`
 - `worktree.close`
 - `worktree.cleanup`
+
+Deterministically identified event rows use strict canonical JSON semantics.
+JSON object order and tuple/list input spelling do not change semantic
+identity, while booleans, integers, and floating-point numbers remain distinct.
+Non-string object keys, non-finite numbers, and values outside the JSON data
+model are rejected before append. An exact existing row is a durable no-op; an
+existing identity with different type, actor, or payload is a storage conflict.
+
+Initial and ordinary-resume core start rows use deterministic ids derived from
+the namespace `blackdog.task.start-event/v1`, attempt id, and event type. The
+owned types are `task.claim`, `task.start`, and conditional `workset.claim`
+only when this start created the workset claim. Product `worktree.start` ids use
+`blackdog.worktree.start.initial/v1` or
+`blackdog.worktree.start.resume/v1` plus the attempt id. Each owned id occurs
+exactly once: a missing row is repairable from canonical durable state, while a
+duplicate or conflicting row blocks. Historical nondeterministic event rows
+remain readable but are not identities that repair may adopt or rewrite.
+
+When `finish_task` receives a `finalization_id`, it uses a durable two-store
+protocol without changing runtime schema v3. Before runtime mutation it appends
+one deterministic `task.finalization.request` for the attempt. That request
+binds the finalization id, actor, task identity, terminal status, result fields,
+validation/residual/follow-up rows, commit identities, elapsed-time policy,
+failure fields, issue flags, and note policy. A conflicting retry cannot replace
+the request.
+
+While holding the runtime lock, Blackdog appends a versioned
+`task.finalization.decision`. Its identity is derived from the request identity
+and a hash of the relevant pre-runtime workset row. The decision binds the
+stable `ended_at`, task/workset claim-release decisions, the target task's
+pre-state identity, the expected terminal task identity, and the expected
+post-runtime workset hash. The runtime replacement then occurs under that same
+lock; decision-owned `task.release`, optional `workset.release`, and
+`task.finish` rows append only after replacement, before the runtime lock is
+released.
+
+An exact retry can therefore converge in both directions. A decision left by a
+failed pre-replacement write can drive the pending runtime mutation; a terminal
+runtime with missing trailing rows can repair only the rows owned by its
+matching decision. If the runtime is later rolled back while decision-owned
+events remain, the matching target-task slice is restored without removing
+unrelated newer claims or attempts. Conversely, when a successful release is
+followed by a later workset claim, retry still records the missing historical
+`workset.release` from the matching decision and leaves the newer claim intact.
+An uncommitted stale decision has no matching terminal identity and cannot emit
+release or finish rows. Exact completed retries do not rewrite `runtime.json`
+or append event bytes. Calls without `finalization_id` retain the legacy
+single-attempt finalization behavior.
+
+`task cancel` and `task reopen` use the same request/decision/owned-event
+shape without changing runtime schema v3. A deterministic
+`task.runtime-transition.request` binds the exact actor, source and target
+status, summary, and failure/issue fields to the target task's pre-runtime
+identity. The request id includes both that pre-runtime identity and the
+canonical request-semantics hash, so even a retry interrupted immediately
+before request append remains bound to one exact generation. Its deterministic
+`task.runtime-transition.decision` binds the
+request hash, pre- and post-runtime task identities and workset hashes, the
+stable `updated_at`, the exact target runtime row, and the one owned
+`task.cancel` or `task.reopen` event. The runtime row is replaced under the
+runtime lock and the owned event is appended once after that replacement.
+
+An interrupted exact retry selects the decision whose pre-identity matches
+the still-unmodified runtime or whose post-identity matches the already-written
+runtime. It then completes only the missing runtime or owned-event stage.
+Different request semantics against a reserved source or current terminal
+identity are a hard conflict. Repeated cancel/reopen cycles get distinct
+decision generations even when several calls occur within one
+second-resolution clock tick. A completed exact retry changes neither
+`runtime.json` nor `events.jsonl`.
+
+The pending-transition read model validates every request generation, not only
+the newest row. Each request may own at most one decision; at most one
+request/decision generation may lack its owned event, and that generation must
+be the latest request. A duplicate decision or an older incomplete generation
+hidden by later rows is a commandless ledger conflict. Runtime and planned
+workset merge paths must preserve the pending target's task state, claim, and
+attempt slice; a workset update that overwrites or removes that task is rejected
+before the planning file is saved.
+
+Stale-claim release is a separate deterministic transaction for the narrow
+case where a task claim remains but no active attempt can close it. A
+`task.stale-claim-release.request` binds the exact target task/claim, terminal
+attempt slice, task state, complete pre-claim set, requested terminal status,
+summary/note, actor, and failure fields. Its id is derived from the workset and
+task ids, the canonical pre-target identity, and the canonical request hash. A
+`task.stale-claim-release.decision` binds that request to one stable
+`released_at`, the derived pre/post target and claim-set projections, the
+runtime workset hashes, optional repaired task row, the decision to release the
+workset claim, and the deterministic ids and complete payloads of its owned
+`task.release` and optional `workset.release` rows.
+
+Request and decision rows are appended while the runtime lock is held, before
+runtime replacement. Owned release rows append after replacement and before
+that lock is released. An interrupted generation is therefore in exactly one
+of these observable stages: request recorded, decision recorded, runtime
+recorded, task event recorded, or complete. Exact retries carry the request id
+and, only after it is durable, the decision id. They may repair only that
+generation. Different semantics, an invalid or superseded guard, a duplicate
+row, a foreign type/actor/id/payload, a projection that relies on loose
+boolean/integer equality, or runtime matching neither recorded side is a
+commandless evidence conflict. A completed exact retry is a byte-for-byte
+runtime/event no-op until later progress; after later progress the old guarded
+action is rejected rather than reserving a new generation.
+
+Because the decision owns the whole claim-set projection, its pending read
+model is workset-scoped and names the owning task. Claim-mutating starts and
+finishes, and product `task begin`, `task land`, and `task close`, stop before
+workspace, Git, claim, attempt, or event mutation and return that owner's exact
+retry action. `task show` and read-only `task recover` on a sibling expose the
+same action. A task-state-only transition or landing reconciliation for a
+different task remains allowed because it cannot alter the reserved target or
+claim set. Cancel/reopen on the owning task is blocked by the stale-release
+action.
+
+Task-scoped runtime mutations never reconcile planning membership. At their
+runtime linearization point they atomically re-read current planning, reject a
+target removed by a winning workset upsert, and preserve every unrelated
+runtime state, claim, and attempt row observed under the lock. Only
+`upsert_workset` may prune membership under the planning-to-runtime lock order;
+it rejects removal of claimed, active, nonterminal, or pending targets. A
+quiescent removed task may lose its current task-state row, but every terminal
+attempt row remains durable history for audit and statistics, including legacy
+terminal rows without `ended_at`.
 
 Current `worktree.start` payloads record:
 
@@ -601,9 +1149,11 @@ Current `worktree.start` payloads record:
 - `prompt_hash`
 - optional `prompt_source`
 - optional `prompt_mode`
+- optional `prompt_replay_artifact_path`
 - `user_prompt_hash`
 - optional `user_prompt_source`
 - optional `user_prompt_mode`
+- optional `user_prompt_replay_artifact_path`
 - `workspace_blackdog_path`
 - optional `runtime_mode`
 - optional `source_mode`
@@ -611,8 +1161,177 @@ Current `worktree.start` payloads record:
 - `setup_receipt`
 - `handler_actions`
 
+For repairable starts, `handler_actions` is reconstructed from the durable
+setup probes rather than copied from a new execution result. Successful probes
+project to stable `validated` actions while ids, kinds, normalized verbs,
+targets, messages, timing fields, and setup summary paths remain bound by the
+receipt/event contract. The event stores prompt hashes and private replay
+references, never prompt bodies. An exact completed retry leaves runtime and
+event bytes and metadata unchanged. `task land`, `task close`, and `task
+cancel` refuse to terminalize an initial or ordinary-resume attempt until all
+owned start evidence is complete.
+
+`worktree.landing.phase` is the product-layer durable landing ledger. Every
+payload records:
+
+- `schema_version`
+- deterministic `transaction_id` keyed to one attempt
+- `workset_id`
+- `task_id`
+- `attempt_id`
+- `phase`
+- `data`, containing the immutable intent or bounded phase proof
+
+Allowed phases, in strict order, are:
+
+1. `intent_recorded`
+2. `source_prepared`
+3. `canonical_commit_created`
+4. `target_updated`
+5. `temporary_cleanup_complete`
+6. `runtime_finalized`
+7. `land_event_recorded`
+8. `task_cleanup_complete`
+9. `complete`
+
+`temporary_cleanup_complete` concerns only the deterministic temporary landing
+worktree. It does not mean the task source worktree or branch was removed;
+those remain available until `task_cleanup_complete`.
+
+For `intent_recorded`, `data` binds the actor, summary, validations, residuals,
+follow-ups, note, cleanup choice, source worktree/branch and commit state,
+target branch/base, deterministic temporary-worktree identity, canonical
+commit-message inputs, and changed-path/source evidence. For later phases,
+`data` carries the bounded proof needed to verify that phase. The intent row is
+appended, flushed, and fsynced before source preparation or any other Git
+mutation. An exact retry may reuse it; a retry that changes any bound value is
+a semantic conflict and stops before mutation.
+
+Each phase has a deterministic event id derived from the transaction and phase.
+The rows must form one exact prefix of the ordered phase list; duplicates,
+gaps, reordering, or conflicting payloads block further mutation. Phase events
+are durable evidence, not permission to skip verification: a retry re-proves
+the recorded source commit, canonical commit, target relationship, temporary
+cleanup, runtime result, landing event, and task cleanup as applicable before
+continuing. Target proof is compare-and-swap against the intent base or proves
+that the recorded canonical commit is already represented. It never authorizes
+an implicit pull, reset, or overwrite.
+
+The task source worktree and branch remain available until both
+`runtime_finalized` and `land_event_recorded` are proven. Task source cleanup is
+recorded only afterward by `task_cleanup_complete`; `--keep-worktree` records
+intentional retention as that phase's completion rather than leaving the
+transaction unfinished. Landing, close, cleanup, and reconciliation apply for
+one attempt share a product-layer operation lock. The lock is coordination,
+not planning/runtime truth, and does not add a `runtime.json` field.
+
+### Workspace adoption receipts and completion events
+
+An adopted successor stores `setup_receipt.workspace_adoption` with schema
+version, deterministic adoption/successor ids, predecessor attempt/status and
+abort transaction, predecessor canonical candidate and source commit/tree,
+retained branch/path, target branch and target commit at adoption, observed
+relation, copied actor and execution/request prompt hashes/sources/modes, and
+the predecessor setup-receipt hash. Its `setup_receipt.atomic_start` binds the
+deterministic core reservation. Exact `workset.claim` (only when created),
+`task.claim`, `task.start`, and product `worktree.start` rows are append-once;
+missing rows are repaired by the exact guarded `task begin`, while conflicting
+rows block every terminalizing surface.
+
+`worktree.adoption.completion.intent` is deterministic per successor and is
+durable before successor runtime finalization. Its payload has the exact field
+set:
+
+- `schema_version`, `adoption_id`, `successor_attempt_id`,
+  `predecessor_attempt_id`, and `abort_transaction_id`
+- predecessor `canonical_candidate`
+- completion `source_commit`, `source_tree_hash`, and `landed_commit`
+- retained `branch`, `worktree_path`, and `target_branch`
+- `target_commit_at_completion`, the immediate final target read containing
+  `landed_commit`
+- `native_target_updated_commit`, the exact native `target_updated` phase
+  commit for `successor_landing`, otherwise null
+- exact ordered `changed_paths`, boolean `cleanup_requested`, and
+  `completion_route`
+- route-specific bounded `source_attribution`
+- `native_landing_transaction_id` and `native_land_event_id` for
+  `successor_landing`, otherwise null
+
+Allowed routes are `predecessor_candidate_containment` and
+`successor_landing`. The special route rederives cleanup, paths, candidate,
+source tree, and exact-original or bounded patch-equivalent attribution from
+the predecessor abort/landing transaction. The normal route re-verifies the
+native source, canonical commit, target update, temporary cleanup, runtime,
+and exact native `worktree.land` phase; its nested attribution binds that
+transaction and permits successor-only work. Every field and nested object is
+strictly rederived on retry. Unknown, missing, extra, mistyped, or
+self-consistent-but-noncanonical data blocks mutation and cleanup.
+
+`worktree.adoption.complete` is deterministic per successor. It repeats the
+validated completion-intent identity and proof, adds `complete=true`, and
+points `land_event_id` to the one synthetic special-route `worktree.land` or
+the existing native successor event. Normal landing never appends a second
+land event. The marker is proven after runtime and land evidence but before
+task-source cleanup. A crash leaves `task show` pointing to the exact repair;
+after the marker and deterministic cleanup converge, another retry changes no
+runtime, event, Git, or filesystem bytes.
+
+### Landing abort events
+
+Closing a normal landing transaction before `target_updated` creates a durable
+abort branch. Its six event types are:
+
+1. `worktree.landing.abort`
+2. `worktree.landing.abort-cleanup`
+3. `worktree.landing.abort-superseded`
+4. `worktree.landing.abort-runtime-finalized`
+5. `worktree.landing.abort-close-event-recorded`
+6. `worktree.landing.abort-complete`
+
+The terminal abort path has the strict order `abort` -> `abort-cleanup` ->
+`abort-runtime-finalized` -> `abort-close-event-recorded` -> `abort-complete`.
+The only alternate path is pre-finalization supersession: `abort` ->
+`abort-cleanup` -> `abort-superseded`, after which normal landing phase events
+resume. Supersession cannot coexist with the runtime, close-event, or complete
+abort stages. Duplicate, reordered, gapped, noncanonical, or actor-conflicting
+abort rows are ledger corruption and block mutation.
+
+The first abort row binds the source commit/tree/worktree/branch, observed
+target, optional exact canonical candidate, temporary landing worktree, and the
+complete close request. The immutable close request contains actor, terminal
+status, summary, validations, residuals, follow-ups, note, cleanup request,
+failure/recovery fields, prompt/operator issue flags, and its deterministic
+core `finalization_id`. Every close retry must match it byte-for-byte
+semantically. An incomplete abort therefore routes to the exact recorded
+`task close` argv; it never reconstructs closure evidence from prose.
+
+`abort-cleanup` proves removal of only the deterministic temporary landing
+worktree and registration. The task source worktree and branch are retained,
+even when the close request included `--cleanup`, so a successor or a late
+landing reconciliation still has source proof. The deterministic
+`worktree.close` row records `cleanup_performed=false` and source retention.
+`abort-complete` alone is not disposability proof. `task cleanup` refuses an
+unlanded retained source so adoption remains possible; removal requires
+ordinary landed or patch-equivalent proof, or exact validated
+adoption-completion proof. Only independently authorized removal appends exact
+`worktree.cleanup` evidence.
+
+If the target contains the exact recorded canonical candidate after abort
+cleanup but before the abort's core `task.finalization.request` exists,
+`abort-superseded` records that proof and normal landing resumes. The core
+request is the point of no return: after it is durable, target movement cannot
+supersede the close, and exact `task close` retries must finish the abort. Core
+finalization first converges its request/decision, terminal runtime write, and
+decision-owned release/finish events. Only then may
+`abort-runtime-finalized` be recorded. Blackdog next appends the deterministic
+`worktree.close` row, records `abort-close-event-recorded`, and finally records
+`abort-complete` with `source_retained=true`. Runtime may therefore already be
+terminal while the product transaction remains `abort_in_progress`; only
+`abort-complete` is the terminal abort-ledger outcome.
+
 Current `worktree.land` payloads record:
 
+- `transaction_id` for transactional landing rows
 - `workset_id`
 - `task_id`
 - `attempt_id`
@@ -622,6 +1341,57 @@ Current `worktree.land` payloads record:
 - `changed_paths`
 - `commit_message`
 - `cleanup`
+
+`transaction_id` connects the canonical landing receipt to its phase ledger.
+Historical `worktree.land` rows written before transactional landing remain
+valid without it; manual `task reconcile-landing` remains the compatibility
+proof/apply surface for those historical attempts. Direct read-only `task
+show`, read-only `task recover`, and CLI `worktree show` may add a
+`legacy_reconciliation_detection` object to their result. Internal recovery
+reads, mutation closeout reads, tables, stats, registry scope, and Codex/session
+reads do not run this detector.
+
+`legacy_reconciliation_detection` is ephemeral read evidence, not a durable
+file or event schema. Its bounded fields are:
+
+- `state`: exactly `ready`, `none`, `unproven`, `ambiguous`, `inconclusive`, or
+  `error`
+- nonempty bounded `reason_code` and `reason_detail`
+- `candidate_count`, optional full `candidate_commit`, and a bounded
+  `candidate_commits` list
+- `scan_limit = 64`, `inspected_commit_count <= 64`, and the optional exact
+  `sentinel_commit`
+- canonical `proof` only when `state = "ready"`
+
+Eligibility is the exact latest terminal failed or blocked legacy attempt with
+no active attempt, task claim, later attempt, recorded landing,
+workspace-adoption marker, or native landing transaction. The product layer
+resolves the target and exact `attempt.start_commit`, reads target's first
+parent with a 65-row maximum so 64 commits after the sentinel plus the sentinel
+fit, and stops as `inconclusive` if the sentinel is not observed. A plausible
+candidate need only reference the exact workset/task/attempt identity; one
+shared canonical proof then enforces the single parent, success/target/actor
+trailers, changed-path equality, target reachability, historical structured
+actor-mismatch compatibility evidence when required, and source patch
+equivalence when the source resolves. Zero plausible commits is `none`, more
+than one is `ambiguous`, a singleton contract failure is `unproven`, and an
+operational Git failure is `error`.
+
+Only `ready` emits one typed read-only next action with exact
+`task reconcile-landing` dry-run argv. Detection never adds `--apply`, writes a
+detector event, changes runtime, or mutates refs, the index, or worktree state.
+
+A nonterminal native transaction is never a reconciliation candidate. Its
+structured next action resumes exact `task land`, or exact `task close` after
+abort intent. The narrow native exception is a terminal `abort_complete` whose
+recorded canonical candidate later becomes reachable from the target. That
+repair must name the exact recorded candidate and re-prove the full abort chain
+plus retained-source or exact independently authorized cleanup evidence. It may repair native
+blocked/failed aborts and is the only reconciliation eligibility for an
+abandoned attempt; arbitrary abandoned historical rows are not eligible. Apply
+also appends the exact transactional `worktree.land` row and, when the landing
+intent requested cleanup, removes the retained source only after that landing
+proof independently authorizes cleanup.
 
 `commit_message` is the canonical landed-commit message Blackdog wrote. Today
 that message carries `Blackdog-Workset`, `Blackdog-Task`, `Blackdog-Attempt`,
@@ -656,7 +1426,72 @@ idempotent by `reconciliation_id`; a retry may append a missing event after an
 already-completed runtime correction but does not add a second matching event.
 Historical `task.finish` and `worktree.close` rows are retained unchanged.
 
-Current `worktree.close` payloads record:
+#### Standalone close transaction
+
+A standalone `task close` or `worktree close` first appends one strict
+schema-v1 `worktree.close.request` before core runtime finalization, Git
+cleanup, or the terminal `worktree.close` receipt. The request event id is
+derived from workset, task, and attempt. Its `finalization_id`,
+`close_event_id`, and optional `cleanup_event_id` are derived from that exact
+identity and are re-derived while reading; a retry cannot substitute them.
+There is at most one request/event generation for an attempt.
+
+The request payload contains exactly:
+
+- `schema_version = 1`, `close_request_id`, `finalization_id`,
+  `close_event_id`, and optional `cleanup_event_id`
+- `workset_id`, `task_id`, `attempt_id`, and `actor`
+- terminal `status`, nonempty `summary`, `validations`, `residuals`,
+  `followup_candidates`, and optional `note`
+- `failure_class`, `recovery_action`, `prompt_issue`, and `operator_issue`
+- `cleanup_requested`
+- `pre_close_projection`, the frozen branch, target, source path,
+  registration, source HEAD, changed paths, dirty state, and explicit cleanup
+  eligibility/disposition/proof/reason
+
+Schema-v1 rows use exact keys, exact booleans, supported status values, and
+canonical text/list shapes. Blackdog scans recognizable v1 request and close
+rows globally before task filtering. A duplicate, orphan, wrong-type,
+wrong-actor, wrong-id, noncanonical, or conflicting deterministic-id row is
+ledger corruption, not a legacy fallback.
+
+The transaction then converges the deterministic core
+`task.finalization.request` and decision, runtime replacement, task/workset
+claim releases, and `task.finish`. The core package owns verification of that
+complete chain. Product cleanup runs only when the frozen projection proves
+the exact attempt, path, registration, branch, and source HEAD and independently
+proves the branch disposable. Dirty, detached, moved, foreign, primary, or
+unlanded sources are retained; their negative ownership proof is recorded in
+the terminal receipt and close still completes. An owned cleanup uses the
+request's exact `cleanup_event_id`; an absent exact source is an idempotent
+no-op proof, never authority to remove another source.
+
+The final schema-v1 `worktree.close` payload records:
+
+- `schema_version = 1`, `close_request_id`, `finalization_id`, and
+  `close_event_id`
+- `workset_id`, `task_id`, `attempt_id`, and `actor`
+- `status`, `summary`, `branch`, `target_branch`, `worktree_path`,
+  `changed_paths`, and optional `commit`
+- `cleanup_requested`, `cleanup_performed`, `cleanup_reason`, and bounded
+  `cleanup` evidence
+- `failure_class`, `recovery_action`, `prompt_issue`, and `operator_issue`
+- exact `core_finalization` event ids plus `runtime_finalized = true`
+
+Transaction progress is derived from the verified request, core evidence,
+cleanup event, and close receipt. The bounded stages are `not_started`,
+`request_recorded`, `decision_recorded`, `runtime_finalized`,
+`task_release_recorded`, `workset_release_recorded`,
+`task_finish_recorded`, `cleanup_pending`, `cleanup_finalized`,
+`close_event_pending`, and `complete`. `task show` and read-only `task recover`
+expose the exact guarded close retry while a transaction is incomplete. The
+same-task begin/reopen/cancel/land/cleanup/reconciliation mutations are gated;
+unrelated tasks and worksets remain available. A complete receipt removes the
+gate, and a guarded retry after a successor verifies the full predecessor
+chain and is a zero-write no-op. An incomplete predecessor with a successor is
+a commandless evidence conflict.
+
+Historical pre-v1 `worktree.close` payloads record:
 
 - `workset_id`
 - `task_id`
@@ -671,21 +1506,33 @@ Current `worktree.close` payloads record:
 - `cleanup_requested`
 - `cleanup_performed`
 - optional `cleanup_reason`
+- optional `transaction_id` for an abort-owned close row
+- optional `abort_finalization_id` for an abort-owned close row
+
+An abort-owned close row is deterministic and carries the immutable close
+request's result plus `cleanup_performed=false` and the source-retention reason.
+Its matching `worktree.landing.abort-close-event-recorded` row proves that exact
+close event before `worktree.landing.abort-complete` can terminate the ledger.
 
 Current `worktree.cleanup` payloads record:
 
 - `workset_id`
 - `task_id`
+- optional `attempt_id` identifying the terminal attempt whose cleanup proof was
+  applied
 - optional `branch`
 - `worktree_path`
-- `deleted_branch`
-- `branch_cleanup_reason`
-- `force_deleted_branch`
+- `cleanup_complete = true`
+- `worktree_absent = true`
+- `branch_absent = true`
 
-`force_deleted_branch` is true only for local disposable task branches that
-Blackdog can prove were already represented by the canonical `landed_commit`
-on the target branch. Ambiguous branches fail cleanup before the retained
-workspace is removed.
+The row has a deterministic `event_id` derived from workset, task, attempt,
+branch, and path. Its semantic content is stable across retries. Therefore a
+write failure before append can add the row on retry, a write failure after
+append can discover the existing row, and neither case can create a duplicate.
+The command response separately reports branch-cleanup reason/proof and whether
+the workspace or branch changed during that invocation. Ambiguous branches
+fail cleanup before the retained workspace is removed.
 
 ## Semantic Boundary
 

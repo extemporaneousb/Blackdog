@@ -11,43 +11,43 @@ distinct question.
 - [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`.
 - [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schemas for
   `blackdog.toml`, `planning.json`, `runtime.json`, `events.jsonl`, history
-  rows, and managed repo artifacts.
+  rows, optional lifecycle observations, and managed repo artifacts.
 
 ## Current Product Surface
 
 - `blackdog init`
-- `blackdog repo analyze`
-- `blackdog repo bind`
-- `blackdog repo table`
+- `blackdog summary`
+- `blackdog snapshot`
+- `blackdog stats`
 - `blackdog local-repo add`
 - `blackdog local-repo list`
 - `blackdog local-repo remove`
-- `blackdog repo install`
-- `blackdog repo scaffold`
-- `blackdog repo update`
-- `blackdog repo refresh`
-- `blackdog repo archive`
-- `blackdog repo unarchive`
-- `blackdog repo unbind`
 - `blackdog prompt preview`
 - `blackdog prompt tune`
 - `blackdog attempts summary`
 - `blackdog attempts table`
 - `blackdog codex coverage`
 - `blackdog codex history`
-- `blackdog codex hook`
-- `blackdog stats`
+- `blackdog codex hook stamp`
+- `blackdog repo install`
+- `blackdog repo bind`
+- `blackdog repo table`
+- `blackdog repo archive`
+- `blackdog repo unarchive`
+- `blackdog repo unbind`
+- `blackdog repo analyze`
+- `blackdog repo scaffold`
+- `blackdog repo update`
+- `blackdog repo refresh`
 - `blackdog task begin`
 - `blackdog task show`
 - `blackdog task recover`
+- `blackdog task cancel`
+- `blackdog task reopen`
 - `blackdog task land`
 - `blackdog task reconcile-landing`
 - `blackdog task close`
-- `blackdog task cancel`
-- `blackdog task reopen`
 - `blackdog task cleanup`
-- `blackdog summary`
-- `blackdog snapshot`
 - `blackdog worktree preflight`
 - `blackdog worktree table`
 - `blackdog worktree preview`

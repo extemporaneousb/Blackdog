@@ -4,36 +4,18 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from blackdog.contract import ContractDocument, contract_documents
+from blackdog.observability import observe_lifecycle
+from blackdog.workflow_contract import (
+    AGENT_WORKFLOW,
+    REPO_OPERATOR_COMMANDS,
+    TASK_AND_REPAIR_COMMANDS,
+)
 from blackdog_core.profile import RepoProfile
 from blackdog_core.state import create_prompt_receipt
 
 
-REPO_LIFECYCLE_COMMANDS = (
-    "blackdog repo install",
-    "blackdog repo update",
-    "blackdog repo refresh",
-    "blackdog prompt preview",
-    "blackdog prompt tune",
-    "blackdog attempts summary",
-    "blackdog attempts table",
-    "blackdog codex coverage",
-    "blackdog codex history",
-)
-WTAM_COMMANDS = (
-    "blackdog task begin",
-    "blackdog task show",
-    "blackdog task recover",
-    "blackdog task land",
-    "blackdog task close",
-    "blackdog task cleanup",
-    "blackdog worktree preflight",
-    "blackdog worktree preview",
-    "blackdog worktree start",
-    "blackdog worktree show",
-    "blackdog worktree land",
-    "blackdog worktree close",
-    "blackdog worktree cleanup",
-)
+REPO_LIFECYCLE_COMMANDS = REPO_OPERATOR_COMMANDS
+WTAM_COMMANDS = TASK_AND_REPAIR_COMMANDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,10 +75,18 @@ def _compose_prompt(
         f"You are working in the repo {profile.project_name} at {profile.paths.project_root}.",
         "Use the repo-local Blackdog contract for repo lifecycle work.",
         "Prefer the repo-local CLI entry point `./.VE/bin/blackdog` when it exists.",
-        "Repo lifecycle commands available in this repo:",
+        (
+            "For normal implementation work, use `blackdog task begin` directly; it performs "
+            "its own readiness checks and returns the only workspace where implementation edits belong."
+        ),
+        (
+            f"`{AGENT_WORKFLOW.preflight_command}` is optional read-only diagnosis, not a "
+            "separate prerequisite for `task begin`."
+        ),
+        "Repo lifecycle, registry, reporting, and evidence commands available in this repo:",
     ]
     lines.extend(f"- `{command}`" for command in REPO_LIFECYCLE_COMMANDS)
-    lines.append("Single-agent task commands and WTAM operator commands remain available when implementation work begins:")
+    lines.append("Task workflow and explicit low-level diagnosis or repair commands:")
     lines.extend(f"- `{command}`" for command in WTAM_COMMANDS)
     if profile.validation_commands:
         lines.append("Validation commands configured for this repo:")
@@ -133,6 +123,12 @@ def preview_prompt(
         include_skill_text=expand_skill_text,
         include_doc_text=expand_contract,
     )
+    observe_lifecycle(
+        profile,
+        surface="prompt.preview",
+        operation_key=receipt.prompt_hash,
+        labels={"prompt_role": "request", "prompt_mode": receipt.mode, "operation_phase": "completed"},
+    )
     return PromptPreview(
         project_name=profile.project_name,
         project_root=str(profile.paths.project_root),
@@ -165,6 +161,12 @@ def tune_prompt(
         include_skill_text=expand_skill_text,
         include_doc_text=expand_contract,
     )
+    observe_lifecycle(
+        profile,
+        surface="prompt.tune",
+        operation_key=receipt.prompt_hash,
+        labels={"prompt_role": "request", "prompt_mode": receipt.mode, "operation_phase": "completed"},
+    )
     return TunedPrompt(
         project_name=profile.project_name,
         project_root=str(profile.paths.project_root),
@@ -192,8 +194,10 @@ def render_prompt_preview_text(preview: PromptPreview, *, show_prompt: bool = Fa
         lines.append(
             f"[blackdog-prompt] validation commands: {', '.join(preview.validation_commands)}"
         )
-    lines.append("[blackdog-prompt] repo lifecycle commands:")
+    lines.append("[blackdog-prompt] repo lifecycle, registry, reporting, and evidence commands:")
     lines.extend(f"  - {command}" for command in preview.repo_lifecycle_commands)
+    lines.append("[blackdog-prompt] task and explicit low-level diagnosis or repair commands:")
+    lines.extend(f"  - {command}" for command in preview.wtam_commands)
     if preview.contract_documents:
         lines.append("[blackdog-prompt] contract documents:")
         for document in preview.contract_documents:

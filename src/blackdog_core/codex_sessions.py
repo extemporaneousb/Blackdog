@@ -15,7 +15,24 @@ import tomllib
 
 from .profile import RepoProfile
 from .runtime_model import AttemptView, load_runtime_model
-from .state import CodexSessionRefRecord, atomic_write_text, now_iso, parse_iso
+from .state import (
+    CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN,
+    CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH,
+    CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR,
+    CODEX_CAPTURE_MISSING_REASON_MULTIPLE_OPEN_TURNS,
+    CODEX_CAPTURE_MISSING_REASON_NO_OPEN_TURN,
+    CODEX_CAPTURE_MISSING_REASON_PROMPT_HASH_AMBIGUOUS,
+    CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING,
+    CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING,
+    CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE,
+    CODEX_CAPTURE_MISSING_REASON_THREAD_MISMATCH,
+    CODEX_CAPTURE_STATUS_CAPTURED,
+    CODEX_CAPTURE_STATUS_MISSING,
+    CodexSessionRefRecord,
+    atomic_write_text,
+    now_iso,
+    parse_iso,
+)
 from .user_state import user_state_file
 
 
@@ -335,7 +352,7 @@ def read_codex_config(home: Path | None = None) -> dict[str, str | None]:
     config_path = (home or codex_home()) / "config.toml"
     try:
         payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    except (OSError, tomllib.TOMLDecodeError):
         return {"model": None, "reasoning_effort": None}
     if not isinstance(payload, dict):
         return {"model": None, "reasoning_effort": None}
@@ -346,10 +363,16 @@ def read_codex_config(home: Path | None = None) -> dict[str, str | None]:
 
 
 def current_codex_runtime_context(home: Path | None = None) -> CodexRuntimeContext:
-    resolved_home = home or codex_home()
-    config = read_codex_config(resolved_home)
     thread_id = _optional_text(os.environ.get("CODEX_THREAD_ID"))
-    session_path = _find_session_path_for_thread(resolved_home, thread_id) if thread_id else None
+    try:
+        resolved_home = home or codex_home()
+        config = read_codex_config(resolved_home)
+        session_path = _find_session_path_for_thread(resolved_home, thread_id) if thread_id else None
+    except Exception:
+        # Runtime/session metadata is optional evidence. Its discovery must not
+        # prevent task creation or handler execution.
+        config = {"model": None, "reasoning_effort": None}
+        session_path = None
     return CodexRuntimeContext(
         thread_id=thread_id,
         session_path=session_path,
@@ -364,34 +387,140 @@ def current_codex_session_ref(
     execution_prompt_hash: str | None = None,
     home: Path | None = None,
 ) -> CodexSessionRefRecord | None:
-    context = current_codex_runtime_context(home)
-    if context.thread_id is None:
+    thread_id = _optional_text(os.environ.get("CODEX_THREAD_ID"))
+    if thread_id is None:
         return None
-    turn_id: str | None = None
-    turn_started_at: str | None = None
-    if context.session_path:
-        session_file = _session_file_from_ref(context.session_path, home or codex_home())
-        if session_file is not None and session_file.is_file():
-            try:
-                session = read_codex_session(session_file, home=home)
-            except CodexSessionError:
-                session = None
-            if session is not None:
-                matched_turn = _match_turn_for_hashes(
-                    session.turns,
-                    user_prompt_hash=user_prompt_hash,
-                    execution_prompt_hash=execution_prompt_hash,
-                )
-                if matched_turn is not None:
-                    turn_id = matched_turn.turn_id
-                    turn_started_at = matched_turn.started_at
+    try:
+        resolved_home = home or codex_home()
+        session_path = _find_session_path_for_thread(resolved_home, thread_id)
+    except Exception:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=None,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR,
+        )
+    if session_path is None:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=None,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING,
+        )
+    session_file = _session_file_from_ref(session_path, resolved_home)
+    if session_file is None or not session_file.is_file():
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING,
+        )
+    try:
+        session = read_codex_session(session_file, home=resolved_home)
+    except CodexSessionError:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE,
+        )
+    except Exception:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR,
+        )
+    if session is None:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE,
+        )
+    if session.thread_id != thread_id:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_THREAD_MISMATCH,
+        )
+
+    prompt_hashes = {item for item in (user_prompt_hash, execution_prompt_hash) if item}
+    prompt_matches = tuple(turn for turn in session.turns if turn.user_message_hash in prompt_hashes)
+    open_turns = tuple(turn for turn in session.turns if turn.completed_at is None)
+    sole_open_turn = open_turns[0] if len(open_turns) == 1 else None
+
+    # A live invocation outranks a stale completed prompt match. Prompt text is
+    # commonly reused or wrapped by skills, while the exact session has at most
+    # one current open turn in the normal case.
+    if sole_open_turn is not None:
+        matched_turn = sole_open_turn
+        capture_method = (
+            CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH
+            if len(prompt_matches) == 1 and prompt_matches[0].turn_id == sole_open_turn.turn_id
+            else CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN
+        )
+    elif len(prompt_matches) == 1 and (
+        not open_turns or any(turn.turn_id == prompt_matches[0].turn_id for turn in open_turns)
+    ):
+        matched_turn = prompt_matches[0]
+        capture_method = CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH
+    elif len(prompt_matches) > 1:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=CODEX_CAPTURE_MISSING_REASON_PROMPT_HASH_AMBIGUOUS,
+        )
+    else:
+        return _missing_codex_session_ref(
+            thread_id=thread_id,
+            session_path=session_path,
+            user_prompt_hash=user_prompt_hash,
+            execution_prompt_hash=execution_prompt_hash,
+            reason=(
+                CODEX_CAPTURE_MISSING_REASON_NO_OPEN_TURN
+                if not open_turns
+                else CODEX_CAPTURE_MISSING_REASON_MULTIPLE_OPEN_TURNS
+            ),
+        )
     return CodexSessionRefRecord(
-        thread_id=context.thread_id,
-        session_path=context.session_path,
-        turn_id=turn_id,
-        turn_started_at=turn_started_at,
+        thread_id=thread_id,
+        session_path=session_path,
+        turn_id=matched_turn.turn_id,
+        turn_started_at=matched_turn.started_at,
         user_prompt_hash=user_prompt_hash,
         execution_prompt_hash=execution_prompt_hash,
+        capture_status=CODEX_CAPTURE_STATUS_CAPTURED,
+        capture_method=capture_method,
+        capture_missing_reason=None,
+    )
+
+
+def _missing_codex_session_ref(
+    *,
+    thread_id: str,
+    session_path: str | None,
+    user_prompt_hash: str | None,
+    execution_prompt_hash: str | None,
+    reason: str,
+) -> CodexSessionRefRecord:
+    return CodexSessionRefRecord(
+        thread_id=thread_id,
+        session_path=session_path,
+        user_prompt_hash=user_prompt_hash,
+        execution_prompt_hash=execution_prompt_hash,
+        capture_status=CODEX_CAPTURE_STATUS_MISSING,
+        capture_missing_reason=reason,
     )
 
 
@@ -613,7 +742,7 @@ def build_codex_coverage(
             anchor=attempt_window_anchor,
         )
     )
-    turns, exact_reference_resolution_counts = _project_turns_with_exact_attempt_refs(
+    turns, exact_reference_resolution_counts, exact_reference_resolutions = _project_turns_with_exact_attempt_refs(
         profile,
         attempts,
         since=since,
@@ -778,6 +907,7 @@ def build_codex_coverage(
                 linked_attempt_ids,
                 relationships_by_attempt.get(attempt.attempt_id, ()),
                 _attempt_environment_classes(attempt, relationships_by_attempt.get(attempt.attempt_id, ())),
+                exact_reference_resolutions.get(attempt.attempt_id),
             )
             for attempt in attempts
         ],
@@ -798,7 +928,7 @@ def build_codex_history(
         for attempt in workset.attempts
         if _attempt_in_window(attempt, cutoff)
     )
-    turns, exact_reference_resolution_counts = _project_turns_with_exact_attempt_refs(
+    turns, exact_reference_resolution_counts, exact_reference_resolutions = _project_turns_with_exact_attempt_refs(
         profile,
         attempts,
         since=since,
@@ -816,6 +946,7 @@ def build_codex_history(
             attempt,
             relationships_by_attempt.get(attempt.attempt_id, ()),
             _attempt_environment_classes(attempt, relationships_by_attempt.get(attempt.attempt_id, ())),
+            exact_reference_resolutions.get(attempt.attempt_id),
         )
         for workset in model.worksets
         for attempt in workset.attempts
@@ -1121,7 +1252,16 @@ def _project_turns_with_exact_attempt_refs(
     until: str | None,
     codex_turns: Iterable[CodexTurn] | None = None,
     include_environment_evidence: bool,
-) -> tuple[tuple[CodexTurn, ...], dict[str, int]]:
+) -> tuple[tuple[CodexTurn, ...], dict[str, int], dict[str, str]]:
+    # Resolve attempt-owned references first. This exact overlay is independent
+    # of repository cwd and must not be discarded by the project scan's cwd
+    # pruning. It still contributes only one proven turn per attempt.
+    exact_turns, resolution_counts, resolutions = _resolve_exact_attempt_turns(
+        attempts,
+        since=since,
+        until=until,
+        include_environment_evidence=include_environment_evidence,
+    )
     project_turns = _project_turns(
         profile,
         since=since,
@@ -1129,13 +1269,7 @@ def _project_turns_with_exact_attempt_refs(
         codex_turns=codex_turns,
         include_environment_evidence=include_environment_evidence,
     )
-    exact_turns, resolution_counts = _resolve_exact_attempt_turns(
-        attempts,
-        since=since,
-        until=until,
-        include_environment_evidence=include_environment_evidence,
-    )
-    return _sort_dedupe_turns((*project_turns, *exact_turns)), resolution_counts
+    return _sort_dedupe_turns((*project_turns, *exact_turns)), resolution_counts, resolutions
 
 
 def _resolve_exact_attempt_turns(
@@ -1144,7 +1278,7 @@ def _resolve_exact_attempt_turns(
     since: str | None,
     until: str | None,
     include_environment_evidence: bool,
-) -> tuple[tuple[CodexTurn, ...], dict[str, int]]:
+) -> tuple[tuple[CodexTurn, ...], dict[str, int], dict[str, str]]:
     """Resolve exact attempt references without widening repository cwd scope."""
 
     home = codex_home()
@@ -1155,24 +1289,33 @@ def _resolve_exact_attempt_turns(
     parsed_sessions: dict[Path, tuple[CodexSession | None, bool]] = {}
     turns: list[CodexTurn] = []
     counts: dict[str, int] = {}
+    resolutions: dict[str, str] = {}
 
-    def record(status: str) -> None:
+    def record(attempt_id: str, status: str) -> None:
         counts[status] = counts.get(status, 0) + 1
+        resolutions[attempt_id] = status
 
     for attempt in attempts:
         ref = attempt.codex_session
         if ref is None:
             continue
-        if not ref.thread_id or not ref.session_path or not ref.turn_id:
-            record("incomplete_reference")
+        if ref.capture_status == CODEX_CAPTURE_STATUS_MISSING:
+            record(attempt.attempt_id, "capture_missing")
+            continue
+        if not ref.thread_id or not ref.session_path:
+            record(attempt.attempt_id, "incomplete_reference")
+            continue
+        prompt_hashes = _attempt_prompt_hashes(attempt) if ref.turn_id is None else set()
+        if ref.turn_id is None and (ref.capture_status is not None or not prompt_hashes):
+            record(attempt.attempt_id, "incomplete_reference")
             continue
         session_candidates = _validated_session_candidates_from_ref(ref.session_path, home)
         if session_candidates is None:
-            record("path_outside_codex_home")
+            record(attempt.attempt_id, "path_outside_codex_home")
             continue
         existing_candidates = tuple(path for path, _ in session_candidates if path.is_file())
         if not existing_candidates:
-            record("session_missing")
+            record(attempt.attempt_id, "session_missing")
             continue
 
         resolved_turn: CodexTurn | None = None
@@ -1180,6 +1323,7 @@ def _resolve_exact_attempt_turns(
         saw_unreadable = False
         saw_thread_mismatch = False
         saw_matching_thread = False
+        legacy_matches: list[CodexTurn] = []
         for candidate, archived_copy in session_candidates:
             if not candidate.is_file():
                 continue
@@ -1201,34 +1345,54 @@ def _resolve_exact_attempt_turns(
                 saw_thread_mismatch = True
                 continue
             saw_matching_thread = True
-            candidate_turn = next(
-                (item for item in candidate_session.turns if item.turn_id == ref.turn_id),
-                None,
-            )
+            if ref.turn_id is None:
+                legacy_matches.extend(
+                    item
+                    for item in candidate_session.turns
+                    if item.user_message_hash is not None and item.user_message_hash in prompt_hashes
+                )
+                continue
+            candidate_turn = next((item for item in candidate_session.turns if item.turn_id == ref.turn_id), None)
             if candidate_turn is None:
                 continue
             resolved_turn = candidate_turn
             used_archived_copy = archived_copy
             break
+        if ref.turn_id is None and saw_matching_thread:
+            deduped_legacy_matches = _sort_dedupe_turns(legacy_matches)
+            if not deduped_legacy_matches:
+                record(attempt.attempt_id, "legacy_prompt_hash_missing")
+                continue
+            if len(deduped_legacy_matches) > 1:
+                record(attempt.attempt_id, "legacy_prompt_hash_ambiguous")
+                continue
+            resolved_turn = deduped_legacy_matches[0]
+            used_archived_copy = resolved_turn.session_path.startswith("archived_sessions/")
         if resolved_turn is None:
             if saw_matching_thread:
-                record("turn_missing")
+                record(attempt.attempt_id, "turn_missing")
             elif saw_thread_mismatch:
-                record("thread_mismatch")
+                record(attempt.attempt_id, "thread_mismatch")
             elif saw_unreadable:
-                record("session_unreadable")
+                record(attempt.attempt_id, "session_unreadable")
             else:
-                record("session_missing")
+                record(attempt.attempt_id, "session_missing")
             continue
         if not _turn_in_bounds(resolved_turn, cutoff=cutoff, upper=upper):
-            record("turn_outside_window")
+            record(attempt.attempt_id, "turn_outside_window")
             continue
         turns.append(resolved_turn)
-        record("resolved_archived_copy" if used_archived_copy else "resolved")
+        if ref.turn_id is None:
+            record(
+                attempt.attempt_id,
+                "resolved_legacy_prompt_hash_archived_copy" if used_archived_copy else "resolved_legacy_prompt_hash",
+            )
+        else:
+            record(attempt.attempt_id, "resolved_archived_copy" if used_archived_copy else "resolved")
 
     if cache_changed:
         _write_codex_session_cache(cache)
-    return _sort_dedupe_turns(turns), dict(sorted(counts.items()))
+    return _sort_dedupe_turns(turns), dict(sorted(counts.items())), resolutions
 
 
 def _validated_session_candidates_from_ref(
@@ -1427,21 +1591,6 @@ def _attempt_prompt_hashes(attempt: AttemptView) -> set[str]:
             if prompt_hash:
                 hashes.add(prompt_hash)
     return hashes
-
-
-def _match_turn_for_hashes(
-    turns: tuple[CodexTurn, ...],
-    *,
-    user_prompt_hash: str | None,
-    execution_prompt_hash: str | None,
-) -> CodexTurn | None:
-    hashes = {item for item in (user_prompt_hash, execution_prompt_hash) if item}
-    if not hashes:
-        return turns[0] if len(turns) == 1 else None
-    for turn in turns:
-        if turn.user_message_hash in hashes:
-            return turn
-    return turns[0] if len(turns) == 1 else None
 
 
 def _session_ref_matches(turn: CodexTurn, attempt: AttemptView) -> bool:
@@ -1653,6 +1802,7 @@ def _attempt_coverage_row(
     linked_attempt_ids: set[str],
     turn_relationships: tuple[dict[str, Any], ...],
     environment_issue_classes: tuple[str, ...],
+    exact_reference_resolution: str | None,
 ) -> dict[str, Any]:
     linked_turn_ids = tuple(
         str(relationship["codex_turn_id"])
@@ -1677,6 +1827,12 @@ def _attempt_coverage_row(
         "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
         "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
         "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
+        "codex_capture_status": attempt.codex_session.capture_status if attempt.codex_session else None,
+        "codex_capture_method": attempt.codex_session.capture_method if attempt.codex_session else None,
+        "codex_capture_missing_reason": (
+            attempt.codex_session.capture_missing_reason if attempt.codex_session else None
+        ),
+        "exact_reference_resolution": exact_reference_resolution,
         "linked_codex_turn": attempt.attempt_id in linked_attempt_ids,
         "linked_codex_turn_ids": list(linked_turn_ids),
         "related_codex_turn_ids": list(related_turn_ids),
@@ -1693,6 +1849,7 @@ def _attempt_history_row(
     attempt: AttemptView,
     turn_relationships: tuple[dict[str, Any], ...],
     environment_issue_classes: tuple[str, ...],
+    exact_reference_resolution: str | None,
 ) -> dict[str, Any]:
     prompt_hash = attempt.prompt_receipt.prompt_hash if attempt.prompt_receipt else None
     user_prompt_hash = attempt.user_prompt_receipt.prompt_hash if attempt.user_prompt_receipt else None
@@ -1716,6 +1873,12 @@ def _attempt_history_row(
         "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
         "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
         "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
+        "codex_capture_status": attempt.codex_session.capture_status if attempt.codex_session else None,
+        "codex_capture_method": attempt.codex_session.capture_method if attempt.codex_session else None,
+        "codex_capture_missing_reason": (
+            attempt.codex_session.capture_missing_reason if attempt.codex_session else None
+        ),
+        "exact_reference_resolution": exact_reference_resolution,
         "linked_codex_turn_ids": [
             str(relationship["codex_turn_id"])
             for relationship in turn_relationships

@@ -1,28 +1,59 @@
 from __future__ import annotations
 
 import argparse
+import re
 import tomllib
 
+from blackdog.contract import managed_skill_relative_path
+from blackdog.repo_lifecycle import (
+    AGENTS_MANAGED_BEGIN,
+    AGENTS_MANAGED_END,
+    render_repo_agents_contract,
+    render_repo_skill,
+)
+from blackdog.workflow_contract import (
+    AGENT_WORKFLOW,
+    NEXT_ACTION_AUTHORITY_GUIDANCE,
+    PROMPT_INPUT_DISPOSAL_GUIDANCE,
+    SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+    TARGET_BRANCH_GUIDANCE,
+    visible_command_signature,
+)
+from blackdog_core.profile import load_profile
 from blackdog_cli.main import _build_parser
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
 class CoreContractTests(CoreAuditTestCase):
-    def _visible_subcommands(self, parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    def _visible_command_signature(
+        self,
+        parser: argparse.ArgumentParser,
+    ) -> tuple[tuple[str, tuple[object, ...]], ...]:
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):
                 return tuple(
-                    choice.dest
+                    (
+                        choice.dest,
+                        self._visible_command_signature(action.choices[choice.dest]),
+                    )
                     for choice in action._choices_actions
                     if choice.help != argparse.SUPPRESS
                 )
         return ()
 
-    def _subparser(self, parser: argparse.ArgumentParser, command: str) -> argparse.ArgumentParser:
-        for action in parser._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                return action.choices[command]
-        self.fail(f"{parser.prog} has no subparsers")
+    def _markdown_command_list(self, text: str, *, heading: str) -> tuple[str, ...]:
+        section = text.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
+        return tuple(re.findall(r"^- `(blackdog [^`]+)`$", section, flags=re.MULTILINE))
+
+    def _cli_documented_visible_commands(self, cli_doc: str) -> tuple[str, ...]:
+        return tuple(
+            command
+            for command in SHIPPED_VISIBLE_COMMAND_INVOCATIONS
+            if re.search(
+                rf"(?m)^(?:### `)?{re.escape(command)}(?:`|(?:\s|$))",
+                cli_doc,
+            )
+        )
 
     def test_blackdog_repo_opts_into_silent_bounded_codex_hooks(self) -> None:
         config = tomllib.loads((REPO_ROOT / ".codex" / "config.toml").read_text(encoding="utf-8"))
@@ -158,10 +189,10 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("worktree.close", file_formats)
         self.assertIn("`backlog.md` is not part of the current contract", file_formats)
         self.assertIn("New runtime writes use only `direct_wtam`", file_formats)
-        self.assertNotIn("supervisor", architecture)
+        self.assertNotIn("blackdog supervisor", architecture)
         self.assertNotIn("workset_manager", architecture)
-        self.assertNotIn("supervisor", cli_doc)
-        self.assertNotIn("supervisor", file_formats)
+        self.assertNotIn("blackdog supervisor", cli_doc)
+        self.assertNotIn("blackdog supervisor", file_formats)
         self.assertNotIn("workset_manager", file_formats)
         self.assertNotIn("docs/SUPERVISED_EXECUTION_TARGET.md", index_doc)
 
@@ -189,77 +220,71 @@ class CoreContractTests(CoreAuditTestCase):
         self.assertIn("implementation_like_unlinked_turns", file_formats)
         self.assertIn("blackdog codex coverage|history|hook", agents)
 
-    def test_cli_help_docs_and_contracts_publish_the_same_visible_surface(self) -> None:
+    def test_cli_help_matches_shared_visible_command_manifest(self) -> None:
         parser = _build_parser()
-        self.assertEqual(
-            self._visible_subcommands(parser),
-            (
-                "init",
-                "summary",
-                "snapshot",
-                "stats",
-                "local-repo",
-                "prompt",
-                "attempts",
-                "codex",
-                "repo",
-                "task",
-                "worktree",
-            ),
-        )
-        expected_nested = {
-            "local-repo": ("add", "list", "remove"),
-            "prompt": ("preview", "tune"),
-            "attempts": ("summary", "table"),
-            "codex": ("coverage", "history", "hook"),
-            "repo": (
-                "install",
-                "bind",
-                "table",
-                "archive",
-                "unarchive",
-                "unbind",
-                "analyze",
-                "scaffold",
-                "update",
-                "refresh",
-            ),
-            "task": (
-                "begin",
-                "show",
-                "recover",
-                "cancel",
-                "reopen",
-                "land",
-                "reconcile-landing",
-                "close",
-                "cleanup",
-            ),
-            "worktree": ("preflight", "table", "preview", "start", "show", "land", "close", "cleanup"),
-        }
+        self.assertEqual(self._visible_command_signature(parser), visible_command_signature())
+
+    def test_docs_publish_shared_visible_command_inventory(self) -> None:
         index_doc = (REPO_ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
+        architecture = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
         cli_doc = (REPO_ROOT / "docs" / "CLI.md").read_text(encoding="utf-8")
-        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
-        for parent, children in expected_nested.items():
-            with self.subTest(parent=parent):
-                self.assertEqual(self._visible_subcommands(self._subparser(parser, parent)), children)
-            for child in children:
-                command = f"blackdog {parent} {child}"
-                with self.subTest(command=command):
-                    self.assertIn(f"`{command}`", index_doc)
-                    if parent == "local-repo":
-                        self.assertIn(command, cli_doc)
-                    else:
-                        self.assertIn(f"### `{command}`", cli_doc)
+        self.assertEqual(
+            self._markdown_command_list(index_doc, heading="Current Product Surface"),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )
+        self.assertEqual(
+            self._markdown_command_list(architecture, heading="Current Shipped Surface"),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )
+        self.assertEqual(
+            self._cli_documented_visible_commands(cli_doc),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )
 
-        for command in ("blackdog init", "blackdog summary", "blackdog snapshot", "blackdog stats"):
-            with self.subTest(command=command):
-                self.assertIn(f"`{command}`", index_doc)
-                self.assertIn(f"### `{command}`", cli_doc)
+    def test_checked_in_agent_contracts_match_current_renderers(self) -> None:
+        profile = load_profile(REPO_ROOT)
+        skill_path = REPO_ROOT / managed_skill_relative_path(profile)
+        agents_text = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        managed_start = agents_text.index(AGENTS_MANAGED_BEGIN)
+        managed_end = agents_text.index(AGENTS_MANAGED_END) + len(AGENTS_MANAGED_END)
+        managed_contract = agents_text[managed_start:managed_end] + "\n"
 
-        self.assertIn("blackdog codex coverage|history|hook", agents)
-        self.assertIn("blackdog worktree preflight|table|preview|start|show|land|close|cleanup", agents)
+        self.assertEqual(skill_path.read_text(encoding="utf-8"), render_repo_skill(profile))
+        self.assertEqual(managed_contract, render_repo_agents_contract(profile))
+        skill_text = skill_path.read_text(encoding="utf-8")
+        for rendered_contract in (managed_contract, skill_text):
+            self.assertIn("--actor codex", rendered_contract)
+            self.assertIn("--json", rendered_contract)
+            self.assertIn("exact triggering user request verbatim", rendered_contract)
+            self.assertEqual(rendered_contract.count(PROMPT_INPUT_DISPOSAL_GUIDANCE), 1)
+            self.assertEqual(rendered_contract.count(NEXT_ACTION_AUTHORITY_GUIDANCE), 1)
+            self.assertEqual(rendered_contract.count(TARGET_BRANCH_GUIDANCE), 1)
+            self.assertIn("retry_task_close_finalization", rendered_contract)
+            self.assertNotIn("--actor AGENT", rendered_contract)
+            self.assertNotIn("--execution-prompt-file EXECUTION_PROMPT", rendered_contract)
+            self.assertNotIn("--request-file USER_REQUEST", rendered_contract)
+            self.assertNotIn("delete the temporary inputs after Blackdog confirms", rendered_contract)
+            self.assertNotIn("partial or blocked normal task lifecycle result", rendered_contract)
+            self.assertNotIn("primary `main` branch", rendered_contract)
+
+        self.assertTrue(AGENT_WORKFLOW.begin_command.endswith(" --json"))
+        self.assertTrue(AGENT_WORKFLOW.land_command.endswith(" --json"))
+        for doc_name in ("ARCHITECTURE.md", "CLI.md", "FILE_FORMATS.md"):
+            doc = (REPO_ROOT / "docs" / doc_name).read_text(encoding="utf-8")
+            self.assertIn("execution_prompt_replay_artifact_path", doc, doc_name)
+            self.assertIn("user_prompt_replay_artifact_path", doc, doc_name)
+            self.assertIn("regardless of `operation_status`", doc, doc_name)
+            self.assertIn("target_branch", doc, doc_name)
+            self.assertIn("never assume it is `main`", doc, doc_name)
+
+        manual_rules = " ".join(agents_text[:managed_start].split())
+        self.assertIn("`task begin` is the one normal implementation entrypoint", manual_rules)
+        self.assertIn("it performs its own readiness checks", manual_rules)
+        self.assertIn("`worktree preflight` is optional read-only diagnosis", manual_rules)
+        self.assertIn("not a separate prerequisite for `task begin`", manual_rules)
+        self.assertNotIn("Before any repo edit you intend to keep, run", manual_rules)
+        self.assertNotIn("primary worktree: yes`, stop", manual_rules)
 
     def test_repo_prunes_legacy_product_modules_and_docs(self) -> None:
         removed_paths = [

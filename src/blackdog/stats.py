@@ -5,20 +5,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-import tomllib
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from blackdog.local_registry import registered_project_roots
-from blackdog.repo_membership import attempt_cleanup_health_counts, discover_profile_dirs
+from blackdog.observability import (
+    LifecycleObservationReport,
+    aggregate_lifecycle_observability,
+    observe_lifecycle,
+    read_lifecycle_observability,
+)
+from blackdog.repo_membership import attempt_cleanup_health_counts
 from blackdog.repo_lifecycle import RepoLifecycleError
+from blackdog.repo_scope import canonicalize_repo_scope, reject_exact_profile_errors, resolve_repo_scope
 from blackdog_core.codex_sessions import (
     CodexTurn,
     build_codex_coverage,
     codex_project_roots,
     collect_codex_turns,
 )
-from blackdog_core.profile import ConfigError, RepoProfile, load_profile
+from blackdog_core.profile import RepoProfile
 from blackdog_core.runtime_model import AttemptView, RuntimeModel, load_runtime_model
 from blackdog_core.state import now_iso, parse_iso
 
@@ -66,8 +72,11 @@ _GLOBALLY_DEDUPED_CODEX_SUMMARY_KEYS = frozenset(
 @dataclass(frozen=True, slots=True)
 class StatsResult:
     scope_source: str
+    supplied_roots: tuple[str, ...]
     discovery_roots: tuple[str, ...]
     project_roots: tuple[str, ...]
+    scope_evidence: tuple[dict[str, str], ...]
+    scope_notes: tuple[str, ...]
     since: str | None
     until: str | None
     by: str
@@ -76,13 +85,17 @@ class StatsResult:
     repos: tuple[dict[str, object], ...]
     buckets: tuple[dict[str, object], ...]
     deduped_project_roots: tuple[str, ...]
+    lifecycle_observability: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "generated_at": now_iso(),
             "scope_source": self.scope_source,
+            "supplied_roots": list(self.supplied_roots),
             "discovery_roots": list(self.discovery_roots),
             "project_roots": list(self.project_roots),
+            "scope_evidence": [dict(row) for row in self.scope_evidence],
+            "scope_notes": list(self.scope_notes),
             "since": self.since,
             "until": self.until,
             "by": self.by,
@@ -91,6 +104,7 @@ class StatsResult:
             "repos": [dict(row) for row in self.repos],
             "buckets": [dict(row) for row in self.buckets],
             "deduped_project_roots": list(self.deduped_project_roots),
+            "lifecycle_observability": dict(self.lifecycle_observability),
         }
 
 
@@ -98,6 +112,7 @@ def build_stats(
     *,
     project_roots: tuple[Path, ...] = (),
     discovery_roots: tuple[Path, ...] = (),
+    registry: bool = False,
     since: str | None = None,
     until: str | None = None,
     by: str = "day",
@@ -110,26 +125,34 @@ def build_stats(
     until_dt = _parse_local_bound(until, local_tz, until=True)
     if since_dt is not None and until_dt is not None and since_dt >= until_dt:
         raise RepoLifecycleError("--since must be before --until")
-    if project_roots and discovery_roots:
-        raise RepoLifecycleError("stats accepts either --project-root or --root, not both")
-    if project_roots:
-        scope_source = "explicit_project_roots"
-        profile_roots = project_roots
-    elif discovery_roots:
-        scope_source = "discovery_roots"
-        profile_roots = tuple(
-            profile_dir
-            for discovery_root in discovery_roots
-            for profile_dir in discover_profile_dirs(discovery_root)
-        )
-    else:
-        scope_source = "registry"
-        profile_roots = registered_project_roots()
-    profiles, deduped_roots = _load_stats_profiles(profile_roots)
+    registry_fallback = not project_roots and not discovery_roots and not registry
+    scope = resolve_repo_scope(
+        command="stats",
+        project_roots=project_roots,
+        discovery_roots=discovery_roots,
+        registry=registry,
+        registry_fallback=registry_fallback,
+        registry_roots=registered_project_roots() if registry or registry_fallback else None,
+    )
+    canonical_scope = canonicalize_repo_scope(scope)
+    reject_exact_profile_errors(canonical_scope, command="stats")
+    profiles = canonical_scope.profiles
     if not profiles:
         if discovery_roots:
-            raise RepoLifecycleError("stats found no Blackdog repos under the supplied --root values")
-        raise RepoLifecycleError("stats requires --project-root, --root, or at least one registered local repo")
+            discovery_errors = tuple(
+                row for row in canonical_scope.scope_evidence if row.get("kind") == "discovery_root_error"
+            )
+            if discovery_errors and len(discovery_errors) == len(canonical_scope.scope_evidence):
+                raise RepoLifecycleError(discovery_errors[0]["message"])
+            raise RepoLifecycleError("stats found no usable Blackdog repos under the supplied --root values")
+        if registry_fallback:
+            raise RepoLifecycleError(
+                "stats defaulted to the user-local registry for backward compatibility, but it is empty; "
+                "pass --registry explicitly or select repos with --project-root or --root"
+            )
+        if registry:
+            raise RepoLifecycleError("stats --registry found no registered local repos")
+        raise RepoLifecycleError("stats found no Blackdog repos in the selected scope")
 
     codex_since = since_dt.astimezone(timezone.utc).isoformat() if since_dt else None
     codex_until = until_dt.astimezone(timezone.utc).isoformat() if until_dt else None
@@ -143,6 +166,15 @@ def build_stats(
     bucket_rows: dict[str, dict[str, object]] = {}
     summary = _empty_summary()
     global_codex_turn_rows: dict[tuple[str, str], dict[str, Any]] = {}
+    observation_key = "|".join(
+        (
+            canonical_scope.scope_source,
+            since or "unset",
+            until or "unset",
+            by,
+            timezone_name,
+        )
+    )
 
     for profile in profiles:
         model = load_runtime_model(profile)
@@ -193,11 +225,33 @@ def build_stats(
         aggregate = bucket_rows.setdefault(bucket_key, _empty_bucket(bucket_key))
         _add_turn_row_to_bucket(aggregate, turn)
 
+    observation_reports: list[LifecycleObservationReport] = []
+    repo_rows_by_root = {str(row["project_root"]): row for row in repo_rows}
+    for profile in profiles:
+        observation_report = read_lifecycle_observability(profile)
+        observation_reports.append(observation_report)
+        repo_rows_by_root[str(profile.paths.project_root)][
+            "lifecycle_observability"
+        ] = observation_report.to_dict()
+        observe_lifecycle(
+            profile,
+            surface="stats.read",
+            operation_key=observation_key,
+            labels={
+                "scope_source": canonical_scope.scope_source,
+                "operation_phase": "completed",
+            },
+        )
+
     buckets = tuple(_clean_bucket(bucket_rows[key]) for key in sorted(bucket_rows))
+    scope_metadata = canonical_scope.metadata()
     return StatsResult(
-        scope_source=scope_source,
-        discovery_roots=tuple(str(root.resolve()) for root in discovery_roots),
-        project_roots=tuple(str(profile.paths.project_root) for profile in profiles),
+        scope_source=str(scope_metadata["scope_source"]),
+        supplied_roots=tuple(scope_metadata["supplied_roots"]),
+        discovery_roots=tuple(scope_metadata["discovery_roots"]),
+        project_roots=tuple(scope_metadata["project_roots"]),
+        scope_evidence=tuple(scope_metadata["scope_evidence"]),
+        scope_notes=tuple(scope_metadata["scope_notes"]),
         since=since_dt.isoformat() if since_dt else None,
         until=until_dt.isoformat() if until_dt else None,
         by=by,
@@ -205,7 +259,8 @@ def build_stats(
         summary=summary,
         repos=tuple(sorted(repo_rows, key=lambda row: str(row["project_root"]))),
         buckets=buckets,
-        deduped_project_roots=deduped_roots,
+        deduped_project_roots=tuple(scope_metadata["deduped_project_roots"]),
+        lifecycle_observability=aggregate_lifecycle_observability(observation_reports),
     )
 
 
@@ -249,6 +304,32 @@ def render_stats_text(result: StatsResult) -> str:
     ]
     if result.deduped_project_roots:
         lines.append(f"Deduped project roots: {len(result.deduped_project_roots)}")
+    for note in result.scope_notes:
+        lines.append(f"Scope note: {note}")
+    observation = result.lifecycle_observability
+    outcomes = observation["outcome_counts"]
+    outcome_summary = ",".join(
+        f"{outcome}={outcomes.get(outcome, 0)}"
+        for outcome in (
+            "success",
+            "failed",
+            "blocked",
+            "partial",
+            "abandoned",
+            "unknown",
+        )
+    )
+    lines.append(
+        "Lifecycle observability: "
+        f"stream_health={observation['stream_health']} observations={observation['observations']} "
+        f"missing={observation['artifact_missing']} unknown={observation['unknown_rows']} "
+        f"unknown_labels={observation['unknown_labels']} "
+        f"malformed={observation['malformed_rows']} duplicates={observation['duplicate_rows']} "
+        f"capacity_pressure={observation['capacity_pressure']} "
+        f"read_failures={observation['read_failures']} "
+        f"write_failures={observation['write_failures']} "
+        f"outcomes=[{outcome_summary}]"
+    )
     if result.buckets:
         lines.append("")
         lines.append(render_stats_tsv(result).rstrip())
@@ -291,22 +372,6 @@ def _looks_like_date(value: str) -> bool:
     except ValueError:
         return False
     return "T" not in value and " " not in value
-
-
-def _load_stats_profiles(roots: Iterable[Path]) -> tuple[tuple[RepoProfile, ...], tuple[str, ...]]:
-    profiles_by_root: dict[Path, RepoProfile] = {}
-    deduped: list[str] = []
-    for root in roots:
-        try:
-            profile = load_profile(root.resolve())
-        except (ConfigError, OSError, tomllib.TOMLDecodeError) as exc:
-            raise RepoLifecycleError(f"{root.resolve()} is not a Blackdog repo: {exc}") from exc
-        key = profile.paths.project_root.resolve()
-        if key in profiles_by_root:
-            deduped.append(str(root.resolve()))
-            continue
-        profiles_by_root[key] = profile
-    return tuple(profiles_by_root[path] for path in sorted(profiles_by_root)), tuple(deduped)
 
 
 def _stats_codex_cwd_roots(profiles: Iterable[RepoProfile]) -> tuple[Path, ...]:

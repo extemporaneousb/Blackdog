@@ -146,10 +146,15 @@ class _HandlerStepResult:
     remediation: str | None = None
 
 
-def _run_command(*args: str, cwd: Path | None = None) -> str:
+def _run_command(
+    *args: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     completed = subprocess.run(
         list(args),
         cwd=str(cwd) if cwd is not None else None,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -614,7 +619,9 @@ def _preview_python_handler(
                         handler_id=config.handler_id,
                         kind=config.kind,
                         action="wire-overlay",
-                        target_path=str(state.worktree_site_packages),
+                        target_path=str(
+                            state.worktree_site_packages / "blackdog-root-overlay.pth"
+                        ),
                         status=HANDLER_STATUS_PLANNED,
                         message="overlay repo-root site-packages into the worktree env",
                     ),
@@ -775,19 +782,25 @@ def _execute_python_handler(
 
 
 def _write_blackdog_launcher(python_path: Path, launcher_path: Path, *, source_root: Path | None) -> str:
+    return _write_text_if_changed(
+        launcher_path,
+        _blackdog_launcher_text(python_path, source_root=source_root),
+        executable=True,
+    )
+
+
+def _blackdog_launcher_text(python_path: Path, *, source_root: Path | None) -> str:
     if source_root is None:
-        script = (
+        return (
             "#!/bin/sh\n"
             f"exec {shlex.quote(str(python_path))} -m blackdog_cli \"$@\"\n"
         )
-    else:
-        script = (
-            "#!/bin/sh\n"
-            f"PYTHONPATH={shlex.quote(str(source_root / 'src'))}"
-            '${PYTHONPATH:+":$PYTHONPATH"} '
-            f"exec {shlex.quote(str(python_path))} -m blackdog_cli \"$@\"\n"
-        )
-    return _write_text_if_changed(launcher_path, script, executable=True)
+    return (
+        "#!/bin/sh\n"
+        f"PYTHONPATH={shlex.quote(str(source_root / 'src'))}"
+        '${PYTHONPATH:+":$PYTHONPATH"} '
+        f"exec {shlex.quote(str(python_path))} -m blackdog_cli \"$@\"\n"
+    )
 
 
 def _preview_blackdog_runtime_handler(
@@ -1021,6 +1034,365 @@ def execute_worktree_handlers(profile: RepoProfile, *, worktree_path: Path) -> H
     return _run_handlers(context, execute=True)
 
 
+def validate_existing_worktree_handlers(
+    profile: RepoProfile,
+    *,
+    worktree_path: Path,
+) -> HandlerPlanSummary:
+    """Prove retained worktree handler outputs without creating or rewriting them."""
+
+    context = _HandlerContext(
+        profile=profile,
+        operation="worktree-adopt",
+        project_root=profile.paths.project_root.resolve(),
+        worktree_path=worktree_path.resolve(),
+        source_root_override=_current_blackdog_source_root(),
+    )
+    python_state: _PythonOverlayState | None = None
+    runtime_state: _BlackdogRuntimeState | None = None
+    actions: list[HandlerAction] = []
+    blockers: list[str] = []
+
+    for handler in _ordered_handlers(profile):
+        if handler.kind == HANDLER_KIND_PYTHON_OVERLAY_VENV:
+            if not isinstance(handler, PythonOverlayVenvHandlerConfig):
+                raise HandlerError("python handler config has an invalid type")
+            state, remediation = _build_python_state(handler, context)
+            python_state = state
+            checks: list[tuple[str, Path | None, bool]] = [
+                ("validate-root-python", state.root_python_path, True),
+                ("validate-worktree-python", state.worktree_python_path, True),
+                ("validate-worktree-bin", state.worktree_bin_path, False),
+                ("validate-worktree-site-packages", state.worktree_site_packages, False),
+            ]
+            if remediation is not None:
+                blockers.append(remediation)
+            for action_name, target, require_file in checks:
+                exists = target is not None and (target.is_file() if require_file else target.is_dir())
+                actions.append(
+                    HandlerAction(
+                        handler_id=handler.handler_id,
+                        kind=handler.kind,
+                        action=action_name,
+                        target_path=str(target) if target is not None else None,
+                        status=HANDLER_STATUS_VALIDATED if exists else HANDLER_STATUS_BLOCKED,
+                        message=(
+                            f"validated retained handler output {target}"
+                            if exists
+                            else f"retained handler output is missing: {target}"
+                        ),
+                    )
+                )
+                if not exists:
+                    blockers.append(action_name)
+            python_runtime_valid = False
+            if (
+                state.worktree_python_path is not None
+                and state.worktree_ve_path is not None
+                and state.worktree_python_path.is_file()
+                and os.access(state.worktree_python_path, os.X_OK)
+            ):
+                try:
+                    observed_prefix = _run_command(
+                        str(state.worktree_python_path),
+                        "-c",
+                        "import pathlib, sys; print(pathlib.Path(sys.prefix).resolve())",
+                    )
+                    python_runtime_valid = (
+                        Path(observed_prefix).resolve() == state.worktree_ve_path.resolve()
+                    )
+                except HandlerError:
+                    python_runtime_valid = False
+            actions.append(
+                HandlerAction(
+                    handler_id=handler.handler_id,
+                    kind=handler.kind,
+                    action="validate-worktree-python-runtime",
+                    target_path=(
+                        str(state.worktree_python_path)
+                        if state.worktree_python_path is not None
+                        else None
+                    ),
+                    status=(
+                        HANDLER_STATUS_VALIDATED
+                        if python_runtime_valid
+                        else HANDLER_STATUS_BLOCKED
+                    ),
+                    message=(
+                        "validated runnable worktree Python prefix"
+                        if python_runtime_valid
+                        else "worktree Python is not runnable with the expected environment prefix"
+                    ),
+                )
+            )
+            if not python_runtime_valid:
+                blockers.append("validate-worktree-python-runtime")
+            if state.worktree_site_packages is not None:
+                root_overlay = state.worktree_site_packages / "blackdog-root-overlay.pth"
+                expected_overlay = str(state.root_site_packages) + "\n"
+                overlay_valid = (
+                    root_overlay.is_file()
+                    and root_overlay.read_text(encoding="utf-8") == expected_overlay
+                )
+                actions.append(
+                    HandlerAction(
+                        handler_id=handler.handler_id,
+                        kind=handler.kind,
+                        action="validate-root-overlay",
+                        target_path=str(root_overlay),
+                        status=HANDLER_STATUS_VALIDATED if overlay_valid else HANDLER_STATUS_BLOCKED,
+                        message=(
+                            "validated retained repo-root Python overlay"
+                            if overlay_valid
+                            else "retained repo-root Python overlay is missing or changed"
+                        ),
+                    )
+                )
+                if not overlay_valid:
+                    blockers.append("validate-root-overlay")
+                editable_paths = _editable_source_paths(
+                    state.root_site_packages,
+                    project_root=context.project_root,
+                    worktree_path=context.worktree_path,
+                    require_mapped_exists=True,
+                )
+                editable_overlay = (
+                    state.worktree_site_packages / _WORKTREE_EDITABLE_OVERLAY
+                )
+                expected_editable = "".join(f"{path}\n" for path in editable_paths)
+                editable_valid = (
+                    editable_overlay.is_file()
+                    and editable_overlay.read_text(encoding="utf-8")
+                    == expected_editable
+                    if editable_paths
+                    else not editable_overlay.exists()
+                )
+                actions.append(
+                    HandlerAction(
+                        handler_id=handler.handler_id,
+                        kind=handler.kind,
+                        action="validate-worktree-editables",
+                        target_path=str(editable_overlay),
+                        status=(
+                            HANDLER_STATUS_VALIDATED
+                            if editable_valid
+                            else HANDLER_STATUS_BLOCKED
+                        ),
+                        message=(
+                            "validated retained worktree editable overlay"
+                            if editable_valid
+                            else "retained worktree editable overlay is missing or changed"
+                        ),
+                    )
+                )
+                if not editable_valid:
+                    blockers.append("validate-worktree-editables")
+            if state.worktree_bin_path is not None:
+                invalid_fallbacks: list[str] = []
+                if not state.root_bin_path.is_dir():
+                    invalid_fallbacks.append("root-bin-missing")
+                else:
+                    for root_item in sorted(state.root_bin_path.iterdir()):
+                        if root_item.name in _ROOT_BIN_FALLBACK_EXCLUDES:
+                            continue
+                        if not root_item.is_file() and not root_item.is_symlink():
+                            continue
+                        candidate = state.worktree_bin_path / root_item.name
+                        if not candidate.exists():
+                            invalid_fallbacks.append(root_item.name)
+                            continue
+                        if candidate.is_symlink() and candidate.resolve() != root_item.resolve():
+                            invalid_fallbacks.append(root_item.name)
+                fallbacks_valid = not invalid_fallbacks
+                actions.append(
+                    HandlerAction(
+                        handler_id=handler.handler_id,
+                        kind=handler.kind,
+                        action="validate-root-bin-fallback",
+                        target_path=str(state.worktree_bin_path),
+                        status=(
+                            HANDLER_STATUS_VALIDATED
+                            if fallbacks_valid
+                            else HANDLER_STATUS_BLOCKED
+                        ),
+                        message=(
+                            "validated retained repo-root tool fallbacks"
+                            if fallbacks_valid
+                            else "retained repo-root tool fallbacks are missing or changed: "
+                            + ", ".join(invalid_fallbacks)
+                        ),
+                    )
+                )
+                if not fallbacks_valid:
+                    blockers.append("validate-root-bin-fallback")
+        elif handler.kind == HANDLER_KIND_BLACKDOG_RUNTIME:
+            if not isinstance(handler, BlackdogRuntimeHandlerConfig) or python_state is None:
+                raise HandlerError("blackdog-runtime requires validated Python handler state")
+            preview = _preview_blackdog_runtime_handler(handler, context, python_state)
+            if not isinstance(preview.state, _BlackdogRuntimeState):
+                raise HandlerError("blackdog-runtime produced an invalid retained state")
+            runtime_state = preview.state
+            python_path = python_state.worktree_python_path
+            if python_path is None:
+                raise HandlerError("retained worktree Python interpreter is missing")
+            source_root = (
+                None
+                if runtime_state.runtime_mode == HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE
+                else runtime_state.source_root
+            )
+            expected_launcher = _blackdog_launcher_text(python_path, source_root=source_root)
+            launcher_valid = (
+                runtime_state.blackdog_path.is_file()
+                and os.access(runtime_state.blackdog_path, os.X_OK)
+                and runtime_state.blackdog_path.read_text(encoding="utf-8") == expected_launcher
+            )
+            actions.append(
+                HandlerAction(
+                    handler_id=handler.handler_id,
+                    kind=handler.kind,
+                    action="validate-blackdog-launcher",
+                    target_path=str(runtime_state.blackdog_path),
+                    status=HANDLER_STATUS_VALIDATED if launcher_valid else HANDLER_STATUS_BLOCKED,
+                    message=(
+                        "validated retained Blackdog launcher"
+                        if launcher_valid
+                        else "retained Blackdog launcher is missing or changed"
+                    ),
+                )
+            )
+            if not launcher_valid:
+                blockers.append("validate-blackdog-launcher")
+            launcher_runtime_valid = False
+            if launcher_valid:
+                try:
+                    _run_command(str(runtime_state.blackdog_path), "--help")
+                    launcher_runtime_valid = True
+                except HandlerError:
+                    launcher_runtime_valid = False
+            actions.append(
+                HandlerAction(
+                    handler_id=handler.handler_id,
+                    kind=handler.kind,
+                    action="validate-blackdog-launcher-runtime",
+                    target_path=str(runtime_state.blackdog_path),
+                    status=(
+                        HANDLER_STATUS_VALIDATED
+                        if launcher_runtime_valid
+                        else HANDLER_STATUS_BLOCKED
+                    ),
+                    message=(
+                        "validated retained Blackdog launcher execution"
+                        if launcher_runtime_valid
+                        else "retained Blackdog launcher does not execute successfully"
+                    ),
+                )
+            )
+            if not launcher_runtime_valid:
+                blockers.append("validate-blackdog-launcher-runtime")
+            if (
+                runtime_state.runtime_mode == HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE
+                and python_state.worktree_site_packages is not None
+            ):
+                source_overlay = python_state.worktree_site_packages / "blackdog-worktree-source.pth"
+                expected_source = str(worktree_path.resolve() / "src") + "\n"
+                source_valid = (
+                    source_overlay.is_file()
+                    and source_overlay.read_text(encoding="utf-8") == expected_source
+                )
+                actions.append(
+                    HandlerAction(
+                        handler_id=handler.handler_id,
+                        kind=handler.kind,
+                        action="validate-worktree-source-overlay",
+                        target_path=str(source_overlay),
+                        status=HANDLER_STATUS_VALIDATED if source_valid else HANDLER_STATUS_BLOCKED,
+                        message=(
+                            "validated retained worktree source overlay"
+                            if source_valid
+                            else "retained worktree source overlay is missing or changed"
+                        ),
+                    )
+                )
+                if not source_valid:
+                    blockers.append("validate-worktree-source-overlay")
+            expected_import_root = (
+                worktree_path.resolve() / "src"
+                if runtime_state.runtime_mode
+                == HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE
+                else (
+                    runtime_state.source_root.resolve() / "src"
+                    if runtime_state.source_root is not None
+                    else None
+                )
+            )
+            import_origin_valid = False
+            if expected_import_root is not None:
+                try:
+                    probe_env = None
+                    if (
+                        runtime_state.runtime_mode
+                        != HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE
+                    ):
+                        probe_env = dict(os.environ)
+                        source_path = str(expected_import_root)
+                        existing_pythonpath = probe_env.get("PYTHONPATH")
+                        probe_env["PYTHONPATH"] = (
+                            source_path
+                            if not existing_pythonpath
+                            else source_path + os.pathsep + existing_pythonpath
+                        )
+                    observed = _run_command(
+                        str(python_path),
+                        "-c",
+                        (
+                            "import pathlib, blackdog, blackdog_cli; "
+                            "print(pathlib.Path(blackdog.__file__).resolve()); "
+                            "print(pathlib.Path(blackdog_cli.__file__).resolve())"
+                        ),
+                        env=probe_env,
+                    ).splitlines()
+                    import_origin_valid = len(observed) == 2 and all(
+                        Path(item).resolve().is_relative_to(expected_import_root)
+                        for item in observed
+                    )
+                except (HandlerError, OSError):
+                    import_origin_valid = False
+            actions.append(
+                HandlerAction(
+                    handler_id=handler.handler_id,
+                    kind=handler.kind,
+                    action="validate-blackdog-import-origin",
+                    target_path=(
+                        str(expected_import_root)
+                        if expected_import_root is not None
+                        else None
+                    ),
+                    status=(
+                        HANDLER_STATUS_VALIDATED
+                        if import_origin_valid
+                        else HANDLER_STATUS_BLOCKED
+                    ),
+                    message=(
+                        "validated retained Blackdog import origin"
+                        if import_origin_valid
+                        else "retained Python does not import Blackdog from the expected source"
+                    ),
+                )
+            )
+            if not import_origin_valid:
+                blockers.append("validate-blackdog-import-origin")
+        else:
+            raise HandlerError(f"unsupported handler kind: {handler.kind}")
+
+    return _summarize(
+        ready=not blockers,
+        actions=tuple(actions),
+        remediation="; ".join(dict.fromkeys(blockers)) if blockers else None,
+        python_state=python_state,
+        runtime_state=runtime_state,
+    )
+
+
 __all__ = [
     "DEFAULT_SOURCE_REMOTE",
     "HANDLER_STATUS_BLOCKED",
@@ -1034,6 +1406,7 @@ __all__ = [
     "HandlerPlanSummary",
     "execute_repo_handlers",
     "execute_worktree_handlers",
+    "validate_existing_worktree_handlers",
     "plan_repo_handlers",
     "plan_worktree_handlers",
 ]

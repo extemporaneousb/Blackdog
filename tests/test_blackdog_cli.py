@@ -14,12 +14,17 @@ from unittest.mock import patch
 
 import blackdog.wtam as wtam
 from blackdog.contract import managed_skill_relative_path
+from blackdog.observability import read_lifecycle_observability
+from blackdog.prompt_artifacts import PROMPT_ARTIFACT_MAX_BYTES
 from blackdog_core.backlog import finish_task, load_planning_state, start_task, upsert_workset
 from blackdog_core.codex_sessions import codex_task_context_path
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
+    StoreError,
+    TaskClaimRecord,
     ValidationRecord,
     append_event,
+    append_event_once,
     create_prompt_receipt,
     load_events,
     load_runtime_state,
@@ -94,6 +99,1131 @@ class BlackdogCliTests(CoreAuditTestCase):
                 text=True,
             )
 
+    def _runtime_transition_fault_fixture(
+        self,
+        *,
+        workset_id: str,
+        operation: str,
+    ):
+        profile = load_profile(self.root)
+        task_id = "STATE-A"
+        upsert_workset(
+            profile,
+            {
+                "id": workset_id,
+                "title": "Runtime transition fault fixture",
+                "tasks": [
+                    {
+                        "id": task_id,
+                        "title": "Transition state",
+                        "intent": "exercise durable transition recovery",
+                    }
+                ],
+            },
+        )
+        if operation == "reopen":
+            setup = wtam.cancel_task(
+                profile,
+                workset_id=workset_id,
+                task_id=task_id,
+                actor="setup-owner",
+                summary="prepare canceled state",
+            )
+            self.assertEqual(setup.operation_status, "succeeded")
+        return profile, task_id
+
+    @staticmethod
+    def _runtime_transition_fault_expectation(
+        *,
+        boundary: str,
+        position: str,
+    ) -> tuple[bool, bool, str, tuple[str, ...]]:
+        if boundary == "request" and position == "before":
+            return False, False, "none", ()
+        if boundary == "request":
+            return True, False, "preflight", ("task.runtime-transition.request",)
+        if boundary == "decision" and position == "before":
+            return True, False, "preflight", ("task.runtime-transition.request",)
+        if boundary == "decision":
+            return (
+                True,
+                False,
+                "preflight",
+                (
+                    "task.runtime-transition.request",
+                    "task.runtime-transition.decision",
+                ),
+            )
+        if position == "before":
+            return (
+                True,
+                False,
+                "runtime_finalized",
+                (
+                    "task.runtime-transition.request",
+                    "task.runtime-transition.decision",
+                ),
+            )
+        return (
+            True,
+            True,
+            "event_finalized",
+            (
+                "task.runtime-transition.request",
+                "task.runtime-transition.decision",
+                "owned",
+            ),
+        )
+
+    def _stale_release_fault_fixture(
+        self,
+        *,
+        workset_id: str,
+        topology: str,
+        null_attempt_id: bool = False,
+    ):
+        profile = load_profile(self.root)
+        task_id = "STALE-A"
+        tasks = [
+            {
+                "id": task_id,
+                "title": "Release stale A",
+                "intent": "exercise stale-claim transaction recovery",
+            }
+        ]
+        if topology == "remaining":
+            tasks.append(
+                {
+                    "id": "STALE-B",
+                    "title": "Preserve B",
+                    "intent": "preserve an unrelated task claim",
+                }
+            )
+        upsert_workset(
+            profile,
+            {
+                "id": workset_id,
+                "title": "Stale release fault fixture",
+                "tasks": tasks,
+            },
+        )
+        attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="stale-owner",
+            prompt_receipt=create_prompt_receipt(
+                "Release stale claim transactionally.", source="unit-test"
+            ),
+        )
+        runtime = load_runtime_state(profile.paths)
+        runtime_workset = next(
+            row for row in runtime.worksets if row.workset_id == workset_id
+        )
+        active_attempt = next(
+            row for row in runtime_workset.attempts
+            if row.attempt_id == attempt.attempt_id
+        )
+        target_claim = next(
+            row for row in runtime_workset.task_claims
+            if row.task_id == task_id
+        )
+        claims = [
+            replace(
+                target_claim,
+                attempt_id=None if null_attempt_id else target_claim.attempt_id,
+            )
+        ]
+        if topology == "remaining":
+            claims.append(
+                TaskClaimRecord(
+                    task_id="STALE-B",
+                    actor="stale-owner",
+                    execution_model=target_claim.execution_model,
+                    claimed_at=target_claim.claimed_at,
+                    attempt_id=None,
+                    note="preserve byte-for-byte",
+                )
+            )
+        stale_attempt = replace(
+            active_attempt,
+            status="blocked",
+            ended_at=now_iso(),
+            summary="interrupted before stale claim release",
+            elapsed_seconds=1,
+        )
+        stale_runtime = merge_workset_runtime(
+            runtime,
+            workset_id=workset_id,
+            task_ids={str(task["id"]) for task in tasks},
+            incoming_records=None,
+            incoming_workset_claim=(
+                None
+                if topology == "no-workset"
+                else runtime_workset.workset_claim
+            ),
+            incoming_task_claims=tuple(claims),
+            incoming_attempts=(stale_attempt,),
+        )
+        save_runtime_state(profile.paths, stale_runtime)
+        return profile, task_id, stale_runtime
+
+    def _pending_stale_release_with_active_sibling(self, workset_id: str):
+        profile = load_profile(self.root)
+        upsert_workset(
+            profile,
+            {
+                "id": workset_id,
+                "title": "Pending stale release product gate",
+                "tasks": [
+                    {
+                        "id": "STALE-A",
+                        "title": "Stale owner",
+                        "intent": "own the pending release",
+                    },
+                    {
+                        "id": "ACTIVE-B",
+                        "title": "Active sibling",
+                        "intent": "exercise product preflight",
+                    },
+                ],
+            },
+        )
+        stale_attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id="STALE-A",
+            actor="owner",
+            prompt_receipt=wtam.create_prompt_receipt(
+                "Leave A stale.", source="unit-test"
+            ),
+        )
+        runtime = load_runtime_state(profile.paths)
+        save_runtime_state(
+            profile.paths,
+            merge_workset_runtime(
+                runtime,
+                workset_id=workset_id,
+                task_ids={"STALE-A", "ACTIVE-B"},
+                incoming_records=None,
+                incoming_attempts=(
+                    replace(
+                        stale_attempt,
+                        status="blocked",
+                        ended_at=now_iso(),
+                        summary="stale owner interrupted",
+                    ),
+                ),
+            ),
+        )
+        active_attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id="ACTIVE-B",
+            actor="owner",
+            prompt_receipt=wtam.create_prompt_receipt(
+                "Keep B active.", source="unit-test"
+            ),
+        )
+        runtime_path = profile.paths.runtime_file.resolve()
+        real_replace = os.replace
+        injected = False
+
+        def fail_runtime(source, destination):
+            nonlocal injected
+            if Path(destination).resolve() == runtime_path and not injected:
+                injected = True
+                raise OSError("leave stale release at its durable decision")
+            return real_replace(source, destination)
+
+        with patch("blackdog_core.state.os.replace", side_effect=fail_runtime):
+            partial = wtam.recover_task(
+                profile,
+                workset_id=workset_id,
+                task_id="STALE-A",
+                release_stale_claim=True,
+                status="failed",
+                summary="repair A before another claim mutation",
+            )
+        self.assertEqual(partial.operation_status, "partial")
+        self.assertEqual(partial.mutation_phase, "preflight")
+        return profile, active_attempt, partial
+
+    @staticmethod
+    def _stale_release_fault_expectation(
+        *,
+        topology: str,
+        boundary: str,
+        position: str,
+    ) -> tuple[bool, bool, str, tuple[str, ...]]:
+        request = "task.stale-claim-release.request"
+        decision = "task.stale-claim-release.decision"
+        if boundary == "request" and position == "before":
+            return False, False, "none", ()
+        if boundary == "request":
+            return True, False, "preflight", (request,)
+        if boundary == "decision" and position == "before":
+            return True, False, "preflight", (request,)
+        if boundary == "decision":
+            return True, False, "preflight", (request, decision)
+        if boundary == "runtime" and position == "before":
+            return True, False, "preflight", (request, decision)
+        if boundary == "runtime":
+            return True, False, "runtime_finalized", (request, decision)
+        if boundary == "task" and position == "before":
+            return True, False, "runtime_finalized", (request, decision)
+        if boundary == "task" and topology == "last":
+            return (
+                True,
+                False,
+                "event_finalization_partial",
+                (request, decision, "task.release"),
+            )
+        if boundary == "task":
+            return (
+                True,
+                True,
+                "event_finalized",
+                (request, decision, "task.release"),
+            )
+        if position == "before":
+            return (
+                True,
+                False,
+                "event_finalization_partial",
+                (request, decision, "task.release"),
+            )
+        return (
+            True,
+            True,
+            "event_finalized",
+            (request, decision, "task.release", "workset.release"),
+        )
+
+    def test_runtime_transition_store_faults_return_structured_direct_results(self) -> None:
+        real_append_event_once = append_event_once
+        for operation in ("cancel", "reopen"):
+            for boundary in ("request", "decision", "owned"):
+                for position in ("before", "after"):
+                    case = f"direct-{operation}-{boundary}-{position}"
+                    with self.subTest(case=case):
+                        profile, task_id = self._runtime_transition_fault_fixture(
+                            workset_id=case,
+                            operation=operation,
+                        )
+                        actor = f"{case}-owner"
+                        target_type = {
+                            "request": "task.runtime-transition.request",
+                            "decision": "task.runtime-transition.decision",
+                            "owned": f"task.{operation}",
+                        }[boundary]
+                        injected = False
+
+                        def fail_transition(*args, **kwargs):
+                            nonlocal injected
+                            if kwargs.get("event_type") != target_type or injected:
+                                return real_append_event_once(*args, **kwargs)
+                            injected = True
+                            if position == "before":
+                                raise StoreError(f"injected before {target_type}")
+                            real_append_event_once(*args, **kwargs)
+                            raise StoreError(f"injected after {target_type}")
+
+                        call = wtam.cancel_task if operation == "cancel" else wtam.reopen_task
+                        call_kwargs = {
+                            "profile": profile,
+                            "workset_id": case,
+                            "task_id": task_id,
+                            "actor": actor,
+                            "summary": f"{operation} through injected storage fault",
+                        }
+                        if operation == "cancel":
+                            call_kwargs.update(
+                                failure_class="unknown",
+                                recovery_action="inspect_transition",
+                            )
+                        with patch(
+                            "blackdog_core.backlog.append_event_once",
+                            side_effect=fail_transition,
+                        ):
+                            result = call(**call_kwargs)
+                        expected_started, expected_completed, phase, prefix = (
+                            self._runtime_transition_fault_expectation(
+                                boundary=boundary,
+                                position=position,
+                            )
+                        )
+                        self.assertEqual(result.operation_status, "partial")
+                        self.assertEqual(result.mutation_started, expected_started)
+                        self.assertEqual(result.mutation_completed, expected_completed)
+                        self.assertEqual(result.mutation_phase, phase)
+                        self.assertEqual(
+                            result.next_action.action_id,
+                            f"retry_task_{operation}_finalization",
+                        )
+                        request_id = result["transition_request_event_id"]
+                        decision_id = result["transition_decision_event_id"]
+                        owned_id = result["transition_owned_event_id"]
+                        self.assertIsNotNone(request_id)
+                        self.assertIn(
+                            f"--transition-request={request_id}",
+                            result.next_action.argv,
+                        )
+                        decision_durable = (
+                            "task.runtime-transition.decision" in prefix
+                        )
+                        self.assertEqual(
+                            f"--transition-decision={decision_id}"
+                            in result.next_action.argv,
+                            decision_durable,
+                        )
+                        events = load_events(profile.paths.events_file)
+                        durable_types = []
+                        for event in events:
+                            if event.get("event_id") == request_id:
+                                durable_types.append(event["type"])
+                            elif event.get("event_id") == decision_id:
+                                durable_types.append(event["type"])
+                            elif event.get("event_id") == owned_id:
+                                durable_types.append("owned")
+                        self.assertEqual(tuple(durable_types), prefix)
+
+                        retry_kwargs = {
+                            **call_kwargs,
+                            "transition_request_event_id": request_id,
+                            "transition_decision_event_id": (
+                                decision_id if decision_durable else None
+                            ),
+                        }
+                        partial_runtime = profile.paths.runtime_file.read_bytes()
+                        partial_events = profile.paths.events_file.read_bytes()
+                        repaired = call(**retry_kwargs)
+                        self.assertEqual(repaired.operation_status, "succeeded")
+                        if expected_completed:
+                            self.assertEqual(
+                                profile.paths.runtime_file.read_bytes(),
+                                partial_runtime,
+                            )
+                            self.assertEqual(
+                                profile.paths.events_file.read_bytes(),
+                                partial_events,
+                            )
+                        runtime_before_third = profile.paths.runtime_file.read_bytes()
+                        events_before_third = profile.paths.events_file.read_bytes()
+                        third = call(**retry_kwargs)
+                        self.assertEqual(third.operation_status, "succeeded")
+                        self.assertFalse(third.mutation_started)
+                        self.assertEqual(
+                            profile.paths.runtime_file.read_bytes(),
+                            runtime_before_third,
+                        )
+                        self.assertEqual(
+                            profile.paths.events_file.read_bytes(),
+                            events_before_third,
+                        )
+
+    def test_runtime_transition_store_faults_return_structured_cli_results(self) -> None:
+        real_append_event_once = append_event_once
+        for operation in ("cancel", "reopen"):
+            for boundary in ("request", "decision", "owned"):
+                for position in ("before", "after"):
+                    case = f"cli-{operation}-{boundary}-{position}"
+                    with self.subTest(case=case):
+                        profile, task_id = self._runtime_transition_fault_fixture(
+                            workset_id=case,
+                            operation=operation,
+                        )
+                        actor = f"{case}-owner"
+                        target_type = {
+                            "request": "task.runtime-transition.request",
+                            "decision": "task.runtime-transition.decision",
+                            "owned": f"task.{operation}",
+                        }[boundary]
+                        injected = False
+
+                        def fail_transition(*args, **kwargs):
+                            nonlocal injected
+                            if kwargs.get("event_type") != target_type or injected:
+                                return real_append_event_once(*args, **kwargs)
+                            injected = True
+                            if position == "before":
+                                raise StoreError(f"injected before {target_type}")
+                            real_append_event_once(*args, **kwargs)
+                            raise StoreError(f"injected after {target_type}")
+
+                        base_argv = [
+                            "task",
+                            operation,
+                            "--project-root",
+                            str(self.root),
+                            "--workset",
+                            case,
+                            "--task",
+                            task_id,
+                            "--actor",
+                            actor,
+                            "--summary",
+                            f"{operation} through injected storage fault",
+                        ]
+                        if operation == "cancel":
+                            base_argv.extend(
+                                [
+                                    "--failure-class",
+                                    "unknown",
+                                    "--recovery-action",
+                                    "inspect_transition",
+                                ]
+                            )
+                        base_argv.append("--json")
+                        with patch(
+                            "blackdog_core.backlog.append_event_once",
+                            side_effect=fail_transition,
+                        ):
+                            exit_code, stdout, stderr = self.run_cli(*base_argv)
+                        self.assertEqual(exit_code, 1, stderr)
+                        payload = json.loads(stdout)["task_state"]
+                        expected_started, expected_completed, phase, prefix = (
+                            self._runtime_transition_fault_expectation(
+                                boundary=boundary,
+                                position=position,
+                            )
+                        )
+                        self.assertEqual(payload["operation_status"], "partial")
+                        self.assertEqual(payload["mutation_started"], expected_started)
+                        self.assertEqual(payload["mutation_completed"], expected_completed)
+                        self.assertEqual(payload["mutation_phase"], phase)
+                        self.assertEqual(
+                            payload["next_action"]["action_id"],
+                            f"retry_task_{operation}_finalization",
+                        )
+                        request_id = payload["transition_request_event_id"]
+                        decision_id = payload["transition_decision_event_id"]
+                        owned_id = payload["transition_owned_event_id"]
+                        action_argv = payload["next_action"]["argv"]
+                        self.assertIn(
+                            f"--transition-request={request_id}",
+                            action_argv,
+                        )
+                        decision_durable = (
+                            "task.runtime-transition.decision" in prefix
+                        )
+                        self.assertEqual(
+                            f"--transition-decision={decision_id}" in action_argv,
+                            decision_durable,
+                        )
+                        durable_types = []
+                        for event in load_events(profile.paths.events_file):
+                            if event.get("event_id") == request_id:
+                                durable_types.append(event["type"])
+                            elif event.get("event_id") == decision_id:
+                                durable_types.append(event["type"])
+                            elif event.get("event_id") == owned_id:
+                                durable_types.append("owned")
+                        self.assertEqual(tuple(durable_types), prefix)
+
+                        retry_argv = list(base_argv[:-1])
+                        retry_argv.extend(
+                            ["--transition-request", request_id]
+                        )
+                        if decision_durable:
+                            retry_argv.extend(
+                                ["--transition-decision", decision_id]
+                            )
+                        retry_argv.append("--json")
+                        partial_runtime = profile.paths.runtime_file.read_bytes()
+                        partial_events = profile.paths.events_file.read_bytes()
+                        exit_code, stdout, stderr = self.run_cli(*retry_argv)
+                        self.assertEqual(exit_code, 0, stderr)
+                        repaired = json.loads(stdout)["task_state"]
+                        self.assertEqual(repaired["operation_status"], "succeeded")
+                        if expected_completed:
+                            self.assertEqual(
+                                profile.paths.runtime_file.read_bytes(),
+                                partial_runtime,
+                            )
+                            self.assertEqual(
+                                profile.paths.events_file.read_bytes(),
+                                partial_events,
+                            )
+                        runtime_before_third = profile.paths.runtime_file.read_bytes()
+                        events_before_third = profile.paths.events_file.read_bytes()
+                        exit_code, stdout, stderr = self.run_cli(*retry_argv)
+                        self.assertEqual(exit_code, 0, stderr)
+                        third = json.loads(stdout)["task_state"]
+                        self.assertFalse(third["mutation_started"])
+                        self.assertEqual(
+                            profile.paths.runtime_file.read_bytes(),
+                            runtime_before_third,
+                        )
+                        self.assertEqual(
+                            profile.paths.events_file.read_bytes(),
+                            events_before_third,
+                        )
+
+    def _assert_stale_release_fault_case(
+        self,
+        *,
+        surface: str,
+        topology: str,
+        boundary: str,
+        position: str,
+    ) -> None:
+        case = f"stale-{surface}-{topology}-{boundary}-{position}"
+        profile, task_id, stale_runtime = self._stale_release_fault_fixture(
+            workset_id=case,
+            topology=topology,
+            null_attempt_id=topology == "no-workset",
+        )
+        real_append_event_once = append_event_once
+        real_replace = os.replace
+        injected = False
+        target_event_type = {
+            "request": "task.stale-claim-release.request",
+            "decision": "task.stale-claim-release.decision",
+            "task": "task.release",
+            "workset": "workset.release",
+        }.get(boundary)
+        runtime_path = profile.paths.runtime_file.resolve()
+
+        def fail_event(*args, **kwargs):
+            nonlocal injected
+            if kwargs.get("event_type") != target_event_type or injected:
+                return real_append_event_once(*args, **kwargs)
+            injected = True
+            if position == "before":
+                raise StoreError(f"injected before {target_event_type}")
+            real_append_event_once(*args, **kwargs)
+            raise StoreError(f"injected after {target_event_type}")
+
+        def fail_runtime_replace(source, destination):
+            nonlocal injected
+            if Path(destination).resolve() != runtime_path or injected:
+                return real_replace(source, destination)
+            injected = True
+            if position == "before":
+                raise OSError("injected before stale runtime replacement")
+            real_replace(source, destination)
+            raise OSError("injected after stale runtime replacement")
+
+        direct_kwargs = {
+            "profile": profile,
+            "workset_id": case,
+            "task_id": task_id,
+            "release_stale_claim": True,
+            "status": "abandoned",
+            "summary": "release stale claim through injected fault",
+            "note": "fault matrix",
+        }
+        cli_argv = [
+            "task",
+            "recover",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            case,
+            "--task",
+            task_id,
+            "--release-stale-claim",
+            "--status",
+            "abandoned",
+            "--summary",
+            "release stale claim through injected fault",
+            "--note",
+            "fault matrix",
+            "--json",
+        ]
+
+        def invoke_initial():
+            if surface == "direct":
+                result = wtam.recover_task(**direct_kwargs)
+                return result, result.to_dict(), None
+            exit_code, stdout, stderr = self.run_cli(*cli_argv)
+            return None, json.loads(stdout)["recovery"], (exit_code, stderr)
+
+        if boundary == "runtime":
+            with patch(
+                "blackdog_core.state.os.replace",
+                side_effect=fail_runtime_replace,
+            ):
+                direct_result, payload, cli_status = invoke_initial()
+        else:
+            with patch(
+                "blackdog_core.backlog.append_event_once",
+                side_effect=fail_event,
+            ):
+                direct_result, payload, cli_status = invoke_initial()
+        if cli_status is not None:
+            self.assertEqual(cli_status[0], 1, cli_status[1])
+        expected_started, expected_completed, phase, prefix = (
+            self._stale_release_fault_expectation(
+                topology=topology,
+                boundary=boundary,
+                position=position,
+            )
+        )
+        self.assertEqual(payload["operation_status"], "partial")
+        self.assertEqual(payload["mutation_started"], expected_started)
+        self.assertEqual(payload["mutation_completed"], expected_completed)
+        self.assertEqual(payload["mutation_phase"], phase)
+        runtime_finalized = phase in {
+            "runtime_finalized",
+            "event_finalization_partial",
+            "event_finalized",
+        }
+        self.assertEqual(payload["released_stale_claim"], runtime_finalized)
+        self.assertEqual(
+            payload["stale_claim_release_runtime_finalized"],
+            runtime_finalized,
+        )
+        self.assertEqual(
+            payload["stale_claim_release_event_finalized"],
+            phase == "event_finalized",
+        )
+        self.assertEqual(
+            payload["stale_claim_release_finalization_pending"],
+            phase != "event_finalized",
+        )
+        self.assertEqual(
+            payload["next_action"]["action_id"],
+            "retry_stale_claim_release_finalization",
+        )
+        request_id = payload["stale_claim_release_request_event_id"]
+        decision_id = payload["stale_claim_release_decision_event_id"]
+        task_event_id = payload["stale_claim_release_task_event_id"]
+        workset_event_id = payload["stale_claim_release_workset_event_id"]
+        self.assertIsNotNone(request_id)
+        action_argv = payload["next_action"]["argv"]
+        self.assertIn(
+            f"--stale-claim-release-request={request_id}",
+            action_argv,
+        )
+        decision_durable = "task.stale-claim-release.decision" in prefix
+        self.assertEqual(
+            f"--stale-claim-release-decision={decision_id}" in action_argv,
+            decision_durable,
+        )
+        durable_types = []
+        for event in load_events(profile.paths.events_file):
+            if event.get("event_id") == request_id:
+                durable_types.append(event["type"])
+            elif event.get("event_id") == decision_id:
+                durable_types.append(event["type"])
+            elif event.get("event_id") == task_event_id:
+                durable_types.append(event["type"])
+            elif event.get("event_id") == workset_event_id:
+                durable_types.append(event["type"])
+        self.assertEqual(tuple(durable_types), prefix)
+
+        if request_id in {event.get("event_id") for event in load_events(profile.paths.events_file)} and not expected_completed:
+            for observed in (
+                wtam.recover_task(
+                    profile,
+                    workset_id=case,
+                    task_id=task_id,
+                ),
+                wtam.show_task(
+                    profile,
+                    workset_id=case,
+                    task_id=task_id,
+                ),
+            ):
+                self.assertFalse(observed.mutation_started)
+                self.assertEqual(
+                    observed.next_action.action_id,
+                    "retry_stale_claim_release_finalization",
+                )
+                self.assertIn(
+                    f"--stale-claim-release-request={request_id}",
+                    observed.next_action.argv,
+                )
+
+        retry_direct = {
+            **direct_kwargs,
+            "stale_claim_release_request_event_id": request_id,
+            "stale_claim_release_decision_event_id": (
+                decision_id if decision_durable else None
+            ),
+        }
+        retry_cli = list(cli_argv[:-1])
+        retry_cli.extend(["--stale-claim-release-request", request_id])
+        if decision_durable:
+            retry_cli.extend(["--stale-claim-release-decision", decision_id])
+        retry_cli.append("--json")
+        partial_runtime = profile.paths.runtime_file.read_bytes()
+        partial_events = profile.paths.events_file.read_bytes()
+        if surface == "direct":
+            repaired_result = wtam.recover_task(**retry_direct)
+            repaired = repaired_result.to_dict()
+        else:
+            exit_code, stdout, stderr = self.run_cli(*retry_cli)
+            self.assertEqual(exit_code, 0, stderr)
+            repaired = json.loads(stdout)["recovery"]
+        self.assertEqual(repaired["operation_status"], "succeeded")
+        if expected_completed:
+            self.assertEqual(profile.paths.runtime_file.read_bytes(), partial_runtime)
+            self.assertEqual(profile.paths.events_file.read_bytes(), partial_events)
+
+        current = next(
+            row for row in load_runtime_state(profile.paths).worksets
+            if row.workset_id == case
+        )
+        prior = next(
+            row for row in stale_runtime.worksets if row.workset_id == case
+        )
+        self.assertEqual(current.attempts, prior.attempts)
+        self.assertEqual(
+            [claim.task_id for claim in current.task_claims],
+            ["STALE-B"] if topology == "remaining" else [],
+        )
+        self.assertEqual(
+            current.workset_claim,
+            prior.workset_claim if topology == "remaining" else None,
+        )
+        target_state = next(
+            state for state in current.task_states if state.task_id == task_id
+        )
+        self.assertEqual(target_state.status, "canceled")
+        runtime_before_third = profile.paths.runtime_file.read_bytes()
+        events_before_third = profile.paths.events_file.read_bytes()
+        if surface == "direct":
+            third = wtam.recover_task(**retry_direct).to_dict()
+        else:
+            exit_code, stdout, stderr = self.run_cli(*retry_cli)
+            self.assertEqual(exit_code, 0, stderr)
+            third = json.loads(stdout)["recovery"]
+        self.assertFalse(third["mutation_started"])
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before_third)
+        self.assertEqual(profile.paths.events_file.read_bytes(), events_before_third)
+
+    def test_stale_release_fault_matrix_direct(self) -> None:
+        for topology in ("last", "remaining", "no-workset"):
+            boundaries = (
+                ("request", "decision", "runtime", "task", "workset")
+                if topology == "last"
+                else ("request", "decision", "runtime", "task")
+            )
+            for boundary in boundaries:
+                for position in ("before", "after"):
+                    with self.subTest(
+                        topology=topology,
+                        boundary=boundary,
+                        position=position,
+                    ):
+                        self._assert_stale_release_fault_case(
+                            surface="direct",
+                            topology=topology,
+                            boundary=boundary,
+                            position=position,
+                        )
+
+    def test_stale_release_fault_matrix_cli(self) -> None:
+        for topology in ("last", "remaining", "no-workset"):
+            boundaries = (
+                ("request", "decision", "runtime", "task", "workset")
+                if topology == "last"
+                else ("request", "decision", "runtime", "task")
+            )
+            for boundary in boundaries:
+                for position in ("before", "after"):
+                    with self.subTest(
+                        topology=topology,
+                        boundary=boundary,
+                        position=position,
+                    ):
+                        self._assert_stale_release_fault_case(
+                            surface="cli",
+                            topology=topology,
+                            boundary=boundary,
+                            position=position,
+                        )
+
+    def test_pending_stale_release_blocks_claim_mutating_product_effects(self) -> None:
+        workset_id = "stale-product-preflight"
+        profile, active_attempt, partial = (
+            self._pending_stale_release_with_active_sibling(workset_id)
+        )
+        request_guard = (
+            f"--stale-claim-release-request="
+            f"{partial['stale_claim_release_request_event_id']}"
+        )
+        runtime_before = profile.paths.runtime_file.read_bytes()
+        events_before = profile.paths.events_file.read_bytes()
+        refs_before = self.git_output("show-ref", "--heads")
+
+        for observed in (
+            wtam.show_task(
+                profile,
+                workset_id=workset_id,
+                task_id="ACTIVE-B",
+            ),
+            wtam.recover_task(
+                profile,
+                workset_id=workset_id,
+                task_id="ACTIVE-B",
+            ),
+            wtam.cancel_task(
+                profile,
+                workset_id=workset_id,
+                task_id="STALE-A",
+                actor="owner",
+                summary="must repair exact stale release first",
+            ),
+            wtam.reopen_task(
+                profile,
+                workset_id=workset_id,
+                task_id="STALE-A",
+                actor="owner",
+                summary="must repair exact stale release first",
+            ),
+        ):
+            self.assertIn(observed.operation_status, {"observed", "blocked"})
+            self.assertEqual(
+                observed.next_action.action_id,
+                "retry_stale_claim_release_finalization",
+            )
+            self.assertIn("--task=STALE-A", observed.next_action.argv)
+            self.assertIn(request_guard, observed.next_action.argv)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
+        self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
+
+        calls = (
+            (
+                "begin",
+                "start_task_worktree",
+                lambda: wtam.begin_task_worktree(
+                    profile,
+                    actor="owner",
+                    prompt="Do not start B before repairing A.",
+                    workset_id=workset_id,
+                    task_id="ACTIVE-B",
+                ),
+            ),
+            (
+                "land",
+                "land_task_worktree",
+                lambda: wtam.land_task(
+                    profile,
+                    workset_id=workset_id,
+                    task_id="ACTIVE-B",
+                    actor="owner",
+                    summary="Do not mutate Git before repairing A.",
+                ),
+            ),
+            (
+                "close",
+                "close_task_worktree",
+                lambda: wtam.close_task(
+                    profile,
+                    workset_id=workset_id,
+                    task_id="ACTIVE-B",
+                    actor="owner",
+                    status="failed",
+                    summary="Do not close B before repairing A.",
+                ),
+            ),
+        )
+        for operation, mutation_name, invoke in calls:
+            with self.subTest(operation=operation):
+                with patch.object(wtam, mutation_name) as mutation:
+                    result = invoke()
+                mutation.assert_not_called()
+                self.assertEqual(result.operation_status, "blocked")
+                self.assertFalse(result.mutation_started)
+                self.assertEqual(
+                    result.next_action.action_id,
+                    "retry_stale_claim_release_finalization",
+                )
+                self.assertIn("--task=STALE-A", result.next_action.argv)
+                self.assertIn(request_guard, result.next_action.argv)
+                self.assertEqual(
+                    result["stale_claim_release_owner_task_id"],
+                    "STALE-A",
+                )
+                self.assertEqual(
+                    profile.paths.runtime_file.read_bytes(), runtime_before
+                )
+                self.assertEqual(
+                    profile.paths.events_file.read_bytes(), events_before
+                )
+                self.assertEqual(self.git_output("show-ref", "--heads"), refs_before)
+        runtime = load_runtime_state(profile.paths)
+        self.assertEqual(
+            next(
+                row for row in runtime.worksets
+                if row.workset_id == workset_id
+                for row in row.attempts
+                if row.attempt_id == active_attempt.attempt_id
+            ).status,
+            "in_progress",
+        )
+
+    def test_stale_release_retry_argv_replays_exactly_and_hidden_guards_stay_hidden(self) -> None:
+        workset_id = "stale-parser-replay"
+        profile, task_id, _runtime = self._stale_release_fault_fixture(
+            workset_id=workset_id,
+            topology="last",
+        )
+        real_append = append_event_once
+        injected = False
+
+        def fail_task_event(*args, **kwargs):
+            nonlocal injected
+            if kwargs.get("event_type") == "task.release" and not injected:
+                injected = True
+                raise StoreError("leave parser replay pending")
+            return real_append(*args, **kwargs)
+
+        with patch(
+            "blackdog_core.backlog.append_event_once",
+            side_effect=fail_task_event,
+        ):
+            partial = wtam.recover_task(
+                profile,
+                workset_id=workset_id,
+                task_id=task_id,
+                release_stale_claim=True,
+                status="abandoned",
+                summary="repair through exact parser replay",
+            )
+        self.assertEqual(partial.operation_status, "partial")
+        self.assertEqual(partial.mutation_phase, "runtime_finalized")
+        action_argv = list(partial.next_action.argv)
+        self.assertEqual(
+            partial.next_action.action_id,
+            "retry_stale_claim_release_finalization",
+        )
+        self.assertTrue(action_argv[0].endswith("blackdog"))
+        self.assertTrue(
+            any(value.startswith("--stale-claim-release-request=") for value in action_argv)
+        )
+        self.assertTrue(
+            any(value.startswith("--stale-claim-release-decision=") for value in action_argv)
+        )
+
+        exit_code, stdout, stderr = self.run_cli(*action_argv[1:], "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        repaired = json.loads(stdout)["recovery"]
+        self.assertEqual(repaired["operation_status"], "succeeded")
+        self.assertTrue(repaired["released_stale_claim"])
+        self.assertFalse(repaired["stale_claim_release_finalization_pending"])
+        repaired_runtime = profile.paths.runtime_file.read_bytes()
+        repaired_events = profile.paths.events_file.read_bytes()
+        exit_code, stdout, stderr = self.run_cli(*action_argv[1:], "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        idempotent = json.loads(stdout)["recovery"]
+        self.assertFalse(idempotent["mutation_started"])
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), repaired_runtime)
+        self.assertEqual(profile.paths.events_file.read_bytes(), repaired_events)
+
+        reopened = wtam.reopen_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="stale-owner",
+            summary="later progress supersedes the completed release",
+        )
+        self.assertEqual(reopened.operation_status, "succeeded")
+        progressed_runtime = profile.paths.runtime_file.read_bytes()
+        progressed_events = profile.paths.events_file.read_bytes()
+        request_count = sum(
+            event.get("type") == "task.stale-claim-release.request"
+            and event.get("payload", {}).get("workset_id") == workset_id
+            for event in load_events(profile.paths.events_file)
+        )
+        exit_code, stdout, stderr = self.run_cli(*action_argv[1:], "--json")
+        self.assertEqual(exit_code, 1, stderr)
+        superseded = json.loads(stdout)["recovery"]
+        self.assertEqual(superseded["operation_status"], "blocked")
+        self.assertEqual(
+            superseded["next_action"]["action_id"],
+            "inspect_stale_claim_release_conflict",
+        )
+        self.assertEqual(superseded["next_action"]["argv"], [])
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), progressed_runtime)
+        self.assertEqual(profile.paths.events_file.read_bytes(), progressed_events)
+        self.assertEqual(
+            sum(
+                event.get("type") == "task.stale-claim-release.request"
+                and event.get("payload", {}).get("workset_id") == workset_id
+                for event in load_events(profile.paths.events_file)
+            ),
+            request_count,
+        )
+
+        help_stdout = io.StringIO()
+        help_stderr = io.StringIO()
+        with redirect_stdout(help_stdout), redirect_stderr(help_stderr):
+            with self.assertRaises(SystemExit) as raised:
+                blackdog_main(["task", "recover", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+        help_text = help_stdout.getvalue()
+        self.assertNotIn("--stale-claim-release-request", help_text)
+        self.assertNotIn("--stale-claim-release-decision", help_text)
+
+    def test_stale_release_guard_and_semantic_conflicts_are_commandless_and_write_nothing(self) -> None:
+        cases = ("foreign-request", "foreign-decision", "different-semantics")
+        for suffix in cases:
+            with self.subTest(case=suffix):
+                workset_id = f"stale-guard-{suffix}"
+                profile, task_id, _runtime = self._stale_release_fault_fixture(
+                    workset_id=workset_id,
+                    topology="last",
+                )
+                runtime_path = profile.paths.runtime_file.resolve()
+                real_replace = os.replace
+                injected = False
+
+                def fail_runtime(source, destination):
+                    nonlocal injected
+                    if Path(destination).resolve() == runtime_path and not injected:
+                        injected = True
+                        raise OSError("leave guarded release at decision")
+                    return real_replace(source, destination)
+
+                with patch(
+                    "blackdog_core.state.os.replace",
+                    side_effect=fail_runtime,
+                ):
+                    partial = wtam.recover_task(
+                        profile,
+                        workset_id=workset_id,
+                        task_id=task_id,
+                        release_stale_claim=True,
+                        status="failed",
+                        summary="canonical guarded semantics",
+                    )
+                request_id = partial["stale_claim_release_request_event_id"]
+                decision_id = partial["stale_claim_release_decision_event_id"]
+                call_kwargs = {
+                    "profile": profile,
+                    "workset_id": workset_id,
+                    "task_id": task_id,
+                    "release_stale_claim": True,
+                    "status": "failed",
+                    "summary": "canonical guarded semantics",
+                    "stale_claim_release_request_event_id": request_id,
+                    "stale_claim_release_decision_event_id": decision_id,
+                }
+                if suffix == "foreign-request":
+                    call_kwargs["stale_claim_release_request_event_id"] = "0" * 64
+                    call_kwargs["stale_claim_release_decision_event_id"] = None
+                elif suffix == "foreign-decision":
+                    call_kwargs["stale_claim_release_decision_event_id"] = "1" * 64
+                else:
+                    call_kwargs["summary"] = "different durable semantics"
+                runtime_before = profile.paths.runtime_file.read_bytes()
+                events_before = profile.paths.events_file.read_bytes()
+                blocked = wtam.recover_task(**call_kwargs)
+                self.assertEqual(blocked.operation_status, "blocked")
+                self.assertFalse(blocked.mutation_started)
+                self.assertEqual(
+                    blocked.next_action.action_id,
+                    "inspect_stale_claim_release_conflict",
+                )
+                self.assertEqual(blocked.next_action.argv, ())
+                self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
+                self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
+
     def test_workset_put_is_disabled_without_explicit_opt_in(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
             "workset",
@@ -120,6 +1250,29 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("summary", help_text)
         self.assertNotIn("workset", help_text)
         self.assertNotIn("next", help_text)
+
+    def test_task_begin_help_hides_generated_adoption_guards(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                blackdog_main(["task", "begin", "--help"])
+        self.assertEqual(raised.exception.code, 0)
+        help_text = stdout.getvalue()
+        self.assertNotIn("--expected-actor", help_text)
+        self.assertNotIn("--expected-execution-prompt-hash", help_text)
+        self.assertNotIn("--expected-execution-prompt-mode", help_text)
+        self.assertNotIn("--expected-request-prompt-hash", help_text)
+        self.assertNotIn("--expected-request-prompt-mode", help_text)
+        self.assertNotIn("--adopt-aborted-landing-source", help_text)
+        self.assertNotIn("--expected-predecessor-attempt", help_text)
+        self.assertNotIn("--expected-landing-transaction", help_text)
+        self.assertNotIn("--expected-source-commit", help_text)
+        self.assertNotIn("--expected-source-tree", help_text)
+        self.assertNotIn("--expected-branch", help_text)
+        self.assertNotIn("--expected-path", help_text)
+        self.assertNotIn("--expected-target-branch", help_text)
+        self.assertNotIn("--expected-target-commit", help_text)
 
     def test_task_begin_partial_existing_target_points_to_normal_new_task_path(self) -> None:
         exit_code, stdout, stderr = self.run_cli(
@@ -284,6 +1437,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             "manual-cancel",
             "--task",
             "CAN-1",
+            "--actor",
+            "cancel-agent",
             "--summary",
             "stale",
             "--failure-class",
@@ -333,6 +1488,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             "manual-cancel",
             "--task",
             "CAN-1",
+            "--actor",
+            "reopen-agent",
             "--summary",
             "needed",
             "--json",
@@ -991,6 +2148,16 @@ class BlackdogCliTests(CoreAuditTestCase):
             failure_class="unknown",
             recovery_action="inspect",
         )
+        # Exercise a real absent source-object lookup. Reconciliation can still
+        # rely on canonical landed-commit trailers/diff when historical source
+        # commit proof has been pruned, but must not confuse an operational Git
+        # error with this explicit missing result.
+        runtime_payload = json.loads(profile.paths.runtime_file.read_text(encoding="utf-8"))
+        runtime_payload["worksets"][0]["attempts"][0]["commit"] = "f" * 40
+        profile.paths.runtime_file.write_text(
+            json.dumps(runtime_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         runtime_before = profile.paths.runtime_file.read_bytes()
         events_before = profile.paths.events_file.read_bytes()
         head_before = self.git_output("rev-parse", "HEAD")
@@ -1012,6 +2179,34 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--json",
         )
 
+        real_run_git_no_check = wtam._run_git_no_check
+
+        def fail_source_commit_inspection(repo_root: Path, *args: str):
+            if args == (
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"{'f' * 40}^{{commit}}",
+            ):
+                return subprocess.CompletedProcess(
+                    ["git", *args],
+                    128,
+                    stdout="",
+                    stderr="simulated reconciliation object database failure",
+                )
+            return real_run_git_no_check(repo_root, *args)
+
+        with patch("blackdog.wtam._run_git_no_check", side_effect=fail_source_commit_inspection):
+            exit_code, stdout, stderr = self.run_cli(*arguments)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("source_commit", stderr)
+        self.assertIn("return_code", stderr)
+        self.assertIn("128", stderr)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
+        self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
+        self.assertEqual(self.git_output("rev-parse", "HEAD"), head_before)
+
         exit_code, stdout, stderr = self.run_cli(*arguments)
 
         self.assertEqual(exit_code, 0, stderr)
@@ -1023,6 +2218,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse(dry_run["proof"]["actor_matches_attempt"])
         self.assertEqual(dry_run["proof"]["actor_mismatch_evidence"]["event_type"], "task.finish")
         self.assertEqual(dry_run["proof"]["changed_paths"], ["reconciled.txt"])
+        self.assertIsNone(dry_run["proof"]["source_commit"])
+        self.assertIsNone(dry_run["proof"]["source_patch_equivalent"])
         self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
         self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
         self.assertEqual(self.git_output("rev-parse", "HEAD"), head_before)
@@ -1048,15 +2245,38 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(reconciliation_events[0]["actor"], "ledger-auditor")
         self.assertEqual(reconciliation_events[0]["payload"]["previous_status"], "failed")
 
+        remaining_events = [
+            event
+            for event in load_events(profile.paths.events_file)
+            if event["type"] != "task.landing.reconciled"
+        ]
+        profile.paths.events_file.write_text(
+            "".join(f"{json.dumps(event, sort_keys=True)}\n" for event in remaining_events),
+            encoding="utf-8",
+        )
+
         exit_code, stdout, stderr = self.run_cli(*arguments[:-1], "--apply", "--json")
         self.assertEqual(exit_code, 0, stderr)
         retried = json.loads(stdout)["landing_reconciliation"]
         self.assertFalse(retried["runtime_changed"])
-        self.assertFalse(retried["event_appended"])
+        self.assertTrue(retried["event_appended"])
+        self.assertTrue(retried["event_repaired"])
+        self.assertTrue(retried["mutation_started"])
+        self.assertTrue(retried["mutation_completed"])
+        self.assertEqual(retried["mutation_phase"], "event_finalized")
         self.assertEqual(
             len([event for event in load_events(profile.paths.events_file) if event["type"] == "task.landing.reconciled"]),
             1,
         )
+
+        exit_code, stdout, stderr = self.run_cli(*arguments[:-1], "--apply", "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        idempotent = json.loads(stdout)["landing_reconciliation"]
+        self.assertFalse(idempotent["runtime_changed"])
+        self.assertFalse(idempotent["event_appended"])
+        self.assertFalse(idempotent["mutation_started"])
+        self.assertFalse(idempotent["mutation_completed"])
+        self.assertEqual(idempotent["mutation_phase"], "none")
 
     def test_task_reconcile_landing_rejects_actor_mismatch_without_terminal_evidence(self) -> None:
         workset_id = "reject-reconcile"
@@ -1254,10 +2474,101 @@ class BlackdogCliTests(CoreAuditTestCase):
         )
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(stdout, "")
-        self.assertIn("task start blocked by setup guard", stderr)
-        self.assertIn("deployment tasks must name the CI/GitHub Actions route", stderr)
+        self.assertEqual(stderr, "")
+        task_payload = json.loads(stdout)["task"]
+        self.assertEqual(task_payload["operation"], "task.begin")
+        self.assertEqual(task_payload["actor"], "codex")
+        self.assertEqual(task_payload["operation_status"], "blocked")
+        self.assertIsNone(task_payload["task_status"])
+        self.assertIsNone(task_payload["attempt_status"])
+        self.assertFalse(task_payload["mutation_started"])
+        self.assertFalse(task_payload["mutation_completed"])
+        self.assertEqual(task_payload["mutation_phase"], "none")
+        self.assertEqual(task_payload["failure_code"], "setup_guard")
+        self.assertEqual(task_payload["next_action"]["action_id"], "deployment_route_required")
+        self.assertEqual(task_payload["next_action"]["kind"], "blocked")
+        self.assertEqual(task_payload["next_action"]["argv"], [])
+        self.assertEqual(task_payload["next_action"]["required_inputs"], ["deployment_route"])
+        self.assertIn("deployment tasks must name the CI/GitHub Actions route", task_payload["error"])
         profile = load_profile(self.root)
+        self.assertEqual(load_planning_state(profile.paths).worksets, ())
+        self.assertEqual(load_runtime_state(profile.paths).worksets, ())
+        self.assertFalse((profile.paths.control_dir / "prompts").exists())
+        report = read_lifecycle_observability(profile)
+        self.assertEqual(report.surface_counts["task.begin"], 1)
+        self.assertEqual(report.outcome_counts["blocked"], 1)
+        self.assertEqual(report.label_counts["failure_class"]["setup_guard"], 1)
+
+        exit_code, text_stdout, text_stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--prompt",
+            "Deploy production now.",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(text_stderr, "")
+        self.assertIn("operation status: blocked", text_stdout)
+        self.assertIn("next action: deployment_route_required", text_stdout)
+        self.assertIn("next action kind: blocked", text_stdout)
+        self.assertNotIn("next command:", text_stdout)
+
+    def test_task_begin_oversized_prompt_leaves_no_task_runtime_or_git_mutation(self) -> None:
+        self.install_repo_runtime()
+        profile = load_profile(self.root)
+
+        def optional_bytes(path: Path) -> bytes | None:
+            return path.read_bytes() if path.exists() else None
+
+        before = {
+            "planning": optional_bytes(profile.paths.planning_file),
+            "runtime": optional_bytes(profile.paths.runtime_file),
+            "events": optional_bytes(profile.paths.events_file),
+            "worktrees": self.git_output("worktree", "list", "--porcelain"),
+            "branches": self.git_output("branch", "--format=%(refname)"),
+        }
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "x" * (PROMPT_ARTIFACT_MAX_BYTES + 1),
+            "--json",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("replay artifact limit", stderr)
+        self.assertEqual(optional_bytes(profile.paths.planning_file), before["planning"])
+        self.assertEqual(optional_bytes(profile.paths.runtime_file), before["runtime"])
+        self.assertEqual(optional_bytes(profile.paths.events_file), before["events"])
+        self.assertEqual(self.git_output("worktree", "list", "--porcelain"), before["worktrees"])
+        self.assertEqual(self.git_output("branch", "--format=%(refname)"), before["branches"])
+        self.assertFalse((profile.paths.control_dir / "prompts").exists())
+
+    def test_task_begin_preflight_observation_failure_is_fail_open(self) -> None:
+        profile = load_profile(self.root)
+        with patch("blackdog.observability.observe_lifecycle", side_effect=OSError("telemetry unavailable")):
+            exit_code, stdout, stderr = self.run_cli(
+                "task",
+                "begin",
+                "--project-root",
+                str(self.root),
+                "--prompt",
+                "Deploy production now.",
+                "--json",
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        task_payload = json.loads(stdout)["task"]
+        self.assertEqual(task_payload["operation_status"], "blocked")
+        self.assertEqual(task_payload["failure_code"], "setup_guard")
+        self.assertFalse(task_payload["mutation_started"])
         self.assertEqual(load_planning_state(profile.paths).worksets, ())
         self.assertEqual(load_runtime_state(profile.paths).worksets, ())
 
@@ -1603,6 +2914,14 @@ class BlackdogCliTests(CoreAuditTestCase):
         worktree_path = Path(task_payload["worktree"]["worktree_path"])
         self.assertEqual(task_payload["prompt_mode"], "skill")
         self.assertNotEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
+        for artifact_field in (
+            "execution_prompt_replay_artifact_path",
+            "user_prompt_replay_artifact_path",
+        ):
+            artifact_path = task_payload[artifact_field]
+            self.assertIsInstance(artifact_path, str)
+            self.assertTrue(artifact_path)
+            self.assertTrue((profile.paths.control_dir / artifact_path).is_file())
         self.assertEqual(task_payload["skill_provenance"], expected_skill_provenance)
         self.assertEqual(
             task_payload["worktree"]["setup_receipt"]["skill_provenance"],
@@ -1686,6 +3005,54 @@ class BlackdogCliTests(CoreAuditTestCase):
             task_payload["execution_prompt_hash"],
         )
 
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--execution-prompt-file",
+            str(execution_prompt_path),
+            "--prompt-mode",
+            "skill",
+            "--request-file",
+            str(user_prompt_path),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        canonical_payload = json.loads(stdout)["task"]
+        for field in (
+            "prompt_mode",
+            "user_prompt_hash",
+            "user_prompt_source",
+            "execution_prompt_hash",
+            "execution_prompt_source",
+            "skill_provenance",
+        ):
+            self.assertEqual(canonical_payload[field], task_payload[field])
+        self.assertEqual(
+            canonical_payload["worktree"]["setup_receipt"]["skill_provenance"],
+            task_payload["worktree"]["setup_receipt"]["skill_provenance"],
+        )
+
+        canonical_worktree = Path(canonical_payload["worktree"]["worktree_path"])
+        exit_code, _, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "closed the canonical prompt alias smoke",
+            "--cleanup",
+            "--json",
+            cwd=canonical_worktree,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(canonical_worktree.exists())
+
     def test_skill_mode_task_begin_requires_the_managed_skill_without_affecting_raw_mode(self) -> None:
         self.install_repo_runtime()
         profile = load_profile(self.root)
@@ -1730,10 +3097,17 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--json",
         )
         self.assertEqual(exit_code, 1)
-        self.assertEqual(stdout, "")
-        self.assertIn("managed", stderr.lower())
-        self.assertIn("skill", stderr.lower())
-        self.assertIn(skill_relative_path.as_posix(), stderr)
+        self.assertEqual(stderr, "")
+        task_payload = json.loads(stdout)["task"]
+        self.assertEqual(task_payload["operation_status"], "blocked")
+        self.assertEqual(task_payload["failure_code"], "managed_skill_missing")
+        self.assertEqual(task_payload["next_action"]["action_id"], "managed_skill_required")
+        self.assertEqual(task_payload["next_action"]["kind"], "blocked")
+        self.assertEqual(task_payload["next_action"]["argv"], [])
+        self.assertEqual(task_payload["next_action"]["required_inputs"], ["managed_skill"])
+        self.assertIn("managed", task_payload["error"].lower())
+        self.assertIn("skill", task_payload["error"].lower())
+        self.assertIn(skill_relative_path.as_posix(), task_payload["error"])
         self.assertEqual(load_planning_state(profile.paths).worksets, ())
         self.assertEqual(load_runtime_state(profile.paths).worksets, ())
         self.assertEqual(optional_bytes(profile.paths.planning_file), state_before["planning"])
@@ -1741,6 +3115,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(optional_bytes(profile.paths.events_file), state_before["events"])
         self.assertEqual(self.git_output("worktree", "list", "--porcelain"), state_before["worktrees"])
         self.assertEqual(self.git_output("branch", "--format=%(refname)"), state_before["branches"])
+        self.assertFalse((profile.paths.control_dir / "prompts").exists())
+        observation_report = read_lifecycle_observability(profile)
+        self.assertEqual(
+            observation_report.label_counts["failure_class"]["managed_skill_missing"],
+            1,
+        )
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -1806,6 +3186,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(self.root),
             "--summary",
             "finished the tuned landing flow",
+            "--validation",
+            "tuned-flow=passed",
             "--json",
             cwd=worktree_path,
         )
@@ -1847,6 +3229,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(self.root),
             "--summary",
             "kept the workspace for explicit cleanup",
+            "--validation",
+            "cleanup-fixture=passed",
             "--keep-worktree",
             "--json",
             cwd=worktree_path,
@@ -1902,6 +3286,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(self.root),
             "--summary",
             "landed but retained before external cleanup",
+            "--validation",
+            "external-cleanup-fixture=passed",
             "--keep-worktree",
             "--json",
             cwd=worktree_path,
@@ -2091,6 +3477,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(self.root),
             "--summary",
             "landed but retained the workspace",
+            "--validation",
+            "unproven-cleanup-fixture=passed",
             "--keep-worktree",
             "--json",
             cwd=worktree_path,
@@ -2333,6 +3721,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(self.root),
             "--summary",
             "landed but retained for table cleanup",
+            "--validation",
+            "table-cleanup-fixture=passed",
             "--keep-worktree",
             "--json",
             cwd=worktree_path,
@@ -2404,6 +3794,8 @@ class BlackdogCliTests(CoreAuditTestCase):
                 str(self.root),
                 "--summary",
                 f"landed retained task {index}",
+                "--validation",
+                "table-lookup-fixture=passed",
                 "--keep-worktree",
                 "--json",
                 cwd=worktree_path,
@@ -2451,6 +3843,8 @@ class BlackdogCliTests(CoreAuditTestCase):
             str(self.root),
             "--summary",
             "landed but retained before external cleanup",
+            "--validation",
+            "missing-worktree-fixture=passed",
             "--keep-worktree",
             "--json",
             cwd=worktree_path,
@@ -2856,6 +4250,14 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIsNone(released_payload["workset_claim"])
         self.assertEqual(released_payload["task_runtime_status"], "canceled")
         self.assertEqual(released_payload["repaired_runtime_status"], "canceled")
+        released_runtime = load_runtime_state(profile.paths)
+        released_workset = next(
+            item for item in released_runtime.worksets if item.workset_id == workset_id
+        )
+        released_task_state = next(
+            item for item in released_workset.task_states if item.task_id == task_id
+        )
+        self.assertEqual(released_task_state.actor, "codex")
 
         exit_code, stdout, stderr = self.run_cli(
             "summary",
@@ -3086,6 +4488,679 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(summary["counts"]["active_attempts"], 0)
         self.assertEqual(summary["counts"]["claimed_tasks"], 0)
         self.assertEqual(summary["recent_attempts"][0]["status"], "success")
+
+    def _canonical_landing_blocked_after_intent(
+        self,
+    ) -> tuple[dict[str, object], Path, object]:
+        self.put_workset(
+            {
+                "id": "durable-abort",
+                "title": "Durable abort",
+                "tasks": [
+                    {
+                        "id": "DA-1",
+                        "title": "Exercise durable abort",
+                        "intent": "prove close and landing recovery",
+                    }
+                ],
+            }
+        )
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Exercise the durable landing abort transaction.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        worktree_path = Path(start_payload["worktree_path"])
+        (worktree_path / "durable-abort.txt").write_text(
+            "durable abort\n",
+            encoding="utf-8",
+        )
+        blocker = wtam.StaleTaskBranchError(
+            branch=start_payload["branch"],
+            target_branch="main",
+            branch_worktree=worktree_path,
+        )
+        with patch.object(wtam, "_update_landing_target", side_effect=blocker):
+            exit_code, stdout, stderr = self.run_cli(
+                "task",
+                "land",
+                "--project-root",
+                str(self.root),
+                "--workset",
+                "durable-abort",
+                "--task",
+                "DA-1",
+                "--actor",
+                "codex",
+                "--summary",
+                "land the durable abort change",
+                "--validation",
+                "durable-abort-fixture=passed",
+                "--json",
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        blocked = json.loads(stdout)["landing"]
+        self.assertEqual(blocked["operation_status"], "partial")
+        transaction = wtam.load_landing_transaction(
+            load_profile(self.root),
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None
+        self.assertEqual(
+            transaction.phases,
+            ("intent_recorded", "source_prepared", "canonical_commit_created"),
+        )
+        return start_payload, worktree_path, transaction
+
+    def _close_durable_abort(
+        self,
+        *,
+        summary: str = "block the stale landing",
+        status: str = "blocked",
+    ) -> tuple[int, dict[str, object], str]:
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--actor",
+            "codex",
+            "--status",
+            status,
+            "--summary",
+            summary,
+            "--validation",
+            "abort-proof=passed",
+            "--residual",
+            "retained source requires a successor attempt",
+            "--followup",
+            "rebase the retained source",
+            "--cleanup",
+            "--json",
+        )
+        return exit_code, json.loads(stdout)["closure"] if stdout else {}, stderr
+
+    def test_landing_abort_binds_close_request_and_exact_retry_is_a_noop(self) -> None:
+        start_payload, worktree_path, _transaction = self._canonical_landing_blocked_after_intent()
+        exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(closure["operation_status"], "succeeded")
+        self.assertTrue(closure["mutation_started"])
+        self.assertTrue(closure["mutation_completed"])
+        self.assertEqual(closure["mutation_phase"], "landing_abort_complete")
+        self.assertTrue(closure["abort_complete"])
+        self.assertTrue(worktree_path.exists())
+        self.assertFalse(closure["cleanup_performed"])
+        self.assertIn("source retained", closure["cleanup_reason"])
+
+        profile = load_profile(self.root)
+        transaction = wtam.load_landing_transaction(
+            profile,
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None
+        self.assertEqual(transaction.outcome, "abort_complete")
+        self.assertEqual(
+            transaction.abort_data["close_request"]["summary"],
+            "block the stale landing",
+        )
+        before_events = profile.paths.events_file.read_bytes()
+        before_runtime = profile.paths.runtime_file.read_bytes()
+
+        exit_code, retried, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(retried["operation_status"], "succeeded")
+        self.assertFalse(retried["mutation_started"])
+        self.assertFalse(retried["mutation_completed"])
+        self.assertEqual(profile.paths.events_file.read_bytes(), before_events)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), before_runtime)
+
+        exit_code, _conflict, stderr = self._close_durable_abort(
+            summary="changed closure evidence"
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("conflicts with the durable close request", stderr)
+        self.assertEqual(profile.paths.events_file.read_bytes(), before_events)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), before_runtime)
+
+    def test_landing_abort_supersedes_before_finalization_and_lands_same_candidate(self) -> None:
+        start_payload, worktree_path, _transaction = self._canonical_landing_blocked_after_intent()
+        original_target_state = wtam._landing_abort_target_state
+        calls = 0
+
+        def stop_after_abort_cleanup(*, intent, landed_commit):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("stop after abort cleanup")
+            return original_target_state(intent=intent, landed_commit=landed_commit)
+
+        with patch.object(
+            wtam,
+            "_landing_abort_target_state",
+            side_effect=stop_after_abort_cleanup,
+        ):
+            exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 1, stderr)
+        self.assertEqual(closure["operation_status"], "blocked")
+        self.assertTrue(closure["mutation_started"])
+        transaction = wtam.load_landing_transaction(
+            load_profile(self.root),
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None and transaction.abort_data is not None
+        candidate = transaction.abort_data["landed_commit"]
+        self.assertTrue(transaction.abort_cleanup_complete)
+        self.assertFalse(transaction.abort_runtime_finalized)
+        self.assertFalse(Path(transaction.intent.temporary_worktree_path).exists())
+        subprocess.run(
+            ["git", "-C", str(self.root), "merge", "--ff-only", candidate],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(closure["status"], "success")
+        self.assertTrue(closure["close_superseded_by_landing"])
+        self.assertEqual(closure["landed_commit"], candidate)
+        self.assertFalse(worktree_path.exists())
+        transaction = wtam.load_landing_transaction(
+            load_profile(self.root),
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None
+        self.assertTrue(transaction.abort_superseded)
+        self.assertTrue(transaction.complete)
+
+    def test_landing_abort_runtime_fault_retries_public_close_then_reconciles_late_target(self) -> None:
+        start_payload, worktree_path, _transaction = self._canonical_landing_blocked_after_intent()
+        with patch(
+            "blackdog_core.backlog._append_decision_owned_events",
+            side_effect=OSError("stop after abort runtime save"),
+        ):
+            exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 1, stderr)
+        self.assertEqual(closure["operation_status"], "blocked")
+        self.assertTrue(closure["mutation_started"])
+        self.assertFalse(closure["mutation_completed"])
+        runtime = load_runtime_state(load_profile(self.root).paths)
+        attempt = next(
+            attempt
+            for workset in runtime.worksets
+            if workset.workset_id == "durable-abort"
+            for attempt in workset.attempts
+            if attempt.attempt_id == start_payload["attempt_id"]
+        )
+        self.assertEqual(attempt.status, "blocked")
+
+        transaction = wtam.load_landing_transaction(
+            load_profile(self.root),
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None and transaction.abort_data is not None
+        candidate = transaction.abort_data["landed_commit"]
+        subprocess.run(
+            ["git", "-C", str(self.root), "merge", "--ff-only", candidate],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(closure["mutation_phase"], "landing_abort_complete")
+        self.assertFalse(closure.get("close_superseded_by_landing", False))
+        self.assertTrue(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        shown = json.loads(stdout)["task_show"]
+        self.assertEqual(
+            shown["next_action"]["action_id"],
+            "verify_late_landing_reconciliation",
+        )
+        reconcile_argv = shown["next_action"]["argv"]
+        self.assertIn(f"--landed-commit={candidate}", reconcile_argv)
+
+        exit_code, stdout, stderr = self.run_cli(*reconcile_argv[1:], "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        dry_run = json.loads(stdout)["landing_reconciliation"]
+        self.assertEqual(dry_run["operation_status"], "observed")
+        apply_argv = dry_run["next_action"]["argv"]
+        exit_code, stdout, stderr = self.run_cli(*apply_argv[1:], "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        applied = json.loads(stdout)["landing_reconciliation"]
+        self.assertEqual(applied["operation_status"], "succeeded")
+        self.assertTrue(applied["native_abort_reconciled"])
+        self.assertEqual(applied["landed_commit"], candidate)
+        self.assertIsNone(applied["native_cleanup_error"], applied)
+        self.assertTrue(applied["native_cleanup"]["worktree_removed"], applied)
+        self.assertFalse(worktree_path.exists())
+        runtime = load_runtime_state(load_profile(self.root).paths)
+        attempt = next(
+            attempt
+            for workset in runtime.worksets
+            if workset.workset_id == "durable-abort"
+            for attempt in workset.attempts
+            if attempt.attempt_id == start_payload["attempt_id"]
+        )
+        self.assertEqual(attempt.status, "success")
+        self.assertEqual(attempt.landed_commit, candidate)
+        land_events = [
+            event
+            for event in load_events(load_profile(self.root).paths.events_file)
+            if event.get("type") == "worktree.land"
+            and event.get("payload", {}).get("attempt_id") == start_payload["attempt_id"]
+        ]
+        self.assertEqual(len(land_events), 1)
+
+    def test_nonterminal_abort_guards_other_task_mutators_until_close_repairs(self) -> None:
+        start_payload, _worktree_path, _transaction = self._canonical_landing_blocked_after_intent()
+        with patch(
+            "blackdog_core.backlog._append_decision_owned_events",
+            side_effect=OSError("stop after abort runtime save"),
+        ):
+            exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 1, stderr)
+        self.assertTrue(closure["mutation_started"])
+        profile = load_profile(self.root)
+        transaction = wtam.load_landing_transaction(
+            profile,
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None
+        self.assertEqual(transaction.outcome, "abort_in_progress")
+        before_events = profile.paths.events_file.read_bytes()
+        before_runtime = profile.paths.runtime_file.read_bytes()
+        expected_action = closure["next_action"]
+        self.assertEqual(expected_action["action_id"], "resume_landing_abort")
+
+        guarded_commands = (
+            (
+                "task",
+                "cancel",
+                "--project-root",
+                str(self.root),
+                "--workset",
+                "durable-abort",
+                "--task",
+                "DA-1",
+                "--actor",
+                "codex",
+                "--summary",
+                "must not cancel partial abort",
+                "--json",
+            ),
+            (
+                "task",
+                "reopen",
+                "--project-root",
+                str(self.root),
+                "--workset",
+                "durable-abort",
+                "--task",
+                "DA-1",
+                "--actor",
+                "codex",
+                "--summary",
+                "must not reopen partial abort",
+                "--json",
+            ),
+            (
+                "task",
+                "begin",
+                "--project-root",
+                str(self.root),
+                "--workset",
+                "durable-abort",
+                "--task",
+                "DA-1",
+                "--actor",
+                "codex",
+                "--prompt",
+                "Exercise the durable landing abort transaction.",
+                "--json",
+            ),
+        )
+        for argv in guarded_commands:
+            with self.subTest(command=argv[1]):
+                exit_code, stdout, stderr = self.run_cli(*argv)
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(stderr, "")
+                result_key = "task" if argv[1] == "begin" else "task_state"
+                guarded = json.loads(stdout)[result_key]
+                self.assertEqual(guarded["operation_status"], "blocked")
+                self.assertFalse(guarded["mutation_started"])
+                self.assertFalse(guarded["mutation_completed"])
+                self.assertEqual(guarded["mutation_phase"], "none")
+                self.assertEqual(guarded["next_action"], expected_action)
+                self.assertEqual(profile.paths.events_file.read_bytes(), before_events)
+                self.assertEqual(profile.paths.runtime_file.read_bytes(), before_runtime)
+
+                exit_code, stdout, stderr = self.run_cli(*argv[:-1])
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(stderr, "")
+                self.assertIn("operation status: blocked", stdout)
+                self.assertIn("mutation: started=no completed=no phase=none", stdout)
+                self.assertIn("next action: resume_landing_abort", stdout)
+                self.assertIn(
+                    f"next command: {expected_action['command']}",
+                    stdout,
+                )
+                self.assertEqual(profile.paths.events_file.read_bytes(), before_events)
+                self.assertEqual(profile.paths.runtime_file.read_bytes(), before_runtime)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "cleanup",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1, stderr)
+        cleanup = json.loads(stdout)["cleanup"]
+        self.assertEqual(cleanup["operation_status"], "blocked")
+        self.assertTrue(cleanup["cleanup_refused"])
+        self.assertEqual(profile.paths.events_file.read_bytes(), before_events)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), before_runtime)
+
+        candidate = transaction.abort_data["landed_commit"]
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--attempt",
+            start_payload["attempt_id"],
+            "--landed-commit",
+            candidate,
+            "--actor",
+            "codex",
+            "--apply",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1, stderr)
+        reconciliation = json.loads(stdout)["landing_reconciliation"]
+        self.assertEqual(reconciliation["operation_status"], "blocked")
+        self.assertEqual(profile.paths.events_file.read_bytes(), before_events)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), before_runtime)
+
+        exit_code, closure, stderr = self._close_durable_abort()
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(closure["mutation_phase"], "landing_abort_complete")
+
+    def test_abandoned_abort_can_reconcile_late_exact_target_containment(self) -> None:
+        start_payload, worktree_path, _transaction = self._canonical_landing_blocked_after_intent()
+        exit_code, closure, stderr = self._close_durable_abort(
+            status="abandoned",
+            summary="abandon the stale landing",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(closure["status"], "abandoned")
+        transaction = wtam.load_landing_transaction(
+            load_profile(self.root),
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None and transaction.abort_data is not None
+        candidate = transaction.abort_data["landed_commit"]
+        subprocess.run(
+            ["git", "-C", str(self.root), "merge", "--ff-only", candidate],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        base_argv = (
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--attempt",
+            start_payload["attempt_id"],
+            "--landed-commit",
+            candidate,
+            "--actor",
+            "codex",
+            "--reason",
+            "late exact containment after abandoned abort",
+        )
+        exit_code, stdout, stderr = self.run_cli(*base_argv, "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(
+            json.loads(stdout)["landing_reconciliation"]["previous_status"],
+            "abandoned",
+        )
+        exit_code, stdout, stderr = self.run_cli(*base_argv, "--apply", "--json")
+        self.assertEqual(exit_code, 0, stderr)
+        applied = json.loads(stdout)["landing_reconciliation"]
+        self.assertEqual(applied["status"], "success")
+        self.assertEqual(applied["previous_status"], "abandoned")
+        self.assertFalse(worktree_path.exists())
+
+    def test_abandoned_abort_rejects_mismatched_candidate_without_mutation(self) -> None:
+        start_payload, worktree_path, _transaction = self._canonical_landing_blocked_after_intent()
+        exit_code, closure, stderr = self._close_durable_abort(
+            status="abandoned",
+            summary="abandon before mismatched reconciliation",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(closure["status"], "abandoned")
+        profile = load_profile(self.root)
+        transaction = wtam.load_landing_transaction(
+            profile,
+            workset_id="durable-abort",
+            task_id="DA-1",
+            attempt_id=start_payload["attempt_id"],
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None and transaction.abort_data is not None
+        wrong_candidate = transaction.intent.target_base_commit
+        self.assertNotEqual(wrong_candidate, transaction.abort_data["landed_commit"])
+        runtime_before = profile.paths.runtime_file.read_bytes()
+        events_before = profile.paths.events_file.read_bytes()
+        worktrees_before = self.git_output("worktree", "list", "--porcelain")
+        refs_before = self.git_output("branch", "--format=%(refname) %(objectname)")
+        base_args = (
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "durable-abort",
+            "--task",
+            "DA-1",
+            "--attempt",
+            start_payload["attempt_id"],
+            "--landed-commit",
+            wrong_candidate,
+            "--actor",
+            "codex",
+        )
+
+        for apply_args in ((), ("--apply",)):
+            with self.subTest(apply=bool(apply_args)):
+                exit_code, stdout, stderr = self.run_cli(
+                    *base_args,
+                    *apply_args,
+                    "--json",
+                )
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("exact recorded canonical candidate", stderr)
+                self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
+                self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
+                self.assertEqual(
+                    self.git_output("worktree", "list", "--porcelain"),
+                    worktrees_before,
+                )
+                self.assertEqual(
+                    self.git_output("branch", "--format=%(refname) %(objectname)"),
+                    refs_before,
+                )
+                self.assertTrue(worktree_path.exists())
+
+    def test_abandoned_without_native_abort_is_zero_mutation_reconciliation_refusal(self) -> None:
+        workset_id = "abandoned-no-native-abort"
+        task_id = "ANA-1"
+        self.put_workset(
+            {
+                "id": workset_id,
+                "title": "Reject arbitrary abandoned reconciliation",
+                "branch_intent": {
+                    "target_branch": "main",
+                    "integration_branch": "main",
+                },
+                "tasks": [
+                    {
+                        "id": task_id,
+                        "title": "Require native abort proof",
+                        "intent": "reject arbitrary abandoned history",
+                    }
+                ],
+            }
+        )
+        profile = load_profile(self.root)
+        attempt = start_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            actor="owner",
+            target_branch="main",
+            prompt_receipt=create_prompt_receipt(
+                "Require exact native abort proof.",
+                source="unit-test",
+            ),
+        )
+        (self.root / "arbitrary-abandoned.txt").write_text("landed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "arbitrary-abandoned.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commit_message = (
+            f"blackdog({workset_id}/{task_id}): Candidate\n\n"
+            "This candidate must not override arbitrary abandoned history.\n\n"
+            f"Blackdog-Workset: {workset_id}\n"
+            f"Blackdog-Task: {task_id}\n"
+            f"Blackdog-Attempt: {attempt.attempt_id}\n"
+            "Blackdog-Actor: owner\n"
+            "Blackdog-Status: success\n"
+            "Blackdog-Target-Branch: main\n"
+            "Blackdog-Changed-Path: arbitrary-abandoned.txt\n"
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "--quiet", "-F", "-"],
+            input=commit_message,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        candidate = self.git_output("rev-parse", "HEAD")
+        finish_task(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=attempt.attempt_id,
+            actor="owner",
+            status="abandoned",
+            summary="Abandoned without a native landing transaction.",
+        )
+        runtime_before = profile.paths.runtime_file.read_bytes()
+        events_before = profile.paths.events_file.read_bytes()
+        head_before = self.git_output("rev-parse", "HEAD")
+        base_args = (
+            "task",
+            "reconcile-landing",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--attempt",
+            attempt.attempt_id,
+            "--landed-commit",
+            candidate,
+            "--actor",
+            "auditor",
+        )
+
+        for apply_args in ((), ("--apply",)):
+            with self.subTest(apply=bool(apply_args)):
+                exit_code, stdout, stderr = self.run_cli(
+                    *base_args,
+                    *apply_args,
+                    "--json",
+                )
+                self.assertEqual(exit_code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("exact terminal native abort-complete transaction", stderr)
+                self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before)
+                self.assertEqual(profile.paths.events_file.read_bytes(), events_before)
+                self.assertEqual(self.git_output("rev-parse", "HEAD"), head_before)
 
     def test_worktree_land_classifies_stale_branch_blocker(self) -> None:
         payload = {

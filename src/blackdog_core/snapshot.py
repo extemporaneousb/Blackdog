@@ -115,6 +115,11 @@ def _attempt_payload(
         "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
         "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
         "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
+        "codex_capture_status": attempt.codex_session.capture_status if attempt.codex_session else None,
+        "codex_capture_method": attempt.codex_session.capture_method if attempt.codex_session else None,
+        "codex_capture_missing_reason": (
+            attempt.codex_session.capture_missing_reason if attempt.codex_session else None
+        ),
         "worktree_role": attempt.worktree_role,
         "branch": attempt.branch,
         "target_branch": attempt.target_branch,
@@ -282,9 +287,15 @@ ATTEMPTS_TABLE_COLUMNS = (
     "codex_session_path",
     "codex_turn_id",
     "codex_turn_started_at",
+    "codex_capture_status",
+    "codex_capture_method",
+    "codex_capture_missing_reason",
     "execution_prompt_source",
     "user_prompt_source",
     "prompt_source",
+    "execution_prompt_replay_artifact_path",
+    "user_prompt_replay_artifact_path",
+    "prompt_replay_artifact_path",
     "execution_prompt_mode",
     "user_prompt_mode",
     "prompt_mode",
@@ -321,12 +332,21 @@ def _prompt_lineage_payload(attempt: AttemptView) -> dict[str, Any]:
         "execution_prompt_source": execution_prompt.source if execution_prompt else None,
         "execution_prompt_hash": execution_prompt.prompt_hash if execution_prompt else None,
         "execution_prompt_mode": execution_prompt.mode if execution_prompt else None,
+        "execution_prompt_replay_artifact_path": (
+            execution_prompt.replay_artifact_path if execution_prompt else None
+        ),
         "user_prompt_source": user_prompt.source if user_prompt else None,
         "user_prompt_hash": user_prompt.prompt_hash if user_prompt else None,
         "user_prompt_mode": user_prompt.mode if user_prompt else None,
+        "user_prompt_replay_artifact_path": (
+            user_prompt.replay_artifact_path if user_prompt else None
+        ),
         "prompt_source": shared_prompt.source if shared_prompt else None,
         "prompt_hash": shared_prompt.prompt_hash if shared_prompt else None,
         "prompt_mode": shared_prompt.mode if shared_prompt else None,
+        "prompt_replay_artifact_path": (
+            shared_prompt.replay_artifact_path if shared_prompt else None
+        ),
     }
 
 

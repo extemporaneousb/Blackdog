@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol
 import hashlib
 import json
+import math
 import os
 import tempfile
+import threading
 import time
 import uuid
 
@@ -31,6 +33,7 @@ _READABLE_RUNTIME_FORMATS = frozenset(
     }
 )
 _UNSET = object()
+_FILE_LOCK_STATE = threading.local()
 
 EXECUTION_MODEL_DIRECT_WTAM = "direct_wtam"
 EXECUTION_MODELS = frozenset({EXECUTION_MODEL_DIRECT_WTAM})
@@ -86,6 +89,43 @@ PROMPT_MODE_TUNED = "tuned"
 PROMPT_MODE_SKILL = "skill"
 PROMPT_MODES = frozenset({PROMPT_MODE_RAW, PROMPT_MODE_TUNED, PROMPT_MODE_SKILL})
 
+CODEX_CAPTURE_STATUS_CAPTURED = "captured"
+CODEX_CAPTURE_STATUS_MISSING = "missing"
+CODEX_CAPTURE_STATUSES = frozenset(
+    {
+        CODEX_CAPTURE_STATUS_CAPTURED,
+        CODEX_CAPTURE_STATUS_MISSING,
+    }
+)
+CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH = "exact_prompt_hash"
+CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN = "exact_active_turn"
+CODEX_CAPTURE_METHODS = frozenset(
+    {
+        CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH,
+        CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN,
+    }
+)
+CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING = "session_path_missing"
+CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING = "session_missing"
+CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE = "session_unreadable"
+CODEX_CAPTURE_MISSING_REASON_THREAD_MISMATCH = "thread_mismatch"
+CODEX_CAPTURE_MISSING_REASON_PROMPT_HASH_AMBIGUOUS = "prompt_hash_ambiguous"
+CODEX_CAPTURE_MISSING_REASON_NO_OPEN_TURN = "no_open_turn"
+CODEX_CAPTURE_MISSING_REASON_MULTIPLE_OPEN_TURNS = "multiple_open_turns"
+CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR = "capture_error"
+CODEX_CAPTURE_MISSING_REASONS = frozenset(
+    {
+        CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING,
+        CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING,
+        CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE,
+        CODEX_CAPTURE_MISSING_REASON_THREAD_MISMATCH,
+        CODEX_CAPTURE_MISSING_REASON_PROMPT_HASH_AMBIGUOUS,
+        CODEX_CAPTURE_MISSING_REASON_NO_OPEN_TURN,
+        CODEX_CAPTURE_MISSING_REASON_MULTIPLE_OPEN_TURNS,
+        CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR,
+    }
+)
+
 FAILURE_CLASS_DIRTY_PRIMARY = "dirty_primary"
 FAILURE_CLASS_STALE_BRANCH = "stale_branch"
 FAILURE_CLASS_MISSING_WORKTREE = "missing_worktree"
@@ -115,6 +155,7 @@ class TaskRuntimeRecord:
     task_id: str
     status: str
     updated_at: str | None = None
+    actor: str | None = None
     note: str | None = None
     failure_class: str | None = None
     recovery_action: str | None = None
@@ -153,6 +194,7 @@ class PromptReceiptRecord:
     recorded_at: str
     source: str | None = None
     mode: str | None = None
+    replay_artifact_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +205,9 @@ class CodexSessionRefRecord:
     turn_started_at: str | None = None
     user_prompt_hash: str | None = None
     execution_prompt_hash: str | None = None
+    capture_status: str | None = None
+    capture_method: str | None = None
+    capture_missing_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,28 +323,57 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 @contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
-    """Hold an interprocess lock next to a state file."""
-    lock_path = path.with_name(f"{path.name}.lock")
+    """Hold a thread-reentrant interprocess lock next to a state file.
+
+    A conforming ``RuntimeStore`` may implement ``save`` by delegating to
+    ``JsonRuntimeStore.save``. Runtime mutation already holds this lock before
+    calling that protocol method, so the nested save must reuse the outer lock
+    in the same thread. Other threads and processes still acquire the real
+    interprocess lock and remain serialized.
+    """
+    # Resolve directory and file symlinks before choosing both the reentrancy
+    # identity and the adjacent lock location. ``flock`` ultimately targets an
+    # inode, so spelling aliases must not create a second in-thread identity or
+    # a different lock file for the same runtime file.
+    resolved_path = Path(path).expanduser().resolve(strict=False)
+    lock_key = (os.getpid(), str(resolved_path))
+    held_locks = getattr(_FILE_LOCK_STATE, "held_locks", None)
+    if held_locks is None:
+        held_locks = {}
+        _FILE_LOCK_STATE.held_locks = held_locks
+    if held_locks.get(lock_key, 0):
+        held_locks[lock_key] += 1
+        try:
+            yield
+        finally:
+            held_locks[lock_key] -= 1
+        return
+
+    lock_path = resolved_path.with_name(f"{resolved_path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     if fcntl is None:
-        lock_dir = path.with_name(f"{path.name}.lockdir")
+        lock_dir = resolved_path.with_name(f"{resolved_path.name}.lockdir")
         while True:
             try:
                 lock_dir.mkdir()
                 break
             except FileExistsError:
                 time.sleep(0.05)
+        held_locks[lock_key] = 1
         try:
             yield
         finally:
+            held_locks.pop(lock_key, None)
             lock_dir.rmdir()
         return
     with lock_path.open("a+", encoding="utf-8") as handle:
         if fcntl is not None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        held_locks[lock_key] = 1
         try:
             yield
         finally:
+            held_locks.pop(lock_key, None)
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -447,6 +521,7 @@ def _prompt_receipt_from_payload(payload: Any, *, field: str, source: Path) -> P
         recorded_at=recorded_at,
         source=_optional_text(payload.get("source")),
         mode=mode,
+        replay_artifact_path=_optional_text(payload.get("replay_artifact_path")),
     )
 
 
@@ -458,13 +533,63 @@ def _codex_session_ref_from_payload(payload: Any, *, field: str, source: Path) -
     thread_id = _optional_text(payload.get("thread_id"))
     if thread_id is None:
         raise StoreError(f"{field}.thread_id is required in {source}")
+    session_path = _optional_text(payload.get("session_path"))
+    turn_id = _optional_text(payload.get("turn_id"))
+    turn_started_at = _optional_text(payload.get("turn_started_at"))
+    user_prompt_hash = _optional_text(payload.get("user_prompt_hash"))
+    execution_prompt_hash = _optional_text(payload.get("execution_prompt_hash"))
+    capture_payload = payload.get("capture")
+    capture_status: str | None = None
+    capture_method: str | None = None
+    capture_missing_reason: str | None = None
+    if capture_payload is not None:
+        if not isinstance(capture_payload, Mapping):
+            raise StoreError(f"{field}.capture must be an object in {source}")
+        capture_status = _optional_text(capture_payload.get("status"))
+        capture_method = _optional_text(capture_payload.get("method"))
+        capture_missing_reason = _optional_text(capture_payload.get("missing_reason"))
+        if capture_status not in CODEX_CAPTURE_STATUSES:
+            raise StoreError(
+                f"{field}.capture.status must be one of {sorted(CODEX_CAPTURE_STATUSES)} in {source}"
+            )
+        if capture_status == CODEX_CAPTURE_STATUS_CAPTURED:
+            if capture_method not in CODEX_CAPTURE_METHODS:
+                raise StoreError(
+                    f"{field}.capture.method must be one of {sorted(CODEX_CAPTURE_METHODS)} "
+                    f"when capture status is captured in {source}"
+                )
+            if capture_missing_reason is not None:
+                raise StoreError(
+                    f"{field}.capture.missing_reason must be null when capture status is captured in {source}"
+                )
+            if session_path is None or turn_id is None:
+                raise StoreError(
+                    f"{field}.session_path and {field}.turn_id are required when capture status is captured in {source}"
+                )
+        else:
+            if capture_method is not None:
+                raise StoreError(
+                    f"{field}.capture.method must be null when capture status is missing in {source}"
+                )
+            if capture_missing_reason not in CODEX_CAPTURE_MISSING_REASONS:
+                raise StoreError(
+                    f"{field}.capture.missing_reason must be one of "
+                    f"{sorted(CODEX_CAPTURE_MISSING_REASONS)} when capture status is missing in {source}"
+                )
+            if turn_id is not None or turn_started_at is not None:
+                raise StoreError(
+                    f"{field}.turn_id and {field}.turn_started_at must be null when capture status is missing in {source}"
+                )
     return CodexSessionRefRecord(
         thread_id=thread_id,
-        session_path=_optional_text(payload.get("session_path")),
-        turn_id=_optional_text(payload.get("turn_id")),
-        turn_started_at=_optional_text(payload.get("turn_started_at")),
-        user_prompt_hash=_optional_text(payload.get("user_prompt_hash")),
-        execution_prompt_hash=_optional_text(payload.get("execution_prompt_hash")),
+        session_path=session_path,
+        turn_id=turn_id,
+        turn_started_at=turn_started_at,
+        user_prompt_hash=user_prompt_hash,
+        execution_prompt_hash=execution_prompt_hash,
+        capture_status=capture_status,
+        capture_method=capture_method,
+        capture_missing_reason=capture_missing_reason,
     )
 
 
@@ -479,6 +604,7 @@ def _task_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         task_id=task_id,
         status=status,
         updated_at=_optional_text(payload.get("updated_at")),
+        actor=_optional_text(payload.get("actor")),
         note=_optional_text(payload.get("note")),
         failure_class=_normalize_failure_class(payload.get("failure_class"), field="task_state.failure_class", source=source),
         recovery_action=_optional_text(payload.get("recovery_action")),
@@ -689,6 +815,7 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
             "recorded_at": prompt_receipt.recorded_at,
             "source": prompt_receipt.source,
             "mode": prompt_receipt.mode,
+            "replay_artifact_path": prompt_receipt.replay_artifact_path,
         }
         if prompt_receipt.text is not None:
             payload["text"] = prompt_receipt.text
@@ -697,7 +824,7 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
     def codex_session_payload(codex_session: CodexSessionRefRecord | None) -> dict[str, Any] | None:
         if codex_session is None:
             return None
-        return {
+        payload: dict[str, Any] = {
             "thread_id": codex_session.thread_id,
             "session_path": codex_session.session_path,
             "turn_id": codex_session.turn_id,
@@ -705,6 +832,13 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
             "user_prompt_hash": codex_session.user_prompt_hash,
             "execution_prompt_hash": codex_session.execution_prompt_hash,
         }
+        if codex_session.capture_status is not None:
+            payload["capture"] = {
+                "status": codex_session.capture_status,
+                "method": codex_session.capture_method,
+                "missing_reason": codex_session.capture_missing_reason,
+            }
+        return payload
 
     return {
         "schema_version": RUNTIME_SCHEMA_VERSION,
@@ -738,6 +872,7 @@ def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
                         "task_id": task_state.task_id,
                         "status": task_state.status,
                         "updated_at": task_state.updated_at,
+                        "actor": task_state.actor,
                         "note": task_state.note,
                         "failure_class": task_state.failure_class,
                         "recovery_action": task_state.recovery_action,
@@ -844,17 +979,30 @@ def mutate_runtime_state(
     paths: BlackdogPaths,
     mutator: Callable[[RuntimeState], RuntimeState],
     store: RuntimeStore | None = None,
+    *,
+    after_save: Callable[[RuntimeState], None] | None = None,
+    save_unchanged: bool = True,
 ) -> RuntimeState:
-    """Load, mutate, and save runtime state while holding the runtime file lock."""
+    """Load, mutate, and save runtime state while holding the runtime file lock.
+
+    ``after_save`` runs under the same lock after the replacement succeeds. It
+    is intentionally allowed to fail: callers that coordinate runtime state
+    with a second durable store can retry from the now-written runtime state.
+    ``save_unchanged=False`` lets those retry paths avoid replacing an already
+    canonical runtime file while still running the after-save repair callback.
+    """
     runtime_store = store or JsonRuntimeStore()
     with exclusive_file_lock(paths.runtime_file):
         current = runtime_store.load(paths.runtime_file)
         next_state = mutator(current)
-        unlocked_save = getattr(runtime_store, "_save_unlocked", None)
-        if callable(unlocked_save):
-            unlocked_save(paths.runtime_file, next_state)
-        else:
-            runtime_store.save(paths.runtime_file, next_state)
+        if save_unchanged or next_state != current:
+            unlocked_save = getattr(runtime_store, "_save_unlocked", None)
+            if callable(unlocked_save):
+                unlocked_save(paths.runtime_file, next_state)
+            else:
+                runtime_store.save(paths.runtime_file, next_state)
+        if after_save is not None:
+            after_save(next_state)
         return next_state
 
 
@@ -937,17 +1085,10 @@ def active_task_attempt(state: RuntimeState, workset_id: str, task_id: str) -> T
 
 
 def latest_task_attempt(state: RuntimeState, workset_id: str, task_id: str) -> TaskAttemptRecord | None:
-    candidates = [attempt for attempt in task_attempts_for_workset(state, workset_id) if attempt.task_id == task_id]
-    if not candidates:
-        return None
-    candidates.sort(
-        key=lambda attempt: (
-            (parse_iso(attempt.ended_at or attempt.started_at).timestamp() if parse_iso(attempt.ended_at or attempt.started_at) is not None else 0.0),
-            attempt.attempt_id,
-        ),
-        reverse=True,
-    )
-    return candidates[0]
+    for attempt in reversed(task_attempts_for_workset(state, workset_id)):
+        if attempt.task_id == task_id:
+            return attempt
+    return None
 
 
 def coerce_task_runtime_records(
@@ -1013,10 +1154,16 @@ def merge_workset_runtime(
         if task_id in preserved_task_claims
     )
 
+    # Terminal attempts are durable execution history.  Planning membership
+    # updates may prune a quiescent task's current state, but must not erase the
+    # attempts used by audit and statistics surfaces.
     preserved_attempts = [
         attempt
         for attempt in (current_runtime.attempts if current_runtime is not None else ())
-        if attempt.task_id in task_ids
+        if (
+            attempt.task_id in task_ids
+            or attempt.status not in ATTEMPT_ACTIVE_STATUSES
+        )
     ]
     attempt_positions = {attempt.attempt_id: index for index, attempt in enumerate(preserved_attempts)}
     if incoming_attempts is not None:
@@ -1061,9 +1208,17 @@ def load_events(path: Path) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
-def append_event(path: Path, *, event_type: str, payload: Mapping[str, Any], actor: str = "blackdog") -> dict[str, Any]:
+def append_event(
+    path: Path,
+    *,
+    event_type: str,
+    payload: Mapping[str, Any],
+    actor: str = "blackdog",
+    event_id: str | None = None,
+    durable: bool = False,
+) -> dict[str, Any]:
     row = {
-        "event_id": uuid.uuid4().hex,
+        "event_id": event_id or uuid.uuid4().hex,
         "type": event_type,
         "at": now_iso(),
         "actor": actor,
@@ -1072,7 +1227,132 @@ def append_event(path: Path, *, event_type: str, payload: Mapping[str, Any], act
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
     return row
+
+
+def append_event_once(
+    path: Path,
+    *,
+    event_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+    actor: str = "blackdog",
+) -> bool:
+    """Durably append one deterministically identified event.
+
+    Repeating the exact identity and semantic content is a no-op. Reusing an
+    identity for different content is a hard storage conflict. The timestamp is
+    intentionally excluded from the comparison because it is assigned only on
+    the first append.
+    """
+    if not isinstance(event_id, str) or not event_id.strip():
+        raise StoreError("append_event_once requires a nonempty event_id")
+    resolved_event_id = event_id.strip()
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise StoreError("append_event_once requires a nonempty event_type")
+    resolved_event_type = event_type
+    if not isinstance(actor, str) or not actor.strip():
+        raise StoreError("append_event_once requires a nonempty actor")
+    resolved_actor = actor
+    resolved_payload, candidate_semantics = _canonical_event_semantics(
+        event_type=resolved_event_type,
+        actor=resolved_actor,
+        payload=payload,
+        source=f"event {resolved_event_id!r}",
+    )
+
+    with exclusive_file_lock(path):
+        matches = [event for event in load_events(path) if event.get("event_id") == resolved_event_id]
+        if len(matches) > 1:
+            raise StoreError(f"Event identity {resolved_event_id!r} occurs more than once in {path}")
+        if matches:
+            existing = matches[0]
+            _existing_payload, existing_semantics = _canonical_event_semantics(
+                event_type=existing.get("type"),
+                actor=existing.get("actor"),
+                payload=existing.get("payload"),
+                source=f"existing event {resolved_event_id!r} in {path}",
+            )
+            if existing_semantics != candidate_semantics:
+                raise StoreError(
+                    f"Event identity {resolved_event_id!r} already exists with different content in {path}"
+                )
+            with path.open("a", encoding="utf-8") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+            return False
+        append_event(
+            path,
+            event_id=resolved_event_id,
+            event_type=resolved_event_type,
+            actor=resolved_actor,
+            payload=resolved_payload,
+            durable=True,
+        )
+        return True
+
+
+def _canonical_event_semantics(
+    *,
+    event_type: Any,
+    actor: Any,
+    payload: Any,
+    source: str,
+) -> tuple[dict[str, Any], str]:
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise StoreError(f"{source} has a non-string or empty event type")
+    if not isinstance(actor, str) or not actor.strip():
+        raise StoreError(f"{source} has a non-string or empty actor")
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"{source} payload must be a JSON object")
+    normalized = _normalize_json_value(payload, source=f"{source} payload")
+    if not isinstance(normalized, dict):  # Defensive: Mapping normalizes to dict.
+        raise StoreError(f"{source} payload must be a JSON object")
+    semantics = json.dumps(
+        {
+            "actor": actor,
+            "payload": normalized,
+            "type": event_type,
+        },
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return normalized, semantics
+
+
+def _normalize_json_value(value: Any, *, source: str) -> Any:
+    """Return a strict JSON value without Python's loose equality semantics.
+
+    Tuple and list inputs normalize to the same JSON array. Numeric spellings
+    retain their JSON representation, so ``1``, ``1.0``, and ``true`` cannot
+    compare equal merely because Python considers some of them equal.
+    """
+    if value is None or isinstance(value, str) or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise StoreError(f"{source} contains a non-finite JSON number")
+        return value
+    if isinstance(value, Mapping):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise StoreError(f"{source} contains a non-string JSON object key")
+            normalized[key] = _normalize_json_value(item, source=f"{source}.{key}")
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [
+            _normalize_json_value(item, source=f"{source}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    raise StoreError(f"{source} contains non-JSON value of type {type(value).__name__}")
 
 
 __all__ = [
@@ -1083,6 +1363,21 @@ __all__ = [
     "ATTEMPT_STATUS_FAILED",
     "ATTEMPT_STATUS_IN_PROGRESS",
     "ATTEMPT_STATUS_SUCCESS",
+    "CODEX_CAPTURE_METHODS",
+    "CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN",
+    "CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH",
+    "CODEX_CAPTURE_MISSING_REASONS",
+    "CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR",
+    "CODEX_CAPTURE_MISSING_REASON_MULTIPLE_OPEN_TURNS",
+    "CODEX_CAPTURE_MISSING_REASON_NO_OPEN_TURN",
+    "CODEX_CAPTURE_MISSING_REASON_PROMPT_HASH_AMBIGUOUS",
+    "CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING",
+    "CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING",
+    "CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE",
+    "CODEX_CAPTURE_MISSING_REASON_THREAD_MISMATCH",
+    "CODEX_CAPTURE_STATUSES",
+    "CODEX_CAPTURE_STATUS_CAPTURED",
+    "CODEX_CAPTURE_STATUS_MISSING",
     "EXECUTION_MODELS",
     "EXECUTION_MODEL_DIRECT_WTAM",
     "FAILURE_CLASSES",
@@ -1121,6 +1416,7 @@ __all__ = [
     "WorksetClaimRecord",
     "WorksetRuntime",
     "append_event",
+    "append_event_once",
     "atomic_write_text",
     "coerce_task_runtime_records",
     "create_prompt_receipt",

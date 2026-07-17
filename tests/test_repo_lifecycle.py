@@ -5,12 +5,20 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 from unittest.mock import patch
 
 from blackdog.contract import legacy_managed_skill_relative_path, managed_skill_relative_path, managed_skill_name
 from blackdog.repo_membership import discover_profile_dirs
 from blackdog.repo_lifecycle import render_repo_skill
+from blackdog.workflow_contract import (
+    AGENT_WORKFLOW,
+    NEXT_ACTION_AUTHORITY_GUIDANCE,
+    PROMPT_INPUT_DISPOSAL_GUIDANCE,
+    SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+    TARGET_BRANCH_GUIDANCE,
+)
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_cli.main import main as blackdog_main
 from blackdog_core.profile import PROJECT_STATUS_ACTIVE, PROJECT_STATUS_ARCHIVED, load_profile, render_default_profile
@@ -25,6 +33,20 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
+
+    def rendered_skill_command_inventory(self, skill_text: str) -> tuple[str, ...]:
+        section = skill_text.split("## Internal CLI Surface\n", 1)[1].split(
+            "## Operator Guardrails\n",
+            1,
+        )[0]
+        return tuple(re.findall(r"`(blackdog [^`]+)`", section))
+
+    def composed_prompt_command_inventory(self, prompt_text: str) -> tuple[str, ...]:
+        return tuple(
+            line.removeprefix("- `").removesuffix("`")
+            for line in prompt_text.splitlines()
+            if line.startswith("- `blackdog ") and line.endswith("`")
+        )
 
     def make_member_repo(self, parent: Path, name: str, *, project_name: str | None = None, status: str | None = None) -> Path:
         repo_root = parent / name
@@ -198,7 +220,10 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertEqual(profile.project_name, "Scaffold Demo")
         self.assertIn("docs/ARCHITECTURE.md", profile.doc_routing_defaults)
         self.assertTrue(skill_path.is_file())
-        self.assertNotIn("repo scaffold", skill_path.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "$scaffold-demo scaffold project <description>",
+            skill_path.read_text(encoding="utf-8"),
+        )
 
         agents_text = (target / "AGENTS.md").read_text(encoding="utf-8")
         self.assertIn("Repo-owned exemplar rule.", agents_text)
@@ -231,6 +256,18 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("repo unbind", skill_text)
         self.assertIn("without `--workset` or `--task`", skill_text)
         self.assertNotIn("planned execution", skill_text)
+
+    def test_checked_in_blackdog_skill_matches_renderer_and_fleet_scope_contract(self) -> None:
+        profile = load_profile(REPO_ROOT)
+        skill_path = REPO_ROOT / managed_skill_relative_path(profile)
+        rendered = render_repo_skill(profile)
+
+        self.assertEqual(skill_path.read_text(encoding="utf-8"), rendered)
+        self.assertIn("repeat `--project-root` for exact repos", rendered)
+        self.assertIn("repeat `--root` for read-only `blackdog.toml` discovery", rendered)
+        self.assertIn("pass `--registry` for the explicit user-local registry", rendered)
+        self.assertIn("Only bare `blackdog stats`", rendered)
+        self.assertIn("`blackdog repo table` never selects registry scope implicitly", rendered)
 
     def test_repo_analyze_does_not_flag_blackdog_source_skill_as_legacy(self) -> None:
         self.write_profile("Blackdog")
@@ -274,6 +311,12 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         payload = json.loads(stdout)["repo_table"]
+        self.assertEqual(payload["scope_source"], "discovery_roots")
+        self.assertEqual(payload["supplied_roots"], [str(fleet_root.resolve())])
+        self.assertEqual(payload["discovery_roots"], [str(fleet_root.resolve())])
+        self.assertEqual(payload["project_roots"], [str((fleet_root / "active-repo").resolve())])
+        self.assertEqual(payload["scope_evidence"], [])
+        self.assertEqual(payload["scope_notes"], [])
         self.assertEqual(payload["columns"][0], "project_name")
         self.assertNotIn("worksets", payload["columns"])
         self.assertNotIn("legacy_worksets", payload["columns"])
@@ -282,6 +325,82 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("managed_source_status", payload["columns"])
         self.assertEqual(payload["rows"][0]["managed_source_mode"], "managed-checkout")
         self.assertEqual(payload["rows"][0]["managed_source_status"], "missing")
+
+    def test_repo_table_supports_exact_registry_and_error_evidence(self) -> None:
+        fleet_root = self.root / "fleet"
+        member = self.make_member_repo(fleet_root, "member", project_name="Member")
+        nested_alias = member / "nested"
+        nested_alias.mkdir()
+        control_dir = (member / ".git" / "blackdog").resolve()
+        self.assertFalse(control_dir.exists())
+
+        with patch("blackdog_core.profile._prune_stale_git_worktrees") as prune:
+            exit_code, stdout, stderr = self.run_cli(
+                "repo",
+                "table",
+                "--project-root",
+                str(member),
+                "--project-root",
+                str(nested_alias),
+                "--no-codex",
+                "--json",
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(control_dir.exists())
+        prune.assert_not_called()
+        exact_payload = json.loads(stdout)["repo_table"]
+        self.assertEqual(exact_payload["scope_source"], "explicit_project_roots")
+        self.assertEqual(exact_payload["project_roots"], [str(member.resolve())])
+        self.assertEqual(exact_payload["deduped_project_roots"], [str(nested_alias.resolve())])
+        self.assertEqual(exact_payload["scope_evidence"][0]["kind"], "duplicate_project_root")
+        self.assertEqual(exact_payload["scope_evidence"][0]["path"], str(nested_alias.resolve()))
+        self.assertEqual(exact_payload["scope_evidence"][0]["canonical_project_root"], str(member.resolve()))
+        self.assertEqual([row["project_name"] for row in exact_payload["rows"]], ["Member"])
+
+        with patch("blackdog.repo_scope.registered_project_roots", return_value=(member,)):
+            exit_code, stdout, stderr = self.run_cli(
+                "repo",
+                "table",
+                "--registry",
+                "--no-codex",
+                "--json",
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        registry_payload = json.loads(stdout)["repo_table"]
+        self.assertEqual(registry_payload["scope_source"], "registry")
+        self.assertEqual(registry_payload["supplied_roots"], [str(member.resolve())])
+        self.assertEqual(registry_payload["project_roots"], [str(member.resolve())])
+        self.assertEqual(registry_payload["scope_notes"], [])
+
+        with patch("blackdog.repo_scope.registered_project_roots", return_value=()):
+            exit_code, stdout, stderr = self.run_cli(
+                "repo",
+                "table",
+                "--registry",
+                "--no-codex",
+                "--json",
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        empty_payload = json.loads(stdout)["repo_table"]
+        self.assertEqual(empty_payload["project_roots"], [])
+        self.assertEqual(empty_payload["rows"], [])
+
+        missing = fleet_root / "missing"
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--project-root",
+            str(missing),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("exact project root", stderr)
+        self.assertIn("not a usable Blackdog repo", stderr)
+
+        with self.assertRaises(SystemExit):
+            self.run_cli("repo", "table", "--root", str(fleet_root), "--registry", "--json")
 
     def test_repo_table_prunes_nested_profiles_under_discovered_repo(self) -> None:
         fleet_root = self.root / "fleet"
@@ -757,11 +876,20 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         agents_text = agents_path.read_text(encoding="utf-8")
         self.assertIn("BLACKDOG MANAGED CONTRACT:BEGIN", agents_text)
         self.assertIn("worktree preflight", agents_text)
-        self.assertIn("primary worktree: yes", agents_text)
-        self.assertIn("routing rule, not a reason to stop", agents_text)
-        self.assertIn("continue by starting or entering a branch-backed task worktree", agents_text)
+        self.assertIn("one normal implementation entrypoint", agents_text)
+        self.assertIn("performs its own readiness checks", agents_text)
+        self.assertIn("explicit read-only diagnosis", agents_text)
+        self.assertIn("not a separate prerequisite", agents_text)
+        self.assertIn(f"`{AGENT_WORKFLOW.begin_command}`", agents_text)
+        self.assertIn("exact triggering user request verbatim", agents_text)
+        self.assertIn("mode-0600 UTF-8 temporary files outside the repo", agents_text)
+        self.assertIn("`--actor` defaults to `codex`", agents_text)
+        self.assertIn("NAME=passed|failed|skipped", agents_text)
+        self.assertIn("retry_stale_claim_release_finalization", agents_text)
+        self.assertIn("hidden request/decision guards are machine-emitted", agents_text)
+        self.assertNotIn("Before any repo edit you intend to keep, run", agents_text)
         self.assertIn("workspace role", agents_text)
-        self.assertIn("implementation edits belong only in `workspace role: task`", agents_text)
+        self.assertIn("Implementation edits belong only in the `workspace role: task`", agents_text)
         self.assertIn("linked branch as the target branch", agents_text)
         self.assertIn("Do not launch an external browser", agents_text)
         self.assertIn("repo install`, `repo update`, or `repo refresh", agents_text)
@@ -777,8 +905,26 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertNotIn("workset put", skill_text)
         self.assertNotIn("next --workset", skill_text)
         self.assertIn("--prompt-mode skill", skill_text)
-        self.assertIn("--validation CHECK=passed", skill_text)
-        self.assertIn("attempt records the evidence", skill_text)
+        self.assertIn('"${validation_args[@]}"', skill_text)
+        self.assertIn("NAME=passed|failed|skipped", skill_text)
+        self.assertIn("Never submit placeholders or invented validation", skill_text)
+        self.assertIn("sole Blackdog task/attempt owner", skill_text)
+        self.assertIn("Workers do not run `task begin`", skill_text)
+        self.assertIn(PROMPT_INPUT_DISPOSAL_GUIDANCE, skill_text)
+        self.assertIn(NEXT_ACTION_AUTHORITY_GUIDANCE, skill_text)
+        self.assertIn(TARGET_BRANCH_GUIDANCE, skill_text)
+        self.assertNotIn("partial or blocked normal task lifecycle result", skill_text)
+        self.assertNotIn("primary `main` branch", skill_text)
+        self.assertIn("retry_stale_claim_release_finalization", skill_text)
+        self.assertIn("retry_task_close_finalization", skill_text)
+        self.assertIn("hidden request/decision guards are machine-emitted", skill_text)
+        self.assertIn("performs its own readiness checks", skill_text)
+        self.assertIn("a separate preflight is not required", skill_text)
+        self.assertIn(f"`{AGENT_WORKFLOW.begin_command}`", skill_text)
+        self.assertEqual(
+            self.rendered_skill_command_inventory(skill_text),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )
         self.assertIn("Operator Guardrails", skill_text)
         self.assertIn("Do not launch an external browser", skill_text)
         self.assertNotIn("Shipped Workflow Families", skill_text)
@@ -970,12 +1116,37 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         preview = json.loads(stdout)["prompt_preview"]
         self.assertEqual(preview["workflow_family"], "repo-lifecycle")
         self.assertEqual(preview["prompt_text"], "Round out repo lifecycle behavior.")
-        self.assertIn("blackdog repo install", preview["composed_prompt"])
+        self.assertEqual(
+            tuple(preview["repo_lifecycle_commands"] + preview["wtam_commands"]),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )
+        self.assertEqual(
+            self.composed_prompt_command_inventory(preview["composed_prompt"]),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )
         self.assertTrue(
             any(item["kind"] == "skill" and item["text"] is not None for item in preview["contract_documents"])
         )
         self.assertTrue(
             any(item["path"] == str((self.root / "AGENTS.md").resolve()) and item["text"] == "repo contract\n" for item in preview["contract_documents"])
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "prompt",
+            "preview",
+            "--project-root",
+            str(self.root),
+            "--prompt",
+            "Round out repo lifecycle behavior.",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(
+            tuple(
+                line.removeprefix("  - ")
+                for line in stdout.splitlines()
+                if line.startswith("  - blackdog ")
+            ),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
         )
 
         exit_code, stdout, stderr = self.run_cli(
@@ -991,4 +1162,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         tuned = json.loads(stdout)["prompt_tune"]
         self.assertEqual(tuned["workflow_family"], "repo-lifecycle")
         self.assertIn("Round out repo lifecycle behavior.", tuned["tuned_prompt"])
-        self.assertIn("blackdog repo refresh", tuned["tuned_prompt"])
+        self.assertEqual(
+            self.composed_prompt_command_inventory(tuned["tuned_prompt"]),
+            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
+        )

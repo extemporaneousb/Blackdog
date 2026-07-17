@@ -83,13 +83,17 @@ repo root.
 ```bash
 blackdog repo table --root /path/to/work --json
 blackdog repo table --root /path/a --root /path/b --since 2026-05-01T00:00:00Z
+blackdog repo table --project-root /path/to/repo --json
+blackdog repo table --registry --json
 blackdog repo table --root /path/to/work --since-hours 24
 blackdog repo table --root /path/to/work --include-archived --no-codex
 ```
 
 Important flags:
 
-- `--root` may be repeated
+- exactly one scope mode is required: repeated `--project-root` for exact
+  repos, repeated `--root` for read-only `blackdog.toml` discovery, or
+  `--registry` for the user-local convenience registry
 - optional `--since` filters windowed attempt metrics and Codex coverage rows
 - optional `--since-hours` is a convenience window, for example `24`
 - optional `--include-archived`
@@ -145,8 +149,9 @@ Discovery skips nested `.worktrees`, `.git`, `.VE`, `.venv`, `node_modules`,
 cache, and build-output directories. Once a `blackdog.toml` is discovered under
 a scanned root, discovery does not recurse below that repo; nested repos must be
 supplied explicitly if an operator wants them counted separately.
-`blackdog.toml` remains the source of truth for scanned membership; `repo table`
-does not read the user-local registry managed by `blackdog local-repo`.
+`blackdog.toml` remains the source of truth for scanned membership. The
+registry is read only when `--registry` is explicit; discovery never reads or
+mutates it.
 Archived repos are excluded unless `--include-archived` is set. With
 `--no-codex`, Codex columns are null in JSON and `-` in text.
 
@@ -158,8 +163,10 @@ head/origin columns show short commit ids when available.
 
 ### `blackdog local-repo`
 
-Manage the user-local repo registry used by cross-repo commands when explicit
-project roots are not supplied.
+Manage the user-local convenience registry. Registry membership is selected
+only by an explicit `--registry` flag, except that bare `blackdog stats` retains
+a documented compatibility fallback to the registry. `repo table` always
+requires one explicit scope (`--project-root`, `--root`, or `--registry`).
 
 ```bash
 blackdog local-repo add --project-root /path/to/repo
@@ -393,13 +400,13 @@ Preview repo-contract prompt composition without starting task execution.
 ```bash
 blackdog prompt preview \
   --project-root /path/to/repo \
-  --prompt "Round out the repo lifecycle MVP."
+  --request "Round out the repo lifecycle MVP."
 ```
 
 Important flags:
 
 - `--project-root`
-- exactly one of `--prompt` or `--prompt-file`
+- exactly one of `--request` or `--request-file`
 - optional `--show-prompt`
 - optional `--expand-skill-text`
 - optional `--expand-contract`
@@ -421,18 +428,25 @@ Rewrite a request into a repo-contract-aware prompt.
 ```bash
 blackdog prompt tune \
   --project-root /path/to/repo \
-  --prompt "Round out the repo lifecycle MVP."
+  --request "Round out the repo lifecycle MVP."
 ```
 
 Important flags:
 
 - `--project-root`
-- exactly one of `--prompt` or `--prompt-file`
+- exactly one of `--request` or `--request-file`
 - optional `--expand-skill-text`
 - optional `--expand-contract`
 
 Text output emits the tuned prompt directly. `--json` returns the tuned prompt
 plus prompt-hash and contract metadata.
+
+`--prompt` and `--prompt-file` remain supported compatibility aliases for
+`--request` and `--request-file` on both prompt commands. Canonical and
+compatibility spellings use the same parser destination and preserve the
+existing receipt source labels, hashes, and downstream semantics. Supplying
+both spellings, or mixing an inline value with any file spelling, is an error
+rather than a last-value-wins choice.
 
 ### `blackdog workset put`
 
@@ -479,26 +493,32 @@ Create or reuse one task envelope and start the WTAM attempt.
 blackdog task begin \
   --project-root /path/to/repo \
   --actor codex \
-  --prompt "Implement the same-thread slice." \
+  --execution-prompt "Implement the same-thread slice." \
   --prompt-mode raw
 
 blackdog task begin \
   --project-root /path/to/repo \
   --actor codex \
-  --prompt-file EXECUTION_PROMPT.txt \
+  --execution-prompt-file EXECUTION_PROMPT.txt \
   --prompt-mode skill \
-  --user-prompt-file USER_PROMPT.txt
+  --request-file USER_REQUEST.txt
 ```
 
 Important flags:
 
 - `--project-root`
-- `--actor`
-- exactly one of `--prompt` or `--prompt-file`
+- optional `--actor`, default `codex`
+- exactly one of `--execution-prompt` or `--execution-prompt-file`
 - optional `--prompt-mode raw|skill|tuned`
-- optional `--user-prompt` or `--user-prompt-file`
+- optional request lineage as `--request` or `--request-file`
 - optional `--workset` for an existing planning task only
 - optional `--task` for an existing planning task only
+- internal replay guards `--expected-actor`,
+  `--expected-execution-prompt-hash`, `--expected-execution-prompt-mode`,
+  `--expected-request-prompt-hash`, and `--expected-request-prompt-mode` are
+  accepted only in Blackdog-emitted exact recovery argv and hidden from
+  operator help; agents execute the emitted argv unchanged rather than author
+  these guards, and the guards must appear together
 - optional `--title`
 - optional `--branch`
 - optional `--from`
@@ -515,12 +535,49 @@ execution prompt receipt, provisions the task worktree, and starts the WTAM
 attempt in one command. That envelope is runtime bookkeeping for attempt
 history and recovery, not a repo-facing planning workflow.
 
+The stable ordinary task owner is `codex`. A supervising multi-agent task may
+explicitly use `codex-supervisor`; that one supervisor owns the Blackdog task
+and attempt while workers contribute inside it. Workers do not create parallel
+Blackdog attempts or land independently.
+
 Before it creates a new task envelope, `task begin` runs task-class startup
 guards against the execution prompt. Deployment-class prompts must name the CI
 or GitHub Actions route, or explicitly state an approved local/emergency
 fallback, before Blackdog will create planning/runtime state. Successful starts
 record a `setup_receipt` on the attempt and start event with task class,
 guard probes, handler setup probes, blockers, and worktree-local runtime paths.
+Post-parse setup refusals that occur before an attempt exists use the same
+operation-result shape: `operation="task.begin"`, `operation_status="blocked"`,
+null task/attempt status, no mutation, one blocked next action, and a bounded
+`setup_guard` or `managed_skill_missing` failure code. JSON writes that result
+to stdout and exits one; text renders the same action. These refusals do not
+write planning, runtime, task events, or Git state. Their bounded outcome is
+still recorded best-effort in the separate fail-open observability stream.
+
+A failure later in begin is not reported as an unstructured exception when
+Blackdog has retained owned state. If auto-begin created its planning envelope
+and prompt artifacts but Git failed before attempt reservation, the command
+returns `operation_status="partial"`, `mutation_started=true`, phase
+`preflight`, the retained workset/task ids, and the executable
+`retry_reserved_task_begin` action. That argv targets the same envelope and uses
+absolute paths to the private replay artifacts. It preserves every supplied
+`--branch`, `--from`, `--path`, `--model`, `--reasoning-effort`, and `--note`
+override. Request replay remains explicit whenever the request and execution
+receipts differ by hash, mode, source, or artifact identity, including
+equal-text inputs from distinct roles. If an attempt was reserved, the partial
+result also includes its attempt/branch/worktree identity. Its
+state-derived next action is `repair_task_start_evidence` while deterministic
+start evidence is missing; if a fault was raised after the final append actually
+succeeded, `mutation_completed` is true and the normal active-task action is
+returned instead. JSON and text exit nonzero for these partial results.
+
+Existing-envelope resume also validates its terminal ledger boundary before
+persisting prompt artifacts or previewing Git work. One exact predecessor
+`task.finish` row scopes later cancel/reopen transitions by append order, even
+when their `updated_at` values share one second. Duplicate matching finish rows
+return `operation_status="blocked"`, `mutation_started=false`, and the terminal
+`task_start_proof_required` action without creating a successor or workspace.
+Only a legacy ledger with no exact finish row uses timestamp-based fallback.
 
 `--project-root` identifies the Blackdog-managed repo and control state. When
 the command runs from a normal linked worktree for the same Git repository,
@@ -528,6 +585,9 @@ the command runs from a normal linked worktree for the same Git repository,
 separate task worktree that lands back to it. Running from the primary checkout
 targets the primary branch. Running from an existing task worktree targets the
 primary branch rather than nesting task semantics on top of that task branch.
+The `target_branch` selected and recorded by Blackdog is authoritative for
+landing and verification; agents never assume it is `main` or switch it
+manually.
 
 For normal new repo work, omit `--workset` and `--task`. Those flags are only
 for explicitly targeting an existing planned task; agents should not invent
@@ -547,9 +607,42 @@ the bounded `setup_receipt.skill_provenance` object documented in
 If that managed skill is missing or unreadable, a declared skill-mode start
 fails before creating the task envelope or runtime state.
 Raw-mode, tuned-mode, and older attempt rows have no skill provenance. When
-`--user-prompt` or `--user-prompt-file` is present, Blackdog stores that raw
-user request lineage separately from the execution prompt for later audit and
-repo-skill optimization.
+`--request` or `--request-file` is present, Blackdog stores that raw request
+lineage separately from the execution prompt for later audit and repo-skill
+optimization.
+
+Before creating planning state or reserving an attempt, a successful new begin
+persists both normalized prompt receipts as content-addressed replay artifacts
+under the configured shared control root. The JSON result exposes each
+control-relative `*_prompt_replay_artifact_path`; runtime keeps that path with
+the hash/source/mode but not the prompt text. Replay artifacts are private
+local full-text files (`0600`), capped at 1,048,576 bytes, and are independent
+of the original inline, stdin, or file input after begin succeeds. Task cleanup
+retains them. Confirmed `repo unbind` removes them with an eligible control
+directory unless `--keep-control-dir` is used. See `FILE_FORMATS.md` for the
+privacy, verification, and retention contract.
+
+Delete the agent-owned `request_file` and `execution_prompt_file` only when the
+structured `task begin` result contains both a nonempty
+`execution_prompt_replay_artifact_path` and a nonempty
+`user_prompt_replay_artifact_path`. If either field is absent or empty, preserve
+both temporary inputs as recovery evidence.
+
+When Codex supplies `CODEX_THREAD_ID`, normal `task begin` also makes one
+best-effort invocation capture in that exact thread/session. A unique current
+open turn outranks a stale completed prompt-hash match; otherwise Blackdog uses
+a unique prompt-hash match only when it identifies the open turn or the session
+has no open turn. The attempt records `captured` with
+`exact_prompt_hash`/`exact_active_turn`, or `missing` with a bounded reason.
+Capture never scans unrelated sessions, never selects the latest completed
+turn, and never blocks task creation.
+
+The former execution spellings `--prompt`/`--prompt-file` and request-lineage
+spellings `--user-prompt`/`--user-prompt-file` remain supported aliases. They
+produce byte-identical receipt hashes, the same historical source labels, and
+the same skill/setup provenance as the canonical spellings. A canonical and
+legacy spelling for the same role cannot be combined, and inline/file sources
+for one role remain mutually exclusive.
 
 ### `blackdog task show`
 
@@ -574,6 +667,9 @@ prompt lineage and the execution-prompt lineage when those differ. For an
 attempt with managed-skill provenance, JSON output also exposes the canonical
 setup-receipt object as top-level `skill_provenance`. Its absence means the
 attempt has no recorded assertion, as expected for raw, tuned, and older rows.
+If that attempt has an incomplete durable landing transaction, `task show`
+also reports its transaction id, latest completed phase, and exact `task land`
+next action rather than presenting the terminal runtime row as complete.
 
 ### `blackdog task recover`
 
@@ -610,18 +706,44 @@ that worktree. It reports:
 - whether the recorded task branch and target branch still resolve locally
 - primary-worktree dirtiness that would still block landing
 - structured recovery fields such as `failure_class` and `recovery_action`
+- any incomplete landing transaction and its latest durable phase
 - recommended next actions such as `task land`, `task close`, `task cleanup`,
   or stale-claim release
-- `recommended_commands`, a machine-readable list of concrete command strings,
-  reasons, and dispositions for the same recovery paths
+- `next_action`, the authoritative typed executable command, bounded choice,
+  complete state, or blocked state
+- `recommended_commands`, the deprecated compatibility list; template rows
+  are explicitly non-executable
+
+For an active initial or ordinary-resume attempt whose deterministic start is
+incomplete, `task show` and read-only `task recover` report
+`next_action.action_id="repair_task_start_evidence"`. Execute that exact begin
+argv; do not assemble a retry from diagnostic fields. A conflicting receipt,
+event, path, ref, registration, or handler contract instead reports the blocked
+`task_start_proof_required` action and has no executable repair argv.
 
 If a latest historical attempt references a missing task branch or missing
 target branch, recovery reads return `recovery_state="stale_reference"` with
 `failure_class="stale_branch"` rather than failing on the underlying git
 inspection command. A successful attempt with a recorded canonical
-`landed_commit`, an existing target branch, and no retained task worktree is
-the exception: canonical landing normally deletes that disposable task branch,
-so recovery reads report the completed task as idle without an operator issue.
+`landed_commit`, an existing target branch, no retained task worktree, and no
+incomplete landing transaction is the exception: canonical landing normally
+deletes that disposable task branch, so recovery reads report the completed
+task as idle without an operator issue.
+
+Read-only `task show` and `task recover` also opt into bounded legacy landing
+detection for the exact latest failed or blocked attempt. Detection is skipped
+for an active or later attempt, a task claim, a recorded landing, an abandoned
+attempt, workspace-adoption evidence, or any native landing transaction. It
+resolves the recorded target and exact attempt start commit, reads no more than
+65 first-parent rows (64 commits after the sentinel plus the sentinel), and
+reports `legacy_reconciliation_detection.state` as `ready`, `none`,
+`unproven`, `ambiguous`, `inconclusive`, or `error`. Only `ready` replaces the
+normal guidance with one complete read-only `task reconcile-landing` dry-run
+argv. That argv never contains `--apply`; the explicit proof command is the
+surface that may subsequently offer its existing guarded apply action. The
+detector does not write runtime/events or mutate Git, refs, the index, or a
+worktree. `task recover --release-stale-claim` is a mutation path and does not
+run the detector after its write.
 
 `--release-stale-claim` is intentionally narrow. It only applies when the task
 claim still exists but there is no active WTAM attempt to close. In that case
@@ -630,6 +752,167 @@ Blackdog releases the lingering task/workset claim, repairs a still
 `blocked`/`failed`, and leaves any retained task workspace untouched so cleanup
 remains an explicit follow-on decision.
 
+Stale-claim release is a durable request/decision/runtime/event transaction.
+If a write is interrupted, every task read in that workset reports the owning
+task and the single authoritative
+`next_action.action_id="retry_stale_claim_release_finalization"`. A sibling
+`task show` or read-only `task recover` therefore points back to the owner; it
+does not suggest releasing the sibling. Claim-mutating `task begin`, `task
+land`, and `task close` stop before workspace, Git, claim, attempt, runtime, or
+event mutation until that exact retry completes. Cancel/reopen of the owning
+task is also blocked. State-only transitions and landing reconciliation for a
+different task remain available because they cannot change the reserved claim
+projection.
+
+The retry argv may contain the internal guards
+`--stale-claim-release-request` and `--stale-claim-release-decision`. They are
+hidden from help intentionally and are emitted only by Blackdog. Execute the
+complete argv unchanged; never type, remove, replace, or carry these guards to
+a different recovery request. An exact completed replay is a byte-for-byte
+no-op. If later task/workset progress supersedes the guarded generation,
+Blackdog returns the commandless
+`inspect_stale_claim_release_conflict` action rather than creating a new
+release generation.
+
+Mutation output distinguishes durable progress from full completion.
+`released_stale_claim` and `stale_claim_release_runtime_finalized` become true
+only after the runtime replacement is durable;
+`stale_claim_release_event_finalized` becomes true only after all owned release
+events are durable; and `stale_claim_release_finalization_pending` stays true
+until both stores agree. Partial results expose these fields and the exact retry
+action instead of claiming the release either wholly failed or wholly landed.
+
+#### Normal task result and next-action contract
+
+Every recognized lifecycle outcome from a normal task command (`begin`, `show`,
+`recover`, `land`, `reconcile-landing`, `close`, `cancel`, `reopen`, and
+`cleanup`) returns the same typed operation result in JSON and renders that
+same result in text. Malformed invocations, unknown identities, and caller
+identity conflicts remain fatal command errors on stderr; they are not durable
+recovery states and do not synthesize a `next_action`. A structured result
+identifies the operation and its status, post-operation task and attempt status,
+post-operation disposition, whether mutation started and completed, the last
+mutation phase, an optional bounded failure code, and exactly one `next_action`.
+
+`next_action.kind` is one of:
+
+- `command`: one complete executable `argv`; optional `alternatives` are also
+  complete commands
+- `choice`: a bounded list of complete executable `choices`, with no implicit
+  default command
+- `complete`: no command because no lifecycle action remains
+- `blocked`: no command because proof or repair is required first
+
+For executable actions, `argv` is authoritative and `command` is its exact
+shell-quoted rendering. `display` is explanatory text, never a command. Text
+output prints the same action id, kind, disposition, display, and exact command
+that JSON reports. Values containing whitespace, quotes, or a leading dash are
+kept as single arguments. Placeholder text, status alternatives, and missing
+prompt files are never emitted as executable `argv`.
+
+Normal task text renders the operation result and authoritative `next_action`
+before diagnostic state. It does not print the compatibility
+`recommended_actions` or `recommended_commands`; those fields remain available
+in JSON only for older consumers.
+
+The older `recommended_actions` and `recommended_commands` keys remain
+additive compatibility views. A legacy row containing placeholders is marked
+`template=true`, `deprecated=true`, and `executable=false`; agents must execute
+only `next_action.argv` (or one complete choice/alternative argv). In
+particular, the legacy `task begin --prompt "..."` row is never selected as a
+next action.
+
+For every structured result from `task begin`, `task show`, `task recover`,
+`task cancel`, `task reopen`, `task land`, `task reconcile-landing`, `task
+close`, or `task cleanup`, agents must treat `next_action` as the sole authority
+regardless of `operation_status`. Execute its exact `argv` for `kind=command`,
+select only a complete bounded choice or alternative when offered, and stop
+when `kind=blocked` or `kind=complete`. Never infer an action from display text,
+error or reason prose, summaries, or compatibility recommendations.
+
+Retained-workspace adoption is an internal `task begin` recovery route, not a
+command an agent assembles. `task show` emits the complete guarded argv only
+for the exact latest `abort_complete` predecessor whose source worktree and
+branch are still clean, registered, and unchanged. The argv binds predecessor,
+abort transaction, source commit/tree, branch/path, target branch/commit,
+actor, both prompt lineages, skill provenance, setup receipt, and handlers.
+Blackdog rechecks target immediately before reserving the deterministic
+successor: candidate containment still belongs to predecessor reconciliation;
+other target drift produces a fresh guarded adoption action with no mutation.
+Once reserved, missing deterministic core or `worktree.start` evidence routes
+back to the same exact begin argv before land, reconcile, close, or cancel may
+terminalize the successor.
+
+The same rule applies to ordinary same-envelope resumes and recoverable initial
+starts. Exact begin repair first validates the recorded canonical primary and
+task-worktree paths, branch registration/tip/HEAD, clean status, prompt lineage,
+runtime claims, and current handler plan without mutation. It may recreate only
+a missing owned workspace and branch at the recorded start commit. It never
+moves a branch, adopts an alternate registration, accepts a symlink spelling,
+or rewrites conflicting evidence. Handler execution begins only after the
+read-only contract check passes. Close, cancel, and land reject an incomplete
+start before runtime, Git, or cleanup mutation. Concurrent exact retries are
+serialized by the attempt lock; a completed retry reports a reused workspace
+and is a true runtime/event no-op.
+
+For an active adopted successor, `task show` reports the live relation to its
+target. `behind` and `diverged` route to the exact worktree-local rebase;
+equal/ahead continue normally. If the predecessor candidate arrives and there
+is no successor-only work, special reconciliation can finish the successor
+from the original source or a bounded, no-merge, stable-patch-equivalent
+rebase. Otherwise `task land` owns successor work through its normal landing
+transaction. Both paths persist `worktree.adoption.completion.intent` before
+runtime finalization and `worktree.adoption.complete` before source cleanup.
+`task show` prioritizes the exact completion repair after a crash; exact
+retries converge and a fully completed retry is a true no-op. Agents must not
+invent `--adopt-aborted-landing-source` or any `--expected-*` adoption guard.
+
+Recovery preserves the existing envelope. A terminal attempt without a
+retained workspace receives a `task begin` command only after Blackdog re-reads
+the recorded execution file and, when distinct, request file and proves their
+normalized hashes and modes match the attempt receipts. The command reuses the
+existing workset, task, persisted actor, prompt mode, and exact file lineage. It
+also carries expected actor and lineage values so a file or task-state change
+after action emission is rejected before any attempt, worktree, branch, or
+runtime mutation. Existing-envelope `task begin` always validates the incoming
+actor and prompt receipts against the latest terminal attempt at that boundary,
+so omitting the expected-value flags cannot bypass the check. It never
+synthesizes prompt text. Inline/stdin sources, missing or changed files,
+missing actor attribution, and otherwise inexact lineage produce a blocked
+action with `required_inputs` and no executable argv. A canceled task receives
+`task reopen` first. For tasks with no attempt, cancel/reopen actor attribution
+is recovered from the durable `task.cancel`/`task.reopen` event rather than a
+process-local default. Cleanup of a terminal clean workspace is a separate
+action before resume. Missing branch metadata, missing refs, and Git reference
+or relationship inspection errors expose typed evidence and a blocked repair
+action rather than falling through to landing. Missing refs and Git command
+errors are distinct states; a command error is never accepted as absence for
+cleanup or reconciliation proof.
+
+Start recovery never copies prompt text into events, error messages, or
+diagnostic commands. Runtime/event receipts contain hashes, modes, provenance,
+and private control-relative artifact references, not full prompt bodies. An
+executable recovery argv may contain the absolute local artifact filename so it
+works from any current directory; those files remain mode `0600` beneath the
+mode `0700` control hierarchy and are verified by hash before use.
+
+Mutation reporting distinguishes a completed command from a partial one. In
+particular, `task close --cleanup` can finish runtime closure while leaving a
+dirty or otherwise unremovable workspace; that result is `partial`, reports
+`mutation_completed=false`, and uses phase
+`runtime_finalized_cleanup_pending`. A cleanup that proves the workspace and
+branch already absent reports no mutation rather than claiming a filesystem
+write. If workspace removal succeeds but branch deletion fails, cleanup returns
+structured `partial` output with phase
+`worktree_removed_branch_cleanup_pending`; its next action retries the exact
+cleanup, and rerunning that action is idempotent. Cleanup evidence uses a
+deterministic append-once event. If Git/filesystem cleanup finishes but the
+event write is unconfirmed, the result is a structured partial with phase
+`cleanup_event_finalization_pending` and an exact event-finalization retry;
+whether the first write failed before or after append, retries converge on one
+event and later retries are true no-ops. Text output calls a true no-op `already
+clean` rather than claiming the workspace was removed.
+
 ### `blackdog task land`
 
 Land the current task and close it.
@@ -637,7 +920,8 @@ Land the current task and close it.
 ```bash
 blackdog task land \
   --project-root /path/to/repo \
-  --summary "finished the same-thread slice"
+  --summary "finished the same-thread slice" \
+  --validation unit=passed
 ```
 
 Important flags:
@@ -646,8 +930,10 @@ Important flags:
 - optional `--workset`
 - optional `--task`
 - optional `--actor`
-- required `--summary`
-- repeatable `--validation NAME=STATUS`
+- `--summary`; a nonblank value is required for the first landing request and
+  may be omitted only when replaying an existing immutable transaction
+- required repeatable `--validation NAME=STATUS`; provide at least one row with
+  status `passed`, `failed`, or `skipped`
 - repeatable `--residual`
 - repeatable `--followup`
 - optional `--note`
@@ -659,6 +945,70 @@ delegates to the canonical `worktree land` success-closure path. Use
 `--keep-worktree` when you want to retain the task workspace and close it later
 through `task cleanup`. The canonical landed-commit trailers are the same ones
 documented under `worktree land`.
+When re-entering an incomplete transaction, the exact next-action command
+supplies its workset/task identity and resolves the recorded attempt even if
+runtime finalization has released the claim or task cleanup has removed the
+original cwd.
+
+An active task with dirty or branch-ahead work does not fabricate closeout
+evidence. `task show` and read-only `task recover` return blocked action
+`landing_evidence_required`, no argv, and required inputs
+`completion_summary` and `validation_evidence`. The first `task land` call also
+returns that blocked result unless its summary is nonblank and it carries at
+least one validation row. This refusal reports mutation phase `none` and does
+not create a landing transaction, append canonical events, update runtime, or
+mutate Git. Record an honest `skipped` row when a named check was deliberately
+not run; Blackdog never invents one.
+
+Landing is a durable transaction keyed to the attempt. Before its first Git
+mutation, Blackdog appends an immutable intent that binds the complete request,
+including actor, summary, validation/residual/follow-up rows, note, cleanup
+choice, source lineage, and expected target base. It then records the ordered
+phases `intent_recorded`, `source_prepared`, `canonical_commit_created`,
+`target_updated`, `temporary_cleanup_complete`, `runtime_finalized`,
+`land_event_recorded`, `task_cleanup_complete`, and `complete`. A retry with
+different intent inputs is blocked rather than silently replacing the first
+request.
+
+An interrupted normal landing path with outcome `landing_in_progress` is
+resumed by running `task land` again for the same attempt, even when runtime
+finalization has already released its active claim. `next_action.argv` carries
+the exact recorded landing request, so agents do not reconstruct summary or
+closure evidence from prose. Each retry verifies the durable phase prefix and
+the corresponding Git/runtime/event postconditions before continuing. A
+completed retry is a no-op: it does not create another canonical commit,
+rewrite runtime, or append duplicate transaction events.
+
+The public task surface may also be invoked with no closeout fields once that
+transaction exists; Blackdog reuses the complete immutable request rather than
+requiring the caller to resupply evidence. Supplying replacement fields still
+must match the recorded intent exactly.
+
+The transaction outcome is `landing_in_progress`, `landed_complete`,
+`abort_in_progress`, or `abort_complete`. `landing_in_progress` routes to the
+exact recorded `task land`; `abort_in_progress` routes to the exact recorded
+`task close`; a pre-finalization superseded abort resumes the normal landing
+ledger. Terminal outcomes use the post-operation task state, except that an
+`abort_complete` whose exact recorded candidate later reaches the target can
+offer bounded reconciliation proof. These outcome-derived actions are
+authoritative even when runtime already looks terminal.
+
+The target branch advances only when it still matches the base captured by the
+intent, or when the recorded canonical landed commit is already represented on
+the target. Landing does not implicitly pull, reset, or overwrite a target that
+advanced independently. The task worktree and branch are preserved through
+runtime finalization and the append-once `worktree.land` event; source cleanup
+is the final phase unless `--keep-worktree` records intentional retention.
+
+`task land` uses process exit status as an automation contract: only a
+structured `operation_status="succeeded"` result exits zero. Retryable blockers
+(including dirty-primary, stale-branch, and Git-proof failures) and terminal
+closed outcomes such as no changes exit nonzero while preserving the full JSON
+result on stdout. An interrupted transaction returns a structured partial
+result whose mutation phase is the latest durable phase prefixed with
+`landing_` (for example, `landing_target_updated`) and whose single executable
+next action is the exact resume command. Agents must inspect the structured
+result instead of treating JSON emission itself as success.
 
 Supervised integration closeout should use `task land` for successful worker
 slices and pass validation rows, residual risks, and follow-up candidates as
@@ -685,13 +1035,13 @@ blackdog task reconcile-landing \
 ```
 
 The command is a dry run unless `--apply` is present. All task identities and
-the commit are required; it never infers a latest task from cwd. Before apply,
-Blackdog requires the attempt to be the latest failed or blocked terminal
-attempt for the task, with no active claim, later attempt, or recorded landing.
-The commit must be reachable from the recorded target branch and carry exact
-canonical workset, task, attempt, success-status, target-branch, actor, and
-changed-path evidence. When the recorded source commit still exists, Blackdog
-also requires stable patch equivalence.
+the commit are required; it never infers a latest task from cwd. The ordinary
+compatibility path requires the latest failed or blocked historical attempt,
+with no active claim, later attempt, or recorded landing. The commit must be
+reachable from the recorded target branch and carry exact canonical workset,
+task, attempt, success-status, target-branch, actor, and changed-path evidence.
+When the recorded source commit still exists, Blackdog also requires stable
+patch equivalence.
 
 `--actor` identifies the operator performing the audit correction; it does not
 replace the attempt actor or the commit actor. A commit/attempt actor mismatch
@@ -703,6 +1053,32 @@ and appends one idempotent `task.landing.reconciled` event. Existing failure and
 close events are never rewritten or replaced. Re-running the same proven
 correction is safe and repairs a missing reconciliation event if a prior process
 stopped after the runtime write.
+Mutation reporting distinguishes runtime repair, event-only repair, and a
+combined repair with phases `runtime_finalized`, `event_finalized`, and
+`runtime_and_event_finalized`. An event-only retry therefore reports a real
+mutation even though runtime was already correct.
+
+This remains the explicit proof/apply compatibility surface for historical
+attempts. Direct read-only task/worktree recovery reads may automatically find
+one candidate only inside the bounded first-parent window described above.
+They do not apply it: `ready` emits this command's complete dry-run argv with
+the exact project/workset/task/attempt/commit/attempt-actor identity and a
+bounded reason, never `--apply`. Zero plausible identity commits is `none`;
+multiple plausible commits is `ambiguous`; malformed singleton proof is
+`unproven`; an absent bounded start sentinel is `inconclusive`; and an
+operational Git inspection failure is `error`. Any native landing transaction
+is excluded from this legacy scan: its structured action remains exact `task
+land`, or exact `task close` after durable abort intent.
+
+The narrow native exception is a terminal `abort_complete` whose exact recorded
+canonical candidate later becomes reachable from the target. Reconciliation
+must use that candidate, verify the complete abort chain, and prove the retained
+source or exact independently authorized cleanup evidence. This path applies to native
+blocked/failed aborts and is the only eligibility for an abandoned attempt;
+arbitrary abandoned historical rows do not qualify. Apply appends the exact
+transactional `worktree.land` evidence and honors the original landing cleanup
+choice through supported task cleanup. Apply shares the attempt operation lock
+with landing, close, and cleanup.
 
 ### `blackdog task close`
 
@@ -735,6 +1111,75 @@ delegates to the canonical non-success closure path.
 Closing with `--status abandoned` cancels the task so normal `summary` and
 `next` views hide it.
 
+For an ordinary active attempt, close is one durable transaction shared by
+`task close`, `worktree close`, and terminal pre-intent `task land` failure
+classification. Before core runtime or Git mutation, Blackdog records an
+immutable `worktree.close.request` that binds the exact attempt, actor,
+terminal evidence, source projection, cleanup ownership decision, and derived
+core/cleanup/receipt ids. It then converges core finalization, performs only an
+exact authorized cleanup, and appends the deterministic `worktree.close`
+receipt. A retry after any interruption resumes that generation; a third retry
+after completion is a zero-write no-op.
+
+Partial close results and `task show`/read-only `task recover` expose
+`next_action.action_id=retry_task_close_finalization`. Its argv contains a
+hidden `--close-request` capability and the exact recorded semantics. Execute
+that argv without adding, dropping, or editing arguments. The hidden guard can
+hydrate every omitted close field, but it is machine output rather than an
+operator-authored flag. If durable semantics, source ownership, or a successor
+conflict with an incomplete predecessor, `next_action.kind=blocked` has no
+argv; inspect the evidence instead of constructing another close command.
+
+While this transaction is incomplete, same-task begin/reopen/cancel/land,
+cleanup, and reconciliation mutations route back to the exact close action.
+Other tasks and worksets are not gated. Once the terminal receipt is verified,
+the gate disappears. If a successor already exists, only a fully complete
+predecessor may be replayed, and only as a verified no-op.
+
+`--cleanup` is a request, not removal authority. Blackdog removes only the
+frozen exact task path/ref when registration, branch, HEAD, cleanliness, and
+landed or patch-equivalent disposition all prove it safe. A dirty, detached,
+primary, moved, foreign, or unlanded source is retained with explicit proof in
+the close receipt; core closure still completes and no other ref or worktree is
+moved or force-deleted.
+
+Close is serialized with landing by the attempt operation lock. A normal
+transaction that already updated the target cannot be converted to non-success;
+its authoritative action resumes exact `task land`. Before target update,
+`task close` may create a durable abort. The abort binds the complete close
+request, including actor, status, summary, validations, residuals, follow-ups,
+note, cleanup choice, failure fields, issue flags, and deterministic core
+finalization id. A conflicting close retry is rejected; a partial abort returns
+the exact recorded `task close` argv.
+
+The six durable product event types are `worktree.landing.abort`,
+`worktree.landing.abort-cleanup`, `worktree.landing.abort-superseded`,
+`worktree.landing.abort-runtime-finalized`,
+`worktree.landing.abort-close-event-recorded`, and
+`worktree.landing.abort-complete`. Their paths are strictly ordered. The
+terminal path is
+`worktree.landing.abort` -> `worktree.landing.abort-cleanup` ->
+`worktree.landing.abort-runtime-finalized` ->
+`worktree.landing.abort-close-event-recorded` ->
+`worktree.landing.abort-complete`. The only alternative is
+`worktree.landing.abort` -> `worktree.landing.abort-cleanup` ->
+`worktree.landing.abort-superseded`: if the target contains the exact canonical
+candidate before the abort's core `task.finalization.request` is durable,
+normal landing resumes. The core request is the point of no return; after it
+exists, late target containment cannot supersede close.
+
+Abort cleanup removes only the deterministic temporary landing worktree. The
+task source worktree and branch remain retained even when `--cleanup` was
+requested. After core finalization converges runtime and its owned events,
+Blackdog records the abort runtime stage, appends the deterministic
+`worktree.close`, records the close-event stage, and records `abort-complete`.
+Runtime may be terminal before those last event stages; keep executing the
+structured exact-close `next_action` until the transaction outcome is
+`abort_complete`. Abort completion alone is not proof that unique retained
+work is disposable: `task cleanup` still refuses an unlanded branch. Cleanup
+requires normal landed/patch-equivalent proof or exact adopted-successor
+completion; otherwise the retained source remains the recovery asset.
+
 ### `blackdog task cancel`
 
 Cancel a planned or blocked task so normal `summary` and `next` views hide it.
@@ -744,6 +1189,7 @@ blackdog task cancel \
   --project-root /path/to/repo \
   --workset kernel \
   --task KERN-1 \
+  --actor lifecycle-agent \
   --summary "superseded by KERN-2" \
   --failure-class superseded \
   --recovery-action leave_canceled
@@ -754,12 +1200,24 @@ Important flags:
 - `--project-root`
 - `--workset`
 - `--task`
-- optional `--actor`
+- required `--actor`
 - optional `--summary`
 - optional `--failure-class`
 - optional `--recovery-action`
 - optional `--prompt-issue`
 - optional `--operator-issue`
+
+Cancel is crash-safe across its runtime/event boundary. If deterministic
+request or decision reservation, runtime replacement, or the owned
+`task.cancel` event is interrupted, the command returns a typed partial result
+and one exact `retry_task_cancel_finalization` action. Run that argv unchanged;
+it repairs the matching durable stage without creating a second cancellation
+generation. Blackdog adds internal `--transition-request` and, once durable,
+`--transition-decision` guards to that generated argv. They are repair
+identities, not operator-authored workflow flags: a completed exact identity is
+a no-op, while an action superseded by reopen or another lifecycle generation
+returns a commandless proof-required conflict. A retry with different actor,
+summary, or failure fields is also a hard conflict.
 
 ### `blackdog task reopen`
 
@@ -770,6 +1228,7 @@ blackdog task reopen \
   --project-root /path/to/repo \
   --workset kernel \
   --task KERN-1 \
+  --actor lifecycle-agent \
   --summary "needed again"
 ```
 
@@ -778,8 +1237,15 @@ Important flags:
 - `--project-root`
 - `--workset`
 - `--task`
-- optional `--actor`
+- required `--actor`
 - optional `--summary`
+
+Reopen has the same crash-safe contract. An interrupted transition returns one
+exact `retry_task_reopen_finalization` action, repairs only its matching
+runtime/event stage, rejects changed retry semantics, and becomes a durable
+no-op once complete. Its generated argv carries the same internal transition
+identity guards, so a saved reopen action cannot reopen a task again after a
+later legitimate cancel.
 
 ### `blackdog task cleanup`
 
@@ -817,9 +1283,24 @@ the branch contains no merge commits, and every branch patch is independently
 reported as equivalent to a patch already on the target. Mixed or unproven
 patch sets remain blocked.
 
+`task close --cleanup` and `task cleanup` exit nonzero for structured partial
+results. This leaves the JSON payload available to automation while preventing
+an incomplete filesystem mutation from being mistaken for success.
+Cleanup shares the attempt operation lock with landing, close, and
+reconciliation apply. It never removes the source worktree or branch required
+by an incomplete landing transaction. Abort cleanup is specifically temporary
+landing-worktree cleanup. `abort_complete` alone is not disposability proof:
+`task cleanup` refuses an unlanded retained source so adoption remains possible.
+Source removal requires ordinary landed or patch-equivalent proof, or exact
+validated adoption-completion proof, and records deterministic
+`worktree.cleanup` evidence only after that independent authorization succeeds.
+
 ### `blackdog worktree preflight`
 
 Show the current WTAM contract for the operator workspace and primary worktree.
+This is optional read-only diagnosis, not a prerequisite for normal
+implementation. `task begin` is the normal implementation entrypoint and runs
+its own readiness checks before returning the task workspace.
 `--project-root` identifies the managed repo and control state. If the shell's
 current directory is inside another worktree for the same Git repository,
 preflight reports that worktree as the current workspace; otherwise it falls
@@ -832,9 +1313,10 @@ in `workspace role: task`. A `primary` or `linked` workspace is a routing
 context for starting a branch-backed task worktree, not an implementation
 workspace.
 
-Task-class guard extension points should compose over this command instead of
-expanding it. `worktree preflight` answers whether the checkout is an allowed
-implementation workspace and whether the normal WTAM landing path is ready.
+Task-class guard extension points may consume this diagnosis instead of
+expanding it. `worktree preflight` reports whether the checkout is an allowed
+implementation workspace and whether the normal WTAM landing path is ready;
+`task begin` owns enforcement for the normal start path.
 Deployment, credential, external-service, or approval checks belong in
 product-layer task/repo-skill guard code or a future guard command that can use
 preflight output as one input.
@@ -900,7 +1382,7 @@ blackdog worktree preview \
   --workset kernel \
   --task KERN-1 \
   --actor codex \
-  --prompt "Implement the kernel rewrite slice in this worktree."
+  --execution-prompt "Implement the kernel rewrite slice in this worktree."
 ```
 
 Important flags:
@@ -909,7 +1391,7 @@ Important flags:
 - `--workset`
 - `--task`
 - `--actor`
-- exactly one of `--prompt` or `--prompt-file`
+- exactly one of `--execution-prompt` or `--execution-prompt-file`
 - optional `--branch`
 - optional `--from`
 - optional `--path`
@@ -947,7 +1429,7 @@ blackdog worktree start \
   --workset kernel \
   --task KERN-1 \
   --actor codex \
-  --prompt "Implement the kernel rewrite slice in this worktree."
+  --execution-prompt "Implement the kernel rewrite slice in this worktree."
 ```
 
 Important flags:
@@ -956,7 +1438,7 @@ Important flags:
 - `--workset`
 - `--task`
 - `--actor`
-- exactly one of `--prompt` or `--prompt-file`
+- exactly one of `--execution-prompt` or `--execution-prompt-file`
 - optional `--branch`
 - optional `--from`
 - optional `--path`
@@ -983,6 +1465,10 @@ handler plan, and records:
 `worktree start` applies the same task-class startup guard as `task begin`.
 Deployment-class prompts must name the CI/GitHub Actions route or explicitly
 approve local/emergency fallback before Blackdog starts the attempt.
+
+Both low-level commands retain `--prompt` and `--prompt-file` as supported
+compatibility aliases. Canonical and compatibility spellings produce the same
+execution receipt and cannot be combined or mixed across inline/file sources.
 
 `worktree start` is a low-level existing-task command. Use `task begin` without
 `--workset` or `--task` for new work; do not invent workset or task ids.
@@ -1034,7 +1520,17 @@ Important flags:
 - raw user-prompt and execution-prompt hashes, sources, and modes when captured
 - primary-worktree dirtiness
 - structured recovery fields such as `failure_class` and `recovery_action`
+- any incomplete landing transaction and its outcome-derived exact `task land`
+  or `task close` resume action
+- bounded, read-only legacy landing detection for direct CLI `worktree show`
 - recommended next actions such as `land`, `close`, or `cleanup`
+
+The detection contract is identical to direct read-only `task show`/`task
+recover`: 64 first-parent commits after the exact start sentinel, typed
+`ready|none|unproven|ambiguous|inconclusive|error` evidence, and at most one
+read-only dry-run reconciliation action without `--apply`. Internal
+`inspect_task_worktree` calls remain opt-in false so tables and post-mutation
+reads do not pay for or act on this compatibility scan.
 
 ### `blackdog worktree land`
 
@@ -1088,11 +1584,27 @@ It:
 - removes the task worktree and deletes its branch unless `--keep-worktree` is
   set
 
+These effects are executed through the same durable attempt transaction used
+by `task land`. Intent is persisted before source preparation, a deterministic
+temporary worktree creates the canonical commit, and the target update uses the
+recorded base as a compare-and-swap guard. The command does not implicitly pull
+or reset. Runtime and append-once `worktree.land` evidence are finalized before
+the task source is removed. If a process stops before runtime finalization,
+`worktree land` can be retried against the still-active attempt. During the
+normal phase ledger, exact `task land` is the authoritative resume path,
+including after claims are released. If close has durably branched the
+transaction into abort, exact `task close` becomes authoritative instead.
+Blackdog verifies the recorded phase or abort postconditions and continues
+without creating a second landed commit or a conflicting terminal result.
+
 If the operational landing step cannot complete, `worktree land` classifies the
-failure before returning. Retryable landing blockers, such as a dirty primary
-checkout, stale task branch base, or merge conflict, return a non-zero exit
-code while keeping the active attempt and claims intact so the agent can fix
-the blocker and rerun `worktree land` or `task land` against the same attempt.
+failure before returning. Retryable blockers found before durable finalization,
+such as a dirty primary checkout, stale task branch base, or merge conflict,
+return a non-zero exit code while keeping the active attempt and claims intact
+so the agent can fix the blocker and rerun `worktree land` or `task land`
+against the same attempt. An interruption after runtime finalization may already
+have released those claims; the transaction ledger still allows only that same
+attempt and immutable request to re-enter and finish.
 Classified terminal failures, such as a task branch with no changes relative to
 the target branch, are closed internally through the same non-success finalizer
 used by `worktree close`; no separate close command is required. Use
@@ -1129,10 +1641,20 @@ Important flags:
 - optional `--cleanup`
 
 `worktree close` is the non-success closure surface for `direct_wtam`.
-It records the attempt result, releases the active task/workset claims, and
-preserves branch/worktree lineage for later inspection. `--cleanup` asks
-Blackdog to remove the task worktree immediately, but cleanup only proceeds
-when that worktree is already clean.
+For an ordinary attempt it uses the same schema-v1 close request, core
+finalization verifier, exact cleanup owner checks, deterministic receipt, and
+recovery gate as `task close`. `--cleanup` proceeds only when the frozen task
+path, registration, branch, source HEAD, cleanliness, and safe branch
+disposition all match. Otherwise the source is explicitly retained and close
+still finishes. A partial result emits the canonical guarded `task close`
+action so recovery has one surface and one semantic owner.
+
+When landing already has a nonterminal transaction, this alias follows the
+same abort contract as `task close`: before target update it records an
+immutable close request and retains the source; after abort intent, every
+partial result resumes the exact structured `task close` action. If target
+update already belongs to the normal landing ledger, the result resumes exact
+`task land` instead. Do not infer either command from the error prose.
 
 ### `blackdog worktree cleanup`
 
@@ -1188,6 +1710,7 @@ blackdog stats --project-root /Users/bullard/Work/Utter/utter-codex
 blackdog stats --project-root /path/a --project-root /path/b --since 2026-06-01 --until 2026-06-20
 blackdog stats --root /Users/bullard/Work --since 2026-06-01 --json
 blackdog stats --root /path/a --root /path/b --timezone America/Los_Angeles
+blackdog stats --registry --json
 blackdog stats --project-root /path/to/repo --by day --timezone America/Los_Angeles --json
 blackdog stats --project-root /path/to/repo --tsv
 ```
@@ -1196,14 +1719,43 @@ Important flags:
 
 - optional repeated `--project-root` for exact repo selection
 - optional repeated `--root` to scan explicitly supplied filesystem roots for
-  `blackdog.toml`; it is mutually exclusive with `--project-root`
-- without either scope flag, stats uses the user-local registry from
-  `blackdog local-repo`
+  `blackdog.toml`
+- optional `--registry` to select the user-local convenience registry
+- the three scope modes are mutually exclusive; bare `stats` retains the
+  historical registry fallback and reports a compatibility note asking callers
+  to pass `--registry` explicitly
 - optional `--since` and `--until` as ISO timestamps or `YYYY-MM-DD` dates
 - optional `--by day`; day is the current shipped bucket granularity
 - optional `--timezone`, for example `America/Los_Angeles`
 - optional `--json`
 - optional `--tsv`
+
+JSON from both `stats` and `repo table` reports `scope_source`,
+`supplied_roots`, selected `project_roots`, `deduped_project_roots`, and bounded
+`scope_evidence`/`scope_notes`. Discovery is read-only and does not register
+repos. The registry is an operator convenience list, never repository truth.
+Both commands resolve candidate profiles through the same canonicalization
+contract, so repo descendants and other aliases report identical selected and
+deduped roots. Discovery and registry scopes retain valid repos when another
+candidate is malformed, missing, or stale and report that candidate as bounded
+`profile_error` evidence; stats errors only when no usable repo remains. Exact
+`--project-root` selection is strict and errors if any supplied candidate is
+not a usable Blackdog repo.
+
+JSON includes `lifecycle_observability` at fleet level and in each repo row.
+This is bounded health for the optional product-layer observation stream, not
+proof that every lifecycle operation was observed. `stream_health` is
+`missing` when no stream existed before the stats read, `degraded` when the
+reader found duplicates, malformed or unknown rows, capacity pressure,
+truncation, unreadable data, or process-local failed writes, and `healthy` only
+when the existing stream was readable, contained unique known valid rows, and
+retained at least one maximum-row slot of headroom. Observation, surface,
+outcome, reason, label, duplicate, capacity, missingness, and failure counts
+remain available even when the stream is absent or damaged. Stats reads the
+existing health first and only then best-effort stamps its own `stats.read`
+observation, so a fresh repo cannot manufacture a healthy result by being
+inspected. Text output renders every bounded outcome count, including
+`partial`, rather than collapsing incomplete mutations into failures.
 
 Date-only `--since` resolves to local midnight in the selected timezone.
 Date-only `--until` is inclusive by date and resolves to the next local
@@ -1259,10 +1811,11 @@ in scope; path aliases for the same repo collapse into one repo row.
 
 Stats uses each target repo's project root and git worktree roots to prune
 unrelated Codex session logs before full parsing or cache materialization. An
-attempt's exact thread/session/turn reference may add only that source turn even
-when its session cwd belongs to another repo. Per-repo rows retain those
-relationships, while fleet session, user-turn, tool-call, token, and day-bucket
-metrics deduplicate shared turns by `(thread_id, turn_id)`.
+attempt's captured exact thread/session/turn reference may add only that source
+turn even when its session cwd belongs to another repo; a legacy reference may
+do so only through one unique hash match in its exact session. Per-repo rows
+retain those relationships, while fleet session, user-turn, tool-call, token,
+and day-bucket metrics deduplicate shared turns by `(thread_id, turn_id)`.
 It also uses a lightweight Codex parse mode that skips environment-issue
 evidence extraction because stats reports aggregate task/attempt/Codex counters,
 not diagnostic evidence excerpts. Use `blackdog codex coverage` or
@@ -1360,9 +1913,15 @@ columns plus row dictionaries. Current columns are:
 - `codex_session_path`
 - `codex_turn_id`
 - `codex_turn_started_at`
+- `codex_capture_status`
+- `codex_capture_method`
+- `codex_capture_missing_reason`
 - `execution_prompt_source`
 - `user_prompt_source`
 - `prompt_source`
+- `execution_prompt_replay_artifact_path`
+- `user_prompt_replay_artifact_path`
+- `prompt_replay_artifact_path`
 - `execution_prompt_mode`
 - `user_prompt_mode`
 - `prompt_mode`
@@ -1414,13 +1973,18 @@ safe single-turn session match. Related/unrelated counters include advisory
 same-session and active-window evidence so older multi-turn Codex sessions can
 be analyzed retroactively without rewriting runtime state. It reports:
 
-An attempt with an exact thread, session path, and turn id may add that one
-referenced turn even when the source session cwd belongs to another repo. The
-path must resolve inside the active Codex session roots and the parsed thread
-and turn must match. Session-only, missing, corrupt, escaped, mismatched, and
-out-of-window references remain nonfatal and are counted in
-`exact_reference_resolution_counts`; sibling turns are never imported by this
-overlay.
+Attempt-owned references are resolved before ordinary repo-cwd pruning. An
+attempt with an exact thread, session path, and turn id may therefore add that
+one referenced turn even when the source session cwd belongs to another repo.
+The path must resolve inside the active Codex session roots and the parsed
+thread and turn must match. A legacy reference without `turn_id` may recover
+only one unique prompt-hash match from that exact referenced thread/session;
+ambiguous or incomplete legacy references add zero turns. Session-only,
+missing, corrupt, escaped, mismatched, and out-of-window references remain
+nonfatal and are counted in `exact_reference_resolution_counts`; each attempt
+row also reports `codex_capture_status`, `codex_capture_method`,
+`codex_capture_missing_reason`, and `exact_reference_resolution`. Sibling turns
+and unrelated sessions are never imported by this overlay.
 
 Implementation-without-Blackdog detection is exposed here as
 `implementation_like_unlinked_turns`: Codex user turns that look like
@@ -1478,7 +2042,8 @@ blackdog codex history --project-root /path/to/repo --write
 `.blackdog/history.jsonl` under the project root. The file is a
 cleanup and migration bridge; it is not the live source of truth.
 
-Rows contain prompt hashes, Codex session refs, relationship labels, and bounded
+Rows contain prompt hashes, Codex session refs, capture status/method/missing
+reason, exact-reference resolution, relationship labels, and bounded
 environment issue evidence, not full prompts or responses. Attempt rows carry
 task/result/git/validation metadata and inherit environment issue classes from
 related Codex turns. Codex-turn rows cover all repo-matched user turns plus any

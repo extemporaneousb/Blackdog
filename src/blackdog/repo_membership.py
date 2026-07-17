@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Iterable
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -14,6 +13,7 @@ import tomllib
 
 from blackdog import __version__ as BLACKDOG_VERSION
 from blackdog.contract import LEGACY_MANAGED_SKILL_NAME, MANAGED_SKILLS_ROOT, managed_skill_name, managed_skill_relative_path
+from blackdog.observability import observe_lifecycle
 from blackdog.repo_lifecycle import (
     AGENTS_FILE_NAME,
     AGENTS_MANAGED_BEGIN,
@@ -21,6 +21,12 @@ from blackdog.repo_lifecycle import (
     RepoLifecycleError,
     RepoLifecycleResult,
     install_repo,
+)
+from blackdog.repo_scope import (
+    canonicalize_repo_scope,
+    discover_profile_dirs,
+    reject_exact_profile_errors,
+    resolve_repo_scope,
 )
 from blackdog_core.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
 from blackdog_core.profile import (
@@ -101,32 +107,17 @@ REPO_TABLE_COLUMNS = (
 LEGACY_REPO_TABLE_COLUMNS = ("legacy_worksets",)
 ALL_REPO_TABLE_COLUMNS = (*REPO_TABLE_COLUMNS, *LEGACY_REPO_TABLE_COLUMNS)
 
-_DISCOVERY_SKIP_DIRS = {
-    ".git",
-    ".hg",
-    ".svn",
-    ".VE",
-    ".venv",
-    ".worktrees",
-    "venv",
-    "node_modules",
-    "__pycache__",
-    ".cache",
-    "cache",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    "dist",
-    "build",
-    "coverage",
-}
-
-
 @dataclass(frozen=True, slots=True)
 class RepoTableResult:
     action: str
     roots: tuple[str, ...]
+    scope_source: str
+    supplied_roots: tuple[str, ...]
+    discovery_roots: tuple[str, ...]
+    project_roots: tuple[str, ...]
+    deduped_project_roots: tuple[str, ...]
+    scope_evidence: tuple[dict[str, str], ...]
+    scope_notes: tuple[str, ...]
     since: str | None
     include_archived: bool
     include_codex: bool
@@ -138,6 +129,13 @@ class RepoTableResult:
         return {
             "action": self.action,
             "roots": list(self.roots),
+            "scope_source": self.scope_source,
+            "supplied_roots": list(self.supplied_roots),
+            "discovery_roots": list(self.discovery_roots),
+            "project_roots": list(self.project_roots),
+            "deduped_project_roots": list(self.deduped_project_roots),
+            "scope_evidence": [dict(row) for row in self.scope_evidence],
+            "scope_notes": list(self.scope_notes),
             "since": self.since,
             "include_archived": self.include_archived,
             "include_codex": self.include_codex,
@@ -401,21 +399,6 @@ def archive_repo(project_root: Path, *, reason: str | None = None) -> RepoStatus
 
 def unarchive_repo(project_root: Path) -> RepoStatusResult:
     return set_repo_status(project_root, status=PROJECT_STATUS_ACTIVE, action="unarchive")
-
-
-def discover_profile_dirs(root: Path) -> tuple[Path, ...]:
-    candidate = root.resolve()
-    if not candidate.exists():
-        raise RepoLifecycleError(f"discovery root does not exist: {candidate}")
-    if candidate.is_file():
-        return (candidate.parent,) if candidate.name == PROFILE_FILE_NAME else ()
-    discovered: list[Path] = []
-    for current_root, dirnames, filenames in os.walk(candidate):
-        dirnames[:] = sorted(name for name in dirnames if name not in _DISCOVERY_SKIP_DIRS)
-        if PROFILE_FILE_NAME in filenames:
-            discovered.append(Path(current_root).resolve())
-            dirnames[:] = []
-    return tuple(discovered)
 
 
 def _current_branch(repo_root: Path) -> str | None:
@@ -722,22 +705,16 @@ def _managed_source_state(profile: RepoProfile) -> dict[str, object | None]:
 
 
 def _repo_table_row(
-    profile_dir: Path,
+    profile: RepoProfile,
     *,
     since: str | None,
     include_codex: bool,
     codex_turns: tuple[CodexTurn, ...] | None = None,
     codex_read_error: str | None = None,
 ) -> dict[str, object]:
-    row = _empty_table_row(profile_dir)
+    row = _empty_table_row(profile.paths.project_root)
     errors: list[str] = []
     cutoff = _parse_table_since(since)
-    try:
-        profile = load_profile(profile_dir)
-    except (ConfigError, RepoLifecycleError, OSError, tomllib.TOMLDecodeError) as exc:
-        row["error"] = str(exc)
-        return {column: row.get(column) for column in ALL_REPO_TABLE_COLUMNS}
-
     row["project_name"] = profile.project_name
     row["status"] = profile.status
     row["project_root"] = str(profile.paths.project_root)
@@ -861,21 +838,27 @@ def _repo_table_row(
 
 
 def build_repo_table(
-    roots: tuple[Path, ...],
+    roots: tuple[Path, ...] = (),
     *,
+    project_roots: tuple[Path, ...] = (),
+    registry: bool = False,
+    registry_roots: tuple[Path, ...] | None = None,
     since: str | None = None,
     include_archived: bool = False,
     include_codex: bool = True,
     include_legacy_worksets: bool = False,
 ) -> RepoTableResult:
-    if not roots:
-        raise RepoLifecycleError("repo table requires at least one --root")
-    discovered: list[Path] = []
-    for root in roots:
-        discovered.extend(discover_profile_dirs(root))
+    scope = resolve_repo_scope(
+        command="repo table",
+        project_roots=project_roots,
+        discovery_roots=roots,
+        registry=registry,
+        registry_roots=registry_roots,
+    )
+    canonical_scope = canonicalize_repo_scope(scope)
+    reject_exact_profile_errors(canonical_scope, command="repo table")
 
     rows: list[dict[str, object]] = []
-    seen_roots: set[Path] = set()
     codex_turns: tuple[CodexTurn, ...] | None = None
     codex_read_error: str | None = None
     if include_codex:
@@ -883,26 +866,53 @@ def build_repo_table(
             codex_turns = collect_codex_turns(since=since)
         except Exception as exc:
             codex_read_error = str(exc)
-    for profile_dir in sorted(dict.fromkeys(discovered)):
+    for profile in canonical_scope.profiles:
         row = _repo_table_row(
-            profile_dir,
+            profile,
             since=since,
             include_codex=include_codex,
             codex_turns=codex_turns,
             codex_read_error=codex_read_error,
         )
-        project_root = Path(str(row["project_root"])).resolve()
-        if project_root in seen_roots:
-            continue
-        seen_roots.add(project_root)
         if row["status"] == PROJECT_STATUS_ARCHIVED and not include_archived:
             continue
         rows.append(row)
+    for error in canonical_scope.profile_errors:
+        row = _empty_table_row(Path(error.candidate_root))
+        row["error"] = error.message
+        rows.append(row)
 
+    scope_metadata = canonical_scope.metadata()
+    observation_key = "|".join(
+        (
+            canonical_scope.scope_source,
+            since or "unset",
+            str(include_archived),
+            str(include_codex),
+            str(include_legacy_worksets),
+        )
+    )
+    for profile in canonical_scope.profiles:
+        observe_lifecycle(
+            profile,
+            surface="repo.table",
+            operation_key=observation_key,
+            labels={
+                "scope_source": canonical_scope.scope_source,
+                "operation_phase": "completed",
+            },
+        )
     columns = (*REPO_TABLE_COLUMNS, *LEGACY_REPO_TABLE_COLUMNS) if include_legacy_worksets else REPO_TABLE_COLUMNS
     return RepoTableResult(
         action="table",
-        roots=tuple(str(root.resolve()) for root in roots),
+        roots=tuple(scope_metadata["supplied_roots"]),
+        scope_source=str(scope_metadata["scope_source"]),
+        supplied_roots=tuple(scope_metadata["supplied_roots"]),
+        discovery_roots=tuple(scope_metadata["discovery_roots"]),
+        project_roots=tuple(scope_metadata["project_roots"]),
+        deduped_project_roots=tuple(scope_metadata["deduped_project_roots"]),
+        scope_evidence=tuple(scope_metadata["scope_evidence"]),
+        scope_notes=tuple(scope_metadata["scope_notes"]),
         since=since,
         include_archived=include_archived,
         include_codex=include_codex,

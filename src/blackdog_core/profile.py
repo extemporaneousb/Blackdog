@@ -425,7 +425,7 @@ def _paths_from_raw(
     )
 
 
-def load_profile(project_root: Path | None = None) -> RepoProfile:
+def load_profile(project_root: Path | None = None, *, read_only: bool = False) -> RepoProfile:
     root = find_project_root(project_root)
     profile_file = root / PROFILE_FILE_NAME
     with profile_file.open("rb") as handle:
@@ -450,7 +450,8 @@ def load_profile(project_root: Path | None = None) -> RepoProfile:
         {str(key): str(value) for key, value in raw_paths.items()},
         path_base=_primary_worktree_root(root),
     )
-    _ensure_control_root_layout(paths)
+    if not read_only:
+        _ensure_control_root_layout(paths)
 
     project_name = str(project.get("name") or root.name)
     return RepoProfile(
