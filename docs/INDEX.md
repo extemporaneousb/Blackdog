@@ -26,6 +26,7 @@ distinct question.
 - `blackdog prompt tune`
 - `blackdog attempts summary`
 - `blackdog attempts table`
+- `blackdog codex link`
 - `blackdog codex coverage`
 - `blackdog codex history`
 - `blackdog codex hook stamp`
@@ -59,8 +60,8 @@ distinct question.
 
 The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
 own repo lifecycle and operator-read workflows, `local-repo` owns user-local
-registry management, `codex` owns Codex-session coverage/history indexing and
-hook-backed task-context observability,
+registry management, `codex` owns task-worktree links, Codex-session
+coverage/history indexing, and hook-backed task-context observability,
 `stats` owns cross-repo metrics, `summary`/`snapshot` expose task-first current
 state, `task` is the default same-thread WTAM path, and `worktree` is the
 explicit planned-task WTAM path.

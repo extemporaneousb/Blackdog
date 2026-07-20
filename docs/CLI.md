@@ -1954,6 +1954,36 @@ or followed the skill.
 `--include-legacy-worksets` prepends the legacy `workset_id` column for
 migration/debugging.
 
+### `blackdog codex link`
+
+Build an opt-in Codex desktop deep link for an active Blackdog task worktree.
+
+```bash
+blackdog codex link --project-root /path/to/task-worktree
+blackdog codex link --project-root /path/to/repo --workset WORKSET --task TASK --json
+```
+
+The command resolves the active in-progress task, verifies that its durable
+worktree still exists, and emits a `codex://threads/new` URL whose `path` is
+that exact workspace. Opening the URL creates a **new local chat** in Codex;
+it does not attach the calling thread, create a Codex-managed worktree, or
+transfer workspace ownership. The prompt is prefilled but is not submitted
+automatically.
+
+Blackdog remains responsible for worktree creation, branch identity, landing,
+and cleanup. The bounded continuation prompt contains only task/workset
+identity and recovery instructions: it tells Codex to run `task show` and
+follow the returned `next_action` exactly. It never copies the raw user prompt,
+the execution prompt, their digests, or replay-artifact paths into the link.
+
+JSON output is under `codex_link` and explicitly records
+`workspace_owner = "blackdog"`, `workspace_role = "task"`,
+`codex_workspace_kind = "local"`, `thread_continuity = "new_thread"`, and
+`auto_submits = false`. It also includes `fallback_argv = ["codex", "app",
+WORKSPACE]`; that stable CLI fallback opens the path but does not prefill the
+continuation prompt. The command refuses completed, abandoned, missing, or
+otherwise inactive task worktrees instead of producing a stale link.
+
 ### `blackdog codex coverage`
 
 Compare Codex's own session/dialogue logs to Blackdog runtime attempts.

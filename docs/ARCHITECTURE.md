@@ -467,6 +467,15 @@ task-class guards around task execution. Codex environments should remain
 convenience wrappers around Blackdog handlers and validation commands; they are
 not the source of repo setup truth.
 
+`blackdog codex link` is also a product-layer adapter. It resolves an active
+attempt through the normal task read model and emits a supported Codex
+new-local-chat deep link for the exact Blackdog-created task worktree. Blackdog
+remains the owner of worktree creation, branch identity, landing, and cleanup;
+the link does not create a Codex-managed worktree or mutate task state. Its
+bounded prompt tells the new thread to recover through `task show` and the
+machine-emitted `next_action`, rather than copying prompt artifacts or runtime
+logic into the UI integration.
+
 Product lifecycle observations also stay in `blackdog`, outside the typed core
 runtime. Prompt, repo, stats, and task/worktree call sites may emit bounded
 enum/hash-only rows to `observability/lifecycle-v1.jsonl` after an operation.
@@ -543,6 +552,7 @@ The current coherent product surface on top of the new core is:
 - `blackdog prompt tune`
 - `blackdog attempts summary`
 - `blackdog attempts table`
+- `blackdog codex link`
 - `blackdog codex coverage`
 - `blackdog codex history`
 - `blackdog codex hook stamp`

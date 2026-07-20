@@ -124,6 +124,7 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
     WorkflowCommand(
         "codex",
         (
+            WorkflowCommand("link"),
             WorkflowCommand("coverage"),
             WorkflowCommand("history"),
             WorkflowCommand("hook", (WorkflowCommand("stamp"),)),
@@ -181,7 +182,7 @@ COMMAND_INVENTORY_SECTIONS = (
     CommandInventorySection("local registry", ("local-repo",)),
     CommandInventorySection("prompt composition", ("prompt",)),
     CommandInventorySection("attempt evidence", ("attempts",)),
-    CommandInventorySection("Codex evidence and hooks", ("codex",)),
+    CommandInventorySection("Codex links, evidence, and hooks", ("codex",)),
     CommandInventorySection("repo lifecycle", ("repo",)),
     CommandInventorySection("task execution and repair", ("task",)),
     CommandInventorySection("explicit low-level diagnosis and repair", ("worktree",)),

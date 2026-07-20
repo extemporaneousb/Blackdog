@@ -917,6 +917,34 @@ Current shipped execution-context values:
 - `workspace_mode = "git-worktree"`
 - `worktree_role = "primary" | "task" | "linked"`
 
+## Codex workspace-link output
+
+`blackdog codex link --json` emits an ephemeral product-layer read result under
+the `codex_link` key. It is not written into planning, runtime, event, or Codex
+hook state.
+
+The version-1 object contains:
+
+- `schema_version = 1`
+- `kind = "codex_local_workspace_link"`
+- `workspace_owner = "blackdog"`
+- `workspace_role = "task"`
+- `codex_workspace_kind = "local"`
+- `thread_continuity = "new_thread"`
+- `auto_submits = false`
+- resolved `project_root`, `workset_id`, `task_id`, `attempt_id`, `branch`, and
+  `target_branch`
+- the absolute Blackdog-owned `workspace_path`
+- `url`, a `codex://threads/new` deep link with URL-encoded `path` and `prompt`
+- `prompt`, a continuation instruction bounded to 1024 characters
+- `fallback_argv = ["codex", "app", workspace_path]`
+- `fallback_prefills_prompt = false`
+
+The prompt contains task identity and recovery instructions only. Raw user and
+execution prompt text, prompt digests, and replay-artifact paths are excluded.
+The command only emits this object for an active in-progress attempt whose task
+worktree still exists.
+
 ## `history.jsonl`
 
 Optional compact history export written to `.blackdog/history.jsonl` by

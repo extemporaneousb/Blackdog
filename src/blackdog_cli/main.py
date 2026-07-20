@@ -9,6 +9,11 @@ import sys
 from typing import Any
 
 from blackdog.codex_hooks import CodexHookError, load_codex_hook_payload, stamp_codex_task_context
+from blackdog.codex_link import (
+    CodexLinkError,
+    build_codex_workspace_link,
+    render_codex_workspace_link_text,
+)
 from blackdog.handlers import HandlerError
 from blackdog.landing import LandingTransactionError
 from blackdog.local_registry import (
@@ -445,8 +450,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_attempts_table.add_argument("--include-legacy-worksets", action="store_true")
     p_attempts_table.add_argument("--json", action="store_true")
 
-    p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed session coverage, history, and hooks")
+    p_codex = subparsers.add_parser("codex", help="Link workspaces and inspect Codex-backed evidence")
     codex_subparsers = p_codex.add_subparsers(dest="codex_command", required=True)
+
+    p_codex_link = codex_subparsers.add_parser("link", help="Build a Codex new-chat link for an active Blackdog task")
+    p_codex_link.add_argument("--project-root", default=".")
+    p_codex_link.add_argument("--workset")
+    p_codex_link.add_argument("--task")
+    p_codex_link.add_argument("--json", action="store_true")
 
     p_codex_coverage = codex_subparsers.add_parser("coverage", help="Compare Codex sessions to Blackdog attempts")
     p_codex_coverage.add_argument("--project-root", default=".")
@@ -964,6 +975,20 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"codex_coverage": payload})
             else:
                 print(render_codex_coverage_text(payload), end="")
+            return 0
+
+        if args.command == "codex" and args.codex_command == "link":
+            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            link = build_codex_workspace_link(
+                profile,
+                workset_id=args.workset,
+                task_id=args.task,
+                cwd=Path.cwd(),
+            )
+            if args.json:
+                _emit_json({"codex_link": link.to_dict()})
+            else:
+                print(render_codex_workspace_link_text(link), end="")
             return 0
 
         if args.command == "codex" and args.codex_command == "history":
@@ -1575,6 +1600,7 @@ def main(argv: list[str] | None = None) -> int:
         raise BacklogError(f"Unsupported command: {args.command}")
     except (
         BacklogError,
+        CodexLinkError,
         CodexHookError,
         CodexSessionError,
         ConfigError,

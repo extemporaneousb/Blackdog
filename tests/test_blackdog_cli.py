@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 import blackdog.wtam as wtam
 from blackdog.contract import managed_skill_relative_path
@@ -2700,6 +2701,109 @@ class BlackdogCliTests(CoreAuditTestCase):
             exit_code, stdout, stderr = self.run_cli("codex", "history", "--project-root", str(self.root), "--write")
             self.assertEqual(exit_code, 0, stderr)
             self.assertTrue((self.root / ".blackdog" / "history.jsonl").exists())
+
+    def test_codex_link_targets_blackdog_owned_task_worktree_without_prompt_leakage(self) -> None:
+        self.install_repo_runtime()
+        user_prompt = "PRIVATE USER REQUEST: rotate the cobalt narwhal."
+        execution_prompt = "PRIVATE EXECUTION DETAIL: use token delta-917."
+        user_prompt_path = self.root / "USER_PROMPT.txt"
+        execution_prompt_path = self.root / "EXECUTION_PROMPT.txt"
+        user_prompt_path.write_text(user_prompt + "\n", encoding="utf-8")
+        execution_prompt_path.write_text(execution_prompt + "\n", encoding="utf-8")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--execution-prompt-file",
+            str(execution_prompt_path),
+            "--prompt-mode",
+            "skill",
+            "--request-file",
+            str(user_prompt_path),
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        task_payload = json.loads(stdout)["task"]
+        workset_id = task_payload["workset_id"]
+        task_id = task_payload["task_id"]
+        worktree_path = Path(task_payload["worktree"]["worktree_path"])
+
+        exit_code, stdout, stderr = self.run_cli(
+            "codex",
+            "link",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(exit_code, 0, stderr)
+        link = json.loads(stdout)["codex_link"]
+        self.assertEqual(link["schema_version"], 1)
+        self.assertEqual(link["kind"], "codex_local_workspace_link")
+        self.assertEqual(link["workspace_owner"], "blackdog")
+        self.assertEqual(link["workspace_role"], "task")
+        self.assertEqual(link["codex_workspace_kind"], "local")
+        self.assertEqual(link["thread_continuity"], "new_thread")
+        self.assertFalse(link["auto_submits"])
+        self.assertEqual(link["workspace_path"], str(worktree_path.resolve()))
+        self.assertEqual(link["workset_id"], workset_id)
+        self.assertEqual(link["task_id"], task_id)
+        self.assertEqual(link["attempt_id"], task_payload["worktree"]["attempt_id"])
+        self.assertEqual(link["branch"], task_payload["worktree"]["branch"])
+        self.assertEqual(link["target_branch"], task_payload["worktree"]["target_branch"])
+        self.assertEqual(link["fallback_argv"], ["codex", "app", str(worktree_path.resolve())])
+        self.assertFalse(link["fallback_prefills_prompt"])
+        self.assertLessEqual(len(link["prompt"]), 1024)
+        self.assertIn("follow its next_action exactly", link["prompt"])
+        self.assertIn("Blackdog owns this worktree, branch, landing, and cleanup", link["prompt"])
+        parsed = urlparse(link["url"])
+        self.assertEqual((parsed.scheme, parsed.netloc, parsed.path), ("codex", "threads", "/new"))
+        self.assertEqual(
+            parse_qs(parsed.query),
+            {"path": [str(worktree_path.resolve())], "prompt": [link["prompt"]]},
+        )
+        self.assertNotIn(user_prompt, stdout)
+        self.assertNotIn(execution_prompt, stdout)
+        self.assertNotIn(task_payload["user_prompt_hash"], stdout)
+        self.assertNotIn(task_payload["execution_prompt_hash"], stdout)
+        self.assertNotIn(task_payload["user_prompt_replay_artifact_path"], stdout)
+        self.assertNotIn(task_payload["execution_prompt_replay_artifact_path"], stdout)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "close",
+            "--project-root",
+            str(self.root),
+            "--status",
+            "abandoned",
+            "--summary",
+            "closed disposable Codex link integration test",
+            "--cleanup",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertFalse(worktree_path.exists())
+
+        exit_code, stdout, stderr = self.run_cli(
+            "codex",
+            "link",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--json",
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("requires an active in-progress Blackdog task attempt", stderr)
 
     def test_codex_hook_stamp_cli_records_active_task_context(self) -> None:
         profile = load_profile(self.root)

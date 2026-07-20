@@ -26,7 +26,7 @@ development.
   - `blackdog local-repo add|list|remove`
   - `blackdog prompt preview|tune`
   - `blackdog attempts summary|table`
-  - `blackdog codex coverage|history|hook stamp`
+  - `blackdog codex link|coverage|history|hook stamp`
   - `blackdog stats`
   - `blackdog task begin|show|recover|land|reconcile-landing|close|cancel|reopen|cleanup`
   - `blackdog summary`
@@ -101,6 +101,7 @@ Keep repo-specific requirements outside this block.
 - Before normal repo-skill implementation, create two mode-0600 UTF-8 temporary files outside the repo: `request_file` contains the exact triggering user request verbatim, and `execution_prompt_file` contains the composed goal, context, constraints, and done condition prompt. Set those shell variables to absolute paths and run the structured begin command below.
 - Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor codex --execution-prompt-file "$execution_prompt_file" --prompt-mode skill --request-file "$request_file" --json`. `--actor` defaults to `codex`; the explicit value here makes ownership visible.
 - Delete `request_file` and `execution_prompt_file` only when the structured `task begin` result contains both a nonempty `execution_prompt_replay_artifact_path` and a nonempty `user_prompt_replay_artifact_path`; otherwise preserve both temporary inputs.
+- `blackdog codex link` is an opt-in continuation into a new Codex local chat for the active task worktree. It does not move the calling thread or create a Codex-managed worktree; Blackdog remains responsible for branch identity, landing, and cleanup.
 - Before landing, set `completion_summary` to the actual completion summary and build the `validation_args` shell array with at least one repeated `--validation` plus `NAME=passed|failed|skipped`; never submit placeholders or invented evidence.
 - For new work, do not pass `--workset` or `--task`; `task begin` creates the task envelope and returns the task workspace.
 - Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.
