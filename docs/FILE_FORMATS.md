@@ -307,6 +307,11 @@ Dirty or branch-ahead active tasks use blocked action
 canonical event, runtime, or Git state. Validation rows are caller evidence and
 are never synthesized.
 
+After a first `task land` request supplies that evidence, a stale task branch
+detected before landing intent returns the exact worktree-local
+`rebase_task_branch` command as its authoritative `next_action`. The result is
+still mutation-free; compatibility recommendations do not replace that action.
+
 Durable landing reports the latest completed transaction phase as
 `mutation_phase`. The nine normal values are `landing_intent_recorded`,
 `landing_source_prepared`, `landing_canonical_commit_created`,

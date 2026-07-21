@@ -6338,10 +6338,15 @@ def land_task(
             next_action=next_action,
             legacy_payload=payload,
         ))
+    pretransaction_failure_action = _pretransaction_landing_failure_next_action(
+        payload
+    )
     if after_transaction is not None and after_transaction.outcome == "abort_in_progress":
         next_action = NextAction.command(_landing_abort_close_action(after_transaction))
     elif after_transaction is not None and after_transaction.outcome == "landing_in_progress":
         next_action = NextAction.command(_landing_resume_action(after_transaction.intent))
+    elif pretransaction_failure_action is not None:
+        next_action = pretransaction_failure_action
     else:
         next_action = decide_next_action(
             _lifecycle_context(operation_profile, state_payload)
@@ -16626,6 +16631,30 @@ def _stale_branch_rebase_action(exc: StaleTaskBranchError) -> LifecycleAction:
         safety_class="operator_confirmation",
         mutation_class="git_and_filesystem",
         display=f"Rebase {exc.branch} onto {exc.target_branch}",
+    )
+
+
+def _pretransaction_landing_failure_next_action(
+    payload: Mapping[str, Any],
+) -> NextAction | None:
+    """Project an exact action from a typed blocker found before landing intent."""
+    if (
+        payload.get("landing_transaction") is not None
+        or payload.get("failure_class") != FAILURE_CLASS_STALE_BRANCH
+        or payload.get("recovery_action") != "rebase_task_branch"
+    ):
+        return None
+    branch = str(payload["branch"])
+    target_branch = str(payload["target_branch"])
+    worktree_path = str(payload.get("worktree_path") or "").strip()
+    return NextAction.command(
+        _stale_branch_rebase_action(
+            StaleTaskBranchError(
+                branch=branch,
+                target_branch=target_branch,
+                branch_worktree=Path(worktree_path) if worktree_path else None,
+            )
+        )
     )
 
 

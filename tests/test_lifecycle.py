@@ -276,6 +276,38 @@ class LifecycleDecisionTests(CoreAuditTestCase):
             ("completion_summary", "validation_evidence"),
         )
 
+    def test_pretransaction_stale_landing_projects_exact_rebase_action(self) -> None:
+        workspace = "/tmp/task workspace with spaces"
+        next_action = wtam._pretransaction_landing_failure_next_action(
+            {
+                "branch": "agent/task-1",
+                "target_branch": "release/next",
+                "worktree_path": workspace,
+                "failure_class": FAILURE_CLASS_STALE_BRANCH,
+                "recovery_action": "rebase_task_branch",
+                "landing_transaction": None,
+            }
+        )
+
+        self.assertIsNotNone(next_action)
+        assert next_action is not None
+        self.assertEqual(next_action.kind, "command")
+        self.assertEqual(next_action.action_id, "rebase_task_branch")
+        self.assertEqual(next_action.reason_code, "stale_task_branch")
+        self.assertEqual(
+            next_action.argv,
+            ("git", "-C", workspace, "rebase", "release/next"),
+        )
+        self.assertIsNone(
+            wtam._pretransaction_landing_failure_next_action(
+                {
+                    "failure_class": FAILURE_CLASS_STALE_BRANCH,
+                    "recovery_action": "rebase_task_branch",
+                    "landing_transaction": {"transaction_id": "durable"},
+                }
+            )
+        )
+
     def test_requires_validation_actions_must_carry_validation_evidence(self) -> None:
         invalid_argvs = (
             ("blackdog", "task", "land", "--summary=fixture"),
@@ -3861,6 +3893,18 @@ class LifecycleResumeIntegrationTests(CoreAuditTestCase):
         self.assertEqual(stale_blocked["operation_status"], "blocked")
         self.assertEqual(stale_blocked["failure_class"], "stale_branch")
         self.assertTrue(stale_blocked["attempt_active"])
+        self.assertFalse(stale_blocked["mutation_started"])
+        self.assertFalse(stale_blocked["mutation_completed"])
+        self.assertEqual(stale_blocked["mutation_phase"], "preflight")
+        self.assertEqual(stale_blocked["next_action"]["kind"], "command")
+        self.assertEqual(
+            stale_blocked["next_action"]["action_id"],
+            "rebase_task_branch",
+        )
+        self.assertEqual(
+            stale_blocked["next_action"]["argv"],
+            ["git", "-C", str(stale_workspace), "rebase", "main"],
+        )
         subprocess.run(
             ["git", "-C", str(stale_workspace), "rebase", "main"],
             check=True,
