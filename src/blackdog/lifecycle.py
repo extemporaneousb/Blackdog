@@ -160,7 +160,7 @@ class StaleTaskBranchError(LifecycleGitError):
         rebase_location = f" -C {branch_worktree}" if branch_worktree is not None else ""
         super().__init__(
             f"cannot land: {branch} is not based on the current {target_branch}; "
-            f"rebase it first with `git{rebase_location} rebase {target_branch}`"
+            f"rebase it first with `git{rebase_location} rebase --autostash {target_branch}`"
         )
 
 

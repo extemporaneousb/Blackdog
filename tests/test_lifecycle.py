@@ -296,7 +296,7 @@ class LifecycleDecisionTests(CoreAuditTestCase):
         self.assertEqual(next_action.reason_code, "stale_task_branch")
         self.assertEqual(
             next_action.argv,
-            ("git", "-C", workspace, "rebase", "release/next"),
+            ("git", "-C", workspace, "rebase", "--autostash", "release/next"),
         )
         self.assertIsNone(
             wtam._pretransaction_landing_failure_next_action(

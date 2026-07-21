@@ -16621,7 +16621,7 @@ def _stale_branch_rebase_action(exc: StaleTaskBranchError) -> LifecycleAction:
     argv = ["git"]
     if exc.branch_worktree:
         argv.extend(("-C", exc.branch_worktree))
-    argv.extend(("rebase", exc.target_branch))
+    argv.extend(("rebase", "--autostash", exc.target_branch))
     return LifecycleAction(
         action_id="rebase_task_branch",
         disposition="operator_action_required",

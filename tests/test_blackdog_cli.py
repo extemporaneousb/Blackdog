@@ -5325,8 +5325,14 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(land_payload["land_failure_disposition"], "retryable")
         self.assertEqual(land_payload["failure_class"], "stale_branch")
         self.assertEqual(land_payload["recovery_action"], "rebase_task_branch")
-        self.assertIn(f"git -C {worktree_path} rebase main", land_payload["error"])
-        self.assertIn(f"git -C {worktree_path} rebase main", land_payload["recommended_actions"][0])
+        self.assertIn(
+            f"git -C {worktree_path} rebase --autostash main",
+            land_payload["error"],
+        )
+        self.assertIn(
+            f"git -C {worktree_path} rebase --autostash main",
+            land_payload["recommended_actions"][0],
+        )
 
         subprocess.run(
             ["git", "-C", str(self.root), "worktree", "remove", "--force", str(worktree_path)],
@@ -5340,6 +5346,139 @@ class BlackdogCliTests(CoreAuditTestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_task_land_emits_dirty_safe_stale_branch_recovery(self) -> None:
+        payload = {
+            "id": "task-stale-land",
+            "title": "Task stale land",
+            "tasks": [
+                {
+                    "id": "TSL-1",
+                    "title": "Recover dirty stale task",
+                    "intent": "preserve dirty task changes while rebasing",
+                }
+            ],
+        }
+        self.put_workset(payload)
+        self.install_repo_runtime()
+        tracked_path = self.root / "tracked-rebase.txt"
+        unstaged_path = self.root / "unstaged-rebase.txt"
+        tracked_path.write_text("tracked base\n", encoding="utf-8")
+        unstaged_path.write_text("unstaged base\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", tracked_path.name, unstaged_path.name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Add rebase fixtures"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            "task-stale-land",
+            "--task",
+            "TSL-1",
+            "--actor",
+            "codex",
+            "--prompt",
+            "Exercise dirty stale task recovery.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        worktree_path = Path(start_payload["worktree_path"])
+        task_tracked = worktree_path / tracked_path.name
+        task_unstaged = worktree_path / unstaged_path.name
+        task_untracked = worktree_path / "untracked-rebase.txt"
+        task_tracked.write_text("tracked task change\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "add", task_tracked.name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        task_unstaged.write_text("unstaged task change\n", encoding="utf-8")
+        task_untracked.write_text("untracked task change\n", encoding="utf-8")
+        (self.root / "main-advanced-again.txt").write_text("advanced\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "main-advanced-again.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance main again"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        land_args = (
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "land after safe stale recovery",
+            "--validation",
+            "rebase-recovery=passed",
+            "--json",
+        )
+        exit_code, stdout, stderr = self.run_cli(*land_args, cwd=worktree_path)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        blocked = json.loads(stdout)["landing"]
+        self.assertEqual(blocked["operation_status"], "blocked")
+        self.assertFalse(blocked["mutation_started"])
+        self.assertEqual(blocked["failure_code"], "stale_branch")
+        next_action = blocked["next_action"]
+        self.assertEqual(next_action["action_id"], "rebase_task_branch")
+        self.assertEqual(next_action["kind"], "command")
+        self.assertEqual(
+            next_action["argv"],
+            ["git", "-C", str(worktree_path), "rebase", "--autostash", "main"],
+        )
+
+        subprocess.run(
+            next_action["argv"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(task_tracked.read_text(encoding="utf-8"), "tracked task change\n")
+        self.assertEqual(task_unstaged.read_text(encoding="utf-8"), "unstaged task change\n")
+        self.assertEqual(task_untracked.read_text(encoding="utf-8"), "untracked task change\n")
+        dirty_status = subprocess.run(
+            ["git", "-C", str(worktree_path), "status", "--short"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn(tracked_path.name, dirty_status)
+        self.assertIn(unstaged_path.name, dirty_status)
+        self.assertIn(f"?? {task_untracked.name}", dirty_status)
+
+        exit_code, stdout, stderr = self.run_cli(*land_args, cwd=worktree_path)
+        self.assertEqual(exit_code, 0, stderr)
+        landed = json.loads(stdout)["landing"]
+        self.assertEqual(landed["operation_status"], "succeeded")
+        self.assertEqual(landed["next_action"]["kind"], "complete")
+        self.assertFalse(worktree_path.exists())
+        self.assertEqual(tracked_path.read_text(encoding="utf-8"), "tracked task change\n")
+        self.assertEqual(unstaged_path.read_text(encoding="utf-8"), "unstaged task change\n")
+        self.assertEqual(
+            (self.root / task_untracked.name).read_text(encoding="utf-8"),
+            "untracked task change\n",
+        )
+        self.assertEqual(self.git_output("status", "--short"), "")
 
     def test_worktree_land_closes_terminal_no_change_failure_without_extra_close_call(self) -> None:
         payload = {

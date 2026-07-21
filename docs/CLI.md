@@ -963,7 +963,11 @@ not run; Blackdog never invents one.
 If that evidence-bearing first request discovers that the task branch is not
 based on its recorded target, the blocked result carries the exact
 worktree-local `rebase_task_branch` argv as authoritative `next_action`. This
-pre-intent failure does not mutate Git, runtime, events, or landing state.
+pre-intent failure does not mutate Git, runtime, events, or landing state. The
+command uses `git rebase --autostash` so tracked and staged edits survive;
+untracked files remain in place under Git's normal overwrite protection.
+Autostash reapplication may still report ordinary merge conflicts for explicit
+resolution in the retained task worktree.
 
 Landing is a durable transaction keyed to the attempt. Before its first Git
 mutation, Blackdog appends an immutable intent that binds the complete request,

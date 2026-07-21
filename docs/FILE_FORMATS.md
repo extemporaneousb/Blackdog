@@ -311,6 +311,10 @@ After a first `task land` request supplies that evidence, a stale task branch
 detected before landing intent returns the exact worktree-local
 `rebase_task_branch` command as its authoritative `next_action`. The result is
 still mutation-free; compatibility recommendations do not replace that action.
+The argv uses `git rebase --autostash <target_branch>` in the exact task
+worktree, preserving dirty tracked and staged content while Git protects
+untracked paths from overwrite. The generic `landing_evidence_required` action
+must not replace this classified recovery.
 
 Durable landing reports the latest completed transaction phase as
 `mutation_phase`. The nine normal values are `landing_intent_recorded`,
