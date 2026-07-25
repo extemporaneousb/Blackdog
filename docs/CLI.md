@@ -1715,9 +1715,9 @@ Report task, attempt, and Codex-session metrics directly without composing
 `repo table`, `summary`, and Codex coverage by hand.
 
 ```bash
-blackdog stats --project-root /Users/bullard/Work/Utter/utter-codex
+blackdog stats --project-root /path/to/repo
 blackdog stats --project-root /path/a --project-root /path/b --since 2026-06-01 --until 2026-06-20
-blackdog stats --root /Users/bullard/Work --since 2026-06-01 --json
+blackdog stats --root /path/to/work --since 2026-06-01 --json
 blackdog stats --root /path/a --root /path/b --timezone America/Los_Angeles
 blackdog stats --registry --json
 blackdog stats --project-root /path/to/repo --by day --timezone America/Los_Angeles --json

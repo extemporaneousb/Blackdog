@@ -962,6 +962,9 @@ Optional compact history export written to `.blackdog/history.jsonl` by
 `history.jsonl` is an audit/export bridge, not the live source of truth. Live
 truth remains `runtime.json`, `events.jsonl`, git history, and Codex's session
 files under `$CODEX_HOME/sessions`.
+Because rows contain machine-local paths and session references, public
+repositories should keep this generated export untracked. Blackdog's own
+repository ignores it and enforces that boundary with `make public-check`.
 
 Each row contains:
 

@@ -89,9 +89,16 @@ workspace role before kept edits.
 make test
 ```
 
-The Makefile is a developer convenience for this package's test suite. It does
-not define the operator runbook for target repos; target repos use their
-repo-local `.VE/bin/blackdog` launcher and `blackdog repo ...` commands.
+`make test` runs `make public-check` first. That gate scans Git-tracked and
+unignored candidate files for known private markers, personal home paths,
+non-example email addresses, and generated local history exports. Additional
+machine-local terms can be added to the gitignored
+`.public-denylist.local`, one per line.
+
+The Makefile is otherwise a developer convenience for this package's test
+suite. It does not define the operator runbook for target repos; target repos
+use their repo-local `.VE/bin/blackdog` launcher and `blackdog repo ...`
+commands.
 
 ## Docs
 

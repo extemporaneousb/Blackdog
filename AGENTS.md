@@ -5,6 +5,12 @@ development.
 
 ## Working Rules
 
+- Blackdog is a public repository. Keep every tracked path, example, fixture,
+  and generated artifact free of client or employer identifiers, personal
+  workspace paths, non-public domains or email addresses, and other private
+  context. Run `make public-check` before landing changes. Put additional
+  machine-local forbidden terms in the gitignored `.public-denylist.local`
+  file, one term per line.
 - Keep the core dependency-light. Prefer the Python standard library unless a
   dependency is clearly justified.
 - Use the current worktree's top-level `.VE` for Blackdog CLI invocations when

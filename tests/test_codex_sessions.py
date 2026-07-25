@@ -311,7 +311,7 @@ class CodexSessionTests(CoreAuditTestCase):
             cwd=self.root,
             turn_id="turn-light-cache",
             message="Implement lightweight stats parsing.",
-            tool_outputs=("ModuleNotFoundError: No module named 'utter'",),
+            tool_outputs=("ModuleNotFoundError: No module named 'optional_dependency'",),
         )
         blackdog_home = self.root / ".blackdog-home"
 
@@ -1325,7 +1325,7 @@ class CodexSessionTests(CoreAuditTestCase):
             cwd=self.root,
             turn_id="turn-env",
             message=prompt,
-            assistant_text="The run failed with ModuleNotFoundError: No module named 'utter'.",
+            assistant_text="The run failed with ModuleNotFoundError: No module named 'optional_dependency'.",
             tool_outputs=(
                 "docker: command not found",
                 "zipfile.BadZipFile: File is not a zip file",

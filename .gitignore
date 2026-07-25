@@ -13,4 +13,5 @@ dist/
 coverage/
 .worktrees/
 .blackdog/worktrees/
-
+.blackdog/history.jsonl
+.public-denylist.local
