@@ -54,6 +54,14 @@ TARGET_BRANCH_GUIDANCE = (
     "Treat the `target_branch` selected and recorded by Blackdog for the task as authoritative "
     "when landing and verifying the result; never assume it is `main` and never switch it manually."
 )
+AUTOMATIC_STALE_RECOVERY_GUIDANCE = (
+    "When repository policy enables automatic stale recovery, `task land` may internally run one "
+    "exact task-worktree `git rebase --autostash`, execute the configured validation commands, and "
+    "retry canonical landing. Trust the returned `next_action`: a commandless "
+    "`automatic_stale_recovery_*` blocker is an exceptional handoff to the current landing agent. "
+    "Preserve the retained task workspace, never choose ours/theirs, reset, force-update, or skip "
+    "validation, and satisfy the typed `required_inputs` before retrying normal `task land`."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +258,7 @@ def render_command_inventory_markdown() -> str:
 
 __all__ = [
     "AGENT_WORKFLOW",
+    "AUTOMATIC_STALE_RECOVERY_GUIDANCE",
     "COMMAND_INVENTORY_SECTIONS",
     "EXECUTION_PROMPT_INPUT",
     "NEXT_ACTION_AUTHORITY_GUIDANCE",

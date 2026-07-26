@@ -619,6 +619,13 @@ class LifecycleContext:
     workspace_adoption_candidate_arrived: bool = False
     workspace_adoption_completion_pending: bool = False
     workspace_adoption_completion_argv: tuple[str, ...] = ()
+    source_git_operation: str | None = None
+    source_git_operation_detail: str | None = None
+    landing_correction_state: str | None = None
+    landing_correction_resume_argv: tuple[str, ...] = ()
+    landing_correction_worktree_path: str | None = None
+    landing_correction_branch: str | None = None
+    landing_correction_target_branch: str | None = None
 
 
 def _flag(name: str, value: str) -> str:
@@ -900,6 +907,135 @@ def decide_next_action(context: LifecycleContext) -> NextAction:
                 mutation_class="git_and_runtime",
                 display="Resume the durable landing transaction",
             )
+        )
+    if context.source_git_operation is not None:
+        return NextAction.terminal(
+            action_id="resolve_task_source_git_operation",
+            kind="blocked",
+            disposition="repair_required",
+            reason_code="task_source_git_operation_in_progress",
+            reason_detail=(
+                context.source_git_operation_detail
+                or "The retained task workspace has an in-progress Git operation that "
+                "requires the current landing agent to inspect and resolve it safely."
+            ),
+            display="Return the retained task workspace to a coherent Git state",
+            required_inputs=(
+                "task_worktree_git_operation_resolution",
+                "unique_work_preservation_proof",
+                "fresh_validation_evidence",
+            ),
+        )
+    if context.landing_correction_state == "active":
+        if not context.landing_correction_resume_argv:
+            return NextAction.terminal(
+                action_id="automatic_stale_recovery_proof_required",
+                kind="blocked",
+                disposition="repair_required",
+                reason_code="automatic_stale_recovery_resume_missing",
+                reason_detail=(
+                    "The durable stale-correction receipt is active but has no "
+                    "canonical resume command."
+                ),
+                display="Repair automatic stale-recovery evidence",
+                required_inputs=("exact_task_land_resume_argv",),
+            )
+        return NextAction.command(
+            LifecycleAction(
+                action_id="resume_automatic_stale_recovery",
+                disposition="retryable",
+                reason_code="automatic_stale_recovery_incomplete",
+                reason_detail=(
+                    "Resume the append-once stale correction and canonical landing "
+                    "from its durable receipt."
+                ),
+                argv=context.landing_correction_resume_argv,
+                safety_class="validated_mutation",
+                mutation_class="git_and_filesystem",
+                display="Resume automatic stale recovery",
+            )
+        )
+    if context.landing_correction_state == "retry_exhausted":
+        if (
+            context.landing_correction_worktree_path
+            and context.landing_correction_target_branch
+        ):
+            return NextAction.command(
+                LifecycleAction(
+                    action_id="rebase_task_branch",
+                    disposition="operator_action_required",
+                    reason_code="stale_task_branch",
+                    reason_detail=(
+                        "The target moved after the one automatic correction; "
+                        "perform the existing exact worktree-local rebase."
+                    ),
+                    argv=(
+                        "git",
+                        "-C",
+                        context.landing_correction_worktree_path,
+                        "rebase",
+                        "--autostash",
+                        context.landing_correction_target_branch,
+                    ),
+                    safety_class="operator_confirmation",
+                    mutation_class="git_and_filesystem",
+                    display=(
+                        f"Rebase {context.landing_correction_branch or 'the task branch'} "
+                        f"onto {context.landing_correction_target_branch}"
+                    ),
+                )
+            )
+        return NextAction.terminal(
+            action_id="automatic_stale_recovery_proof_required",
+            kind="blocked",
+            disposition="repair_required",
+            reason_code="automatic_stale_recovery_target_missing",
+            reason_detail=(
+                "Retry-exhausted correction evidence is missing its exact "
+                "worktree or target identity."
+            ),
+            display="Repair automatic stale-recovery evidence",
+            required_inputs=("task_worktree", "target_branch"),
+        )
+    automatic_blockers = {
+        "conflict": (
+            "automatic_stale_recovery_conflict",
+            "automatic_rebase_conflict",
+            "The automatic rebase encountered a real content conflict.",
+            (
+                "task_worktree_conflict_resolution",
+                "unique_work_preservation_proof",
+                "fresh_validation_evidence",
+            ),
+        ),
+        "validation_failed": (
+            "automatic_stale_recovery_validation_failed",
+            "post_rebase_validation_failed",
+            "Configured validation did not prove the corrected task tree.",
+            ("task_worktree_repair", "fresh_validation_evidence"),
+        ),
+        "unsafe": (
+            "automatic_stale_recovery_unsafe",
+            "automatic_rebase_safety_unproven",
+            "Blackdog could not prove a safe automatic correction state.",
+            ("git_operation_proof", "unique_work_preservation_proof"),
+        ),
+    }
+    automatic_blocker = automatic_blockers.get(
+        str(context.landing_correction_state or "")
+    )
+    if automatic_blocker is not None:
+        action_id, reason_code, detail, required_inputs = automatic_blocker
+        return NextAction.terminal(
+            action_id=action_id,
+            kind="blocked",
+            disposition="repair_required",
+            reason_code=reason_code,
+            reason_detail=(
+                f"{detail} The retained task workspace remains authoritative."
+            ),
+            display="Return automatic stale recovery to the current landing agent",
+            required_inputs=required_inputs,
         )
     if context.reconciliation_candidate:
         if context.landing_reconcile_argv:

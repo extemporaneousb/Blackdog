@@ -404,6 +404,19 @@ the final completion read separately, so crash repair can use frozen evidence
 even if the live target later moves. Cleanup has a narrow force-delete proof
 for an exact validated completion; ordinary cleanup policy is unchanged.
 
+Ordinary pre-intent target advancement has one additive, opt-in product-layer
+correction path. A versioned `[landing]` policy authorizes high-level
+`task land` to execute the existing worktree-local `git rebase --autostash`
+operation once and then run the primary target profile's explicit validation
+commands. An append-once `worktree.landing.correction` receipt binds the
+request, policy, source/tree, target, rebase result, and bounded validation
+proof before handing off to the unchanged landing transaction. No parallel
+commit or target-update implementation exists. Conflict, validation failure,
+or unproven Git state stops with a typed landing-agent blocker and preserves
+the source. A second pre-intent target advance ends automation and returns the
+existing `rebase_task_branch` command; post-intent target movement remains
+inside the durable landing compare-and-swap and abort/recovery contract.
+
 ## Guardrails And Reporting
 
 Task-class guard extension points live in the `blackdog` product layer. They

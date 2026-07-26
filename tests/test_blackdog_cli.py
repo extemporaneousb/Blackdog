@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -5467,7 +5468,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn(f"?? {task_untracked.name}", dirty_status)
 
         exit_code, stdout, stderr = self.run_cli(*land_args, cwd=worktree_path)
-        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(exit_code, 0, f"{stderr}\n{stdout}")
         landed = json.loads(stdout)["landing"]
         self.assertEqual(landed["operation_status"], "succeeded")
         self.assertEqual(landed["next_action"]["kind"], "complete")
@@ -5479,6 +5480,897 @@ class BlackdogCliTests(CoreAuditTestCase):
             "untracked task change\n",
         )
         self.assertEqual(self.git_output("status", "--short"), "")
+
+    def _enable_automatic_stale_rebase(self, validation_command: str) -> None:
+        profile_path = self.root / "blackdog.toml"
+        profile_text = profile_path.read_text(encoding="utf-8")
+        profile_text = profile_text.replace(
+            "validation_commands = [\"PYTHONPATH=src python3 -m unittest discover "
+            "-s tests -p 'test_*.py'\"]",
+            f"validation_commands = [{json.dumps(validation_command)}]",
+        ).replace(
+            "automatic_stale_rebase = false",
+            "automatic_stale_rebase = true",
+        )
+        profile_path.write_text(profile_text, encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "blackdog.toml"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Enable automatic stale rebase"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def _start_automatic_stale_task(
+        self,
+        *,
+        workset_id: str,
+        task_id: str,
+        validation_command: str,
+    ) -> tuple[dict[str, object], Path]:
+        self._enable_automatic_stale_rebase(validation_command)
+        self.put_workset(
+            {
+                "id": workset_id,
+                "title": "Automatic stale landing",
+                "tasks": [
+                    {
+                        "id": task_id,
+                        "title": "Correct stale task",
+                        "intent": "rebase, revalidate, and land automatically",
+                    }
+                ],
+            }
+        )
+        self.install_repo_runtime()
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree",
+            "start",
+            "--project-root",
+            str(self.root),
+            "--workset",
+            workset_id,
+            "--task",
+            task_id,
+            "--actor",
+            "codex",
+            "--prompt",
+            "Exercise automatic stale task recovery.",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        start_payload = json.loads(stdout)["worktree"]
+        return start_payload, Path(start_payload["worktree_path"])
+
+    def _remove_retained_test_worktree(
+        self,
+        *,
+        worktree_path: Path,
+        branch: str,
+    ) -> None:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "worktree",
+                "remove",
+                "--force",
+                str(worktree_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "branch", "-D", branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_task_land_automatically_rebases_revalidates_and_lands_stale_work(
+        self,
+    ) -> None:
+        start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-stale-land",
+            task_id="ASL-1",
+            validation_command="test -f target-generation.txt",
+        )
+        task_path = worktree_path / "automatic-task.txt"
+        task_path.write_text("task change\n", encoding="utf-8")
+        (self.root / "target-generation.txt").write_text(
+            "target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "target-generation.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "land automatically corrected task",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(exit_code, 0, f"{stderr}\n{stdout}")
+        landed = json.loads(stdout)["landing"]
+        self.assertEqual(landed["operation_status"], "succeeded")
+        self.assertEqual(landed["next_action"]["kind"], "complete")
+        self.assertEqual(
+            landed["automatic_stale_recovery"]["state"],
+            "landed",
+        )
+        self.assertTrue(
+            landed["automatic_stale_recovery"]["target_updated_by_blackdog"]
+        )
+        receipt = landed["landing_correction"]
+        self.assertEqual(
+            receipt["phases"],
+            [
+                "intent_recorded",
+                "rebase_completed",
+                "validation_completed",
+                "handed_to_landing",
+            ],
+        )
+        self.assertFalse(worktree_path.exists())
+        self.assertEqual(task_path.name, "automatic-task.txt")
+        self.assertEqual(
+            (self.root / task_path.name).read_text(encoding="utf-8"),
+            "task change\n",
+        )
+        message = self.git_output("show", "-s", "--format=%B", "HEAD")
+        self.assertIn(
+            "Blackdog-Validation: blackdog-post-rebase-validation=passed",
+            message,
+        )
+        self.assertEqual(self.git_output("status", "--short"), "")
+        self.assertTrue(start_payload["branch"])
+
+    def test_task_land_blocks_when_post_rebase_validation_fails(self) -> None:
+        validation_marker = self.root.parent / (
+            f"{self.root.name}-validation-service-ready"
+        )
+        start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-validation-failure",
+            task_id="AVF-1",
+            validation_command=f"test -f {shlex.quote(str(validation_marker))}",
+        )
+        (worktree_path / "validation-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+        (self.root / "validation-target.txt").write_text(
+            "target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "validation-target.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        target_before = self.git_output("rev-parse", "HEAD")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "validation must stop landing",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        blocked = json.loads(stdout)["landing"]
+        self.assertEqual(
+            blocked["next_action"]["action_id"],
+            "automatic_stale_recovery_validation_failed",
+        )
+        self.assertEqual(blocked["next_action"]["kind"], "blocked")
+        self.assertEqual(
+            blocked["automatic_stale_recovery"]["state"],
+            "validation_failed",
+        )
+        self.assertEqual(
+            blocked["landing_correction"]["phases"][-1],
+            "blocked",
+        )
+        durable_validation = blocked["landing_correction"]["phase_data"][
+            "blocked"
+        ]["validation"]
+        self.assertEqual(durable_validation["completed_count"], 1)
+        self.assertEqual(
+            durable_validation["results"][0]["status"],
+            "failed",
+        )
+        self.assertFalse(
+            durable_validation["results"][0]["output_retained"]
+        )
+        self.assertNotIn(
+            str(validation_marker),
+            json.dumps(blocked["landing_correction"]),
+        )
+        show_code, show_stdout, show_stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(show_code, 0, show_stderr)
+        shown_correction = json.loads(show_stdout)["task_show"][
+            "landing_correction"
+        ]["corrections"][0]
+        self.assertEqual(
+            shown_correction["phase_data"]["blocked"]["validation"][
+                "results"
+            ][0]["status"],
+            "failed",
+        )
+        self.assertEqual(self.git_output("rev-parse", "HEAD"), target_before)
+        self.assertTrue(worktree_path.exists())
+        validation_marker.write_text("ready\n", encoding="utf-8")
+
+        retry_code, retry_stdout, retry_stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "validation must stop landing",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(retry_code, 0, f"{retry_stderr}\n{retry_stdout}")
+        landed = json.loads(retry_stdout)["landing"]
+        self.assertEqual(landed["next_action"]["kind"], "complete")
+        corrections = landed["landing_correction"]
+        self.assertEqual(corrections["intent"]["generation"], 2)
+        self.assertFalse(worktree_path.exists())
+        validation_marker.unlink()
+        self.assertTrue(start_payload["branch"])
+
+    def test_task_land_already_current_does_not_enter_corrective_path(self) -> None:
+        start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-current-land",
+            task_id="ACL-1",
+            validation_command="exit 99",
+        )
+        (worktree_path / "already-current-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "land already-current task",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(exit_code, 0, f"{stderr}\n{stdout}")
+        landed = json.loads(stdout)["landing"]
+        self.assertEqual(landed["operation_status"], "succeeded")
+        self.assertEqual(landed["next_action"]["kind"], "complete")
+        self.assertNotIn("automatic_stale_recovery", landed)
+        self.assertNotIn("landing_correction", landed)
+        self.assertEqual(
+            (self.root / "already-current-task.txt").read_text(encoding="utf-8"),
+            "task change\n",
+        )
+
+    def test_task_land_resumes_after_rebase_effect_before_receipt(self) -> None:
+        _start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-rebase-receipt-fault",
+            task_id="ARRF-1",
+            validation_command="true",
+        )
+        (worktree_path / "rebase-receipt-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+        (self.root / "rebase-receipt-target.txt").write_text(
+            "target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "rebase-receipt-target.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        land_args = (
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "resume rebase receipt fault",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+        )
+
+        with patch(
+            "blackdog.wtam.record_landing_correction_rebase_completed",
+            side_effect=RuntimeError("fault after rebase effect"),
+        ):
+            first_code, first_stdout, first_stderr = self.run_cli(
+                *land_args,
+                cwd=worktree_path,
+            )
+
+        self.assertEqual(first_code, 1)
+        self.assertEqual(first_stderr, "")
+        first = json.loads(first_stdout)["landing"]
+        self.assertTrue(first["mutation_started"])
+        self.assertEqual(
+            first["next_action"]["action_id"],
+            "resume_automatic_stale_recovery",
+        )
+        self.assertEqual(
+            first["next_action"]["argv"],
+            first["landing_correction"]["corrections"][0]["intent"][
+                "resume_argv"
+            ],
+        )
+        show_code, show_stdout, show_stderr = self.run_cli(
+            "task",
+            "show",
+            "--project-root",
+            str(self.root),
+            "--json",
+            cwd=worktree_path,
+        )
+        self.assertEqual(show_code, 0, show_stderr)
+        shown = json.loads(show_stdout)["task_show"]
+        self.assertEqual(
+            shown["next_action"]["action_id"],
+            "resume_automatic_stale_recovery",
+        )
+        self.assertEqual(
+            shown["next_action"]["argv"],
+            first["next_action"]["argv"],
+        )
+
+        retry_code, retry_stdout, retry_stderr = self.run_cli(
+            *land_args,
+            cwd=worktree_path,
+        )
+        self.assertEqual(retry_code, 0, f"{retry_stderr}\n{retry_stdout}")
+        landed = json.loads(retry_stdout)["landing"]
+        self.assertEqual(landed["next_action"]["kind"], "complete")
+        self.assertEqual(
+            landed["landing_correction"]["phases"],
+            [
+                "intent_recorded",
+                "rebase_completed",
+                "validation_completed",
+                "handed_to_landing",
+            ],
+        )
+
+    def test_task_land_does_not_rebase_again_after_receipt_fault_and_target_move(
+        self,
+    ) -> None:
+        start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-rebase-receipt-target-move",
+            task_id="ARRTM-1",
+            validation_command="true",
+        )
+        (worktree_path / "receipt-target-move-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+        (self.root / "receipt-target-move-base.txt").write_text(
+            "first target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "receipt-target-move-base.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target once"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        land_args = (
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "bound receipt fault target movement",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+        )
+
+        with patch(
+            "blackdog.wtam.record_landing_correction_rebase_completed",
+            side_effect=RuntimeError("fault after rebase effect"),
+        ):
+            first_code, first_stdout, first_stderr = self.run_cli(
+                *land_args,
+                cwd=worktree_path,
+            )
+
+        self.assertEqual(first_code, 1)
+        self.assertEqual(first_stderr, "")
+        first = json.loads(first_stdout)["landing"]
+        self.assertEqual(
+            first["next_action"]["action_id"],
+            "resume_automatic_stale_recovery",
+        )
+        corrected_head = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        (self.root / "receipt-target-move-second.txt").write_text(
+            "second target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "add",
+                "receipt-target-move-second.txt",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target twice"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        retry_code, retry_stdout, retry_stderr = self.run_cli(
+            *land_args,
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(retry_code, 1)
+        self.assertEqual(retry_stderr, "")
+        blocked = json.loads(retry_stdout)["landing"]
+        self.assertEqual(
+            blocked["next_action"]["action_id"],
+            "rebase_task_branch",
+        )
+        self.assertEqual(
+            blocked["next_action"]["argv"],
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "rebase",
+                "--autostash",
+                "main",
+            ],
+        )
+        self.assertEqual(
+            blocked["automatic_stale_recovery"]["state"],
+            "retry_exhausted",
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            corrected_head,
+        )
+        self._remove_retained_test_worktree(
+            worktree_path=worktree_path,
+            branch=str(start_payload["branch"]),
+        )
+
+    def test_task_land_resumes_after_validation_receipt_append_fault(self) -> None:
+        _start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-validation-receipt-fault",
+            task_id="AVRF-1",
+            validation_command="true",
+        )
+        (worktree_path / "validation-receipt-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+        (self.root / "validation-receipt-target.txt").write_text(
+            "target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "validation-receipt-target.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        land_args = (
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "resume validation receipt fault",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+        )
+        real_record = wtam.record_landing_correction_validation_completed
+
+        def append_then_fail(*args, **kwargs):
+            real_record(*args, **kwargs)
+            raise RuntimeError("fault after validation receipt append")
+
+        with patch(
+            "blackdog.wtam.record_landing_correction_validation_completed",
+            side_effect=append_then_fail,
+        ):
+            first_code, first_stdout, first_stderr = self.run_cli(
+                *land_args,
+                cwd=worktree_path,
+            )
+
+        self.assertEqual(first_code, 1)
+        self.assertEqual(first_stderr, "")
+        first = json.loads(first_stdout)["landing"]
+        self.assertEqual(
+            first["next_action"]["action_id"],
+            "resume_automatic_stale_recovery",
+        )
+        self.assertEqual(
+            first["landing_correction"]["corrections"][0]["phases"][-1],
+            "validation_completed",
+        )
+
+        retry_code, retry_stdout, retry_stderr = self.run_cli(
+            *land_args,
+            cwd=worktree_path,
+        )
+        self.assertEqual(retry_code, 0, f"{retry_stderr}\n{retry_stdout}")
+        self.assertEqual(
+            json.loads(retry_stdout)["landing"]["next_action"]["kind"],
+            "complete",
+        )
+
+    def test_task_land_original_request_resumes_after_landing_intent_fault(
+        self,
+    ) -> None:
+        _start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-landing-intent-fault",
+            task_id="ALIF-1",
+            validation_command="true",
+        )
+        (worktree_path / "landing-intent-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+        (self.root / "landing-intent-target.txt").write_text(
+            "target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "landing-intent-target.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        land_args = (
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "resume original correction request",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+        )
+
+        with patch(
+            "blackdog.wtam.record_landing_correction_handed_to_landing",
+            side_effect=RuntimeError("fault before correction handoff"),
+        ):
+            first_code, first_stdout, first_stderr = self.run_cli(
+                *land_args,
+                cwd=worktree_path,
+            )
+
+        self.assertEqual(first_code, 1)
+        self.assertEqual(first_stderr, "")
+        first = json.loads(first_stdout)["landing"]
+        self.assertEqual(
+            first["next_action"]["action_id"],
+            "resume_landing_transaction",
+        )
+
+        retry_code, retry_stdout, retry_stderr = self.run_cli(
+            *land_args,
+            cwd=worktree_path,
+        )
+        self.assertEqual(retry_code, 0, f"{retry_stderr}\n{retry_stdout}")
+        landed = json.loads(retry_stdout)["landing"]
+        self.assertEqual(landed["next_action"]["kind"], "complete")
+        self.assertEqual(
+            landed["landing_correction"]["last_phase"]
+            if "last_phase" in landed["landing_correction"]
+            else landed["landing_correction"]["phases"][-1],
+            "handed_to_landing",
+        )
+
+    def test_task_land_aborts_owned_rebase_conflict_and_preserves_task(
+        self,
+    ) -> None:
+        conflict_path = self.root / "conflict.txt"
+        conflict_path.write_text("base\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", conflict_path.name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Add conflict base"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-rebase-conflict",
+            task_id="ARC-1",
+            validation_command="true",
+        )
+        task_conflict_path = worktree_path / conflict_path.name
+        task_conflict_path.write_text("task\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "add", conflict_path.name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "commit", "-m", "Change task side"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        task_head_before = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        conflict_path.write_text("target\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", conflict_path.name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Change target side"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        target_before = self.git_output("rev-parse", "HEAD")
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "land",
+            "--project-root",
+            str(self.root),
+            "--summary",
+            "conflict must preserve task",
+            "--validation",
+            "caller-validation=passed",
+            "--json",
+            cwd=worktree_path,
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        blocked = json.loads(stdout)["landing"]
+        self.assertEqual(
+            blocked["next_action"]["action_id"],
+            "automatic_stale_recovery_conflict",
+        )
+        self.assertEqual(blocked["next_action"]["kind"], "blocked")
+        self.assertTrue(blocked["automatic_stale_recovery"]["rebase_aborted"])
+        self.assertEqual(self.git_output("rev-parse", "HEAD"), target_before)
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            task_head_before,
+        )
+        self.assertEqual(
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout,
+            "",
+        )
+        self._remove_retained_test_worktree(
+            worktree_path=worktree_path,
+            branch=str(start_payload["branch"]),
+        )
+
+    def test_task_land_bounds_second_target_movement(self) -> None:
+        start_payload, worktree_path = self._start_automatic_stale_task(
+            workset_id="automatic-retry-exhausted",
+            task_id="ARE-1",
+            validation_command="true",
+        )
+        (worktree_path / "bounded-task.txt").write_text(
+            "task change\n",
+            encoding="utf-8",
+        )
+        (self.root / "bounded-target-one.txt").write_text(
+            "first target change\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "bounded-target-one.txt"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Advance target once"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        real_validation = wtam._run_post_rebase_validation
+
+        def advance_target_after_validation(*args, **kwargs):
+            result = real_validation(*args, **kwargs)
+            (self.root / "bounded-target-two.txt").write_text(
+                "second target change\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(self.root), "add", "bounded-target-two.txt"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(self.root), "commit", "-m", "Advance target twice"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result
+
+        with patch(
+            "blackdog.wtam._run_post_rebase_validation",
+            side_effect=advance_target_after_validation,
+        ):
+            exit_code, stdout, stderr = self.run_cli(
+                "task",
+                "land",
+                "--project-root",
+                str(self.root),
+                "--summary",
+                "bounded target movement",
+                "--validation",
+                "caller-validation=passed",
+                "--json",
+                cwd=worktree_path,
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        blocked = json.loads(stdout)["landing"]
+        self.assertEqual(
+            blocked["next_action"]["action_id"],
+            "rebase_task_branch",
+        )
+        self.assertEqual(blocked["next_action"]["kind"], "command")
+        self.assertEqual(
+            blocked["next_action"]["argv"],
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "rebase",
+                "--autostash",
+                "main",
+            ],
+        )
+        self.assertEqual(
+            blocked["automatic_stale_recovery"]["attempt_count"],
+            1,
+        )
+        self.assertEqual(
+            blocked["automatic_stale_recovery"]["state"],
+            "retry_exhausted",
+        )
+        self.assertIsNone(blocked["landing_transaction"])
+        self.assertTrue(worktree_path.exists())
+        self._remove_retained_test_worktree(
+            worktree_path=worktree_path,
+            branch=str(start_payload["branch"]),
+        )
 
     def test_worktree_land_closes_terminal_no_change_failure_without_extra_close_call(self) -> None:
         payload = {

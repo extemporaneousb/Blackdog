@@ -707,6 +707,13 @@ that worktree. It reports:
 - primary-worktree dirtiness that would still block landing
 - structured recovery fields such as `failure_class` and `recovery_action`
 - any incomplete landing transaction and its latest durable phase
+- any automatic stale-correction receipt, including its active/terminal
+  generation and ordered phases
+- the exact recorded `task land` resume argv when a correction generation was
+  interrupted, or the exact worktree-local `rebase_task_branch` argv when its
+  one automatic attempt was exhausted
+- any retained source-worktree Git operation, which returns commandless
+  `resolve_task_source_git_operation` guidance instead of guessing ownership
 - recommended next actions such as `task land`, `task close`, `task cleanup`,
   or stale-claim release
 - `next_action`, the authoritative typed executable command, bounded choice,
@@ -962,12 +969,25 @@ not run; Blackdog never invents one.
 
 If that evidence-bearing first request discovers that the task branch is not
 based on its recorded target, the blocked result carries the exact
-worktree-local `rebase_task_branch` argv as authoritative `next_action`. This
-pre-intent failure does not mutate Git, runtime, events, or landing state. The
-command uses `git rebase --autostash` so tracked and staged edits survive;
-untracked files remain in place under Git's normal overwrite protection.
-Autostash reapplication may still report ordinary merge conflicts for explicit
-resolution in the retained task worktree.
+worktree-local `rebase_task_branch` argv as authoritative `next_action` by
+default. When the versioned `[landing]` policy enables
+`automatic_stale_rebase`, `task land` instead records an append-once correction
+receipt, runs that exact `git rebase --autostash` once in the task worktree,
+and executes every authoritative `[taxonomy].validation_commands` entry there.
+Commands use `/bin/sh -c`, have the configured per-command timeout, stop at the
+first failure, and retain only bounded typed results and hashes, not command
+output.
+
+A clean correction appends the reserved
+`blackdog-post-rebase-validation=passed` evidence row and retries the existing
+canonical landing transaction. Conflict, failed validation, or an unsafe
+workspace returns a commandless typed blocker and retains the task workspace
+for the current landing agent. Blackdog never chooses ours/theirs, resets,
+force-updates, or skips checks. If the target advances a second time before
+intent, the automatic loop stops, records `retry_exhausted`, and returns the
+existing exact command-bearing `rebase_task_branch` action. Staleness after
+landing intent remains owned by the existing transaction/CAS recovery path.
+The low-level `worktree land` command never opts into this correction.
 
 Landing is a durable transaction keyed to the attempt. Before its first Git
 mutation, Blackdog appends an immutable intent that binds the complete request,

@@ -439,7 +439,78 @@ class LifecycleDecisionTests(CoreAuditTestCase):
             next_action.reason_code,
             "active_workspace_adoption_proof_failed",
         )
+
+    def test_in_progress_source_git_operation_is_a_commandless_blocker(self) -> None:
+        next_action = decide_next_action(
+            _context(
+                source_git_operation="REBASE_HEAD",
+                source_git_operation_detail=(
+                    "The retained task workspace has an in-progress rebase."
+                ),
+            )
+        )
+
+        self.assertEqual(
+            next_action.action_id,
+            "resolve_task_source_git_operation",
+        )
+        self.assertEqual(next_action.kind, "blocked")
         self.assertEqual(next_action.argv, ())
+        self.assertIn(
+            "unique_work_preservation_proof",
+            next_action.required_inputs,
+        )
+
+    def test_active_correction_resumes_exact_task_land_argv(self) -> None:
+        resume_argv = (
+            "blackdog",
+            "task",
+            "land",
+            "--project-root=/tmp/repo with spaces",
+            "--workset=workset-1",
+            "--task=TASK-1",
+            "--actor=codex",
+            "--summary=exact correction request",
+            "--validation=unit=passed",
+        )
+
+        next_action = decide_next_action(
+            _context(
+                landing_correction_state="active",
+                landing_correction_resume_argv=resume_argv,
+            )
+        )
+
+        self.assertEqual(
+            next_action.action_id,
+            "resume_automatic_stale_recovery",
+        )
+        self.assertEqual(next_action.kind, "command")
+        self.assertEqual(next_action.argv, resume_argv)
+
+    def test_retry_exhausted_correction_returns_existing_rebase_action(self) -> None:
+        next_action = decide_next_action(
+            _context(
+                landing_correction_state="retry_exhausted",
+                landing_correction_worktree_path="/tmp/task workspace",
+                landing_correction_branch="agent/task",
+                landing_correction_target_branch="main",
+            )
+        )
+
+        self.assertEqual(next_action.action_id, "rebase_task_branch")
+        self.assertEqual(next_action.kind, "command")
+        self.assertEqual(
+            next_action.argv,
+            (
+                "git",
+                "-C",
+                "/tmp/task workspace",
+                "rebase",
+                "--autostash",
+                "main",
+            ),
+        )
 
     def test_typed_landing_failures_do_not_classify_legacy_message_phrases(self) -> None:
         primary = classify_lifecycle_exception(
@@ -3903,10 +3974,17 @@ class LifecycleResumeIntegrationTests(CoreAuditTestCase):
         )
         self.assertEqual(
             stale_blocked["next_action"]["argv"],
-            ["git", "-C", str(stale_workspace), "rebase", "main"],
+            [
+                "git",
+                "-C",
+                str(stale_workspace),
+                "rebase",
+                "--autostash",
+                "main",
+            ],
         )
         subprocess.run(
-            ["git", "-C", str(stale_workspace), "rebase", "main"],
+            stale_blocked["next_action"]["argv"],
             check=True,
             capture_output=True,
             text=True,

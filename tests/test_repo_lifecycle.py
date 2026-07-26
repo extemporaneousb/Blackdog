@@ -14,6 +14,7 @@ from blackdog.repo_membership import discover_profile_dirs
 from blackdog.repo_lifecycle import render_repo_skill
 from blackdog.workflow_contract import (
     AGENT_WORKFLOW,
+    AUTOMATIC_STALE_RECOVERY_GUIDANCE,
     NEXT_ACTION_AUTHORITY_GUIDANCE,
     PROMPT_INPUT_DISPOSAL_GUIDANCE,
     SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
@@ -912,6 +913,7 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("Workers do not run `task begin`", skill_text)
         self.assertIn(PROMPT_INPUT_DISPOSAL_GUIDANCE, skill_text)
         self.assertIn(NEXT_ACTION_AUTHORITY_GUIDANCE, skill_text)
+        self.assertIn(AUTOMATIC_STALE_RECOVERY_GUIDANCE, skill_text)
         self.assertIn(TARGET_BRANCH_GUIDANCE, skill_text)
         self.assertNotIn("partial or blocked normal task lifecycle result", skill_text)
         self.assertNotIn("primary `main` branch", skill_text)

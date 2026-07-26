@@ -26,6 +26,10 @@ HANDLER_SOURCE_MODE_TARGET_REPO = "target-repo"
 HANDLER_SOURCE_MODE_LOCAL_OVERRIDE = "local-override"
 HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE = "editable-worktree-source"
 HANDLER_INSTALL_MODE_LAUNCHER_SHIM = "launcher-shim"
+LANDING_SCHEMA_VERSION = 1
+DEFAULT_LANDING_VALIDATION_TIMEOUT_SECONDS = 900
+MIN_LANDING_VALIDATION_TIMEOUT_SECONDS = 1
+MAX_LANDING_VALIDATION_TIMEOUT_SECONDS = 3600
 DEFAULT_DOC_ROUTING = (
     "AGENTS.md",
     "docs/INDEX.md",
@@ -95,11 +99,20 @@ RepoHandlerConfig = PythonOverlayVenvHandlerConfig | BlackdogRuntimeHandlerConfi
 
 
 @dataclass(frozen=True)
+class LandingConfig:
+    schema_version: int
+    automatic_stale_rebase: bool
+    validation_timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class RepoProfile:
     project_name: str
     status: str
     profile_version: int
     validation_commands: tuple[str, ...]
+    validation_commands_explicit: bool
+    landing: LandingConfig
     doc_routing_defaults: tuple[str, ...]
     paths: BlackdogPaths
     handlers: tuple[RepoHandlerConfig, ...]
@@ -433,8 +446,47 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
 
     project = payload.get("project") or {}
     taxonomy = payload.get("taxonomy") or {}
+    raw_landing = payload.get("landing")
+    landing = {} if raw_landing is None else raw_landing
     raw_paths = payload.get("paths") or {}
     handlers, handlers_explicit = _load_handlers(payload.get("handlers"))
+    if not isinstance(landing, dict):
+        raise ConfigError("landing must be a table")
+    landing_schema_version = landing.get("schema_version", LANDING_SCHEMA_VERSION)
+    if type(landing_schema_version) is not int or landing_schema_version != LANDING_SCHEMA_VERSION:
+        raise ConfigError(
+            f"landing.schema_version must be {LANDING_SCHEMA_VERSION}"
+        )
+    automatic_stale_rebase = landing.get("automatic_stale_rebase", False)
+    if not isinstance(automatic_stale_rebase, bool):
+        raise ConfigError("landing.automatic_stale_rebase must be a boolean")
+    validation_timeout_seconds = landing.get(
+        "validation_timeout_seconds",
+        DEFAULT_LANDING_VALIDATION_TIMEOUT_SECONDS,
+    )
+    if (
+        type(validation_timeout_seconds) is not int
+        or not MIN_LANDING_VALIDATION_TIMEOUT_SECONDS
+        <= validation_timeout_seconds
+        <= MAX_LANDING_VALIDATION_TIMEOUT_SECONDS
+    ):
+        raise ConfigError(
+            "landing.validation_timeout_seconds must be an integer from "
+            f"{MIN_LANDING_VALIDATION_TIMEOUT_SECONDS} to "
+            f"{MAX_LANDING_VALIDATION_TIMEOUT_SECONDS}"
+        )
+    validation_commands_explicit = "validation_commands" in taxonomy
+    if automatic_stale_rebase:
+        configured_validations = taxonomy.get("validation_commands")
+        if (
+            not isinstance(configured_validations, list)
+            or not configured_validations
+            or any(not isinstance(item, str) or not item.strip() for item in configured_validations)
+        ):
+            raise ConfigError(
+                "landing.automatic_stale_rebase requires a nonempty explicit "
+                "taxonomy.validation_commands array"
+            )
 
     if "control_dir" not in raw_paths:
         required_runtime = {"planning_file", "runtime_file", "events_file"}
@@ -460,6 +512,12 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
         profile_version=int(project.get("profile_version") or 1),
         validation_commands=tuple(
             str(item) for item in taxonomy.get("validation_commands") or DEFAULT_VALIDATION_COMMANDS
+        ),
+        validation_commands_explicit=validation_commands_explicit,
+        landing=LandingConfig(
+            schema_version=landing_schema_version,
+            automatic_stale_rebase=automatic_stale_rebase,
+            validation_timeout_seconds=validation_timeout_seconds,
         ),
         doc_routing_defaults=tuple(
             str(item) for item in taxonomy.get("doc_routing_defaults") or DEFAULT_DOC_ROUTING
@@ -509,6 +567,10 @@ def render_default_profile(
         f'[taxonomy]\n'
         f'validation_commands = [{validations}]\n'
         f'doc_routing_defaults = [{doc_routing}]\n\n'
+        f'[landing]\n'
+        f'schema_version = {LANDING_SCHEMA_VERSION}\n'
+        f'automatic_stale_rebase = false\n'
+        f'validation_timeout_seconds = {DEFAULT_LANDING_VALIDATION_TIMEOUT_SECONDS}\n\n'
         f"{render_default_handlers()}"
     )
 

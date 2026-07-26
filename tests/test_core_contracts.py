@@ -13,6 +13,7 @@ from blackdog.repo_lifecycle import (
 )
 from blackdog.workflow_contract import (
     AGENT_WORKFLOW,
+    AUTOMATIC_STALE_RECOVERY_GUIDANCE,
     NEXT_ACTION_AUTHORITY_GUIDANCE,
     PROMPT_INPUT_DISPOSAL_GUIDANCE,
     SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
@@ -260,6 +261,10 @@ class CoreContractTests(CoreAuditTestCase):
             self.assertIn("exact triggering user request verbatim", rendered_contract)
             self.assertEqual(rendered_contract.count(PROMPT_INPUT_DISPOSAL_GUIDANCE), 1)
             self.assertEqual(rendered_contract.count(NEXT_ACTION_AUTHORITY_GUIDANCE), 1)
+            self.assertEqual(
+                rendered_contract.count(AUTOMATIC_STALE_RECOVERY_GUIDANCE),
+                1,
+            )
             self.assertEqual(rendered_contract.count(TARGET_BRANCH_GUIDANCE), 1)
             self.assertIn("retry_task_close_finalization", rendered_contract)
             self.assertNotIn("--actor AGENT", rendered_contract)

@@ -17,6 +17,7 @@ from blackdog.contract import (
 from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
 from blackdog.workflow_contract import (
     AGENT_WORKFLOW,
+    AUTOMATIC_STALE_RECOVERY_GUIDANCE,
     NEXT_ACTION_AUTHORITY_GUIDANCE,
     PROMPT_INPUT_DISPOSAL_GUIDANCE,
     TARGET_BRANCH_GUIDANCE,
@@ -571,6 +572,7 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         "- For new work, do not pass `--workset` or `--task`; `task begin` creates the task envelope and returns the task workspace.",
         "- Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.",
         f"- {NEXT_ACTION_AUTHORITY_GUIDANCE}",
+        f"- {AUTOMATIC_STALE_RECOVERY_GUIDANCE}",
         (
             "- Direct read-only `task show`, read-only `task recover`, and CLI `worktree show` may "
             "report bounded legacy landing detection. Execute only the exact read-only `next_action.argv`; "
@@ -661,6 +663,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "- Inputs: the user's task request, routed docs from `blackdog.toml`, and the repo-local managed AGENTS contract.\n"
         "- Output: one landed commit with Blackdog trailers, or an explicit `task close` result with status, summary, residuals, and follow-ups.\n"
         f"- {NEXT_ACTION_AUTHORITY_GUIDANCE}\n"
+        f"- {AUTOMATIC_STALE_RECOVERY_GUIDANCE}\n"
         "- Do not manually invent or switch Codex session references. Normal `task begin` captures the invoking turn as best-effort evidence; capture missingness never blocks work, and `codex coverage`/`codex history` are the reconciliation surfaces.\n"
         "- Use `blackdog codex link` only for an explicit continuation into a new Codex local chat. It targets the active Blackdog task worktree without transferring branch, landing, or cleanup ownership to Codex.\n"
         "- Retained-workspace adoption and adoption-completion repair are internal recovery routes emitted by `task show`/`task recover`. Execute only their exact `next_action.argv`; never invent adoption flags, expected-value guards, rebase targets, reconciliation commits, cleanup, or a replacement task.\n"

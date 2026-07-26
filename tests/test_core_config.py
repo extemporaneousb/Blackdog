@@ -18,6 +18,10 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
         self.assertEqual(profile.paths.worktrees_dir, (self.root.parent / f".worktrees-{self.root.name}").resolve())
+        self.assertFalse(profile.landing.automatic_stale_rebase)
+        self.assertEqual(profile.landing.schema_version, 1)
+        self.assertEqual(profile.landing.validation_timeout_seconds, 900)
+        self.assertTrue(profile.validation_commands_explicit)
         self.assertTrue(profile.handlers_explicit)
         self.assertEqual(profile.handlers[0].kind, profile_module.HANDLER_KIND_PYTHON_OVERLAY_VENV)
         self.assertEqual(profile.handlers[1].kind, profile_module.HANDLER_KIND_BLACKDOG_RUNTIME)
@@ -63,6 +67,76 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertFalse(profile.handlers_explicit)
         self.assertEqual(profile.handlers[0].handler_id, "python")
         self.assertEqual(profile.handlers[1].handler_id, "blackdog")
+
+    def test_load_profile_accepts_automatic_stale_rebase_policy(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8").replace(
+                "automatic_stale_rebase = false",
+                "automatic_stale_rebase = true",
+            ),
+            encoding="utf-8",
+        )
+
+        profile = self.load_test_profile()
+
+        self.assertTrue(profile.landing.automatic_stale_rebase)
+        self.assertEqual(profile.landing.validation_timeout_seconds, 900)
+
+    def test_automatic_stale_rebase_requires_explicit_validation_commands(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        profile_text = profile_path.read_text(encoding="utf-8")
+        profile_text = profile_text.replace(
+            "validation_commands = [\"PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py'\"]\n",
+            "",
+        ).replace(
+            "automatic_stale_rebase = false",
+            "automatic_stale_rebase = true",
+        )
+        profile_path.write_text(profile_text, encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            profile_module.ConfigError,
+            "requires a nonempty explicit taxonomy.validation_commands",
+        ):
+            self.load_test_profile()
+
+    def test_load_profile_rejects_invalid_landing_policy(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        original = profile_path.read_text(encoding="utf-8")
+
+        invalid_rows = (
+            ("schema_version = 1", "schema_version = 2", "landing.schema_version"),
+            (
+                "automatic_stale_rebase = false",
+                'automatic_stale_rebase = "yes"',
+                "landing.automatic_stale_rebase",
+            ),
+            (
+                "validation_timeout_seconds = 900",
+                "validation_timeout_seconds = 0",
+                "landing.validation_timeout_seconds",
+            ),
+        )
+        for old, new, expected in invalid_rows:
+            with self.subTest(expected=expected):
+                profile_path.write_text(original.replace(old, new), encoding="utf-8")
+                with self.assertRaisesRegex(profile_module.ConfigError, expected):
+                    self.load_test_profile()
+
+        malformed = original.replace(
+            "[landing]\n"
+            "schema_version = 1\n"
+            "automatic_stale_rebase = false\n"
+            "validation_timeout_seconds = 900\n\n",
+            "",
+        ).replace("[project]\n", "landing = false\n\n[project]\n", 1)
+        profile_path.write_text(malformed, encoding="utf-8")
+        with self.assertRaisesRegex(profile_module.ConfigError, "landing must be a table"):
+            self.load_test_profile()
 
     def test_load_profile_accepts_project_statuses(self) -> None:
         self.write_profile("Demo")

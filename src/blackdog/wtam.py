@@ -46,6 +46,7 @@ from blackdog.landing import (
     append_worktree_land_once,
     attempt_lifecycle_lock,
     exact_worktree_land_event,
+    landing_phase_event_id,
     landing_transaction_id,
     load_landing_transaction,
     record_landing_abort,
@@ -58,6 +59,20 @@ from blackdog.landing import (
     strict_json_equal,
     worktree_land_event_id,
 )
+from blackdog.landing_correction import (
+    PHASE_INTENT_RECORDED as CORRECTION_PHASE_INTENT_RECORDED,
+    PHASE_REBASE_COMPLETED as CORRECTION_PHASE_REBASE_COMPLETED,
+    PHASE_VALIDATION_COMPLETED as CORRECTION_PHASE_VALIDATION_COMPLETED,
+    LandingCorrection,
+    LandingCorrectionIntent,
+    load_landing_correction,
+    load_landing_correction_selection,
+    record_landing_correction_blocked,
+    record_landing_correction_handed_to_landing,
+    record_landing_correction_intent,
+    record_landing_correction_rebase_completed,
+    record_landing_correction_validation_completed,
+)
 from blackdog.lifecycle import (
     CleanupEventFinalizationError,
     CleanupOwnershipError,
@@ -67,6 +82,7 @@ from blackdog.lifecycle import (
     GitReferenceInspection,
     LifecycleAction,
     LifecycleContext,
+    LifecycleGitError,
     MissingTaskWorktreeError,
     NextAction,
     NoChangesToLandError,
@@ -84,6 +100,7 @@ from blackdog.prompt_artifacts import (
     verify_prompt_artifact,
 )
 from blackdog.prompting import tune_prompt
+from blackdog.validation import ValidationRunResult, run_validation_commands
 from blackdog_core.backlog import (
     AbandonedLandingEligibility,
     BacklogError,
@@ -181,6 +198,37 @@ TASK_CLASS_ANALYSIS_PUBLISH = "analysis_publish"
 SETUP_RECEIPT_SCHEMA_VERSION = 1
 AUTO_TASK_ENVELOPE_RESERVATION_SCHEMA_VERSION = 1
 _AUTO_TASK_ENVELOPE_RESERVATION_KEY = "task_begin_reservation"
+AUTOMATIC_STALE_REBASE_MAX_ATTEMPTS = 1
+AUTOMATIC_STALE_REBASE_VALIDATION_NAME = "blackdog-post-rebase-validation"
+
+
+class AutomaticStaleRecoveryError(LifecycleGitError):
+    """A pre-intent automatic stale correction that requires agent handoff."""
+
+    operator_issue = True
+
+    def __init__(
+        self,
+        *,
+        state: str,
+        detail: str,
+        evidence: Mapping[str, Any],
+    ) -> None:
+        if state not in {"conflict", "validation_failed", "unsafe", "retry_exhausted"}:
+            raise ValueError(f"unsupported automatic stale recovery state: {state}")
+        self.state = state
+        self.failure_code = (
+            FAILURE_CLASS_UNKNOWN
+            if state == "validation_failed"
+            else FAILURE_CLASS_STALE_BRANCH
+        )
+        self.recovery_action = (
+            "rebase_task_branch"
+            if state == "retry_exhausted"
+            else f"automatic_stale_recovery_{state}"
+        )
+        self.automatic_stale_recovery = dict(evidence)
+        super().__init__(detail)
 
 
 class TaskBeginPreflightError(BacklogError):
@@ -6216,7 +6264,7 @@ def land_task(
             legacy_payload=payload,
         ))
     payload = land_task_worktree(
-        profile,
+        primary_profile,
         workset_id=resolved_workset,
         task_id=resolved_task,
         actor=resolved_actor,
@@ -6226,6 +6274,9 @@ def land_task(
         followup_candidates=followup_candidates,
         note=note,
         cleanup=cleanup,
+        _automatic_stale_recovery_enabled=(
+            primary_profile.landing.automatic_stale_rebase
+        ),
     )
     primary_text = str(payload.get("primary_worktree") or "").strip()
     operation_profile = (
@@ -6244,6 +6295,14 @@ def land_task(
         workset_id=resolved_workset,
         task_id=resolved_task,
     )
+    if payload.get("landing_correction") is None and state_payload.get(
+        "landing_correction"
+    ) is not None:
+        payload["landing_correction"] = state_payload["landing_correction"]
+    if state_payload.get("landing_correction_state") is not None:
+        payload["landing_correction_state"] = state_payload[
+            "landing_correction_state"
+        ]
     if payload.get("close_transaction_blocked"):
         close_request_value = str(payload.get("close_request_id") or "").strip()
         durable_close_request = (
@@ -6368,7 +6427,11 @@ def land_task(
             and after_transaction.terminal
         )
     )
-    mutation_phase = _landing_operation_phase(after_transaction)
+    mutation_phase = (
+        _landing_operation_phase(after_transaction)
+        if after_transaction is not None
+        else str(payload.get("mutation_phase") or "preflight")
+    )
     operation_status = (
         "succeeded"
         if success
@@ -8340,6 +8403,29 @@ def _lifecycle_context(profile: RepoProfile, payload: dict[str, Any]) -> Lifecyc
         workspace_adoption_completion_argv=tuple(
             payload.get("workspace_adoption_completion_argv") or ()
         ),
+        source_git_operation=(
+            str(payload.get("source_git_operation") or "").strip() or None
+        ),
+        source_git_operation_detail=(
+            str(payload.get("source_git_operation_detail") or "").strip() or None
+        ),
+        landing_correction_state=(
+            str(payload.get("landing_correction_state") or "").strip() or None
+        ),
+        landing_correction_resume_argv=tuple(
+            payload.get("landing_correction_resume_argv") or ()
+        ),
+        landing_correction_worktree_path=(
+            str(payload.get("landing_correction_worktree_path") or "").strip()
+            or None
+        ),
+        landing_correction_branch=(
+            str(payload.get("landing_correction_branch") or "").strip() or None
+        ),
+        landing_correction_target_branch=(
+            str(payload.get("landing_correction_target_branch") or "").strip()
+            or None
+        ),
     )
 
 
@@ -8409,6 +8495,26 @@ def _task_recovery_payload(
     )
     worktree_exists = task_worktree is not None and task_worktree.exists()
     worktree_dirty_paths = _worktree_changed_paths(profile, task_worktree) if task_worktree is not None else []
+    source_git_operation: str | None = None
+    source_git_operation_detail: str | None = None
+    if active_attempt is not None and worktree_exists and task_worktree is not None:
+        try:
+            source_git_operation = _in_progress_git_operation(task_worktree)
+        except WorktreeError:
+            source_git_operation = "inspection_error"
+            source_git_operation_detail = (
+                "Blackdog could not prove that the retained task workspace is free "
+                "of an in-progress Git operation. The current landing agent must "
+                "inspect it without resetting or discarding unique work."
+            )
+        else:
+            if source_git_operation is not None:
+                source_git_operation_detail = (
+                    f"The retained task workspace reports {source_git_operation!r}. "
+                    "Blackdog will not infer ownership, abort it, or continue landing; "
+                    "the current landing agent must preserve unique work and restore a "
+                    "coherent Git state."
+                )
     if selected_attempt is None:
         branch_ahead = False
         branch_inspection = GitReferenceInspection(
@@ -8629,6 +8735,8 @@ def _task_recovery_payload(
         "worktree_exists": worktree_exists,
         "worktree_dirty": bool(worktree_dirty_paths),
         "worktree_dirty_paths": worktree_dirty_paths,
+        "source_git_operation": source_git_operation,
+        "source_git_operation_detail": source_git_operation_detail,
         "branch_ahead_of_target": branch_ahead,
         "branch_exists": branch_exists,
         "target_branch_exists": target_branch_exists,
@@ -8823,6 +8931,61 @@ def _task_recovery_payload(
         pending_stale_owner == task_id
     )
     payload["close_transaction_pending"] = pending_close is not None
+    correction_selection = (
+        load_landing_correction_selection(
+            profile,
+            workset_id=workset_id,
+            task_id=task_id,
+            attempt_id=selected_attempt.attempt_id,
+        )
+        if selected_attempt is not None
+        else None
+    )
+    payload["landing_correction"] = (
+        correction_selection.to_dict()
+        if correction_selection is not None
+        and correction_selection.corrections
+        else None
+    )
+    correction_action_state: str | None = None
+    correction_resume_argv: tuple[str, ...] = ()
+    correction_action_receipt = None
+    if correction_selection is not None:
+        if correction_selection.active is not None:
+            correction_action_receipt = correction_selection.active
+            correction_action_state = "active"
+            correction_resume_argv = correction_action_receipt.intent.resume_argv
+        elif (
+            correction_selection.latest_terminal is not None
+            and correction_selection.latest_terminal.blocked
+        ):
+            correction_action_receipt = correction_selection.latest_terminal
+            correction_reason = str(
+                correction_action_receipt.phase_data["blocked"]["reason_code"]
+            )
+            correction_action_state = {
+                "automatic_rebase_conflict": "conflict",
+                "post_rebase_validation_failed": "validation_failed",
+                "automatic_rebase_safety_unproven": "unsafe",
+                "automatic_stale_recovery_retry_exhausted": "retry_exhausted",
+            }.get(correction_reason, "unsafe")
+    payload["landing_correction_state"] = correction_action_state
+    payload["landing_correction_resume_argv"] = list(correction_resume_argv)
+    payload["landing_correction_worktree_path"] = (
+        correction_action_receipt.intent.worktree_path
+        if correction_action_receipt is not None
+        else None
+    )
+    payload["landing_correction_branch"] = (
+        correction_action_receipt.intent.branch
+        if correction_action_receipt is not None
+        else None
+    )
+    payload["landing_correction_target_branch"] = (
+        correction_action_receipt.intent.target_branch
+        if correction_action_receipt is not None
+        else None
+    )
     if pending_close is None:
         payload["close_transaction"] = None
     elif pending_close.get("stage") == "conflict":
@@ -9228,6 +9391,972 @@ def _require_no_in_progress_source_operation(worktree_path: Path) -> None:
         )
 
 
+def _rebase_metadata_present(worktree_path: Path) -> bool:
+    for marker in ("REBASE_HEAD", "rebase-apply", "rebase-merge"):
+        marker_text = _run_git(worktree_path, "rev-parse", "--git-path", marker)
+        marker_path = Path(marker_text)
+        if not marker_path.is_absolute():
+            marker_path = worktree_path / marker_path
+        if marker_path.exists():
+            return True
+    return False
+
+
+def _stash_identity(worktree_path: Path) -> tuple[str, ...]:
+    completed = _run_git_no_check(
+        worktree_path,
+        "stash",
+        "list",
+        "--format=%H%x00%gd",
+    )
+    if completed.returncode != 0:
+        raise WorktreeError("could not inspect the task worktree stash identity")
+    return tuple(completed.stdout.splitlines())
+
+
+def _automatic_stale_recovery_payload(
+    *,
+    state: str,
+    correction_id: str | None,
+    attempt_count: int,
+    worktree_path: Path,
+    branch: str,
+    target_branch: str,
+    original_source_head: str,
+    rebased_source_head: str | None,
+    target_commit: str,
+    rebase_started: bool,
+    rebase_aborted: bool,
+    validation: ValidationRunResult | None = None,
+    validated_tree_hash: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "state": state,
+        "correction_id": correction_id,
+        "attempt_count": attempt_count,
+        "max_attempts": AUTOMATIC_STALE_REBASE_MAX_ATTEMPTS,
+        "worktree_path": str(worktree_path),
+        "branch": branch,
+        "target_branch": target_branch,
+        "original_source_head": original_source_head,
+        "rebased_source_head": rebased_source_head,
+        "target_commit": target_commit,
+        "validated_tree_hash": validated_tree_hash,
+        "rebase_started": rebase_started,
+        "rebase_aborted": rebase_aborted,
+        "worktree_preserved": True,
+        "target_updated_by_blackdog": False,
+        "landing_agent_handoff_required": state != "completed",
+        "validation": validation.to_dict() if validation is not None else None,
+    }
+
+
+def _run_automatic_stale_rebase(
+    profile: RepoProfile,
+    *,
+    attempt: Any,
+    exc: StaleTaskBranchError,
+    correction_id: str | None,
+) -> tuple[Path, str, str, dict[str, Any]]:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    worktree_path = Path(str(exc.branch_worktree or attempt.worktree_path or "")).resolve(
+        strict=False
+    )
+    if (
+        not worktree_path.exists()
+        or not _is_git_worktree_path(worktree_path)
+        or _registered_worktree_row(primary_root, worktree_path) is None
+    ):
+        evidence = _automatic_stale_recovery_payload(
+            state="unsafe",
+            correction_id=correction_id,
+            attempt_count=0,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head="unknown",
+            rebased_source_head=None,
+            target_commit="unknown",
+            rebase_started=False,
+            rebase_aborted=False,
+        )
+        raise AutomaticStaleRecoveryError(
+            state="unsafe",
+            detail="automatic stale recovery could not prove the exact task worktree registration",
+            evidence=evidence,
+        )
+    operation = _in_progress_git_operation(worktree_path)
+    if operation is not None:
+        source_head = _run_git(worktree_path, "rev-parse", "HEAD")
+        target_commit = _run_git(primary_root, "rev-parse", str(attempt.target_branch))
+        evidence = _automatic_stale_recovery_payload(
+            state="unsafe",
+            correction_id=correction_id,
+            attempt_count=0,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head=source_head,
+            rebased_source_head=None,
+            target_commit=target_commit,
+            rebase_started=False,
+            rebase_aborted=False,
+        )
+        raise AutomaticStaleRecoveryError(
+            state="unsafe",
+            detail=(
+                "automatic stale recovery found a pre-existing Git operation "
+                f"({operation}); the landing agent must inspect it"
+            ),
+            evidence=evidence,
+        )
+    branch_head = _run_git(primary_root, "rev-parse", f"refs/heads/{attempt.branch}")
+    if _run_git(worktree_path, "rev-parse", "HEAD") != branch_head:
+        raise WorktreeError("automatic stale recovery found incoherent task branch HEAD")
+    target_commit = _run_git(
+        primary_root,
+        "rev-parse",
+        f"refs/heads/{attempt.target_branch}",
+    )
+    _manifest, original_tree_hash = _projected_source_tree_manifest(worktree_path)
+    original_stash = _stash_identity(worktree_path)
+    action = _stale_branch_rebase_action(exc)
+    completed = subprocess.run(
+        list(action.argv),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    operation_after = _in_progress_git_operation(worktree_path)
+    if completed.returncode != 0 or operation_after is not None:
+        rebase_aborted = False
+        restoration_proven = False
+        if _rebase_metadata_present(worktree_path):
+            aborted = _run_git_no_check(worktree_path, "rebase", "--abort")
+            rebase_aborted = aborted.returncode == 0
+            if rebase_aborted and _in_progress_git_operation(worktree_path) is None:
+                _restored_manifest, restored_tree_hash = _projected_source_tree_manifest(
+                    worktree_path
+                )
+                restoration_proven = (
+                    _run_git(worktree_path, "rev-parse", "HEAD") == branch_head
+                    and restored_tree_hash == original_tree_hash
+                    and _stash_identity(worktree_path) == original_stash
+                )
+        state = "conflict" if restoration_proven else "unsafe"
+        current_head = _run_git(worktree_path, "rev-parse", "HEAD")
+        evidence = _automatic_stale_recovery_payload(
+            state=state,
+            correction_id=correction_id,
+            attempt_count=1,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head=branch_head,
+            rebased_source_head=current_head if current_head != branch_head else None,
+            target_commit=target_commit,
+            rebase_started=True,
+            rebase_aborted=rebase_aborted,
+        )
+        detail = (
+            "automatic stale recovery encountered a content conflict and restored "
+            "the original task workspace"
+            if restoration_proven
+            else "automatic stale recovery could not prove exact restoration; the "
+            "task workspace and any Git/autostash state were preserved"
+        )
+        raise AutomaticStaleRecoveryError(
+            state=state,
+            detail=detail,
+            evidence=evidence,
+        )
+    if _in_progress_git_operation(worktree_path) is not None:
+        raise WorktreeError("automatic stale recovery left an in-progress Git operation")
+    rebased_head = _run_git(worktree_path, "rev-parse", "HEAD")
+    current_target_commit = _run_git(
+        primary_root,
+        "rev-parse",
+        f"refs/heads/{attempt.target_branch}",
+    )
+    if current_target_commit != target_commit:
+        evidence = _automatic_stale_recovery_payload(
+            state="retry_exhausted",
+            correction_id=correction_id,
+            attempt_count=AUTOMATIC_STALE_REBASE_MAX_ATTEMPTS,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head=branch_head,
+            rebased_source_head=rebased_head,
+            target_commit=current_target_commit,
+            rebase_started=True,
+            rebase_aborted=False,
+        )
+        raise AutomaticStaleRecoveryError(
+            state="retry_exhausted",
+            detail=(
+                "the landing target moved while the one allowed automatic rebase "
+                "was running"
+            ),
+            evidence=evidence,
+        )
+    if (
+        _run_git(primary_root, "rev-parse", f"refs/heads/{attempt.branch}")
+        != rebased_head
+        or _stash_identity(worktree_path) != original_stash
+    ):
+        evidence = _automatic_stale_recovery_payload(
+            state="unsafe",
+            correction_id=correction_id,
+            attempt_count=1,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head=branch_head,
+            rebased_source_head=rebased_head,
+            target_commit=target_commit,
+            rebase_started=True,
+            rebase_aborted=False,
+        )
+        raise AutomaticStaleRecoveryError(
+            state="unsafe",
+            detail="automatic stale recovery could not prove branch or stash coherence",
+            evidence=evidence,
+        )
+    ancestor = _run_git_no_check(
+        primary_root,
+        "merge-base",
+        "--is-ancestor",
+        target_commit,
+        rebased_head,
+    )
+    if ancestor.returncode != 0:
+        evidence = _automatic_stale_recovery_payload(
+            state="unsafe",
+            correction_id=correction_id,
+            attempt_count=1,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head=branch_head,
+            rebased_source_head=rebased_head,
+            target_commit=target_commit,
+            rebase_started=True,
+            rebase_aborted=False,
+        )
+        raise AutomaticStaleRecoveryError(
+            state="unsafe",
+            detail="automatic stale recovery did not place the task on its recorded target",
+            evidence=evidence,
+        )
+    evidence = _automatic_stale_recovery_payload(
+        state="rebased",
+        correction_id=correction_id,
+        attempt_count=1,
+        worktree_path=worktree_path,
+        branch=str(attempt.branch),
+        target_branch=str(attempt.target_branch),
+        original_source_head=branch_head,
+        rebased_source_head=rebased_head,
+        target_commit=target_commit,
+        rebase_started=True,
+        rebase_aborted=False,
+    )
+    return worktree_path, rebased_head, target_commit, evidence
+
+
+def _run_post_rebase_validation(
+    profile: RepoProfile,
+    *,
+    attempt: Any,
+    worktree_path: Path,
+    original_source_head: str,
+    rebased_source_head: str,
+    target_commit: str,
+    correction_id: str | None,
+    attempt_count: int,
+    rebase_started: bool,
+) -> tuple[ValidationRunResult, str, dict[str, Any]]:
+    _before_manifest, before_tree_hash = _projected_source_tree_manifest(worktree_path)
+    validation = run_validation_commands(
+        profile.validation_commands,
+        cwd=worktree_path,
+        timeout_seconds=profile.landing.validation_timeout_seconds,
+    )
+    _after_manifest, after_tree_hash = _projected_source_tree_manifest(worktree_path)
+    if not validation.all_passed or after_tree_hash != before_tree_hash:
+        evidence = _automatic_stale_recovery_payload(
+            state="validation_failed",
+            correction_id=correction_id,
+            attempt_count=attempt_count,
+            worktree_path=worktree_path,
+            branch=str(attempt.branch),
+            target_branch=str(attempt.target_branch),
+            original_source_head=original_source_head,
+            rebased_source_head=rebased_source_head,
+            target_commit=target_commit,
+            rebase_started=rebase_started,
+            rebase_aborted=False,
+            validation=validation,
+            validated_tree_hash=(
+                after_tree_hash if after_tree_hash == before_tree_hash else None
+            ),
+        )
+        reason = (
+            "configured validation changed managed task content"
+            if after_tree_hash != before_tree_hash
+            else "configured validation did not pass on the rebased task tree"
+        )
+        raise AutomaticStaleRecoveryError(
+            state="validation_failed",
+            detail=reason,
+            evidence=evidence,
+        )
+    evidence = _automatic_stale_recovery_payload(
+        state="completed",
+        correction_id=correction_id,
+        attempt_count=attempt_count,
+        worktree_path=worktree_path,
+        branch=str(attempt.branch),
+        target_branch=str(attempt.target_branch),
+        original_source_head=original_source_head,
+        rebased_source_head=rebased_source_head,
+        target_commit=target_commit,
+        rebase_started=rebase_started,
+        rebase_aborted=False,
+        validation=validation,
+        validated_tree_hash=after_tree_hash,
+    )
+    return validation, after_tree_hash, evidence
+
+
+def _landing_correction_evidence_hash(value: Any) -> str:
+    rendered = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _landing_correction_intent(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    attempt: Any,
+    request: Mapping[str, Any],
+    generation: int,
+) -> LandingCorrectionIntent:
+    primary_root = find_primary_worktree(profile.paths.project_root)
+    worktree_path = _resolve_attempt_worktree(
+        profile,
+        branch=str(attempt.branch or ""),
+        worktree_path=attempt.worktree_path,
+    )
+    if (
+        worktree_path is None
+        or not worktree_path.exists()
+        or not _is_git_worktree_path(worktree_path)
+    ):
+        raise MissingTaskWorktreeError(worktree_path or attempt.worktree_path)
+    registration = _registered_worktree_row(primary_root, worktree_path)
+    if (
+        registration is None
+        or registration.get("branch") != f"refs/heads/{attempt.branch}"
+    ):
+        raise WorktreeError(
+            "automatic stale recovery could not prove the task worktree registration"
+        )
+    source_head = _run_git(
+        primary_root,
+        "rev-parse",
+        f"refs/heads/{attempt.branch}",
+    )
+    if _run_git(worktree_path, "rev-parse", "HEAD") != source_head:
+        raise WorktreeError(
+            "automatic stale recovery found an incoherent task branch HEAD"
+        )
+    target_commit = _run_git(
+        primary_root,
+        "rev-parse",
+        f"refs/heads/{attempt.target_branch}",
+    )
+    _manifest, source_tree_hash = _projected_source_tree_manifest(worktree_path)
+    policy_identity = {
+        "schema_version": profile.landing.schema_version,
+        "validation_timeout_seconds": profile.landing.validation_timeout_seconds,
+        "validation_command_hashes": [
+            hashlib.sha256(command.encode("utf-8")).hexdigest()
+            for command in profile.validation_commands
+        ],
+    }
+    executable = _lifecycle_blackdog_executable(
+        profile,
+        {"worktree_path": str(worktree_path)},
+    )
+    resume_argv = [
+        executable,
+        "task",
+        "land",
+        f"--project-root={primary_root}",
+        f"--workset={workset_id}",
+        f"--task={task_id}",
+        f"--actor={request['actor']}",
+        f"--summary={request['summary']}",
+    ]
+    resume_argv.extend(
+        f"--validation={name}={status}"
+        for name, status in request["validations"]
+    )
+    resume_argv.extend(
+        f"--residual={value}" for value in request["residuals"]
+    )
+    resume_argv.extend(
+        f"--followup={value}" for value in request["followup_candidates"]
+    )
+    if request["note"] is not None:
+        resume_argv.append(f"--note={request['note']}")
+    if not request["cleanup"]:
+        resume_argv.append("--keep-worktree")
+    return LandingCorrectionIntent(
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt_id=str(attempt.attempt_id),
+        actor=str(request["actor"]),
+        branch=str(attempt.branch),
+        target_branch=str(attempt.target_branch),
+        worktree_path=str(worktree_path.resolve(strict=False)),
+        source_head_commit=source_head,
+        target_commit=target_commit,
+        source_tree_hash=source_tree_hash,
+        request_identity_hash=_landing_correction_evidence_hash(dict(request)),
+        validation_policy_hash=_landing_correction_evidence_hash(policy_identity),
+        generation=generation,
+        resume_argv=tuple(resume_argv),
+    )
+
+
+def _automatic_stale_reason_code(state: str) -> str:
+    return {
+        "conflict": "automatic_rebase_conflict",
+        "validation_failed": "post_rebase_validation_failed",
+        "unsafe": "automatic_rebase_safety_unproven",
+        "retry_exhausted": "automatic_stale_recovery_retry_exhausted",
+    }[state]
+
+
+def _correction_source_state(
+    correction: LandingCorrection,
+) -> tuple[str, str, str]:
+    if CORRECTION_PHASE_VALIDATION_COMPLETED in correction.phases:
+        row = correction.phase_data[CORRECTION_PHASE_VALIDATION_COMPLETED]
+    elif CORRECTION_PHASE_REBASE_COMPLETED in correction.phases:
+        row = correction.phase_data[CORRECTION_PHASE_REBASE_COMPLETED]
+    else:
+        row = correction.phase_data[CORRECTION_PHASE_INTENT_RECORDED]
+    return (
+        str(row["source_head_commit"]),
+        str(row["target_commit"]),
+        str(row["source_tree_hash"]),
+    )
+
+
+def _raise_recorded_correction_blocker(
+    correction: LandingCorrection,
+    *,
+    current: LandingCorrectionIntent,
+) -> None:
+    blocked = correction.phase_data.get("blocked")
+    reason_code = str(blocked.get("reason_code") if blocked is not None else "")
+    state = {
+        "automatic_rebase_conflict": "conflict",
+        "post_rebase_validation_failed": "validation_failed",
+        "automatic_rebase_safety_unproven": "unsafe",
+        "automatic_stale_recovery_retry_exhausted": "retry_exhausted",
+    }.get(reason_code)
+    if state is None:
+        raise WorktreeError(
+            "automatic stale recovery has unsupported terminal correction evidence"
+        )
+    source_head, recorded_target, source_tree = _correction_source_state(correction)
+    if (
+        current.source_head_commit != source_head
+        or current.source_tree_hash != source_tree
+    ):
+        return
+    if state not in {"conflict", "unsafe", "retry_exhausted"} and (
+        current.target_commit != recorded_target
+    ):
+        return
+    evidence = _automatic_stale_recovery_payload(
+        state=state,
+        correction_id=correction.correction_id,
+        attempt_count=(
+            1
+            if CORRECTION_PHASE_REBASE_COMPLETED in correction.phases
+            else 0
+        ),
+        worktree_path=Path(current.worktree_path),
+        branch=current.branch,
+        target_branch=current.target_branch,
+        original_source_head=correction.intent.source_head_commit,
+        rebased_source_head=(
+            source_head
+            if source_head != correction.intent.source_head_commit
+            else None
+        ),
+        target_commit=current.target_commit,
+        rebase_started=CORRECTION_PHASE_REBASE_COMPLETED in correction.phases,
+        rebase_aborted=state == "conflict",
+        validated_tree_hash=(
+            source_tree
+            if CORRECTION_PHASE_VALIDATION_COMPLETED in correction.phases
+            else None
+        ),
+    )
+    evidence["receipt"] = correction.to_dict()
+    raise AutomaticStaleRecoveryError(
+        state=state,
+        detail=(
+            "the retained task state still matches the durable automatic stale "
+            "recovery blocker; the current landing agent must satisfy its typed "
+            "required inputs before retrying"
+        ),
+        evidence=evidence,
+    )
+
+
+def _record_automatic_correction_blocker(
+    profile: RepoProfile,
+    *,
+    correction_intent: LandingCorrectionIntent,
+    exc: AutomaticStaleRecoveryError,
+) -> None:
+    validation_payload = exc.automatic_stale_recovery.get("validation")
+    validation = None
+    if validation_payload is not None:
+        observed_validation = ValidationRunResult.from_dict(validation_payload)
+        if exc.state == "validation_failed":
+            validation = observed_validation
+    record_landing_correction_blocked(
+        profile,
+        intent=correction_intent,
+        reason_code=_automatic_stale_reason_code(exc.state),
+        validation=validation,
+    )
+    correction = load_landing_correction(
+        profile,
+        workset_id=correction_intent.workset_id,
+        task_id=correction_intent.task_id,
+        attempt_id=correction_intent.attempt_id,
+        correction_id=correction_intent.correction_id,
+    )
+    evidence = dict(exc.automatic_stale_recovery)
+    evidence["correction_id"] = correction_intent.correction_id
+    if correction is not None:
+        evidence["receipt"] = correction.to_dict()
+    exc.automatic_stale_recovery = evidence
+
+
+def _automatic_stale_correction(
+    profile: RepoProfile,
+    *,
+    workset_id: str,
+    task_id: str,
+    attempt: Any,
+    request: Mapping[str, Any],
+    stale_error: StaleTaskBranchError | None,
+) -> tuple[dict[str, Any], dict[str, Any], LandingCorrectionIntent]:
+    selection = load_landing_correction_selection(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt_id=str(attempt.attempt_id),
+    )
+    generation = (
+        selection.active.intent.generation
+        if selection.active is not None
+        else len(selection.corrections) + 1
+    )
+    current_intent = _landing_correction_intent(
+        profile,
+        workset_id=workset_id,
+        task_id=task_id,
+        attempt=attempt,
+        request=request,
+        generation=generation,
+    )
+    if (
+        selection.latest_terminal is not None
+        and selection.latest_terminal.blocked
+        and str(
+            selection.latest_terminal.phase_data["blocked"]["reason_code"]
+        )
+        == "automatic_stale_recovery_retry_exhausted"
+    ):
+        _raise_recorded_correction_blocker(
+            selection.latest_terminal,
+            current=current_intent,
+        )
+
+    correction = selection.active
+    created_new_correction = correction is None
+    if created_new_correction:
+        correction_intent = current_intent
+        record_landing_correction_intent(profile, intent=correction_intent)
+        correction = load_landing_correction(
+            profile,
+            workset_id=correction_intent.workset_id,
+            task_id=correction_intent.task_id,
+            attempt_id=correction_intent.attempt_id,
+            correction_id=correction_intent.correction_id,
+        )
+        if correction is None:
+            raise WorktreeError(
+                "automatic stale recovery intent was not durably observable"
+            )
+    else:
+        correction_intent = correction.intent
+        if (
+            current_intent.actor != correction_intent.actor
+            or current_intent.branch != correction_intent.branch
+            or current_intent.target_branch != correction_intent.target_branch
+            or current_intent.worktree_path != correction_intent.worktree_path
+            or current_intent.request_identity_hash
+            != correction_intent.request_identity_hash
+            or current_intent.validation_policy_hash
+            != correction_intent.validation_policy_hash
+        ):
+            evidence = _automatic_stale_recovery_payload(
+                state="unsafe",
+                correction_id=correction_intent.correction_id,
+                attempt_count=0,
+                worktree_path=Path(correction_intent.worktree_path),
+                branch=correction_intent.branch,
+                target_branch=correction_intent.target_branch,
+                original_source_head=correction_intent.source_head_commit,
+                rebased_source_head=None,
+                target_commit=current_intent.target_commit,
+                rebase_started=False,
+                rebase_aborted=False,
+            )
+            exc = AutomaticStaleRecoveryError(
+                state="unsafe",
+                detail=(
+                    "automatic stale recovery retry conflicts with its durable "
+                    "request, policy, or workspace identity"
+                ),
+                evidence=evidence,
+            )
+            _record_automatic_correction_blocker(
+                profile,
+                correction_intent=correction_intent,
+                exc=exc,
+            )
+            raise exc
+
+    try:
+        correction = load_landing_correction(
+            profile,
+            workset_id=correction_intent.workset_id,
+            task_id=correction_intent.task_id,
+            attempt_id=correction_intent.attempt_id,
+            correction_id=correction_intent.correction_id,
+        )
+        assert correction is not None
+        rebase_started = CORRECTION_PHASE_REBASE_COMPLETED in correction.phases
+        original_source_head = correction_intent.source_head_commit
+        worktree_path = Path(correction_intent.worktree_path)
+        if not rebase_started:
+            current_intent = _landing_correction_intent(
+                profile,
+                workset_id=workset_id,
+                task_id=task_id,
+                attempt=attempt,
+                request=request,
+                generation=correction_intent.generation,
+            )
+            target_is_ancestor = (
+                _run_git_no_check(
+                    find_primary_worktree(profile.paths.project_root),
+                    "merge-base",
+                    "--is-ancestor",
+                    current_intent.target_commit,
+                    current_intent.source_head_commit,
+                ).returncode
+                == 0
+            )
+            if (
+                not created_new_correction
+                and current_intent.target_commit
+                != correction_intent.target_commit
+            ):
+                evidence = _automatic_stale_recovery_payload(
+                    state="retry_exhausted",
+                    correction_id=correction_intent.correction_id,
+                    attempt_count=AUTOMATIC_STALE_REBASE_MAX_ATTEMPTS,
+                    worktree_path=worktree_path,
+                    branch=correction_intent.branch,
+                    target_branch=correction_intent.target_branch,
+                    original_source_head=original_source_head,
+                    rebased_source_head=(
+                        current_intent.source_head_commit
+                        if current_intent.source_head_commit
+                        != original_source_head
+                        else None
+                    ),
+                    target_commit=current_intent.target_commit,
+                    rebase_started=target_is_ancestor,
+                    rebase_aborted=False,
+                )
+                raise AutomaticStaleRecoveryError(
+                    state="retry_exhausted",
+                    detail=(
+                        "the target advanced after the automatic correction "
+                        "intent but before its rebase evidence was recorded"
+                    ),
+                    evidence=evidence,
+                )
+            if not created_new_correction and target_is_ancestor:
+                source_head = current_intent.source_head_commit
+                target_commit = current_intent.target_commit
+                source_tree_hash = current_intent.source_tree_hash
+                recovery_evidence = _automatic_stale_recovery_payload(
+                    state="rebased",
+                    correction_id=correction_intent.correction_id,
+                    attempt_count=1,
+                    worktree_path=worktree_path,
+                    branch=correction_intent.branch,
+                    target_branch=correction_intent.target_branch,
+                    original_source_head=original_source_head,
+                    rebased_source_head=source_head,
+                    target_commit=target_commit,
+                    rebase_started=True,
+                    rebase_aborted=False,
+                )
+                record_landing_correction_rebase_completed(
+                    profile,
+                    intent=correction_intent,
+                    source_head_commit=source_head,
+                    target_commit=target_commit,
+                    source_tree_hash=source_tree_hash,
+                )
+                rebase_started = True
+            elif stale_error is not None or not created_new_correction:
+                rebase_error = stale_error or StaleTaskBranchError(
+                    branch=correction_intent.branch,
+                    target_branch=correction_intent.target_branch,
+                    branch_worktree=worktree_path,
+                )
+                (
+                    worktree_path,
+                    source_head,
+                    target_commit,
+                    recovery_evidence,
+                ) = _run_automatic_stale_rebase(
+                    profile,
+                    attempt=attempt,
+                    exc=rebase_error,
+                    correction_id=correction_intent.correction_id,
+                )
+                _manifest, source_tree_hash = _projected_source_tree_manifest(
+                    worktree_path
+                )
+                record_landing_correction_rebase_completed(
+                    profile,
+                    intent=correction_intent,
+                    source_head_commit=source_head,
+                    target_commit=target_commit,
+                    source_tree_hash=source_tree_hash,
+                )
+                rebase_started = True
+            elif target_is_ancestor:
+                source_head = current_intent.source_head_commit
+                target_commit = current_intent.target_commit
+                source_tree_hash = current_intent.source_tree_hash
+                recovery_evidence = _automatic_stale_recovery_payload(
+                    state="validating",
+                    correction_id=correction_intent.correction_id,
+                    attempt_count=0,
+                    worktree_path=worktree_path,
+                    branch=correction_intent.branch,
+                    target_branch=correction_intent.target_branch,
+                    original_source_head=original_source_head,
+                    rebased_source_head=source_head,
+                    target_commit=target_commit,
+                    rebase_started=False,
+                    rebase_aborted=False,
+                )
+            else:
+                raise WorktreeError(
+                    "automatic stale recovery could not prove the corrected source ancestry"
+                )
+        else:
+            source_head, target_commit, source_tree_hash = _correction_source_state(
+                correction
+            )
+            current_intent = _landing_correction_intent(
+                profile,
+                workset_id=workset_id,
+                task_id=task_id,
+                attempt=attempt,
+                request=request,
+                generation=correction_intent.generation,
+            )
+            if (
+                current_intent.source_head_commit != source_head
+                or current_intent.source_tree_hash != source_tree_hash
+                or current_intent.target_commit != target_commit
+            ):
+                evidence = _automatic_stale_recovery_payload(
+                    state="retry_exhausted",
+                    correction_id=correction_intent.correction_id,
+                    attempt_count=AUTOMATIC_STALE_REBASE_MAX_ATTEMPTS,
+                    worktree_path=worktree_path,
+                    branch=correction_intent.branch,
+                    target_branch=correction_intent.target_branch,
+                    original_source_head=original_source_head,
+                    rebased_source_head=source_head,
+                    target_commit=current_intent.target_commit,
+                    rebase_started=True,
+                    rebase_aborted=False,
+                )
+                raise AutomaticStaleRecoveryError(
+                    state="retry_exhausted",
+                    detail=(
+                        "the target or corrected task tree changed after the one "
+                        "allowed automatic stale correction"
+                    ),
+                    evidence=evidence,
+                )
+            recovery_evidence = _automatic_stale_recovery_payload(
+                state="rebased",
+                correction_id=correction_intent.correction_id,
+                attempt_count=1,
+                worktree_path=worktree_path,
+                branch=correction_intent.branch,
+                target_branch=correction_intent.target_branch,
+                original_source_head=original_source_head,
+                rebased_source_head=source_head,
+                target_commit=target_commit,
+                rebase_started=True,
+                rebase_aborted=False,
+            )
+
+        correction = load_landing_correction(
+            profile,
+            workset_id=correction_intent.workset_id,
+            task_id=correction_intent.task_id,
+            attempt_id=correction_intent.attempt_id,
+            correction_id=correction_intent.correction_id,
+        )
+        assert correction is not None
+        if CORRECTION_PHASE_VALIDATION_COMPLETED not in correction.phases:
+            validation, source_tree_hash, recovery_evidence = (
+                _run_post_rebase_validation(
+                    profile,
+                    attempt=attempt,
+                    worktree_path=worktree_path,
+                    original_source_head=original_source_head,
+                    rebased_source_head=source_head,
+                    target_commit=target_commit,
+                    correction_id=correction_intent.correction_id,
+                    attempt_count=1 if rebase_started else 0,
+                    rebase_started=rebase_started,
+                )
+            )
+            record_landing_correction_validation_completed(
+                profile,
+                intent=correction_intent,
+                source_head_commit=source_head,
+                target_commit=target_commit,
+                source_tree_hash=source_tree_hash,
+                validation_evidence_hash=_landing_correction_evidence_hash(
+                    validation.to_dict()
+                ),
+                validation=validation,
+            )
+        else:
+            validation_row = correction.phase_data[
+                CORRECTION_PHASE_VALIDATION_COMPLETED
+            ]
+            source_tree_hash = str(validation_row["source_tree_hash"])
+            current_intent = _landing_correction_intent(
+                profile,
+                workset_id=workset_id,
+                task_id=task_id,
+                attempt=attempt,
+                request=request,
+                generation=correction_intent.generation,
+            )
+            if (
+                current_intent.source_head_commit != source_head
+                or current_intent.target_commit != target_commit
+                or current_intent.source_tree_hash != source_tree_hash
+            ):
+                raise AutomaticStaleRecoveryError(
+                    state="retry_exhausted",
+                    detail=(
+                        "validated automatic stale recovery evidence no longer "
+                        "matches the exact source and target"
+                    ),
+                    evidence=recovery_evidence,
+                )
+
+        corrected_request = _landing_request_with_automatic_validation(request)
+        correction = load_landing_correction(
+            profile,
+            workset_id=correction_intent.workset_id,
+            task_id=correction_intent.task_id,
+            attempt_id=correction_intent.attempt_id,
+            correction_id=correction_intent.correction_id,
+        )
+        assert correction is not None
+        recovery_evidence = dict(recovery_evidence)
+        recovery_evidence["receipt"] = correction.to_dict()
+        return corrected_request, recovery_evidence, correction_intent
+    except AutomaticStaleRecoveryError as exc:
+        _record_automatic_correction_blocker(
+            profile,
+            correction_intent=correction_intent,
+            exc=exc,
+        )
+        raise
+    except WorktreeError as cause:
+        evidence = _automatic_stale_recovery_payload(
+            state="unsafe",
+            correction_id=correction_intent.correction_id,
+            attempt_count=0,
+            worktree_path=Path(correction_intent.worktree_path),
+            branch=correction_intent.branch,
+            target_branch=correction_intent.target_branch,
+            original_source_head=correction_intent.source_head_commit,
+            rebased_source_head=None,
+            target_commit=correction_intent.target_commit,
+            rebase_started=False,
+            rebase_aborted=False,
+        )
+        exc = AutomaticStaleRecoveryError(
+            state="unsafe",
+            detail=(
+                "automatic stale recovery could not prove a safe correction or "
+                "validation state"
+            ),
+            evidence=evidence,
+        )
+        _record_automatic_correction_blocker(
+            profile,
+            correction_intent=correction_intent,
+            exc=exc,
+        )
+        raise exc from cause
+
+
 def _normalized_landing_request(
     *,
     actor: str,
@@ -9270,6 +10399,17 @@ def _normalized_landing_request(
         "note": str(note).strip() if note is not None and str(note).strip() else None,
         "cleanup": bool(cleanup),
     }
+
+
+def _landing_request_with_automatic_validation(
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    corrected_request = dict(request)
+    corrected_request["validations"] = (
+        *tuple(request["validations"]),
+        (AUTOMATIC_STALE_REBASE_VALIDATION_NAME, "passed"),
+    )
+    return corrected_request
 
 
 def _landing_request_has_evidence(
@@ -16638,6 +17778,43 @@ def _pretransaction_landing_failure_next_action(
     payload: Mapping[str, Any],
 ) -> NextAction | None:
     """Project an exact action from a typed blocker found before landing intent."""
+    automatic_action = str(payload.get("recovery_action") or "").strip()
+    automatic_actions = {
+        "automatic_stale_recovery_conflict": (
+            "automatic_rebase_conflict",
+            "The automatic rebase encountered a real content conflict. Blackdog "
+            "preserved the task workspace and did not move the target.",
+            (
+                "task_worktree_conflict_resolution",
+                "unique_work_preservation_proof",
+                "fresh_validation_evidence",
+            ),
+        ),
+        "automatic_stale_recovery_validation_failed": (
+            "post_rebase_validation_failed",
+            "Configured validation did not prove the rebased task tree. Blackdog "
+            "preserved the task workspace and did not move the target.",
+            ("task_worktree_repair", "fresh_validation_evidence"),
+        ),
+        "automatic_stale_recovery_unsafe": (
+            "automatic_rebase_safety_unproven",
+            "Blackdog could not prove a safe automatic rebase or restoration. The "
+            "task workspace is retained for the current landing agent.",
+            ("git_operation_proof", "unique_work_preservation_proof"),
+        ),
+    }
+    automatic = automatic_actions.get(automatic_action)
+    if payload.get("landing_transaction") is None and automatic is not None:
+        reason_code, reason_detail, required_inputs = automatic
+        return NextAction.terminal(
+            action_id=automatic_action,
+            kind="blocked",
+            disposition="repair_required",
+            reason_code=reason_code,
+            reason_detail=reason_detail,
+            display="Return automatic stale recovery to the current landing agent",
+            required_inputs=required_inputs,
+        )
     if (
         payload.get("landing_transaction") is not None
         or payload.get("failure_class") != FAILURE_CLASS_STALE_BRANCH
@@ -16807,7 +17984,7 @@ def _landing_blocked_payload(
         recommended_actions.append(
             "fix the landing blocker, then rerun `blackdog task land` with closure evidence"
         )
-    return {
+    payload = {
         "branch": branch,
         "target_branch": target_branch,
         "primary_worktree": str(primary_root),
@@ -16838,6 +18015,12 @@ def _landing_blocked_payload(
         "recommended_actions": recommended_actions,
         "recommended_commands": recommended_commands,
     }
+    automatic_stale_recovery = getattr(exc, "automatic_stale_recovery", None)
+    if isinstance(automatic_stale_recovery, Mapping):
+        payload["automatic_stale_recovery"] = dict(automatic_stale_recovery)
+        payload["landing_correction"] = automatic_stale_recovery.get("receipt")
+        payload["mutation_phase"] = "git_prepared"
+    return payload
 
 
 def land_task_worktree(
@@ -16852,6 +18035,7 @@ def land_task_worktree(
     followup_candidates: tuple[str, ...] = (),
     note: str | None = None,
     cleanup: bool = True,
+    _automatic_stale_recovery_enabled: bool = False,
 ) -> dict[str, Any]:
     workset, task = _require_workset_and_task(
         profile,
@@ -17038,15 +18222,149 @@ def land_task_worktree(
 
         side_effect_before: str | None = None
         intent_recorded_by_call = False
+        correction_mutation_observed = False
+        automatic_recovery_evidence: dict[str, Any] | None = None
+        correction_intent: LandingCorrectionIntent | None = None
         try:
-            if transaction is None:
-                intent = _build_landing_intent(
+            if transaction is not None:
+                correction_selection = load_landing_correction_selection(
                     profile,
-                    workset=workset,
-                    task=task,
-                    attempt=attempt,
-                    request=request,
+                    workset_id=workset_id,
+                    task_id=task_id,
+                    attempt_id=attempt.attempt_id,
                 )
+                active_correction = correction_selection.active
+                if (
+                    active_correction is not None
+                    and CORRECTION_PHASE_VALIDATION_COMPLETED
+                    in active_correction.phases
+                ):
+                    record_landing_correction_handed_to_landing(
+                        profile,
+                        intent=active_correction.intent,
+                        landing_transaction_id=transaction.intent.transaction_id,
+                        landing_intent_event_id=landing_phase_event_id(
+                            transaction.intent.transaction_id,
+                            "intent_recorded",
+                        ),
+                    )
+                    correction_mutation_observed = True
+            if transaction is None:
+                if (
+                    _automatic_stale_recovery_enabled
+                    and any(
+                        name == AUTOMATIC_STALE_REBASE_VALIDATION_NAME
+                        for name, _status in request["validations"]
+                    )
+                ):
+                    raise BacklogError(
+                        f"{AUTOMATIC_STALE_REBASE_VALIDATION_NAME!r} is reserved "
+                        "for Blackdog-owned post-rebase evidence"
+                    )
+                correction_selection = (
+                    load_landing_correction_selection(
+                        profile,
+                        workset_id=workset_id,
+                        task_id=task_id,
+                        attempt_id=attempt.attempt_id,
+                    )
+                    if _automatic_stale_recovery_enabled
+                    else None
+                )
+                try:
+                    intent = _build_landing_intent(
+                        profile,
+                        workset=workset,
+                        task=task,
+                        attempt=attempt,
+                        request=request,
+                    )
+                except StaleTaskBranchError as stale_error:
+                    if not _automatic_stale_recovery_enabled:
+                        raise
+                    correction_mutation_observed = True
+                    (
+                        request,
+                        automatic_recovery_evidence,
+                        correction_intent,
+                    ) = _automatic_stale_correction(
+                        profile,
+                        workset_id=workset_id,
+                        task_id=task_id,
+                        attempt=attempt,
+                        request=request,
+                        stale_error=stale_error,
+                    )
+                    try:
+                        intent = _build_landing_intent(
+                            profile,
+                            workset=workset,
+                            task=task,
+                            attempt=attempt,
+                            request=request,
+                        )
+                    except StaleTaskBranchError as second_stale:
+                        latest_target = _run_git(
+                            find_primary_worktree(profile.paths.project_root),
+                            "rev-parse",
+                            f"refs/heads/{attempt.target_branch}",
+                        )
+                        exhausted_evidence = dict(
+                            automatic_recovery_evidence or {}
+                        )
+                        exhausted_evidence.update(
+                            {
+                                "state": "retry_exhausted",
+                                "target_commit": latest_target,
+                                "landing_agent_handoff_required": True,
+                            }
+                        )
+                        exhausted = AutomaticStaleRecoveryError(
+                            state="retry_exhausted",
+                            detail=(
+                                "the landing target moved again after the one "
+                                "allowed automatic stale correction"
+                            ),
+                            evidence=exhausted_evidence,
+                        )
+                        assert correction_intent is not None
+                        _record_automatic_correction_blocker(
+                            profile,
+                            correction_intent=correction_intent,
+                            exc=exhausted,
+                        )
+                        raise exhausted from second_stale
+                else:
+                    if (
+                        correction_selection is not None
+                        and (
+                            correction_selection.active is not None
+                            or (
+                                correction_selection.latest_terminal is not None
+                                and correction_selection.latest_terminal.blocked
+                            )
+                        )
+                    ):
+                        correction_mutation_observed = True
+                        (
+                            request,
+                            automatic_recovery_evidence,
+                            correction_intent,
+                        ) = _automatic_stale_correction(
+                            profile,
+                            workset_id=workset_id,
+                            task_id=task_id,
+                            attempt=attempt,
+                            request=request,
+                            stale_error=None,
+                        )
+                        intent = _build_landing_intent(
+                            profile,
+                            workset=workset,
+                            task=task,
+                            attempt=attempt,
+                            request=request,
+                        )
                 intent_recorded_by_call = record_landing_phase(
                     profile,
                     intent=intent,
@@ -17054,16 +18372,47 @@ def land_task_worktree(
                     data=intent.to_dict(),
                 )
                 transaction = _reload_landing_transaction(profile, intent=intent)
+                if correction_intent is not None:
+                    record_landing_correction_handed_to_landing(
+                        profile,
+                        intent=correction_intent,
+                        landing_transaction_id=intent.transaction_id,
+                        landing_intent_event_id=landing_phase_event_id(
+                            intent.transaction_id,
+                            "intent_recorded",
+                        ),
+                    )
+                    correction_mutation_observed = True
             elif transaction.intent.request_identity() != request:
-                mismatches = sorted(
-                    key
-                    for key in request
-                    if transaction.intent.request_identity().get(key) != request.get(key)
+                corrected_retry = _landing_request_with_automatic_validation(
+                    request
                 )
-                raise LandingTransactionError(
-                    "landing retry conflicts with immutable intent on: "
-                    + ", ".join(mismatches)
+                retry_correction_selection = (
+                    load_landing_correction_selection(
+                        profile,
+                        workset_id=workset_id,
+                        task_id=task_id,
+                        attempt_id=attempt.attempt_id,
+                    )
                 )
+                handed_correction = retry_correction_selection.latest_terminal
+                if (
+                    handed_correction is not None
+                    and handed_correction.handed_to_landing
+                    and transaction.intent.request_identity() == corrected_retry
+                ):
+                    request = corrected_retry
+                else:
+                    mismatches = sorted(
+                        key
+                        for key in request
+                        if transaction.intent.request_identity().get(key)
+                        != request.get(key)
+                    )
+                    raise LandingTransactionError(
+                        "landing retry conflicts with immutable intent on: "
+                        + ", ".join(mismatches)
+                    )
             side_effect_before = _landing_side_effect_fingerprint(
                 profile,
                 intent=transaction.intent,
@@ -17094,8 +18443,33 @@ def land_task_worktree(
                     adoption_completion_recorded=True,
                     native_land_event_reused=True,
                 )
+            correction_selection = load_landing_correction_selection(
+                profile,
+                workset_id=workset_id,
+                task_id=task_id,
+                attempt_id=attempt.attempt_id,
+            )
+            completed_correction = correction_selection.latest_terminal
+            if (
+                completed_correction is not None
+                and completed_correction.handed_to_landing
+            ):
+                result["landing_correction"] = completed_correction.to_dict()
+                evidence = dict(automatic_recovery_evidence or {})
+                evidence.update(
+                    {
+                        "schema_version": 1,
+                        "state": "landed",
+                        "correction_id": completed_correction.correction_id,
+                        "target_updated_by_blackdog": True,
+                        "landing_agent_handoff_required": False,
+                        "receipt": completed_correction.to_dict(),
+                    }
+                )
+                result["automatic_stale_recovery"] = evidence
             result["mutation_observed"] = (
                 intent_recorded_by_call
+                or correction_mutation_observed
                 or side_effect_before
                 != _landing_side_effect_fingerprint(
                     profile,
@@ -17112,6 +18486,8 @@ def land_task_worktree(
             )
             mutation_observed = bool(
                 intent_recorded_by_call
+                or correction_mutation_observed
+                or isinstance(exc, AutomaticStaleRecoveryError)
                 or (
                     side_effect_before is not None
                     and current is not None
@@ -17156,6 +18532,28 @@ def land_task_worktree(
                             adoption_completion_recorded=True,
                             native_land_event_reused=True,
                         )
+                    correction_selection = load_landing_correction_selection(
+                        profile,
+                        workset_id=workset_id,
+                        task_id=task_id,
+                        attempt_id=attempt.attempt_id,
+                    )
+                    completed_correction = correction_selection.latest_terminal
+                    if (
+                        completed_correction is not None
+                        and completed_correction.handed_to_landing
+                    ):
+                        result["landing_correction"] = (
+                            completed_correction.to_dict()
+                        )
+                        result["automatic_stale_recovery"] = {
+                            "schema_version": 1,
+                            "state": "landed",
+                            "correction_id": completed_correction.correction_id,
+                            "target_updated_by_blackdog": True,
+                            "landing_agent_handoff_required": False,
+                            "receipt": completed_correction.to_dict(),
+                        }
                     result["mutation_observed"] = mutation_observed
                     return result
             terminal_status = _terminal_land_failure_status(exc)

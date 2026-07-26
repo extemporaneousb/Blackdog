@@ -305,16 +305,24 @@ Dirty or branch-ahead active tasks use blocked action
 `mutation_started=false`, `mutation_completed=false`, and
 `mutation_phase="none"`; it creates no landing transaction and changes no
 canonical event, runtime, or Git state. Validation rows are caller evidence and
-are never synthesized.
+are never synthesized during ordinary landing. The sole reserved exception is
+the product-owned `blackdog-post-rebase-validation=passed` row described below.
 
 After a first `task land` request supplies that evidence, a stale task branch
-detected before landing intent returns the exact worktree-local
-`rebase_task_branch` command as its authoritative `next_action`. The result is
-still mutation-free; compatibility recommendations do not replace that action.
-The argv uses `git rebase --autostash <target_branch>` in the exact task
-worktree, preserving dirty tracked and staged content while Git protects
-untracked paths from overwrite. The generic `landing_evidence_required` action
-must not replace this classified recovery.
+detected before landing intent retains the existing exact worktree-local
+`rebase_task_branch` command unless `[landing].automatic_stale_rebase` is
+enabled. With that v1 policy enabled, `task land` durably records a correction
+intent, runs that exact `git rebase --autostash <target_branch>` operation once,
+executes every configured validation command in the task worktree, and retries
+the existing canonical landing path. Successful validation appends the
+reserved product evidence row. Conflict, validation failure, or unsafe Git
+state returns a commandless typed `automatic_stale_recovery_*` blocker. A
+second pre-intent target movement records `retry_exhausted` but returns the
+existing exact command-bearing `rebase_task_branch` action; post-intent
+compare-and-swap staleness retains the existing transaction-safe recovery
+route. Every stopped path preserves the task workspace. The low-level
+`worktree land` surface and repositories without the complete policy retain
+the previous manual action.
 
 Durable landing reports the latest completed transaction phase as
 `mutation_phase`. The nine normal values are `landing_intent_recorded`,
@@ -377,6 +385,37 @@ Current required top-level sections:
 - `[paths]`
 - `[taxonomy]`
 - `[[handlers]]`
+
+The additive `[landing]` section is optional when reading older profiles. The
+default renderer writes:
+
+```toml
+[landing]
+schema_version = 1
+automatic_stale_rebase = false
+validation_timeout_seconds = 900
+```
+
+Only schema version `1` is accepted. Enabling `automatic_stale_rebase` requires
+an explicitly configured, nonempty `[taxonomy].validation_commands` list.
+`validation_timeout_seconds` is an integer from 1 through 3600 and applies per
+configured command. The correction budget is product-owned and fixed at one;
+it is deliberately not a profile knob.
+
+An enabled repository supplies both parts explicitly; for example:
+
+```toml
+[taxonomy]
+validation_commands = [
+  "python -m unittest discover -s tests -p 'test_*.py'",
+  "python -m compileall -q src",
+]
+
+[landing]
+schema_version = 1
+automatic_stale_rebase = true
+validation_timeout_seconds = 900
+```
 
 Current shipped handler kinds:
 
@@ -1039,6 +1078,7 @@ Current shipped write path:
 - `task.finish`
 - `task.landing.reconciled`
 - `worktree.start`
+- `worktree.landing.correction`
 - `worktree.landing.phase`
 - `worktree.landing.abort`
 - `worktree.landing.abort-cleanup`
@@ -1264,6 +1304,41 @@ intentional retention as that phase's completion rather than leaving the
 transaction unfinished. Landing, close, cleanup, and reconciliation apply for
 one attempt share a product-layer operation lock. The lock is coordination,
 not planning/runtime truth, and does not add a `runtime.json` field.
+
+`worktree.landing.correction` is the additive product-layer receipt for an
+enabled pre-intent automatic stale correction. Its schema-version-1 payload is
+keyed to a deterministic `correction_id` and one attempt, and forms one
+append-once prefix:
+
+1. `intent_recorded`
+2. optional `rebase_completed`
+3. `validation_completed`
+4. either `handed_to_landing` or `blocked`
+
+Intent evidence binds a contiguous correction `generation`, the exact
+source/target/worktree identities, the exact original `task land` resume argv,
+and hashes of the projected source tree, landing request, and authoritative
+validation policy. Validation evidence contains command-result hashes, counts,
+statuses, return codes, timings, and output byte counts; it never stores
+commands or output. `handed_to_landing` binds the ordinary landing transaction
+and its intent event. `blocked` stores only a stable reason code and preceding
+phase, plus the same bounded typed validation result when validation caused
+the blocker. Exact phase retries are append-once no-ops; conflicting evidence,
+non-contiguous generations, or multiple active correction generations fail
+closed. `task show`, `task recover`, and landing results expose this receipt as
+typed `landing_correction` state. An active generation returns its recorded
+resume argv exactly. A later explicit `task land` call may append a new
+generation after a conflict, failed validation, or repairable safety blocker;
+the earlier terminal evidence remains immutable. A `retry_exhausted`
+generation instead remains authoritative until the task source changes by the
+exact returned manual rebase action.
+
+Validation commands run in owned process groups. Timeout, lingering
+descendants, and catchable Blackdog interruption terminate that group before
+returning. An uncatchable process death or machine loss cannot prove that a
+previous external command stopped; that exceptional condition requires
+process/worktree inspection by the landing agent before another landing call
+and is never inferred as successful from the receipt.
 
 ### Workspace adoption receipts and completion events
 
