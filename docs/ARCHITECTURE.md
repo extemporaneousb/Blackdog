@@ -292,6 +292,14 @@ request and expected source/target state, and cannot be replaced by a retry
 with different inputs. `runtime.json` remains schema v3; transaction progress
 lives in additive `worktree.landing.phase` events.
 
+The canonical Git message is a versioned product-layer envelope. Format 2 is
+human-first: normalized completion-summary lines precede the machine section,
+with the first line serving as the Git subject and each later line representing
+one major change. Canonical Blackdog trailers remain the identity/proof plane.
+Readers accept trailer-compatible legacy format 1 (no format trailer) during
+the transition and format 2 (`Blackdog-Commit-Format: 2`), while rejecting an
+explicit unknown or duplicated version.
+
 Every retry re-proves the completed phase postconditions and resumes the same
 attempt with the exact recorded request. Git preparation uses a deterministic
 temporary worktree. Target movement is compare-and-swap against the recorded

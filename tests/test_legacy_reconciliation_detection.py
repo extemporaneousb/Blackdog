@@ -179,9 +179,14 @@ class LegacyReconciliationDetectionTests(CoreAuditTestCase):
         target_branch: str = "main",
         paths: tuple[str, ...] = ("legacy source.txt",),
         duplicate_status: bool = False,
+        commit_format: str | None = None,
     ) -> str:
         lines = [
-            f"blackdog({WORKSET_ID}/{TASK_ID}): Historical landing",
+            (
+                "Restore historical landing evidence"
+                if commit_format is not None
+                else f"blackdog({WORKSET_ID}/{TASK_ID}): Historical landing"
+            ),
             "",
             "Git mutation completed before the old runtime ledger was finalized.",
             "",
@@ -193,6 +198,8 @@ class LegacyReconciliationDetectionTests(CoreAuditTestCase):
         ]
         if duplicate_status:
             lines.append(f"Blackdog-Status: {status}")
+        if commit_format is not None:
+            lines.append(f"Blackdog-Commit-Format: {commit_format}")
         lines.append(f"Blackdog-Target-Branch: {target_branch}")
         lines.extend(f"Blackdog-Changed-Path: {path}" for path in paths)
         return "\n".join(lines) + "\n"
@@ -206,6 +213,7 @@ class LegacyReconciliationDetectionTests(CoreAuditTestCase):
         status: str = "success",
         target_branch: str = "main",
         duplicate_status: bool = False,
+        commit_format: str | None = None,
         path: str = "legacy source.txt",
         content: str | None = None,
     ) -> str:
@@ -228,6 +236,7 @@ class LegacyReconciliationDetectionTests(CoreAuditTestCase):
                 target_branch=target_branch,
                 paths=(path,),
                 duplicate_status=duplicate_status,
+                commit_format=commit_format,
             ),
         )
         return self._git_out("rev-parse", "HEAD")
@@ -433,6 +442,35 @@ class LegacyReconciliationDetectionTests(CoreAuditTestCase):
                 self.assertIn("--apply", stdout)
                 self.assertIn("Apply the proven landing reconciliation", stdout)
                 self._assert_read_only(before)
+
+    def test_v2_human_first_candidate_is_ready(self) -> None:
+        attempt = self._start_attempt()
+        source_commit = self._source_commit(attempt)
+        candidate = self._canonical_candidate(
+            attempt,
+            source_commit=source_commit,
+            commit_format="2",
+        )
+        self._finish(attempt, source_commit=source_commit)
+
+        detection = self._detection(self._show_json())
+        self.assertEqual(detection["state"], "ready")
+        self.assertEqual(detection["candidate_commit"], candidate)
+        self.assertEqual(detection["proof"]["commit_format"], 2)
+
+    def test_unsupported_commit_format_candidate_is_unproven(self) -> None:
+        attempt = self._start_attempt()
+        source_commit = self._source_commit(attempt)
+        self._canonical_candidate(
+            attempt,
+            source_commit=source_commit,
+            commit_format="99",
+        )
+        self._finish(attempt, source_commit=source_commit)
+
+        detection = self._detection(self._show_json())
+        self.assertEqual(detection["state"], "unproven")
+        self.assertIn("Blackdog-Commit-Format", detection["reason_detail"])
 
     def test_source_object_missing_is_ready_but_source_patch_mismatch_is_unproven(self) -> None:
         attempt, _source, candidate = self._ready_history(source_recorded=False)

@@ -1740,10 +1740,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(land_payload["cleaned_worktree"], str(worktree_path))
         self.assertFalse(worktree_path.exists())
         landed_message = self.git_output("show", "-s", "--format=%B", land_payload["landed_commit"])
-        self.assertIn("blackdog(direct-mode/DM-1): Record stats", landed_message)
+        self.assertEqual(landed_message.splitlines()[0], "finished direct mode")
+        self.assertNotIn("blackdog(direct-mode/DM-1): Record stats", landed_message)
         self.assertIn("Blackdog-Workset: direct-mode", landed_message)
         self.assertIn("Blackdog-Task: DM-1", landed_message)
         self.assertIn("Blackdog-Status: success", landed_message)
+        self.assertIn("Blackdog-Commit-Format: 2", landed_message)
         self.assertIn("Blackdog-Execution-Model: direct_wtam", landed_message)
         self.assertIn("Blackdog-Model: gpt-5.4", landed_message)
         self.assertIn("Blackdog-Reasoning-Effort: high", landed_message)
@@ -1908,9 +1910,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         task_payload = json.loads(stdout)["task"]
         workset_id = task_payload["workset_id"]
+        task_id = task_payload["task_id"]
         worktree_path = Path(task_payload["worktree"]["worktree_path"])
         self.assertTrue(task_payload["created_workset"])
-        self.assertEqual(task_payload["task_id"], "TASK-1")
+        self.assertRegex(task_id, r"^TASK-[0-9A-F]{8}$")
+        self.assertEqual(task_id.removeprefix("TASK-"), workset_id.rsplit("-", 1)[-1].upper())
+        self.assertIn(task_id.lower(), task_payload["worktree"]["task_slug"])
         self.assertEqual(task_payload["prompt_mode"], "raw")
         self.assertEqual(task_payload["user_prompt_hash"], task_payload["execution_prompt_hash"])
         self.assertTrue(workset_id.startswith("task-"))
@@ -1954,7 +1959,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         show_payload = json.loads(stdout)["task_show"]
         self.assertTrue(show_payload["active_attempt"])
         self.assertEqual(show_payload["workset_id"], workset_id)
-        self.assertEqual(show_payload["task_id"], "TASK-1")
+        self.assertEqual(show_payload["task_id"], task_id)
         self.assertIn("task-begin.txt", show_payload["changed_paths"])
         self.assertEqual(show_payload["user_prompt_hash"], task_payload["user_prompt_hash"])
         self.assertEqual(show_payload["execution_prompt_hash"], task_payload["execution_prompt_hash"])
@@ -1966,7 +1971,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--project-root",
             str(self.root),
             "--summary",
-            "finished the same-thread task flow",
+            "Make same-thread task history human-readable.\nGenerate unique task IDs for new task envelopes.",
             "--validation",
             "unit=passed",
             "--json",
@@ -1975,11 +1980,16 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(exit_code, 0, stderr)
         land_payload = json.loads(stdout)["landing"]
         self.assertEqual(land_payload["status"], "success")
-        self.assertEqual(land_payload["task_id"], "TASK-1")
+        self.assertEqual(land_payload["task_id"], task_id)
         self.assertIn("task-begin.txt", land_payload["changed_paths"])
         self.assertFalse(worktree_path.exists())
         landed_message = self.git_output("show", "-s", "--format=%B", land_payload["landed_commit"])
-        self.assertIn(f"blackdog({workset_id}/TASK-1)", landed_message)
+        landed_lines = landed_message.splitlines()
+        self.assertEqual(landed_lines[0], "Make same-thread task history human-readable.")
+        self.assertIn("Generate unique task IDs for new task envelopes.", landed_lines)
+        self.assertNotIn(f"blackdog({workset_id}/{task_id})", landed_message)
+        self.assertIn(f"Blackdog-Task: {task_id}", landed_message)
+        self.assertIn("Blackdog-Commit-Format: 2", landed_message)
         self.assertIn("Blackdog-Changed-Path: task-begin.txt", landed_message)
         self.assertIn("Blackdog-Validation: unit=passed", landed_message)
         self.assertIn("Blackdog-Model: gpt-5.5", landed_message)
@@ -2009,7 +2019,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--workset",
             workset_id,
             "--task",
-            "TASK-1",
+            task_id,
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)

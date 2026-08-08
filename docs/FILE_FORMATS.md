@@ -297,6 +297,12 @@ durable evidence, normally `repair_task_start_evidence` when a deterministic
 row is missing. Diagnostic `error` and `error_type` fields contain no prompt
 body. Compatibility recommendations remain non-authoritative.
 
+Automatic one-task envelopes created by `task begin` share one random
+eight-hex suffix between their identities: `workset_id` ends in the lowercase
+suffix and `task_id` is `TASK-<UPPERCASE_SUFFIX>`. This replaces the historical
+hard-coded `TASK-1` for new envelopes only. Task ids remain workset-scoped, and
+older planning/runtime records containing `TASK-1` require no migration.
+
 Dirty or branch-ahead active tasks use blocked action
 `landing_evidence_required` until both `completion_summary` and
 `validation_evidence` are supplied. The action has no argv. A first
@@ -1508,9 +1514,12 @@ also appends the exact transactional `worktree.land` row and, when the landing
 intent requested cleanup, removes the retained source only after that landing
 proof independently authorizes cleanup.
 
-`commit_message` is the canonical landed-commit message Blackdog wrote. Today
-that message carries `Blackdog-Workset`, `Blackdog-Task`, `Blackdog-Attempt`,
-`Blackdog-Actor`, and `Blackdog-Status` trailers, optional
+`commit_message` is the canonical landed-commit message Blackdog wrote. Format
+2 puts the first nonblank normalized summary line in the Git subject and emits
+each later nonblank summary line as one body line before the machine section.
+It records `Blackdog-Commit-Format: 2` and carries `Blackdog-Workset`,
+`Blackdog-Task`, `Blackdog-Attempt`, `Blackdog-Actor`, and `Blackdog-Status`
+trailers, optional
 `Blackdog-Target-Branch`, `Blackdog-Execution-Model`, `Blackdog-Model`,
 `Blackdog-Reasoning-Effort`, `Blackdog-Prompt-Hash`,
 `Blackdog-Prompt-Source`, and `Blackdog-Prompt-Mode`; when the raw user prompt
@@ -1519,6 +1528,9 @@ lineage differs from the execution prompt lineage, it also carries
 `Blackdog-User-Prompt-Mode`; it always includes one `Blackdog-Changed-Path`
 trailer per changed path, plus any `Blackdog-Validation`/
 `Blackdog-Residual`/`Blackdog-Followup` trailers supplied at land time.
+Readers accept both this format and legacy format 1, identified by the absence
+of `Blackdog-Commit-Format` and the old `blackdog(workset/task): title`
+subject. An explicit unsupported or duplicated format trailer is not canonical.
 
 Current `task.landing.reconciled` payloads record:
 

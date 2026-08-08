@@ -198,6 +198,7 @@ TASK_CLASS_ANALYSIS_PUBLISH = "analysis_publish"
 SETUP_RECEIPT_SCHEMA_VERSION = 1
 AUTO_TASK_ENVELOPE_RESERVATION_SCHEMA_VERSION = 1
 _AUTO_TASK_ENVELOPE_RESERVATION_KEY = "task_begin_reservation"
+CANONICAL_COMMIT_FORMAT_VERSION = "2"
 AUTOMATIC_STALE_REBASE_MAX_ATTEMPTS = 1
 AUTOMATIC_STALE_REBASE_VALIDATION_NAME = "blackdog-post-rebase-validation"
 
@@ -978,7 +979,9 @@ def _auto_task_workset_payload(
 ) -> dict[str, Any]:
     resolved_title = str(title or "").strip() or _derive_task_title(prompt)
     title_slug = slugify(resolved_title) or "task"
-    workset_id = f"task-{title_slug}-{uuid.uuid4().hex[:8]}"
+    identity_suffix = uuid.uuid4().hex[:8]
+    workset_id = f"task-{title_slug}-{identity_suffix}"
+    task_id = f"TASK-{identity_suffix.upper()}"
     target_branch = _target_branch_for_current_worktree(profile, repo_root=workspace_root)
     return {
         "id": workset_id,
@@ -996,7 +999,7 @@ def _auto_task_workset_payload(
         },
         "tasks": [
             {
-                "id": "TASK-1",
+                "id": task_id,
                 "title": resolved_title,
                 "intent": resolved_title,
                 "description": prompt,
@@ -2857,18 +2860,29 @@ def _canonical_commit_message(
     residuals: tuple[str, ...],
     followup_candidates: tuple[str, ...],
 ) -> str:
-    subject = f"blackdog({workset.workset_id}/{task.task_id}): {task.title}"
+    summary_lines = tuple(
+        " ".join(line.split())
+        for line in str(summary).splitlines()
+        if line.strip()
+    )
+    if not summary_lines:
+        raise BacklogError("landing summary must contain a nonempty human-readable line")
     lines = [
-        subject,
+        summary_lines[0],
         "",
-        summary.strip(),
-        "",
-        f"Blackdog-Workset: {workset.workset_id}",
-        f"Blackdog-Task: {task.task_id}",
-        f"Blackdog-Attempt: {attempt_id}",
-        f"Blackdog-Actor: {actor}",
-        f"Blackdog-Status: {status}",
     ]
+    if len(summary_lines) > 1:
+        lines.extend((*summary_lines[1:], ""))
+    lines.extend(
+        [
+            f"Blackdog-Workset: {workset.workset_id}",
+            f"Blackdog-Task: {task.task_id}",
+            f"Blackdog-Attempt: {attempt_id}",
+            f"Blackdog-Actor: {actor}",
+            f"Blackdog-Status: {status}",
+            f"Blackdog-Commit-Format: {CANONICAL_COMMIT_FORMAT_VERSION}",
+        ]
+    )
     if target_branch:
         lines.append(f"Blackdog-Target-Branch: {target_branch}")
     if execution_model:
@@ -14419,6 +14433,20 @@ def _require_exact_canonical_trailer(
         )
 
 
+def _require_supported_canonical_commit_format(
+    trailers: dict[str, list[str]],
+) -> int:
+    values = trailers.get("Blackdog-Commit-Format", [])
+    if not values:
+        return 1
+    if values == [CANONICAL_COMMIT_FORMAT_VERSION]:
+        return int(CANONICAL_COMMIT_FORMAT_VERSION)
+    raise WorktreeError(
+        "landed commit canonical trailer Blackdog-Commit-Format must be absent "
+        f"for legacy format 1 or exactly {CANONICAL_COMMIT_FORMAT_VERSION!r}; got {values!r}"
+    )
+
+
 def _stable_diff_patch_id(repo_root: Path, base_commit: str, head_commit: str) -> str:
     diff = _run_git(repo_root, "diff", "--binary", base_commit, head_commit)
     if not diff:
@@ -14663,6 +14691,10 @@ def _prove_landing_reconciliation_candidate(
             _require_exact_canonical_trailer(trailers, key=key, expected=expected)
         except WorktreeError as exc:
             raise LandingReconciliationProofError(str(exc)) from exc
+    try:
+        commit_format = _require_supported_canonical_commit_format(trailers)
+    except WorktreeError as exc:
+        raise LandingReconciliationProofError(str(exc)) from exc
     commit_actor_values = trailers.get("Blackdog-Actor", [])
     if len(commit_actor_values) != 1 or not commit_actor_values[0]:
         raise LandingReconciliationProofError(
@@ -14771,6 +14803,7 @@ def _prove_landing_reconciliation_candidate(
         "landed_parent_commit": landed_parent_commit,
         "reachable_from_target": True,
         "canonical_trailers": {**expected_trailers, "Blackdog-Actor": commit_actor},
+        "commit_format": commit_format,
         "commit_actor": commit_actor,
         "attempt_actor": attempt.actor,
         "actor_matches_attempt": actor_matches_attempt,
@@ -16630,6 +16663,7 @@ def _reconcile_adopted_successor_landing(
     }
     for key, expected in expected_trailers.items():
         _require_exact_canonical_trailer(trailers, key=key, expected=expected)
+    commit_format = _require_supported_canonical_commit_format(trailers)
     trailer_paths = tuple(sorted(trailers.get("Blackdog-Changed-Path", ())))
     if trailer_paths != tuple(sorted(transaction.intent.changed_paths)):
         raise WorktreeError(
@@ -16643,6 +16677,7 @@ def _reconcile_adopted_successor_landing(
         "source_tree_hash": source_tree_hash,
         "source_attribution": source_attribution,
         "canonical_trailers": expected_trailers,
+        "commit_format": commit_format,
         "changed_paths": list(transaction.intent.changed_paths),
         "successor_only_work_absent": True,
     }

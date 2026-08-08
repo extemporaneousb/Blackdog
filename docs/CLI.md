@@ -535,6 +535,12 @@ execution prompt receipt, provisions the task worktree, and starts the WTAM
 attempt in one command. That envelope is runtime bookkeeping for attempt
 history and recovery, not a repo-facing planning workflow.
 
+New automatic envelopes use one shared eight-hex identity suffix: the workset
+ends in the lowercase suffix and its task id is `TASK-<UPPERCASE_SUFFIX>`.
+That makes the task id recognizable in its worktree/branch identity and useful
+across repository history instead of repeating `TASK-1`. Existing envelopes
+whose workset-scoped task id is `TASK-1` remain fully readable and resumable.
+
 The stable ordinary task owner is `codex`. A supervising multi-agent task may
 explicitly use `codex-supervisor`; that one supervisor owns the Blackdog task
 and attempt while workers contribute inside it. Workers do not create parallel
@@ -1595,9 +1601,12 @@ It:
 - auto-stages dirty task-worktree changes and creates an internal prep commit
   on the task branch when needed
 - creates one canonical landed commit for the successful task attempt
+- writes commit-format 2 messages whose first nonblank `--summary` line is the
+  Git subject, whose later nonblank summary lines are one major body item each,
+  and whose machine metadata follows the human-readable section
 - writes canonical landed-commit trailers for `Blackdog-Workset`,
   `Blackdog-Task`, `Blackdog-Attempt`, `Blackdog-Actor`, `Blackdog-Status`,
-  optional `Blackdog-Target-Branch`, `Blackdog-Execution-Model`,
+  `Blackdog-Commit-Format`, optional `Blackdog-Target-Branch`, `Blackdog-Execution-Model`,
   `Blackdog-Model`, `Blackdog-Reasoning-Effort`, `Blackdog-Prompt-Hash`,
   `Blackdog-Prompt-Source`, and `Blackdog-Prompt-Mode`; when the raw user
   prompt lineage differs from the execution prompt lineage, it also writes
