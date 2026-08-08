@@ -101,6 +101,68 @@ class BlackdogCliTests(CoreAuditTestCase):
                 text=True,
             )
 
+    def install_repository_guard(self) -> None:
+        guard_path = self.root / "repository_guard.py"
+        guard_path.write_text(
+            "import hashlib\n"
+            "import json\n"
+            "import sys\n\n"
+            "payload = json.load(sys.stdin)\n"
+            "text = payload['task']['execution_prompt']['text']\n"
+            "digest = hashlib.sha256(text.encode('utf-8')).hexdigest()\n"
+            "if digest != payload['task']['execution_prompt']['sha256']:\n"
+            "    result = {\n"
+            "        'schema_version': 1,\n"
+            "        'status': 'blocked',\n"
+            "        'reason_code': 'prompt_digest_mismatch',\n"
+            "        'message': 'The structured prompt digest did not match.',\n"
+            "        'required_inputs': ['valid_prompt_digest'],\n"
+            "    }\n"
+            "elif text == 'Return an invalid guard result.':\n"
+            "    result = {'status': 'passed'}\n"
+            "elif text == 'Block this repository action.':\n"
+            "    result = {\n"
+            "        'schema_version': 1,\n"
+            "        'status': 'blocked',\n"
+            "        'reason_code': 'repository_approval_missing',\n"
+            "        'message': 'Repository approval evidence is required.',\n"
+            "        'required_inputs': ['repository_approval'],\n"
+            "    }\n"
+            "else:\n"
+            "    result = {\n"
+            "        'schema_version': 1,\n"
+            "        'status': 'passed',\n"
+            "        'reason_code': 'repository_policy_passed',\n"
+            "        'message': 'Repository policy passed.',\n"
+            "        'required_inputs': [],\n"
+            "    }\n"
+            "json.dump(result, sys.stdout)\n",
+            encoding="utf-8",
+        )
+        profile_path = self.root / "blackdog.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8")
+            + "\n[[guards]]\n"
+            + "schema_version = 1\n"
+            + 'id = "repository-policy"\n'
+            + 'phase = "task_begin"\n'
+            + f"command = [{json.dumps(sys.executable)}, \"repository_guard.py\"]\n"
+            + "timeout_seconds = 10\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "blackdog.toml", "repository_guard.py"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Configure repository guard"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def _runtime_transition_fault_fixture(
         self,
         *,
@@ -1921,7 +1983,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertTrue(workset_id.startswith("task-"))
         self.assertTrue(worktree_path.exists())
         self.assertEqual(task_payload["worktree"]["setup_receipt"]["status"], "ok")
-        self.assertEqual(task_payload["worktree"]["setup_receipt"]["task_class"], "implementation")
+        self.assertEqual(task_payload["worktree"]["setup_receipt"]["guard_receipts"], [])
         self.assertNotIn("skill_provenance", task_payload)
         self.assertNotIn("skill_provenance", task_payload["worktree"]["setup_receipt"])
 
@@ -1938,7 +2000,7 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIsNone(started_attempt["prompt_receipt"]["text"])
         attempt_row = json.loads(stdout)["runtime_model"]["attempts"][0]
         self.assertEqual(attempt_row["setup_status"], "ok")
-        self.assertEqual(attempt_row["task_class"], "implementation")
+        self.assertEqual(attempt_row["guard_receipts_count"], 0)
         self.assertEqual(attempt_row["setup_blockers_count"], 0)
         self.assertEqual(attempt_row["setup_receipt"]["status"], "ok")
         self.assertIsNone(attempt_row["skill_path"])
@@ -2470,8 +2532,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertIn("must have exactly one parent for reconciliation", stderr)
         self.assertEqual(load_runtime_state(profile.paths).worksets[0].attempts[0].status, "failed")
 
-    def test_task_begin_deployment_guard_blocks_before_auto_task_creation(self) -> None:
+    def test_configured_repository_guard_blocks_before_auto_task_creation(self) -> None:
         self.install_repo_runtime()
+        self.install_repository_guard()
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -2481,7 +2544,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--actor",
             "codex",
             "--prompt",
-            "Deploy production now.",
+            "Block this repository action.",
             "--json",
         )
 
@@ -2497,11 +2560,12 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse(task_payload["mutation_completed"])
         self.assertEqual(task_payload["mutation_phase"], "none")
         self.assertEqual(task_payload["failure_code"], "setup_guard")
-        self.assertEqual(task_payload["next_action"]["action_id"], "deployment_route_required")
+        self.assertEqual(task_payload["next_action"]["action_id"], "repository_guard_blocked")
         self.assertEqual(task_payload["next_action"]["kind"], "blocked")
         self.assertEqual(task_payload["next_action"]["argv"], [])
-        self.assertEqual(task_payload["next_action"]["required_inputs"], ["deployment_route"])
-        self.assertIn("deployment tasks must name the CI/GitHub Actions route", task_payload["error"])
+        self.assertEqual(task_payload["next_action"]["required_inputs"], ["repository_approval"])
+        self.assertEqual(task_payload["next_action"]["reason_code"], "repository_approval_missing")
+        self.assertIn("Repository approval evidence is required", task_payload["error"])
         profile = load_profile(self.root)
         self.assertEqual(load_planning_state(profile.paths).worksets, ())
         self.assertEqual(load_runtime_state(profile.paths).worksets, ())
@@ -2517,12 +2581,12 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--project-root",
             str(self.root),
             "--prompt",
-            "Deploy production now.",
+            "Block this repository action.",
         )
         self.assertEqual(exit_code, 1)
         self.assertEqual(text_stderr, "")
         self.assertIn("operation status: blocked", text_stdout)
-        self.assertIn("next action: deployment_route_required", text_stdout)
+        self.assertIn("next action: repository_guard_blocked", text_stdout)
         self.assertIn("next action kind: blocked", text_stdout)
         self.assertNotIn("next command:", text_stdout)
 
@@ -2563,6 +2627,8 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertFalse((profile.paths.control_dir / "prompts").exists())
 
     def test_task_begin_preflight_observation_failure_is_fail_open(self) -> None:
+        self.install_repo_runtime()
+        self.install_repository_guard()
         profile = load_profile(self.root)
         with patch("blackdog.observability.observe_lifecycle", side_effect=OSError("telemetry unavailable")):
             exit_code, stdout, stderr = self.run_cli(
@@ -2571,7 +2637,7 @@ class BlackdogCliTests(CoreAuditTestCase):
                 "--project-root",
                 str(self.root),
                 "--prompt",
-                "Deploy production now.",
+                "Block this repository action.",
                 "--json",
             )
 
@@ -2584,36 +2650,9 @@ class BlackdogCliTests(CoreAuditTestCase):
         self.assertEqual(load_planning_state(profile.paths).worksets, ())
         self.assertEqual(load_runtime_state(profile.paths).worksets, ())
 
-    def test_task_prompt_classification_requires_positive_specific_signals(self) -> None:
-        implementation_prompts = (
-            "Correct stale guidance and avoid any deploy targets.",
-            "Deduplicate pairing stability report modules and refresh the managed skill.",
-            "Remove duplicate Reportdog helpers without publishing anything.",
-            "Update the release notes.",
-        )
-        for prompt in implementation_prompts:
-            with self.subTest(prompt=prompt):
-                receipt = wtam._task_start_guard_receipt(prompt)
-                self.assertEqual(receipt["task_class"], "implementation")
-                self.assertEqual(receipt["status"], "ok")
-                self.assertEqual(receipt["blockers"], [])
-
-        classified_prompts = (
-            ("Deploy production now.", "deployment", "blocked"),
-            ("Do not deploy manually; deploy through GitHub Actions workflow_dispatch.", "deployment", "ok"),
-            ("Publish the analysis report to SharePoint.", "analysis_publish", "ok"),
-            ("Refresh the production database from its source.", "deployment", "blocked"),
-            ("Refresh the local dataset from its source.", "data_refresh", "ok"),
-            ("Ingest the latest dataset.", "data_refresh", "ok"),
-        )
-        for prompt, expected_class, expected_status in classified_prompts:
-            with self.subTest(prompt=prompt):
-                receipt = wtam._task_start_guard_receipt(prompt)
-                self.assertEqual(receipt["task_class"], expected_class)
-                self.assertEqual(receipt["status"], expected_status)
-
-    def test_task_begin_deployment_route_records_setup_receipt(self) -> None:
+    def test_invalid_repository_guard_result_blocks_without_mutation(self) -> None:
         self.install_repo_runtime()
+        self.install_repository_guard()
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -2623,7 +2662,33 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--actor",
             "codex",
             "--prompt",
-            "Deploy production through GitHub Actions workflow_dispatch.",
+            "Return an invalid guard result.",
+            "--json",
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)["task"]
+        self.assertEqual(payload["next_action"]["action_id"], "repository_guard_failed")
+        self.assertEqual(payload["next_action"]["reason_code"], "repository_guard_invalid_result")
+        self.assertEqual(payload["next_action"]["required_inputs"], ["repository_guard"])
+        profile = load_profile(self.root)
+        self.assertEqual(load_planning_state(profile.paths).worksets, ())
+        self.assertEqual(load_runtime_state(profile.paths).worksets, ())
+
+    def test_configured_repository_guard_pass_records_setup_receipt(self) -> None:
+        self.install_repo_runtime()
+        self.install_repository_guard()
+
+        exit_code, stdout, stderr = self.run_cli(
+            "task",
+            "begin",
+            "--project-root",
+            str(self.root),
+            "--actor",
+            "codex",
+            "--prompt",
+            "Proceed with this repository action.",
             "--json",
         )
         self.assertEqual(exit_code, 0, stderr)
@@ -2632,9 +2697,14 @@ class BlackdogCliTests(CoreAuditTestCase):
         branch = task_payload["worktree"]["branch"]
         setup_receipt = task_payload["worktree"]["setup_receipt"]
         self.assertEqual(setup_receipt["status"], "ok")
-        self.assertEqual(setup_receipt["task_class"], "deployment")
         self.assertEqual(setup_receipt["blockers"], [])
-        self.assertTrue(any(row["name"] == "deployment_route" and row["status"] == "ok" for row in setup_receipt["probes"]))
+        self.assertEqual(len(setup_receipt["guard_receipts"]), 1)
+        guard_receipt = setup_receipt["guard_receipts"][0]
+        self.assertEqual(guard_receipt["id"], "repository-policy")
+        self.assertEqual(guard_receipt["phase"], "task_begin")
+        self.assertEqual(guard_receipt["status"], "passed")
+        self.assertEqual(guard_receipt["reason_code"], "repository_policy_passed")
+        self.assertRegex(guard_receipt["config_sha256"], r"^[0-9a-f]{64}$")
 
         exit_code, stdout, stderr = self.run_cli(
             "task",
@@ -2644,7 +2714,7 @@ class BlackdogCliTests(CoreAuditTestCase):
             "--status",
             "abandoned",
             "--summary",
-            "closed deployment route receipt smoke test",
+            "closed repository guard receipt smoke test",
             "--cleanup",
             "--json",
             cwd=worktree_path,
@@ -2860,10 +2930,10 @@ class BlackdogCliTests(CoreAuditTestCase):
         payload = json.loads(stdout)["codex_hook_stamp"]
         self.assertTrue(payload["context_found"])
         self.assertEqual(payload["active_attempt"]["attempt_id"], attempt.attempt_id)
-        self.assertEqual(payload["turn_classification"]["source"], "heuristic")
+        self.assertNotIn("turn_classification", payload)
         rows = load_events(codex_task_context_path(profile))
         self.assertEqual(rows[0]["payload"]["hook"]["session_id"], "thread-cli-hook")
-        self.assertEqual(rows[0]["payload"]["turn_classification"], payload["turn_classification"])
+        self.assertNotIn("turn_classification", rows[0]["payload"])
         self.assertNotIn("this text", json.dumps(rows[0]["payload"]))
 
         silent_payload = {**event_payload, "turn_id": "turn-cli-hook-silent"}

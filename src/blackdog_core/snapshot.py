@@ -134,7 +134,7 @@ def _attempt_payload(
         "prompt_issue": attempt.prompt_issue,
         "operator_issue": attempt.operator_issue,
         "setup_status": setup_receipt.get("status"),
-        "task_class": setup_receipt.get("task_class"),
+        "guard_receipts_count": len(setup_receipt.get("guard_receipts") or ()),
         "setup_blockers_count": len(setup_receipt.get("blockers") or ()),
         "skill_path": skill_provenance["path"] if skill_provenance is not None else None,
         "skill_hash": skill_provenance["sha256"] if skill_provenance is not None else None,
@@ -317,7 +317,7 @@ ATTEMPTS_TABLE_COLUMNS = (
     "prompt_issue",
     "operator_issue",
     "setup_status",
-    "task_class",
+    "guard_receipts_count",
     "setup_blockers_count",
     "summary",
 )

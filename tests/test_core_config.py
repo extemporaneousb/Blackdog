@@ -22,6 +22,7 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.landing.schema_version, 1)
         self.assertEqual(profile.landing.validation_timeout_seconds, 900)
         self.assertTrue(profile.validation_commands_explicit)
+        self.assertEqual(profile.guards, ())
         self.assertTrue(profile.handlers_explicit)
         self.assertEqual(profile.handlers[0].kind, profile_module.HANDLER_KIND_PYTHON_OVERLAY_VENV)
         self.assertEqual(profile.handlers[1].kind, profile_module.HANDLER_KIND_BLACKDOG_RUNTIME)
@@ -180,6 +181,58 @@ class CoreConfigTests(CoreAuditTestCase):
 
         with self.assertRaises(profile_module.ConfigError):
             self.load_test_profile()
+
+    def test_load_profile_accepts_repository_owned_guards(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        profile_path.write_text(
+            profile_path.read_text(encoding="utf-8")
+            + "\n[[guards]]\n"
+            + "schema_version = 1\n"
+            + 'id = "task-policy"\n'
+            + 'phase = "task_begin"\n'
+            + 'command = ["./scripts/task-policy"]\n'
+            + "timeout_seconds = 15\n",
+            encoding="utf-8",
+        )
+
+        profile = self.load_test_profile()
+
+        self.assertEqual(len(profile.guards), 1)
+        guard = profile.guards[0]
+        self.assertEqual(guard.guard_id, "task-policy")
+        self.assertEqual(guard.phase, profile_module.GUARD_PHASE_TASK_BEGIN)
+        self.assertEqual(guard.command, ("./scripts/task-policy",))
+        self.assertTrue(guard.enabled)
+        self.assertEqual(guard.timeout_seconds, 15)
+
+    def test_load_profile_rejects_invalid_repository_guards(self) -> None:
+        self.write_profile("Demo")
+        profile_path = self.root / "blackdog.toml"
+        original = profile_path.read_text(encoding="utf-8")
+        invalid_blocks = (
+            (
+                "[[guards]]\nschema_version = 2\nid = \"policy\"\nphase = \"task_begin\"\ncommand = [\"true\"]\n",
+                "guards\\[0\\].schema_version",
+            ),
+            (
+                "[[guards]]\nschema_version = 1\nid = \"Policy Name\"\nphase = \"task_begin\"\ncommand = [\"true\"]\n",
+                "guards\\[0\\].id",
+            ),
+            (
+                "[[guards]]\nschema_version = 1\nid = \"policy\"\nphase = \"unknown\"\ncommand = [\"true\"]\n",
+                "guards\\[0\\].phase",
+            ),
+            (
+                "[[guards]]\nschema_version = 1\nid = \"policy\"\nphase = \"task_begin\"\ncommand = []\n",
+                "guards\\[0\\].command",
+            ),
+        )
+        for block, expected in invalid_blocks:
+            with self.subTest(expected=expected):
+                profile_path.write_text(original + "\n" + block, encoding="utf-8")
+                with self.assertRaisesRegex(profile_module.ConfigError, expected):
+                    self.load_test_profile()
 
     def test_load_profile_rejects_handler_dependency_cycles(self) -> None:
         (self.root / "blackdog.toml").write_text(

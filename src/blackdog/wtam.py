@@ -37,6 +37,11 @@ from blackdog.handlers import (
     plan_worktree_handlers,
     validate_existing_worktree_handlers,
 )
+from blackdog.guards import (
+    GuardTaskInput,
+    RepositoryGuardRefusal,
+    evaluate_task_begin_guards,
+)
 from blackdog.landing import (
     LANDING_PHASES,
     LandingIntent,
@@ -191,11 +196,8 @@ WORKSPACE_MODE_GIT_WORKTREE = "git-worktree"
 WORKTREE_ROLE_PRIMARY = "primary"
 WORKTREE_ROLE_TASK = "task"
 WORKTREE_ROLE_LINKED = "linked"
-TASK_CLASS_IMPLEMENTATION = "implementation"
-TASK_CLASS_DEPLOYMENT = "deployment"
-TASK_CLASS_DATA_REFRESH = "data_refresh"
-TASK_CLASS_ANALYSIS_PUBLISH = "analysis_publish"
-SETUP_RECEIPT_SCHEMA_VERSION = 1
+LEGACY_SETUP_RECEIPT_SCHEMA_VERSION = 1
+SETUP_RECEIPT_SCHEMA_VERSION = 2
 AUTO_TASK_ENVELOPE_RESERVATION_SCHEMA_VERSION = 1
 _AUTO_TASK_ENVELOPE_RESERVATION_KEY = "task_begin_reservation"
 CANONICAL_COMMIT_FORMAT_VERSION = "2"
@@ -746,127 +748,40 @@ def _derive_task_title(prompt: str) -> str:
     return title.rstrip(" .") or "Task"
 
 
-_NEGATED_TASK_SIGNAL = re.compile(
-    r"\b(?:avoid|avoiding|do\s+not|don't|never|no|not|without)\b(?:\W+\w+){0,4}\W*$"
-)
-
-
-def _has_positive_task_signal(prompt: str, patterns: tuple[str, ...]) -> bool:
-    normalized = " ".join(str(prompt).lower().split())
-    for pattern in patterns:
-        for match in re.finditer(pattern, normalized):
-            clause_prefix = re.split(r"[.;,:\n]", normalized[: match.start()])[-1]
-            if _NEGATED_TASK_SIGNAL.search(clause_prefix):
-                continue
-            return True
-    return False
-
-
-def _classify_task_prompt(prompt: str) -> str:
-    if _has_positive_task_signal(
-        prompt,
-        (
-            r"\bdeploy(?:ed|ing|ment|ments|s)?\b",
-            r"\brelease\b(?!\s+(?:notes?|docs?|documentation)\b)",
-            r"\bproduction\b|\bprod-[a-z0-9_-]+\b",
-            r"\b(?:ship|promote|roll\s+out)\b[^.;,:\n]{0,32}\b(?:prod|production)\b",
-            r"\b(?:prod|production)\b[^.;,:\n]{0,32}\b(?:release|rollout)\b",
-        ),
-    ):
-        return TASK_CLASS_DEPLOYMENT
-    if _has_positive_task_signal(
-        prompt,
-        (
-            r"\bpublish(?:ed|es|ing)?\b",
-            r"\b(?:render|generate|write|create)\b[^.;,:\n]{0,24}\b(?:analysis\s+)?reports?\b",
-            r"\b(?:upload|send|sync)\b[^.;,:\n]{0,24}\bsharepoint\b",
-            r"\bsharepoint\b[^.;,:\n]{0,24}\b(?:upload|send|sync)\b",
-        ),
-    ):
-        return TASK_CLASS_ANALYSIS_PUBLISH
-    if _has_positive_task_signal(
-        prompt,
-        (
-            r"\bingest(?:ed|ing|s)?\b",
-            r"\b(?:refresh|reload|reindex|sync)\b[^.;,:\n]{0,24}\b(?:data|database|dataset|warehouse|catalog|source)\b",
-            r"\b(?:data|database|dataset|warehouse|catalog|source)\b[^.;,:\n]{0,24}\b(?:refresh|reload|reindex|sync|update)\b",
-        ),
-    ):
-        return TASK_CLASS_DATA_REFRESH
-    return TASK_CLASS_IMPLEMENTATION
-
-
-def _deployment_route_declared(prompt: str) -> bool:
-    normalized = str(prompt).lower()
-    route_markers = (
-        "github actions",
-        "ci route",
-        "ci-owned",
-        "workflow_dispatch",
-        "standard deploy path",
-        "approved local fallback",
-        "local fallback approved",
-        "emergency fallback",
-    )
-    return any(marker in normalized for marker in route_markers)
-
-
-def _task_start_guard_receipt(prompt: str) -> dict[str, Any]:
-    task_class = _classify_task_prompt(prompt)
-    probes: list[dict[str, Any]] = [
-        {
-            "name": "task_class",
-            "status": "ok",
-            "value": task_class,
-            "required": True,
-            "message": f"classified task as {task_class}",
-        }
-    ]
-    blockers: list[str] = []
-    if task_class == TASK_CLASS_DEPLOYMENT:
-        route_declared = _deployment_route_declared(prompt)
-        probes.append(
-            {
-                "name": "deployment_route",
-                "status": "ok" if route_declared else "blocked",
-                "required": True,
-                "message": (
-                    "deployment route or approved local fallback is explicit"
-                    if route_declared
-                    else "deployment tasks must name the CI/GitHub Actions route or explicitly approve local fallback"
-                ),
-            }
+def _guard_task_start(
+    profile: RepoProfile,
+    *,
+    actor: str,
+    prompt_mode: str,
+    execution_receipt: PromptReceiptRecord,
+    user_receipt: PromptReceiptRecord,
+) -> dict[str, Any]:
+    try:
+        guard_receipts = evaluate_task_begin_guards(
+            profile,
+            task=GuardTaskInput(
+                actor=actor,
+                prompt_mode=prompt_mode,
+                execution_prompt_text=execution_receipt.text or "",
+                execution_prompt_hash=execution_receipt.prompt_hash,
+                request_prompt_text=user_receipt.text or "",
+                request_prompt_hash=user_receipt.prompt_hash,
+            ),
         )
-        if not route_declared:
-            blockers.append("deployment_route")
-    return {
-        "schema_version": SETUP_RECEIPT_SCHEMA_VERSION,
-        "task_class": task_class,
-        "status": "blocked" if blockers else "ok",
-        "blockers": blockers,
-        "probes": probes,
-    }
-
-
-def _guard_task_start(prompt: str) -> dict[str, Any]:
-    receipt = _task_start_guard_receipt(prompt)
-    blockers = receipt.get("blockers") or []
-    if blockers:
-        messages = [
-            str(probe.get("message"))
-            for probe in receipt.get("probes", [])
-            if probe.get("status") == "blocked" and probe.get("message")
-        ]
-        detail = "; ".join(messages) or f"blocked setup probes: {', '.join(str(item) for item in blockers)}"
+    except RepositoryGuardRefusal as exc:
         raise TaskBeginPreflightError(
-            f"task start blocked by setup guard: {detail}",
+            f"task start refused by {exc}",
             failure_code="setup_guard",
-            action_id="deployment_route_required",
-            reason_code="deployment_route_missing",
-            display="Specify the approved deployment route or an explicit local fallback",
-            required_inputs=("deployment_route",),
-        )
-    return receipt
+            action_id=exc.action_id,
+            reason_code=exc.reason_code,
+            display=exc.message,
+            required_inputs=exc.required_inputs,
+        ) from exc
+    return {
+        "schema_version": 1,
+        "status": "passed",
+        "guard_receipts": [dict(receipt) for receipt in guard_receipts],
+    }
 
 
 def _managed_skill_provenance(profile: RepoProfile, *, workspace_root: Path) -> dict[str, Any]:
@@ -927,8 +842,8 @@ def _handler_setup_receipt(
     *,
     skill_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    probes = list(guard_receipt.get("probes") or [])
-    blockers = [str(item) for item in guard_receipt.get("blockers") or []]
+    probes: list[dict[str, Any]] = []
+    blockers: list[str] = []
     for action in handlers.actions:
         status = (
             "ok"
@@ -955,9 +870,9 @@ def _handler_setup_receipt(
     receipt = {
         "schema_version": SETUP_RECEIPT_SCHEMA_VERSION,
         "checked_at": now_iso(),
-        "task_class": guard_receipt.get("task_class") or TASK_CLASS_IMPLEMENTATION,
         "status": "ok" if handlers.ready and not blockers else "blocked",
         "blockers": blockers,
+        "guard_receipts": list(guard_receipt.get("guard_receipts") or []),
         "workspace_ve": handlers.worktree_ve_path,
         "workspace_blackdog_path": handlers.blackdog_path,
         "runtime_mode": handlers.runtime_mode,
@@ -3177,7 +3092,8 @@ def _durable_start_handlers(
     setup = attempt.setup_receipt
     if (
         not isinstance(setup, Mapping)
-        or setup.get("schema_version") != SETUP_RECEIPT_SCHEMA_VERSION
+        or setup.get("schema_version")
+        not in {LEGACY_SETUP_RECEIPT_SCHEMA_VERSION, SETUP_RECEIPT_SCHEMA_VERSION}
         or setup.get("status") != "ok"
         or setup.get("blockers") != []
         or not isinstance(setup.get("probes"), list)
@@ -3895,6 +3811,7 @@ def start_task_worktree(
     prompt_mode: str = PROMPT_MODE_RAW,
     execution_prompt_receipt: PromptReceiptRecord | None = None,
     user_prompt_receipt: PromptReceiptRecord | None = None,
+    guard_receipt: dict[str, Any] | None = None,
     skill_provenance: dict[str, Any] | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
@@ -3927,7 +3844,6 @@ def start_task_worktree(
         raise WorktreeError("task start execution prompt receipt does not match its prompt input")
     resolved_execution_receipt = execution_prompt_receipt or candidate_execution_receipt
     resolved_user_receipt = user_prompt_receipt or resolved_execution_receipt
-    guard_receipt = _guard_task_start(resolved_execution_receipt.text or "")
     if resume_guard is not None and resume_guard.retry_reserved_successor:
         return _repair_reserved_resume_worktree(
             profile,
@@ -3942,6 +3858,13 @@ def start_task_worktree(
             path=path,
             note=note,
         )
+    resolved_guard_receipt = guard_receipt or _guard_task_start(
+        profile,
+        actor=actor,
+        prompt_mode=prompt_mode,
+        execution_receipt=resolved_execution_receipt,
+        user_receipt=resolved_user_receipt,
+    )
     preview = preview_task_worktree(
         profile,
         workset_id=workset_id,
@@ -4017,7 +3940,7 @@ def start_task_worktree(
     try:
         handlers = execute_worktree_handlers(profile, worktree_path=worktree_path)
         setup_receipt = _handler_setup_receipt(
-            guard_receipt,
+            resolved_guard_receipt,
             handlers,
             skill_provenance=skill_provenance,
         )
@@ -4312,6 +4235,7 @@ def _adopt_aborted_landing_source_worktree(
     actor: str,
     incoming_execution: PromptReceiptRecord,
     incoming_request: PromptReceiptRecord,
+    guard_receipt: dict[str, Any] | None = None,
     current_skill_provenance: dict[str, Any] | None,
     expected_actor: str | None,
     expected_execution_prompt_hash: str | None,
@@ -4478,7 +4402,10 @@ def _adopt_aborted_landing_source_worktree(
             raise WorktreeError(
                 handlers.remediation or "retained workspace handler validation failed"
             )
-        guard_receipt = _guard_task_start(incoming_execution.text or "")
+        if guard_receipt is None:
+            raise BacklogError(
+                "workspace adoption requires repository guard evidence before prompt persistence"
+            )
         setup_receipt = _handler_setup_receipt(
             guard_receipt,
             handlers,
@@ -5246,7 +5173,6 @@ def begin_task_worktree(
         user_prompt_source=user_prompt_source,
         prompt_mode=prompt_mode,
     )
-    _guard_task_start(execution_receipt.text)
     if adopt_aborted_landing_source:
         assert resolved_workset is not None
         assert resolved_task is not None
@@ -5258,6 +5184,35 @@ def begin_task_worktree(
         )
         if predecessor is None or predecessor.task_id != resolved_task:
             raise BacklogError("workspace adoption predecessor does not exist in this task")
+        predecessor_transaction = load_landing_transaction(
+            profile,
+            workset_id=resolved_workset,
+            task_id=resolved_task,
+            attempt_id=predecessor.attempt_id,
+        )
+        if predecessor_transaction is None:
+            raise BacklogError("workspace adoption predecessor has no landing transaction")
+        expected_successor_id = _workspace_adoption_successor_id(
+            task_id=resolved_task,
+            adoption_id=_workspace_adoption_id(predecessor_transaction.transaction_id),
+        )
+        latest_before_adoption = latest_task_attempt(
+            load_runtime_state(profile.paths),
+            resolved_workset,
+            resolved_task,
+        )
+        adoption_guard_receipt = None
+        if (
+            latest_before_adoption is None
+            or latest_before_adoption.attempt_id != expected_successor_id
+        ):
+            adoption_guard_receipt = _guard_task_start(
+                profile,
+                actor=actor,
+                prompt_mode=prompt_mode,
+                execution_receipt=execution_receipt,
+                user_receipt=user_receipt,
+            )
         if predecessor.prompt_receipt is not None:
             _verify_recorded_prompt_artifact(
                 profile,
@@ -5290,6 +5245,7 @@ def begin_task_worktree(
                     actor=actor,
                     incoming_execution=execution_receipt,
                     incoming_request=user_receipt,
+                    guard_receipt=adoption_guard_receipt,
                     current_skill_provenance=skill_provenance,
                     expected_actor=expected_actor,
                     expected_execution_prompt_hash=expected_execution_prompt_hash,
@@ -5507,6 +5463,15 @@ def begin_task_worktree(
                     user_receipt=user_receipt,
                     execution_receipt=execution_receipt,
                 )
+    guard_receipt = None
+    if resume_guard is None or not resume_guard.retry_reserved_successor:
+        guard_receipt = _guard_task_start(
+            profile,
+            actor=actor,
+            prompt_mode=prompt_mode,
+            execution_receipt=execution_receipt,
+            user_receipt=user_receipt,
+        )
     if resume_guard is not None:
         _verify_recorded_prompt_artifact(
             profile,
@@ -5639,6 +5604,7 @@ def begin_task_worktree(
             prompt_mode=prompt_mode,
             execution_prompt_receipt=execution_receipt,
             user_prompt_receipt=user_receipt,
+            guard_receipt=guard_receipt,
             skill_provenance=skill_provenance,
             model=model,
             reasoning_effort=reasoning_effort,
@@ -12492,7 +12458,8 @@ def _workspace_adoption_handlers_from_setup(
     setup = successor.setup_receipt
     if (
         not isinstance(setup, Mapping)
-        or setup.get("schema_version") != SETUP_RECEIPT_SCHEMA_VERSION
+        or setup.get("schema_version")
+        not in {LEGACY_SETUP_RECEIPT_SCHEMA_VERSION, SETUP_RECEIPT_SCHEMA_VERSION}
         or setup.get("status") != "ok"
         or setup.get("blockers") != []
         or not isinstance(setup.get("probes"), list)
@@ -20685,7 +20652,10 @@ def render_start_text(spec: WorktreeSpec, *, surface: str = "worktree") -> str:
         f"{prefix} prompt mode: {spec.prompt_mode or 'unset'}",
         f"{prefix} workspace CLI: {spec.workspace_blackdog_path or 'missing'}",
         f"{prefix} runtime mode: {spec.runtime_mode or 'unset'}",
-        f"{prefix} setup: {spec.setup_receipt.get('status', 'unknown')} task_class={spec.setup_receipt.get('task_class', 'unknown')}",
+        (
+            f"{prefix} setup: {spec.setup_receipt.get('status', 'unknown')} "
+            f"repository_guards={len(spec.setup_receipt.get('guard_receipts') or ())}"
+        ),
     ]
     if spec.script_policy:
         lines.append(f"{prefix} script policy: {spec.script_policy}")
@@ -20866,7 +20836,8 @@ def render_task_begin_text(spec: Any, *, show_prompt: bool = False) -> str:
             f"[blackdog-task] runtime mode: {worktree.get('runtime_mode') or 'unset'}",
             (
                 f"[blackdog-task] setup: {worktree.get('setup_receipt', {}).get('status', 'unknown')} "
-                f"task_class={worktree.get('setup_receipt', {}).get('task_class', 'unknown')}"
+                "repository_guards="
+                f"{len(worktree.get('setup_receipt', {}).get('guard_receipts') or ())}"
             ),
         ]
     )

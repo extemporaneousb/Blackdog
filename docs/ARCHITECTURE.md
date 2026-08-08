@@ -427,27 +427,33 @@ inside the durable landing compare-and-swap and abort/recovery contract.
 
 ## Guardrails And Reporting
 
-Task-class guard extension points live in the `blackdog` product layer. They
-may consume `worktree preflight`, prompt preview, repo-skill context, handler
-preview output, and attempt history, but they do not change the core
-planning/runtime ownership boundary. The WTAM preflight surface stays focused
-on workspace role, branch, dirty state, landing readiness, worktree inventory,
-and the repo-local CLI path. The shipped startup guard classifies task prompts
-before attempt start; deployment-class prompts must name the CI/GitHub Actions
-route or explicitly approve local/emergency fallback before Blackdog creates a
-new task envelope or starts an attempt. More class-specific checks for
-credentials, external services, or approvals should stay layered around task
-start and closeout rather than embedded into `blackdog_core`.
+Repository policy guards are optional `[[guards]]` commands owned by the target
+repo's `blackdog.toml`. Blackdog defines only their versioned command protocol,
+bounded result validation, pre-mutation enforcement, and retained setup
+evidence. It does not classify prompts, define sensitive task categories, know
+approval phrases, or ship a default policy. With no configured guards, task
+start performs no repository-policy inference.
+
+The shipped `task_begin` phase passes structured repository, actor, prompt
+mode, request, execution-prompt, and digest fields to each enabled command over
+stdin. Commands run in configuration order from the repository root and must
+be side-effect-free and safe to retry. A valid `passed` result permits the next
+guard; `blocked`, nonzero, timeout, malformed, oversized, or unsupported output
+refuses start before planning, runtime, prompt-artifact, worktree, branch, or
+handler mutation. Successful results are retained in the attempt setup receipt
+with guard id, phase, configuration digest, status, reason, message, and
+required-input evidence. The WTAM preflight surface remains limited to
+workspace and Git readiness; it does not reinterpret repository policy.
 
 Environment/launcher repair expectations are owned by repo lifecycle and
 handler orchestration. `repo install`, `repo update`, and `repo refresh`
 validate configured handlers and repair repo-local runtime artifacts in the
 repo-root scope. `worktree start` executes the handler plan for the task
 workspace: worktree-local `.VE`, overlay/source-path wiring, root-bin fallback
-links, and the worktree-local launcher. Handler actions and task-class guard
-results are recorded as the attempt `setup_receipt` and on `worktree.start`
-events when task execution starts. For skill-mode task starts, the product
-layer also records bounded managed-skill provenance in that receipt: a
+links, and the worktree-local launcher. Handler actions and configured
+repository-guard results are recorded as the attempt `setup_receipt` and on
+`worktree.start` events when task execution starts. For skill-mode task starts,
+the product layer also records bounded managed-skill provenance in that receipt: a
 repo-relative path, file digest, source label, and provenance schema version.
 This is additive durable evidence about the skill revision Blackdog read at
 start, not model-consumption attestation, a planning field, or a new typed core
@@ -477,16 +483,14 @@ turns and unrelated sessions are never imported by this overlay, and the
 overlay does not mutate task/runtime/event state.
 
 Codex hooks and environments belong in the `blackdog` product layer. Hook
-handlers may inspect preflight state, active attempts, prompt hashes, and Codex
-turn metadata to provide context or guardrails, but they must not bypass the
-typed planning/runtime mutation APIs. `blackdog codex hook stamp` writes a
+handlers may inspect active attempts and hash transient prompt/tool input for
+task-context observability, but they must not bypass the typed planning/runtime
+mutation APIs or invent policy labels. `blackdog codex hook stamp` writes a
 bounded append-only task-context stream under `codex/task-context.jsonl`; it is
-observability evidence consumed by coverage/history, not the source of attempt
-truth. Best-effort turn classification derived from transient hook input is
-descriptive only: a `guarded` risk label cannot activate, satisfy, or bypass the
-task-class guards around task execution. Codex environments should remain
-convenience wrappers around Blackdog handlers and validation commands; they are
-not the source of repo setup truth.
+relationship evidence consumed by coverage/history, not the source of attempt
+truth and not a policy guard. Codex environments remain convenience wrappers
+around Blackdog handlers and validation commands; they are not the source of
+repo setup truth.
 
 `blackdog codex link` is also a product-layer adapter. It resolves an active
 attempt through the normal task read model and emits a supported Codex

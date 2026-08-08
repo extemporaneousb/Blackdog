@@ -546,12 +546,14 @@ explicitly use `codex-supervisor`; that one supervisor owns the Blackdog task
 and attempt while workers contribute inside it. Workers do not create parallel
 Blackdog attempts or land independently.
 
-Before it creates a new task envelope, `task begin` runs task-class startup
-guards against the execution prompt. Deployment-class prompts must name the CI
-or GitHub Actions route, or explicitly state an approved local/emergency
-fallback, before Blackdog will create planning/runtime state. Successful starts
-record a `setup_receipt` on the attempt and start event with task class,
-guard probes, handler setup probes, blockers, and worktree-local runtime paths.
+Before it creates a new task envelope, `task begin` runs each enabled
+`phase = "task_begin"` command from the repo-owned `[[guards]]` configuration.
+Blackdog passes one versioned JSON object on stdin and accepts only one
+versioned `passed` or `blocked` JSON result on stdout. It defines no built-in
+task categories or approval phrases, and a repo with no configured guards has
+no repository-policy gate. Successful starts record a schema-v2
+`setup_receipt` on the attempt and start event with configured guard receipts,
+handler setup probes, blockers, and worktree-local runtime paths.
 Post-parse setup refusals that occur before an attempt exists use the same
 operation-result shape: `operation="task.begin"`, `operation_status="blocked"`,
 null task/attempt status, no mutation, one blocked next action, and a bounded
@@ -1348,13 +1350,10 @@ in `workspace role: task`. A `primary` or `linked` workspace is a routing
 context for starting a branch-backed task worktree, not an implementation
 workspace.
 
-Task-class guard extension points may consume this diagnosis instead of
-expanding it. `worktree preflight` reports whether the checkout is an allowed
+Repository-owned tools may consume this diagnosis, but `worktree preflight`
+does not evaluate policy. It reports whether the checkout is an allowed
 implementation workspace and whether the normal WTAM landing path is ready;
-`task begin` owns enforcement for the normal start path.
-Deployment, credential, external-service, or approval checks belong in
-product-layer task/repo-skill guard code or a future guard command that can use
-preflight output as one input.
+configured `task_begin` guards own repository policy at task start.
 
 ```bash
 blackdog worktree preflight --project-root /path/to/repo
@@ -1494,12 +1493,11 @@ handler plan, and records:
 - prompt source
 - prompt receipt hash
 - handler actions and timings
-- setup receipt status, task class, guard probes, handler probes, blockers,
+- setup receipt status, configured guard receipts, handler probes, blockers,
   and prepared worktree-local runtime paths
 
-`worktree start` applies the same task-class startup guard as `task begin`.
-Deployment-class prompts must name the CI/GitHub Actions route or explicitly
-approve local/emergency fallback before Blackdog starts the attempt.
+`worktree start` applies the same configured `task_begin` guards as `task
+begin`. With no repo-owned `[[guards]]`, it applies no repository-policy gate.
 
 Both low-level commands retain `--prompt` and `--prompt-file` as supported
 compatibility aliases. Canonical and compatibility spellings produce the same
@@ -2057,9 +2055,8 @@ and unrelated sessions are never imported by this overlay.
 Implementation-without-Blackdog detection is exposed here as
 `implementation_like_unlinked_turns`: Codex user turns that look like
 implementation work but are not strongly linked to a Blackdog attempt. This is
-one of Blackdog's learning/report outputs for tightening repo skills,
-task-class guard extension points, and operator training; it does not create or
-modify tasks.
+one of Blackdog's learning/report outputs for tightening repo skills and
+operator training; it does not create or modify tasks.
 
 - Codex sessions and user-turn counts
 - Blackdog attempt counts and active attempts
@@ -2069,9 +2066,6 @@ modify tasks.
   `active_attempt_window`, and `same_session`
 - analysis-only turns
 - unlinked implementation-like turns
-- hook-stamped `turn_classification` on matching turn rows, plus deduplicated
-  `turn_classification_counts` maps named `by_intent`, `by_domain`, and
-  `by_risk`
 - environment issue turn counts, evidence-hit counts, observed-vs-guidance
   evidence counts, and structured issue classes such as `missing_cli`,
   `missing_venv`, `missing_container_runtime`, `missing_python_module`,
@@ -2117,10 +2111,9 @@ task/result/git/validation metadata and inherit environment issue classes from
 related Codex turns. Codex-turn rows cover all repo-matched user turns plus any
 single exact attempt-referenced foreign-cwd turns,
 including linked Blackdog launches, same-session follow-ups, and analysis-only
-work that never entered WTAM. Every Codex-turn row also exposes a stable
-`turn_classification` key containing the bounded object from a valid matching
-hook stamp, or `null` when none exists. This does not replace the existing
-session-derived `classification` field.
+work that never entered WTAM. Hook stamps contribute relationship evidence
+only. Codex-turn rows retain the existing session-derived `classification`
+field and do not add policy or risk labels from hook input.
 
 `execution_prompt_*` records the prompt Blackdog actually ran.
 `user_prompt_*` records the raw user request Blackdog received.
@@ -2141,27 +2134,17 @@ from `--event-json`/`--event-file`. It writes a bounded task-context stamp to
 the repo control root at `codex/task-context.jsonl`. The stamp includes hook
 metadata such as `session_id`, `turn_id`, `hook_event_name`, cwd, model, and
 permission mode, plus the active Blackdog attempt inferred from the hook cwd
-when one exists. When Codex supplies `prompt` or `message`, Blackdog also uses
-that text transiently to produce a coarse heuristic `turn_classification` with
-bounded intent, domain, risk, source, and confidence labels. The `--json` result
-includes the resulting classification.
-
-Prompt/message text, tool command text, matched classifier terms, and excerpts
-are not stored. Blackdog records prompt and tool-command hashes when Codex
-supplies those fields, then persists only those hashes and the bounded
-classification labels. Missing prompt/message input produces an unknown,
-low-confidence classification. Any other classification failure degrades to
-the same bounded unknown object so the task-context stamp can still be recorded.
+when one exists. When Codex supplies `prompt`, `message`, or a tool command,
+Blackdog hashes that text transiently and stores only the corresponding
+prompt/tool-command hash. It does not classify the text or infer repository
+policy from it.
 
 This is an additive observability layer. It does not create, claim, land, or
 close tasks. `runtime.json` remains the attempt source of truth. `codex
 coverage` and `codex history` consume hook stamps as the strong
-`hook_context` relationship when a turn id and active attempt id match. A
-classification risk of `guarded` only describes a deployment, external-write,
-or destructive signal. It cannot activate, satisfy, bypass, or otherwise affect
-the task-class guards that control task execution. A classification-only stamp
-without an active attempt can still annotate and count a matching Codex turn,
-but it does not create a `hook_context` relationship.
+`hook_context` relationship when a turn id and active attempt id match. A stamp
+without an active attempt remains observability evidence but does not create a
+relationship or a policy decision.
 
 Repo-local hooks should call the repo-local launcher using a git-root based
 path. Blackdog itself dogfoods the observability path with this tracked

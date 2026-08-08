@@ -45,33 +45,6 @@ CODEX_SESSION_CACHE_FILE_NAME = "session-cache-v1.json"
 CODEX_HOOK_CONTEXT_DIR_NAME = "codex"
 CODEX_HOOK_TASK_CONTEXT_FILE_NAME = "task-context.jsonl"
 
-_TURN_CLASSIFICATION_INTENTS = (
-    "implementation",
-    "analysis",
-    "question",
-    "status",
-    "unknown",
-)
-_TURN_CLASSIFICATION_DOMAINS = (
-    "ui",
-    "docs",
-    "tests",
-    "backend",
-    "data",
-    "repo_lifecycle",
-    "environment",
-    "deployment",
-    "external_write",
-    "destructive",
-)
-_TURN_CLASSIFICATION_RISKS = ("normal", "guarded", "unknown")
-_TURN_CLASSIFICATION_SOURCES = ("heuristic",)
-_TURN_CLASSIFICATION_CONFIDENCES = ("low", "medium", "high")
-_TURN_CLASSIFICATION_CONFIDENCE_RANK = {
-    confidence: rank for rank, confidence in enumerate(_TURN_CLASSIFICATION_CONFIDENCES)
-}
-_TURN_CLASSIFICATION_HOOK_EVENT_RANK = {"UserPromptSubmit": 1}
-
 _IMPLEMENTATION_KEYWORDS = frozenset(
     {
         "add",
@@ -279,15 +252,6 @@ class CodexAttemptRelationship:
 
 
 @dataclass(frozen=True, slots=True)
-class CodexHookTurnClassification:
-    intent: str
-    domains: tuple[str, ...]
-    risk: str
-    source: str
-    confidence: str
-
-
-@dataclass(frozen=True, slots=True)
 class CodexHookTaskContextStamp:
     thread_id: str
     turn_id: str
@@ -296,7 +260,6 @@ class CodexHookTaskContextStamp:
     attempt_id: str | None
     hook_event_name: str | None
     stamped_at: str | None
-    turn_classification: CodexHookTurnClassification | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -751,7 +714,6 @@ def build_codex_coverage(
         include_environment_evidence=include_environment_evidence,
     )
     hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
-    turn_classifications = _hook_turn_classifications_by_turn(hook_stamps)
     relationships = _relate_turns_to_attempts(turns, attempts, hook_stamps=hook_stamps)
     linked = _strong_link_attempt_ids(relationships)
     relationships_by_attempt = _relationships_by_attempt(relationships, turns)
@@ -780,9 +742,6 @@ def build_codex_coverage(
                 "user_message_hash": turn.user_message_hash,
                 "message_excerpt": turn.message_excerpt,
                 "classification": classification,
-                "turn_classification": _turn_classification_row(
-                    turn_classifications.get(_turn_key(turn))
-                ),
                 "linked_attempt_ids": list(attempt_ids),
                 "related_attempt_ids": [relationship.attempt_id for relationship in turn_relationships],
                 "attempt_relationships": [
@@ -892,7 +851,6 @@ def build_codex_coverage(
             "hook_task_context_stamps": len(hook_stamps),
         },
         "by_classification": by_classification,
-        "turn_classification_counts": _turn_classification_counts(turn_classifications.values()),
         "exact_reference_resolution_counts": exact_reference_resolution_counts,
         "relationship_counts": relationship_counts,
         "environment_issue_counts": environment_issue_counts,
@@ -936,7 +894,6 @@ def build_codex_history(
         include_environment_evidence=True,
     )
     hook_stamps = _filter_hook_task_context_stamps(load_codex_task_context_stamps(profile), turns)
-    turn_classifications = _hook_turn_classifications_by_turn(hook_stamps)
     relationships = _relate_turns_to_attempts(turns, attempts, hook_stamps=hook_stamps)
     relationships_by_attempt = _relationships_by_attempt(relationships, turns)
     rows = [
@@ -957,7 +914,6 @@ def build_codex_history(
             profile,
             turn,
             relationships.get(_turn_key(turn), ()),
-            turn_classification=turn_classifications.get(_turn_key(turn)),
         )
         for turn in turns
         if turn.user_message_hash is not None
@@ -1914,8 +1870,6 @@ def _turn_history_row(
     profile: RepoProfile,
     turn: CodexTurn,
     relationships: tuple[CodexAttemptRelationship, ...],
-    *,
-    turn_classification: CodexHookTurnClassification | None,
 ) -> dict[str, Any]:
     linked_attempt_ids = tuple(
         relationship.attempt_id for relationship in relationships if relationship.relationship in STRONG_ATTEMPT_RELATIONSHIPS
@@ -1936,7 +1890,6 @@ def _turn_history_row(
         "model": turn.model,
         "reasoning_effort": turn.reasoning_effort,
         "classification": turn.classification,
-        "turn_classification": _turn_classification_row(turn_classification),
         "user_prompt_hash": turn.user_message_hash,
         "linked_attempt_ids": list(linked_attempt_ids),
         "related_attempt_ids": [relationship.attempt_id for relationship in relationships],
@@ -1965,42 +1918,6 @@ def _turn_relationship_row(relationship: CodexAttemptRelationship) -> dict[str, 
         "task_id": relationship.task_id,
         "relationship": relationship.relationship,
         "linked": relationship.linked,
-    }
-
-
-def _turn_classification_row(
-    classification: CodexHookTurnClassification | None,
-) -> dict[str, Any] | None:
-    if classification is None:
-        return None
-    return {
-        "intent": classification.intent,
-        "domains": list(classification.domains),
-        "risk": classification.risk,
-        "source": classification.source,
-        "confidence": classification.confidence,
-    }
-
-
-def _turn_classification_counts(
-    classifications: Iterable[CodexHookTurnClassification],
-) -> dict[str, dict[str, int]]:
-    intent_counts: dict[str, int] = {}
-    domain_counts: dict[str, int] = {}
-    risk_counts: dict[str, int] = {}
-    for classification in classifications:
-        intent_counts[classification.intent] = intent_counts.get(classification.intent, 0) + 1
-        risk_counts[classification.risk] = risk_counts.get(classification.risk, 0) + 1
-        for domain in classification.domains:
-            domain_counts[domain] = domain_counts.get(domain, 0) + 1
-    return {
-        "by_intent": {
-            value: intent_counts[value] for value in _TURN_CLASSIFICATION_INTENTS if value in intent_counts
-        },
-        "by_domain": {
-            value: domain_counts[value] for value in _TURN_CLASSIFICATION_DOMAINS if value in domain_counts
-        },
-        "by_risk": {value: risk_counts[value] for value in _TURN_CLASSIFICATION_RISKS if value in risk_counts},
     }
 
 
@@ -2614,58 +2531,6 @@ def _filter_hook_task_context_stamps(
     return tuple(stamp for stamp in stamps if (stamp.thread_id, stamp.turn_id) in turn_keys)
 
 
-def _hook_turn_classifications_by_turn(
-    stamps: Iterable[CodexHookTaskContextStamp],
-) -> dict[tuple[str, str], CodexHookTurnClassification]:
-    selected: dict[tuple[str, str], CodexHookTaskContextStamp] = {}
-    for stamp in stamps:
-        classification = stamp.turn_classification
-        if classification is None:
-            continue
-        key = (stamp.thread_id, stamp.turn_id)
-        current = selected.get(key)
-        if current is None or _hook_turn_classification_quality(stamp) > _hook_turn_classification_quality(current):
-            selected[key] = stamp
-    return {
-        key: stamp.turn_classification
-        for key, stamp in selected.items()
-        if stamp.turn_classification is not None
-    }
-
-
-def _hook_turn_classification_quality(stamp: CodexHookTaskContextStamp) -> tuple[int, int, int, int, float]:
-    classification = stamp.turn_classification
-    if classification is None:
-        return (0, 0, 0, 0, 0.0)
-    meaningful = (
-        classification.intent != "unknown"
-        or bool(classification.domains)
-        or classification.risk != "unknown"
-    )
-    event_rank = _TURN_CLASSIFICATION_HOOK_EVENT_RANK.get(stamp.hook_event_name or "", 0) if meaningful else 0
-    stamped_at = parse_iso(stamp.stamped_at)
-    return (
-        event_rank,
-        *_turn_classification_quality(classification),
-        stamped_at.timestamp() if stamped_at is not None else 0.0,
-    )
-
-
-def _turn_classification_quality(classification: CodexHookTurnClassification) -> tuple[int, int, int]:
-    information = sum(
-        (
-            classification.intent != "unknown",
-            bool(classification.domains),
-            classification.risk != "unknown",
-        )
-    )
-    return (
-        information,
-        _TURN_CLASSIFICATION_CONFIDENCE_RANK[classification.confidence],
-        len(classification.domains),
-    )
-
-
 def _hook_task_context_stamp_from_event(row: Any) -> CodexHookTaskContextStamp | None:
     if not isinstance(row, Mapping):
         return None
@@ -2695,39 +2560,6 @@ def _hook_task_context_stamp_from_event(row: Any) -> CodexHookTaskContextStamp |
         attempt_id=attempt_id,
         hook_event_name=_optional_text(hook.get("hook_event_name")),
         stamped_at=_optional_text(row.get("at")),
-        turn_classification=_turn_classification_from_payload(payload.get("turn_classification")),
-    )
-
-
-def _turn_classification_from_payload(value: Any) -> CodexHookTurnClassification | None:
-    if not isinstance(value, Mapping):
-        return None
-    intent = value.get("intent")
-    domains = value.get("domains")
-    risk = value.get("risk")
-    source = value.get("source")
-    confidence = value.get("confidence")
-    if intent not in _TURN_CLASSIFICATION_INTENTS:
-        return None
-    if not isinstance(domains, list) or len(domains) > len(_TURN_CLASSIFICATION_DOMAINS):
-        return None
-    if any(
-        not isinstance(domain, str) or domain not in _TURN_CLASSIFICATION_DOMAINS for domain in domains
-    ):
-        return None
-    if risk not in _TURN_CLASSIFICATION_RISKS:
-        return None
-    if source not in _TURN_CLASSIFICATION_SOURCES:
-        return None
-    if confidence not in _TURN_CLASSIFICATION_CONFIDENCES:
-        return None
-    ordered_domains = tuple(domain for domain in _TURN_CLASSIFICATION_DOMAINS if domain in domains)
-    return CodexHookTurnClassification(
-        intent=str(intent),
-        domains=ordered_domains,
-        risk=str(risk),
-        source=str(source),
-        confidence=str(confidence),
     )
 
 
@@ -2875,7 +2707,6 @@ __all__ = [
     "STRONG_ATTEMPT_RELATIONSHIPS",
     "CodexAttemptRelationship",
     "CodexHookTaskContextStamp",
-    "CodexHookTurnClassification",
     "CodexRuntimeContext",
     "CodexSession",
     "CodexSessionError",

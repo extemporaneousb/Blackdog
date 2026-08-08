@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Mapping
 import hashlib
 import json
-import re
 import subprocess
 
 from blackdog_core.codex_sessions import CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION, codex_task_context_path
@@ -19,79 +18,6 @@ from blackdog_core.state import (
 
 class CodexHookError(RuntimeError):
     pass
-
-
-_TURN_DOMAIN_ORDER = (
-    "ui",
-    "docs",
-    "tests",
-    "backend",
-    "data",
-    "repo_lifecycle",
-    "environment",
-    "deployment",
-    "external_write",
-    "destructive",
-)
-_TURN_CLASSIFICATION_SOURCE = "heuristic"
-
-_DOMAIN_TERMS = {
-    "ui": ("ui", "ux", "frontend", "front-end", "page", "html", "css", "layout", "padding", "panel", "modal", "button"),
-    "docs": (
-        "doc", "docs", "documentation", "readme", "changelog", "markdown", "guide", "manual", "release notes",
-    ),
-    "tests": ("test", "tests", "testing", "pytest", "unittest", "regression", "fixture"),
-    "backend": ("backend", "back-end", "server", "api", "endpoint", "service", "handler", "database", "sql"),
-    "data": (
-        "data", "dataset", "ingest", "ingestion", "etl", "csv", "tsv", "jsonl", "workbook", "spreadsheet",
-        "schema", "records", "query",
-    ),
-    "repo_lifecycle": (
-        "repo", "repository", "git", "branch", "commit", "worktree", "pull request", "merge", "checkout",
-    ),
-    "environment": (
-        "environment", "virtualenv", "venv", ".ve", "dependencies", "docker", "container", "bootstrap", "setup",
-        "runtime",
-    ),
-    "deployment": (
-        "deploy", "deployed", "deploying", "deployment", "rollout", "production", "prod", "release to production",
-    ),
-    "external_write": (
-        "publish", "published", "publishing", "upload", "uploaded", "git push", "push branch", "push the branch",
-        "push changes", "push the changes", "push commit", "push the commit", "pushed changes", "pushing changes",
-        "send email", "send message",
-        "post to slack", "post to teams", "create issue", "update issue", "create ticket", "update ticket",
-        "create pull request",
-    ),
-    "destructive": (
-        "rm -rf", "reset --hard", "drop table", "drop database", "drop schema", "truncate table", "force-delete",
-        "force delete", "delete file", "delete the file", "delete directory", "delete the directory", "delete branch",
-        "delete the branch", "delete database", "delete the database", "delete table", "delete the table",
-        "delete records", "delete the records", "delete data", "delete the data", "destroy", "purge", "wipe",
-        "remove file", "remove directory", "remove branch", "remove database", "remove table", "remove records",
-        "remove data",
-    ),
-}
-_STATUS_PREFIX = re.compile(
-    r"^(?:(?:please|can you|could you|would you|will you)\s+)?(?:status\b|progress\b|current state\b|"
-    r"where (?:are|do) we\b|what (?:has )?changed\b|"
-    r"what(?:'s| is) left\b|what remains\b|what(?:'s| is) (?:the )?(?:current )?status\b|"
-    r"how (?:is|are) .+ going\b|update me\b|(?:give|send) me (?:a |an )?(?:status|progress)(?: update)?\b)"
-)
-_IMPLEMENTATION_TERMS = (
-    "add", "build", "change", "commit", "create", "delete", "deploy", "edit", "fix", "implement", "land",
-    "migrate", "modify", "patch", "publish", "refactor", "remove", "rename", "replace", "restore", "run",
-    "ship", "update", "upload", "validate", "write",
-)
-_ANALYSIS_TERMS = (
-    "analyze", "assess", "audit", "compare", "diagnose", "evaluate", "examine", "explain", "inspect",
-    "investigate", "review", "summarize", "trace", "understand",
-)
-_QUESTION_PREFIX = re.compile(
-    r"^(?:what|why|how|when|where|who|which|is|are|do|does|did|has|have|can|could|should|would)\b"
-)
-_POLITE_IMPLEMENTATION_PREFIX = re.compile(r"^(?:please|can you|could you|would you|will you)\b")
-_GUARDED_DOMAINS = frozenset({"deployment", "external_write", "destructive"})
 
 
 def load_codex_hook_payload(text: str) -> dict[str, Any]:
@@ -116,7 +42,6 @@ def stamp_codex_task_context(
     session_cwd = _optional_text(hook_payload.get("cwd"))
     effective_cwd = Path(session_cwd).expanduser().resolve() if session_cwd else (cwd or Path.cwd()).resolve()
     active_attempt = _active_attempt_context(profile, effective_cwd)
-    turn_classification = _best_effort_turn_classification(hook_payload)
     context_payload = {
         "schema_version": CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION,
         "project_name": profile.project_name,
@@ -124,7 +49,6 @@ def stamp_codex_task_context(
         "cwd": str(effective_cwd),
         "context_found": active_attempt is not None,
         "hook": _hook_observability_payload(hook_payload),
-        "turn_classification": turn_classification,
         "active_attempt": active_attempt,
     }
     path = codex_task_context_path(profile)
@@ -141,7 +65,6 @@ def stamp_codex_task_context(
         "hook_event_name": context_payload["hook"].get("hook_event_name"),
         "session_id": context_payload["hook"].get("session_id"),
         "turn_id": context_payload["hook"].get("turn_id"),
-        "turn_classification": turn_classification,
         "active_attempt": active_attempt,
         "event_id": event["event_id"],
     }
@@ -211,70 +134,8 @@ def _hook_observability_payload(hook_payload: Mapping[str, Any]) -> dict[str, An
     return payload
 
 
-def _best_effort_turn_classification(hook_payload: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        return _classify_turn(hook_payload)
-    except Exception:
-        # Hook classification is observability only. A classifier defect must not
-        # prevent the existing task-context stamp from being recorded.
-        return _unknown_turn_classification()
-
-
-def _classify_turn(hook_payload: Mapping[str, Any]) -> dict[str, Any]:
-    text = _hook_turn_text(hook_payload)
-    if text is None:
-        return _unknown_turn_classification()
-
-    normalized = " ".join(text.casefold().split())
-    domains = [
-        domain
-        for domain in _TURN_DOMAIN_ORDER
-        if _contains_any_term(normalized, _DOMAIN_TERMS[domain])
-    ]
-    question_like = normalized.endswith("?") or _QUESTION_PREFIX.search(normalized) is not None
-    implementation_like = _contains_any_term(normalized, _IMPLEMENTATION_TERMS)
-    analysis_like = _contains_any_term(normalized, _ANALYSIS_TERMS)
-
-    if _STATUS_PREFIX.search(normalized) is not None:
-        intent = "status"
-    elif implementation_like and (not question_like or _POLITE_IMPLEMENTATION_PREFIX.search(normalized) is not None):
-        intent = "implementation"
-    elif analysis_like:
-        intent = "analysis"
-    elif question_like:
-        intent = "question"
-    elif implementation_like:
-        intent = "implementation"
-    else:
-        intent = "unknown"
-
-    risk = "guarded" if any(domain in _GUARDED_DOMAINS for domain in domains) else "normal"
-    confidence = "high" if intent != "unknown" else ("medium" if domains else "low")
-    return {
-        "intent": intent,
-        "domains": domains,
-        "risk": risk,
-        "source": _TURN_CLASSIFICATION_SOURCE,
-        "confidence": confidence,
-    }
-
-
-def _unknown_turn_classification() -> dict[str, Any]:
-    return {
-        "intent": "unknown",
-        "domains": [],
-        "risk": "unknown",
-        "source": _TURN_CLASSIFICATION_SOURCE,
-        "confidence": "low",
-    }
-
-
 def _hook_turn_text(hook_payload: Mapping[str, Any]) -> str | None:
     return _optional_text(hook_payload.get("prompt")) or _optional_text(hook_payload.get("message"))
-
-
-def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
-    return any(re.search(rf"(?<![\w]){re.escape(term)}(?![\w])", text) is not None for term in terms)
 
 
 def _current_branch(cwd: Path) -> str | None:

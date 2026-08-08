@@ -63,8 +63,9 @@ development.
   before editing.
 - Treat the file formats in `docs/FILE_FORMATS.md` as the contract for
   planning, runtime, and event artifacts.
-- Keep task-class preflight/guard extensions in the product layer unless a
-  durable schema change is explicitly designed and documented first.
+- Keep repository policy in optional `[[guards]]` blocks in `blackdog.toml`.
+  Blackdog owns the generic protocol and evidence; each target repo owns every
+  policy decision made by its configured commands.
 - Use `blackdog codex coverage|history|hook`, `repo table`, and `stats` as the
   reporting surfaces for implementation-like Codex work that did not enter
   Blackdog task execution.

@@ -392,7 +392,9 @@ Current required top-level sections:
 - `[taxonomy]`
 - `[[handlers]]`
 
-The additive `[landing]` section is optional when reading older profiles. The
+Optional `[[guards]]` blocks own repository policy and are defined in
+Repository Guard And Reporting Schema Notes below. The additive `[landing]`
+section is optional when reading older profiles. The
 default renderer writes:
 
 ```toml
@@ -453,14 +455,88 @@ the configured control directory when it is inside the repo or git common dir.
 It preserves repo-owned `AGENTS.md` text, unrelated dirty files, external
 control dirs, and `.blackdog/history.jsonl` by default.
 
-## Guardrail And Reporting Schema Notes
+## Repository Guard And Reporting Schema Notes
 
-Task-class guard extension points do not have a v1 durable schema field.
-Today they are product-layer policy that can read `blackdog.toml`, routed docs,
-prompt receipts, handler previews, preflight output, attempts, and Codex
-coverage/history rows. If a future guard writes durable configuration or
-results, this file must define the field names and allowed values before the
-implementation writes them.
+Repository policy is optional and repo-owned. Each configured policy command is
+one `[[guards]]` table in `blackdog.toml`:
+
+```toml
+[[guards]]
+schema_version = 1
+id = "repository-policy"
+phase = "task_begin"
+command = ["./scripts/blackdog-task-guard"]
+enabled = true
+timeout_seconds = 30
+```
+
+`schema_version` must be `1`. `id` is a unique lowercase identifier matching
+`[a-z0-9][a-z0-9._-]{0,63}`. The only shipped phase is `task_begin`. `command`
+is a nonempty argv array executed directly, without a shell, from the canonical
+repository root. `enabled` defaults to true. `timeout_seconds` defaults to 30
+and must be from 1 through 300. Tables execute in file order. There are no
+default guards and Blackdog does not add guard tables during init, install,
+update, or refresh.
+
+Configured commands must be side-effect-free and safe to retry. At the
+`task_begin` pre-mutation boundary, Blackdog writes one JSON object to stdin:
+
+```json
+{
+  "schema_version": 1,
+  "phase": "task_begin",
+  "guard": {
+    "id": "repository-policy",
+    "config_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "repository": {
+    "project_name": "Example",
+    "project_root": "/absolute/repo"
+  },
+  "task": {
+    "actor": "codex",
+    "prompt_mode": "skill",
+    "execution_prompt": {
+      "text": "composed execution prompt",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "request": {
+      "text": "raw request",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  }
+}
+```
+
+Prompt text is transient subprocess input. Blackdog does not copy the input
+fields directly into guard receipts, task events, errors, or observability.
+Because the command's result message is retained, the command must not echo
+request or execution-prompt text into any result field. The configuration
+digest is canonical SHA-256 over the schema version, id, phase, argv, enabled
+value, and timeout.
+
+The command must exit zero and write exactly one JSON object to stdout, no
+larger than 16,384 UTF-8 bytes, with exactly these fields:
+
+```json
+{
+  "schema_version": 1,
+  "status": "passed",
+  "reason_code": "repository_policy_passed",
+  "message": "Repository policy passed.",
+  "required_inputs": []
+}
+```
+
+`status` is `passed` or `blocked`. `reason_code` and each unique required-input
+name use the same identifier grammar as guard ids. `message` is nonempty and at
+most 512 characters. `required_inputs` contains at most 16 values and must be
+empty for `passed`. A `blocked` result becomes the typed
+`repository_guard_blocked` task-begin action with the repo's reason, message,
+and required inputs. Timeout, execution failure, nonzero exit, oversized
+output, malformed JSON, unknown fields, or invalid values become the typed
+`repository_guard_failed` action. Every refusal occurs before planning,
+runtime, prompt-artifact, Git, worktree, or handler mutation.
 
 Environment/launcher repair expectations use existing handler and event
 payloads. Repo lifecycle commands report handler actions in command output.
@@ -484,7 +560,6 @@ hook stamp` appends `codex.hook.task_context` events to
 - `cwd`
 - `context_found`
 - `hook`
-- optional `turn_classification`
 - optional `active_attempt`
 
 `hook` may include `hook_event_name`, `session_id`, `turn_id`,
@@ -492,47 +567,15 @@ hook stamp` appends `codex.hook.task_context` events to
 `tool_use_id`, `prompt_hash`, and `tool_command_hash`. It must not store full
 prompt text or tool command text.
 
-`turn_classification`, when present, is a bounded object derived from the
-transient hook `prompt` or `message`. It contains:
-
-- `intent = "implementation" | "analysis" | "question" | "status" | "unknown"`
-- `domains`, a unique list in this canonical order when values are present:
-  `ui`, `docs`, `tests`, `backend`, `data`, `repo_lifecycle`, `environment`,
-  `deployment`, `external_write`, `destructive`
-- `risk = "normal" | "guarded" | "unknown"`
-- `source = "heuristic"`
-- `confidence = "low" | "medium" | "high"`
-
-`guarded` is reported when the heuristic detects `deployment`,
-`external_write`, or `destructive`; it is descriptive observability, not proof
-that a task-class guard ran or passed. With no usable prompt/message, the
-classifier emits `intent = "unknown"`, an empty `domains` list,
-`risk = "unknown"`, and `confidence = "low"`. If classification itself cannot
-complete, new stamps still proceed with that same bounded unknown object; older
-stamps may omit the additive field. The classifier does not persist input text,
-matched terms, or excerpts; only these bounded labels and the existing hashes
-under `hook` cross the storage boundary.
-
 `active_attempt`, when present, includes `workset_id`, `task_id`, `attempt_id`,
 current status/actor/start metadata, branch fields, worktree path, match reason,
 and any stored Codex session ref fields already present on the attempt.
 Coverage/history treat a stamp as the strong `hook_context` relationship when
 its `session_id`/`turn_id` matches a Codex turn and its attempt id exists in
-`runtime.json`. Coverage and `codex_turn` history rows carry a stable
-`turn_classification` key containing the bounded object from a valid matching
-stamp, or `null` when no such classification exists; this does not replace the
-existing session-derived `classification` field. Coverage also reports
-deduplicated turn-level `turn_classification_counts` with `by_intent`,
-`by_domain`, and `by_risk` maps. Repeated hook stamps for one Codex turn do not
-multiply counts; each domain is counted at most once per turn, so a multi-domain
-turn contributes once to each matching domain. Only non-null classifications
-contribute to these maps; the explicit unknown fallback is a classification and
-is counted under `unknown`. When lifecycle hooks provide conflicting labels for
-one turn, a meaningful `UserPromptSubmit` classification takes precedence;
-otherwise Blackdog prefers the most informative, highest-confidence, latest
-stamp. A matching classification-only stamp does not need an active attempt to
-annotate or count the turn; only the `hook_context` relationship requires a
-corresponding attempt in `runtime.json`.
+`runtime.json`. Prompt and tool-command hashes remain bounded observability;
+hook input does not create policy classifications. Readers ignore the removed
+`turn_classification` field when it appears in an older stamp while preserving
+the stamp's valid task relationship.
 
 Supervised integration closeout uses existing attempt fields and landed-commit
 trailers: validations, residuals, follow-up candidates, changed paths, status,
@@ -708,12 +751,16 @@ terminal successful runtime row after `runtime_finalized`; `task land` may
 re-enter that same attempt to finish its event and cleanup phases even though
 the task/workset claims have been released.
 
-`setup_receipt`, when present, is a structured task-start receipt. It records
-`schema_version`, `status`, `task_class`, `blockers`, and `probes`, plus handler
-summary paths/modes and optional `skill_provenance`, `atomic_start`, and
-`worktree_start`. Start guards and handler setup probes use the receipt to show
-which startup checks ran, what was blocked, and which worktree-local runtime
-paths were prepared.
+`setup_receipt`, when present, is a structured task-start receipt. New writes
+use `schema_version = 2` and record `status`, `blockers`, `guard_receipts`, and
+handler `probes`, plus handler summary paths/modes and optional
+`skill_provenance`, `atomic_start`, `workspace_adoption`, and `worktree_start`.
+Each guard receipt has `schema_version = 1`, `id`, `phase`, `config_sha256`,
+`status = "passed"`, `reason_code`, `message`, and empty `required_inputs`.
+Blocked and invalid guard results are pre-attempt refusals and therefore do not
+create a durable attempt setup receipt. Schema-v1 setup receipts from the
+removed built-in policy remain readable for start repair and historical audit;
+new code neither writes nor interprets their `task_class` value as policy.
 
 Normal initial and ordinary-resume starts record `setup_receipt.worktree_start`
 as:

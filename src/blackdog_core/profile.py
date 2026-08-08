@@ -30,6 +30,12 @@ LANDING_SCHEMA_VERSION = 1
 DEFAULT_LANDING_VALIDATION_TIMEOUT_SECONDS = 900
 MIN_LANDING_VALIDATION_TIMEOUT_SECONDS = 1
 MAX_LANDING_VALIDATION_TIMEOUT_SECONDS = 3600
+GUARD_SCHEMA_VERSION = 1
+GUARD_PHASE_TASK_BEGIN = "task_begin"
+GUARD_PHASES = (GUARD_PHASE_TASK_BEGIN,)
+DEFAULT_GUARD_TIMEOUT_SECONDS = 30
+MIN_GUARD_TIMEOUT_SECONDS = 1
+MAX_GUARD_TIMEOUT_SECONDS = 300
 DEFAULT_DOC_ROUTING = (
     "AGENTS.md",
     "docs/INDEX.md",
@@ -99,6 +105,16 @@ RepoHandlerConfig = PythonOverlayVenvHandlerConfig | BlackdogRuntimeHandlerConfi
 
 
 @dataclass(frozen=True)
+class GuardConfig:
+    schema_version: int
+    guard_id: str
+    phase: str
+    command: tuple[str, ...]
+    enabled: bool
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class LandingConfig:
     schema_version: int
     automatic_stale_rebase: bool
@@ -115,6 +131,7 @@ class RepoProfile:
     landing: LandingConfig
     doc_routing_defaults: tuple[str, ...]
     paths: BlackdogPaths
+    guards: tuple[GuardConfig, ...]
     handlers: tuple[RepoHandlerConfig, ...]
     handlers_explicit: bool
 
@@ -393,6 +410,75 @@ def _load_handlers(payload: object) -> tuple[tuple[RepoHandlerConfig, ...], bool
     return handlers, True
 
 
+def _guard_from_payload(payload: dict[str, object], *, index: int) -> GuardConfig:
+    field_prefix = f"guards[{index}]"
+    schema_version = payload.get("schema_version")
+    if type(schema_version) is not int or schema_version != GUARD_SCHEMA_VERSION:
+        raise ConfigError(f"{field_prefix}.schema_version must be {GUARD_SCHEMA_VERSION}")
+    guard_id = _optional_text(payload.get("id"))
+    if guard_id is None or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", guard_id) is None:
+        raise ConfigError(
+            f"{field_prefix}.id must match [a-z0-9][a-z0-9._-]{{0,63}}"
+        )
+    phase = _optional_text(payload.get("phase"))
+    if phase not in GUARD_PHASES:
+        raise ConfigError(
+            f"{field_prefix}.phase must be one of {', '.join(GUARD_PHASES)}"
+        )
+    raw_command = payload.get("command")
+    if (
+        not isinstance(raw_command, list)
+        or not raw_command
+        or any(not isinstance(item, str) or not item.strip() for item in raw_command)
+    ):
+        raise ConfigError(
+            f"{field_prefix}.command must be a nonempty list of non-empty strings"
+        )
+    command = tuple(item.strip() for item in raw_command)
+    enabled = (
+        True
+        if "enabled" not in payload
+        else _bool_value(payload.get("enabled"), field=f"{field_prefix}.enabled")
+    )
+    timeout_seconds = payload.get("timeout_seconds", DEFAULT_GUARD_TIMEOUT_SECONDS)
+    if (
+        type(timeout_seconds) is not int
+        or not MIN_GUARD_TIMEOUT_SECONDS
+        <= timeout_seconds
+        <= MAX_GUARD_TIMEOUT_SECONDS
+    ):
+        raise ConfigError(
+            f"{field_prefix}.timeout_seconds must be an integer from "
+            f"{MIN_GUARD_TIMEOUT_SECONDS} to {MAX_GUARD_TIMEOUT_SECONDS}"
+        )
+    return GuardConfig(
+        schema_version=schema_version,
+        guard_id=guard_id,
+        phase=phase,
+        command=command,
+        enabled=enabled,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _load_guards(payload: object) -> tuple[GuardConfig, ...]:
+    if payload is None:
+        return ()
+    if not isinstance(payload, list):
+        raise ConfigError("guards must be an array of tables")
+    guards: list[GuardConfig] = []
+    seen: set[str] = set()
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise ConfigError("guards must contain only tables")
+        guard = _guard_from_payload(item, index=index)
+        if guard.guard_id in seen:
+            raise ConfigError(f"duplicate guard id {guard.guard_id!r}")
+        seen.add(guard.guard_id)
+        guards.append(guard)
+    return tuple(guards)
+
+
 def _prune_stale_git_worktrees(project_root: Path) -> None:
     _run_git(project_root, "worktree", "prune")
 
@@ -449,6 +535,7 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
     raw_landing = payload.get("landing")
     landing = {} if raw_landing is None else raw_landing
     raw_paths = payload.get("paths") or {}
+    guards = _load_guards(payload.get("guards"))
     handlers, handlers_explicit = _load_handlers(payload.get("handlers"))
     if not isinstance(landing, dict):
         raise ConfigError("landing must be a table")
@@ -523,6 +610,7 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
             str(item) for item in taxonomy.get("doc_routing_defaults") or DEFAULT_DOC_ROUTING
         ),
         paths=paths,
+        guards=guards,
         handlers=handlers,
         handlers_explicit=handlers_explicit,
     )

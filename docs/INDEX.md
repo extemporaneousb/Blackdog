@@ -72,7 +72,8 @@ explicit planned-task WTAM path.
 - Do not use architecture prose as an alternate CLI or schema contract.
 - Do not preserve deleted backlog, board, bootstrap, inbox, render, or
   multi-agent runtime surfaces on the typed model.
-- Keep task-class guard extensions in the product layer.
+- Keep repository policy in optional, repo-owned `[[guards]]` configuration;
+  Blackdog supplies only the generic execution and evidence contract.
 - Keep generated repo skills thin: route work through the Blackdog CLI and
   record durable attempts instead of encoding workflow logic in prompt prose.
 - Validate repo installation and layering through the normal test suite and

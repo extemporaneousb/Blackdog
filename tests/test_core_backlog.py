@@ -1048,11 +1048,22 @@ class CorePlanningTests(CoreAuditTestCase):
                 mode="raw",
             ),
             setup_receipt={
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "ok",
-                "task_class": "implementation",
                 "blockers": [],
-                "probes": [{"name": "task_class", "status": "ok", "value": "implementation"}],
+                "guard_receipts": [
+                    {
+                        "schema_version": 1,
+                        "id": "repo-policy",
+                        "phase": "task_begin",
+                        "config_sha256": "0" * 64,
+                        "status": "passed",
+                        "reason_code": "policy_passed",
+                        "message": "Repository policy passed.",
+                        "required_inputs": [],
+                    }
+                ],
+                "probes": [],
             },
             note="starting work",
         )
@@ -1066,7 +1077,7 @@ class CorePlanningTests(CoreAuditTestCase):
         self.assertEqual(attempt.prompt_receipt.prompt_hash, create_prompt_receipt("Implement the direct slice and record runtime stats.").prompt_hash)
         self.assertEqual(attempt.user_prompt_receipt.source, "user-test")
         self.assertEqual(attempt.setup_receipt["status"], "ok")
-        self.assertEqual(attempt.setup_receipt["task_class"], "implementation")
+        self.assertEqual(attempt.setup_receipt["guard_receipts"][0]["id"], "repo-policy")
 
         runtime_state = load_runtime_state(self.profile.paths, store=JsonRuntimeStore())
         self.assertEqual(runtime_state.worksets[0].workset_claim.actor, "codex")
@@ -1112,7 +1123,10 @@ class CorePlanningTests(CoreAuditTestCase):
             if line.strip()
         ]
         start_event = next(event for event in events if event["type"] == "task.start")
-        self.assertEqual(start_event["payload"]["setup_receipt"]["task_class"], "implementation")
+        self.assertEqual(
+            start_event["payload"]["setup_receipt"]["guard_receipts"][0]["id"],
+            "repo-policy",
+        )
 
     def test_reconcile_landed_attempt_preserves_terminal_lineage_and_is_idempotent(self) -> None:
         upsert_workset(

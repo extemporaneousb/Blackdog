@@ -206,8 +206,8 @@ class CoreContractTests(CoreAuditTestCase):
 
         for text in (architecture, cli_doc, file_formats):
             lower_text = text.lower()
-            with self.subTest(contract="task-class guards"):
-                self.assertIn("task-class guard extension points", lower_text)
+            with self.subTest(contract="repository guards"):
+                self.assertIn("repository policy", lower_text)
             with self.subTest(contract="implementation-without-Blackdog"):
                 self.assertIn("implementation-without-blackdog detection", lower_text)
             with self.subTest(contract="learning reports"):
