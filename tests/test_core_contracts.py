@@ -258,21 +258,22 @@ class CoreContractTests(CoreAuditTestCase):
         for rendered_contract in (managed_contract, skill_text):
             self.assertIn("--actor codex", rendered_contract)
             self.assertIn("--json", rendered_contract)
-            self.assertIn("exact triggering user request verbatim", rendered_contract)
             self.assertEqual(rendered_contract.count(PROMPT_INPUT_DISPOSAL_GUIDANCE), 1)
             self.assertEqual(rendered_contract.count(NEXT_ACTION_AUTHORITY_GUIDANCE), 1)
-            self.assertEqual(
-                rendered_contract.count(AUTOMATIC_STALE_RECOVERY_GUIDANCE),
-                1,
-            )
-            self.assertEqual(rendered_contract.count(TARGET_BRANCH_GUIDANCE), 1)
-            self.assertIn("retry_task_close_finalization", rendered_contract)
             self.assertNotIn("--actor AGENT", rendered_contract)
             self.assertNotIn("--execution-prompt-file EXECUTION_PROMPT", rendered_contract)
             self.assertNotIn("--request-file USER_REQUEST", rendered_contract)
             self.assertNotIn("delete the temporary inputs after Blackdog confirms", rendered_contract)
             self.assertNotIn("partial or blocked normal task lifecycle result", rendered_contract)
             self.assertNotIn("primary `main` branch", rendered_contract)
+        self.assertIn("exact triggering user request verbatim", managed_contract)
+        self.assertEqual(managed_contract.count(AUTOMATIC_STALE_RECOVERY_GUIDANCE), 1)
+        self.assertEqual(managed_contract.count(TARGET_BRANCH_GUIDANCE), 1)
+        self.assertIn("retry_task_close_finalization", managed_contract)
+        self.assertNotIn(AUTOMATIC_STALE_RECOVERY_GUIDANCE, skill_text)
+        self.assertNotIn(TARGET_BRANCH_GUIDANCE, skill_text)
+        self.assertNotIn("retry_task_close_finalization", skill_text)
+        self.assertLessEqual(len(skill_text.splitlines()), 20)
 
         self.assertTrue(AGENT_WORKFLOW.begin_command.endswith(" --json"))
         self.assertTrue(AGENT_WORKFLOW.land_command.endswith(" --json"))

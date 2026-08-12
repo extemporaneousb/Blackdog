@@ -76,5 +76,7 @@ explicit planned-task WTAM path.
   Blackdog supplies only the generic execution and evidence contract.
 - Keep generated repo skills thin: route work through the Blackdog CLI and
   record durable attempts instead of encoding workflow logic in prompt prose.
+  Treat `doc_routing_defaults` as a catalog: agents select only the entries
+  relevant to the current request instead of loading the full list by default.
 - Validate repo installation and layering through the normal test suite and
   operator-facing `repo analyze`/`worktree preflight` checks.

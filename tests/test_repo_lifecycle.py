@@ -14,11 +14,9 @@ from blackdog.repo_membership import discover_profile_dirs
 from blackdog.repo_lifecycle import render_repo_skill
 from blackdog.workflow_contract import (
     AGENT_WORKFLOW,
-    AUTOMATIC_STALE_RECOVERY_GUIDANCE,
     NEXT_ACTION_AUTHORITY_GUIDANCE,
     PROMPT_INPUT_DISPOSAL_GUIDANCE,
     SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
-    TARGET_BRANCH_GUIDANCE,
 )
 from blackdog_core.backlog import finish_task, start_task, upsert_workset
 from blackdog_cli.main import main as blackdog_main
@@ -34,13 +32,6 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
-
-    def rendered_skill_command_inventory(self, skill_text: str) -> tuple[str, ...]:
-        section = skill_text.split("## Internal CLI Surface\n", 1)[1].split(
-            "## Operator Guardrails\n",
-            1,
-        )[0]
-        return tuple(re.findall(r"`(blackdog [^`]+)`", section))
 
     def composed_prompt_command_inventory(self, prompt_text: str) -> tuple[str, ...]:
         return tuple(
@@ -250,25 +241,20 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
 
         self.assertIn("$blackdog scaffold project <description>", skill_text)
         self.assertIn("repo scaffold", skill_text)
-        self.assertIn("repo table", skill_text)
-        self.assertIn("repo bind", skill_text)
-        self.assertIn("repo archive", skill_text)
-        self.assertIn("repo unarchive", skill_text)
-        self.assertIn("repo unbind", skill_text)
-        self.assertIn("without `--workset` or `--task`", skill_text)
+        self.assertNotIn("Internal CLI Surface", skill_text)
+        self.assertLessEqual(len(skill_text.splitlines()), 20)
         self.assertNotIn("planned execution", skill_text)
 
-    def test_checked_in_blackdog_skill_matches_renderer_and_fleet_scope_contract(self) -> None:
+    def test_checked_in_blackdog_skill_matches_thin_renderer(self) -> None:
         profile = load_profile(REPO_ROOT)
         skill_path = REPO_ROOT / managed_skill_relative_path(profile)
         rendered = render_repo_skill(profile)
 
         self.assertEqual(skill_path.read_text(encoding="utf-8"), rendered)
-        self.assertIn("repeat `--project-root` for exact repos", rendered)
-        self.assertIn("repeat `--root` for read-only `blackdog.toml` discovery", rendered)
-        self.assertIn("pass `--registry` for the explicit user-local registry", rendered)
-        self.assertIn("Only bare `blackdog stats`", rendered)
-        self.assertIn("`blackdog repo table` never selects registry scope implicitly", rendered)
+        self.assertLessEqual(len(rendered.splitlines()), 20)
+        self.assertIn("Read only catalog entries relevant to the current task", rendered)
+        self.assertNotIn("Internal CLI Surface", rendered)
+        self.assertNotIn("Docs To Review", rendered)
 
     def test_repo_analyze_does_not_flag_blackdog_source_skill_as_legacy(self) -> None:
         self.write_profile("Blackdog")
@@ -908,28 +894,17 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("--prompt-mode skill", skill_text)
         self.assertIn('"${validation_args[@]}"', skill_text)
         self.assertIn("NAME=passed|failed|skipped", skill_text)
-        self.assertIn("Never submit placeholders or invented validation", skill_text)
-        self.assertIn("sole Blackdog task/attempt owner", skill_text)
-        self.assertIn("Workers do not run `task begin`", skill_text)
         self.assertIn(PROMPT_INPUT_DISPOSAL_GUIDANCE, skill_text)
         self.assertIn(NEXT_ACTION_AUTHORITY_GUIDANCE, skill_text)
-        self.assertIn(AUTOMATIC_STALE_RECOVERY_GUIDANCE, skill_text)
-        self.assertIn(TARGET_BRANCH_GUIDANCE, skill_text)
         self.assertNotIn("partial or blocked normal task lifecycle result", skill_text)
         self.assertNotIn("primary `main` branch", skill_text)
-        self.assertIn("retry_stale_claim_release_finalization", skill_text)
-        self.assertIn("retry_task_close_finalization", skill_text)
-        self.assertIn("hidden request/decision guards are machine-emitted", skill_text)
-        self.assertIn("performs its own readiness checks", skill_text)
-        self.assertIn("a separate preflight is not required", skill_text)
         self.assertIn(f"`{AGENT_WORKFLOW.begin_command}`", skill_text)
-        self.assertEqual(
-            self.rendered_skill_command_inventory(skill_text),
-            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
-        )
-        self.assertIn("Operator Guardrails", skill_text)
-        self.assertIn("Do not launch an external browser", skill_text)
-        self.assertNotIn("Shipped Workflow Families", skill_text)
+        self.assertIn("Read only catalog entries relevant to the current task", skill_text)
+        self.assertLessEqual(len(skill_text.splitlines()), 18)
+        self.assertNotIn("Internal CLI Surface", skill_text)
+        self.assertNotIn("Operator Guardrails", skill_text)
+        self.assertNotIn("Docs To Review", skill_text)
+        self.assertNotIn("deployment", skill_text.lower())
         self.assertIn("AGENTS.md", skill_text)
         self.assertNotIn("docs/INDEX.md", skill_text)
         skill_metadata = skill_metadata_path.read_text(encoding="utf-8")
@@ -1082,9 +1057,9 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         self.assertIn("docs/CUSTOM.md", agents_text)
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertNotIn("stale skill", skill_text)
-        self.assertIn("docs/CUSTOM.md", skill_text)
+        self.assertNotIn("docs/CUSTOM.md", skill_text)
         self.assertIn("repo refresh", skill_text)
-        self.assertIn("task cancel", skill_text)
+        self.assertNotIn("Internal CLI Surface", skill_text)
         skill_metadata = skill_metadata_path.read_text(encoding="utf-8")
         self.assertNotIn("stale metadata", skill_metadata)
         self.assertIn(f"default_prompt: \"Use ${managed_skill_name(profile)} do <task-description>", skill_metadata)
@@ -1122,10 +1097,8 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
             tuple(preview["repo_lifecycle_commands"] + preview["wtam_commands"]),
             SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
         )
-        self.assertEqual(
-            self.composed_prompt_command_inventory(preview["composed_prompt"]),
-            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
-        )
+        self.assertEqual(self.composed_prompt_command_inventory(preview["composed_prompt"]), ())
+        self.assertIn("inspect only entries relevant to this request", preview["composed_prompt"])
         self.assertTrue(
             any(item["kind"] == "skill" and item["text"] is not None for item in preview["contract_documents"])
         )
@@ -1164,7 +1137,5 @@ class RepoLifecycleCliTests(CoreAuditTestCase):
         tuned = json.loads(stdout)["prompt_tune"]
         self.assertEqual(tuned["workflow_family"], "repo-lifecycle")
         self.assertIn("Round out repo lifecycle behavior.", tuned["tuned_prompt"])
-        self.assertEqual(
-            self.composed_prompt_command_inventory(tuned["tuned_prompt"]),
-            SHIPPED_VISIBLE_COMMAND_INVOCATIONS,
-        )
+        self.assertEqual(self.composed_prompt_command_inventory(tuned["tuned_prompt"]), ())
+        self.assertIn("inspect only entries relevant to this request", tuned["tuned_prompt"])

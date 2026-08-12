@@ -404,6 +404,11 @@ automatic_stale_rebase = false
 validation_timeout_seconds = 900
 ```
 
+`[taxonomy].doc_routing_defaults` is an ordered document-routing catalog.
+Generated instructions tell agents to select only entries relevant to the
+current task. Listing a document does not require loading its contents on every
+request; full text expansion is restricted to explicit preview/tuning flags.
+
 Only schema version `1` is accepted. Enabling `automatic_stale_rebase` requires
 an explicitly configured, nonempty `[taxonomy].validation_commands` list.
 `validation_timeout_seconds` is an integer from 1 through 3600 and applies per

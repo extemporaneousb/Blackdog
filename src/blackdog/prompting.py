@@ -73,31 +73,24 @@ def _compose_prompt(
     )
     lines = [
         f"You are working in the repo {profile.project_name} at {profile.paths.project_root}.",
-        "Use the repo-local Blackdog contract for repo lifecycle work.",
-        "Prefer the repo-local CLI entry point `./.VE/bin/blackdog` when it exists.",
-        (
-            "For normal implementation work, use `blackdog task begin` directly; it performs "
-            "its own readiness checks and returns the only workspace where implementation edits belong."
-        ),
-        (
-            f"`{AGENT_WORKFLOW.preflight_command}` is optional read-only diagnosis, not a "
-            "separate prerequisite for `task begin`."
-        ),
-        "Repo lifecycle, registry, reporting, and evidence commands available in this repo:",
+        "Follow the repo-local managed `AGENTS.md` Blackdog contract.",
+        "Use `./.VE/bin/blackdog` when it exists.",
+        f"Normal implementation starts with `{AGENT_WORKFLOW.begin_command}`.",
+        "The returned task workspace is the only place for implementation edits.",
     ]
-    lines.extend(f"- `{command}`" for command in REPO_LIFECYCLE_COMMANDS)
-    lines.append("Task workflow and explicit low-level diagnosis or repair commands:")
-    lines.extend(f"- `{command}`" for command in WTAM_COMMANDS)
     if profile.validation_commands:
         lines.append("Validation commands configured for this repo:")
         lines.extend(f"- `{command}`" for command in profile.validation_commands)
     if profile.doc_routing_defaults:
-        lines.append("Review these routed contract docs before editing when they apply:")
+        lines.append(
+            "Document routing catalog: inspect only entries relevant to this request; "
+            "do not load every document by default:"
+        )
         lines.extend(f"- `{item}`" for item in profile.doc_routing_defaults)
     lines.append("User request:")
     lines.append(request)
     if documents:
-        lines.append("Contract inputs:")
+        lines.append("Available contract inputs:")
         for document in documents:
             lines.append(f"- {document.kind}: {document.path}")
             if document.text is not None:

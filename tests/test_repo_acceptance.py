@@ -64,10 +64,11 @@ class RepoAcceptanceTests(CoreAuditTestCase):
 
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
-        self.assertIn("Execution Contract", skill_text)
-        self.assertIn("goal, context, constraints, and done condition", skill_text)
-        self.assertIn("delegate setup, state, recovery, and landing to the Blackdog CLI", skill_text)
-        self.assertIn("- `AGENTS.md`", skill_text)
+        self.assertIn("## Workflow", skill_text)
+        self.assertIn("a concise goal, relevant context, constraints, and done condition", skill_text)
+        self.assertIn("`AGENTS.md` owns the detailed workflow contract", skill_text)
+        self.assertNotIn("Docs To Review", skill_text)
+        self.assertLessEqual(len(skill_text.splitlines()), 18)
         self.assertNotIn("docs/PRODUCT_SPEC.md", skill_text)
         self.assertNotIn("docs/TARGET_MODEL.md", skill_text)
 

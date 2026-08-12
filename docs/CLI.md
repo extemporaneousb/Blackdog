@@ -418,6 +418,11 @@ Important flags:
 - routed contract docs and the repo-local managed skill
 - the composed prompt text when `--show-prompt` is set
 
+The composed prompt treats `doc_routing_defaults` as a catalog and directs the
+agent to inspect only entries relevant to the request. It does not inline
+document bodies or repeat the full CLI inventory unless an explicit expansion
+or output surface requests that detail.
+
 Use `--expand-skill-text` when you want the repo-local skill text inlined.
 Use `--expand-contract` when you want routed doc text inlined as well.
 
@@ -1446,8 +1451,8 @@ Important flags:
   remediation when start is blocked
 
 Use `--show-prompt` when you want the exact prompt receipt text.
-Use `--expand-contract` when you want the preview to inline the contract
-documents Blackdog expects an agent to use.
+Use `--expand-contract` when you explicitly want the preview to inline every
+configured contract document. Normal task startup does not expand that catalog.
 
 `worktree preview` is a low-level recovery/repair command. Use `task begin`
 without `--workset` or `--task` for new work; do not invent workset or task ids.

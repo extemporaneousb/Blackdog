@@ -995,7 +995,10 @@ def _looks_like_managed_skill_dir(skill_dir: Path) -> bool:
     return (
         "Repo-local AI development workflow" in text
         and "backed by Blackdog" in text
-        and "`blackdog.toml` is the machine-readable source of truth" in text
+        and (
+            "`blackdog.toml` is the machine-readable source of truth" in text
+            or "`blackdog.toml` owns handler setup" in text
+        )
     )
 
 

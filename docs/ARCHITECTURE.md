@@ -612,7 +612,11 @@ The current coherent product surface on top of the new core is:
 The `task` family is the default same-thread WTAM path and is what generated
 repo-local skills use for `$<repo-name> do ...` requests. The skill may compose
 an execution prompt and pass it with `prompt-mode=skill` while recording the raw
-user request as separate prompt lineage. `task begin` uses the operator's
+user request as separate prompt lineage. The generated skill is only a compact
+entrypoint into the managed `AGENTS.md` contract; it does not duplicate recovery
+rules, command inventories, or the configured document list. Profile
+`doc_routing_defaults` entries are a selection catalog, not an instruction to
+load every document for every request. `task begin` uses the operator's
 current workspace as the routing context when that workspace belongs to the
 managed Git repository, so normal linked worktrees become target branches and
 receive changes only through nested task worktrees.

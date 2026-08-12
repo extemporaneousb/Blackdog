@@ -123,7 +123,7 @@ Keep repo-specific requirements outside this block.
 - Before finishing implementation work, re-check branch and dirty state and do not leave uncommitted changes from your work.
 - Treat the `target_branch` selected and recorded by Blackdog for the task as authoritative when landing and verifying the result; never assume it is `main` and never switch it manually.
 
-Review these routed docs before editing when they apply:
+Document routing catalog: read only the entries relevant to the current task; do not load every document by default:
 - `docs/INDEX.md`
 - `docs/ARCHITECTURE.md`
 - `docs/CLI.md`

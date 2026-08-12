@@ -21,7 +21,6 @@ from blackdog.workflow_contract import (
     NEXT_ACTION_AUTHORITY_GUIDANCE,
     PROMPT_INPUT_DISPOSAL_GUIDANCE,
     TARGET_BRANCH_GUIDANCE,
-    render_command_inventory_markdown,
 )
 from blackdog_core.profile import (
     RepoProfile,
@@ -597,7 +596,13 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         f"- {TARGET_BRANCH_GUIDANCE}",
     ]
     if routed_docs:
-        lines.extend(("", "Review these routed docs before editing when they apply:"))
+        lines.extend(
+            (
+                "",
+                "Document routing catalog: read only the entries relevant to the current task; "
+                "do not load every document by default:",
+            )
+        )
         lines.extend(f"- `{item}`" for item in routed_docs)
     if profile.validation_commands:
         lines.extend(("", "Run the narrowest relevant validation after changes. Repo defaults:"))
@@ -637,7 +642,6 @@ def _write_repo_agents(profile: RepoProfile) -> tuple[Path, str]:
 
 
 def render_repo_skill(profile: RepoProfile) -> str:
-    docs = "\n".join(f"- `{item}`" for item in profile.doc_routing_defaults)
     skill_name = managed_skill_name(profile)
     blackdog_source_skill = _looks_like_blackdog_source_checkout(profile.paths.project_root)
     scaffold_workflow = ""
@@ -645,46 +649,23 @@ def render_repo_skill(profile: RepoProfile) -> str:
         scaffold_workflow = (
             f"- `${skill_name} scaffold project <description>`: ask only for missing durable choices such as target path, project name, exemplar repo, validation commands, routed docs, local project access, and app/runtime needs; preview with `./.VE/bin/blackdog repo scaffold --target-root TARGET --like EXEMPLAR --project-name NAME --dry-run`, then apply without adding scaffold logic to the generated project skill.\n"
         )
-    command_inventory = render_command_inventory_markdown()
     return (
         "---\n"
         f"name: {skill_name}\n"
         f'description: "Repo-local AI development workflow for {profile.project_name}, backed by Blackdog."\n'
         "---\n\n"
         f"# Repo Skill: {profile.project_name}\n\n"
-        "Use this repo-local skill for normal development requests. The skill is backed by the repo-local Blackdog CLI, but users do not need to name Blackdog workflow primitives in ordinary requests.\n"
-        "`blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.\n\n"
-        "## User Workflows\n\n"
+        "Use this repo-local skill for normal development requests. `AGENTS.md` owns the detailed "
+        "workflow contract; do not duplicate it here. `blackdog.toml` owns handler setup, validation, "
+        "and a document-routing catalog. Read only catalog entries relevant to the current task; do not "
+        "load every routed document by default.\n\n"
+        "## Workflow\n\n"
         f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
-        f"- `${skill_name} do <task-description>`: materialize two mode-0600 UTF-8 temporary files outside the repo. Set `request_file` to the absolute path containing the exact triggering user request verbatim; set `execution_prompt_file` to the absolute path containing the concise goal, context, constraints, and done condition prompt composed from that request and routed docs. Run `{AGENT_WORKFLOW.begin_command}` directly without `--workset` or `--task`. {PROMPT_INPUT_DISPOSAL_GUIDANCE} `task begin` performs its own readiness checks, so a separate preflight is not required; make changes only in the returned task workspace; validate; set `completion_summary` to concise human-readable change statements whose first nonblank line is the Git subject and whose later nonblank lines are major body items; build `validation_args` with at least one repeated `--validation` and `NAME=passed|failed|skipped`; then run `{AGENT_WORKFLOW.land_command}`. Never submit placeholders or invented validation; do not put Blackdog metadata in the summary.\n"
-        "- `task begin --actor` defaults to the stable owner `codex`; the generated command supplies it explicitly. For supervised multi-agent work, the one supervisor may instead use `codex-supervisor` and remains the sole Blackdog task/attempt owner. Workers do not run `task begin`, create parallel Blackdog attempts, or land separately; their contributions and reviews remain inside the supervisor-owned task.\n\n"
-        "## Execution Contract\n\n"
-        "- Inputs: the user's task request, routed docs from `blackdog.toml`, and the repo-local managed AGENTS contract.\n"
-        "- Output: one landed commit with Blackdog trailers, or an explicit `task close` result with status, summary, residuals, and follow-ups.\n"
+        f"- `${skill_name} do <task-description>`: create the two mode-0600 UTF-8 temporary prompt files required by `AGENTS.md`; keep the exact triggering request in `request_file` and a concise goal, relevant context, constraints, and done condition in `execution_prompt_file`. Run `{AGENT_WORKFLOW.begin_command}` directly. {PROMPT_INPUT_DISPOSAL_GUIDANCE}\n"
+        "- Make implementation changes only in the returned task workspace.\n"
         f"- {NEXT_ACTION_AUTHORITY_GUIDANCE}\n"
-        f"- {AUTOMATIC_STALE_RECOVERY_GUIDANCE}\n"
-        "- Do not manually invent or switch Codex session references. Normal `task begin` captures the invoking turn as best-effort evidence; capture missingness never blocks work, and `codex coverage`/`codex history` are the reconciliation surfaces.\n"
-        "- Use `blackdog codex link` only for an explicit continuation into a new Codex local chat. It targets the active Blackdog task worktree without transferring branch, landing, or cleanup ownership to Codex.\n"
-        "- Retained-workspace adoption and adoption-completion repair are internal recovery routes emitted by `task show`/`task recover`. Execute only their exact `next_action.argv`; never invent adoption flags, expected-value guards, rebase targets, reconciliation commits, cleanup, or a replacement task.\n"
-        "- Direct read-only `task show`, read-only `task recover`, and CLI `worktree show` may detect one legacy landing candidate within 64 target first-parent commits after the exact attempt start. Execute only the emitted read-only dry-run `next_action.argv`; never add `--apply` unless that proof command returns its guarded apply action. Internal/mutation/table/stats reads do not run this scan.\n"
-        "- If any task surface reports `next_action.action_id=retry_stale_claim_release_finalization`, execute that exact owner-task argv before claim-mutating begin/land/close or owner cancel/reopen. Its hidden request/decision guards are machine-emitted replay capabilities; never invent, edit, remove, or reuse them. Stop if Blackdog returns a blocked or conflict action.\n"
-        "- If any task surface reports `next_action.action_id=retry_task_close_finalization`, execute that exact argv until close completes. Its hidden close-request guard and terminal evidence are machine-emitted replay capabilities; never omit, edit, or reconstruct them. A blocked action has no recovery command and requires evidence inspection.\n"
-        "- Keep this skill thin: delegate setup, state, recovery, and landing to the Blackdog CLI rather than encoding workflow state in prompt prose.\n\n"
-        "## Internal CLI Surface\n\n"
-        f"{command_inventory}\n"
-        "- abandoned work is canceled by default; use `task reopen` only when it should return to normal execution\n\n"
-        "`worktree preflight` is optional read-only diagnosis; `task begin` is the one normal implementation entrypoint.\n\n"
-        "## Operator Guardrails\n\n"
-        "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser; prefer Codex in-app browser tools or headless evidence.\n"
-        "- After `repo install`, `repo update`, or `repo refresh`, run `git status --short`; commit or land managed repo changes, or report the checkout as intentionally dirty before finishing.\n"
-        "- Before finishing implementation work, re-check branch and dirty state and do not leave uncommitted changes from your work.\n"
-        f"- {TARGET_BRANCH_GUIDANCE}\n\n"
-        "## Fleet Scope\n\n"
-        "- Choose exactly one fleet scope: repeat `--project-root` for exact repos, repeat `--root` for read-only `blackdog.toml` discovery, or pass `--registry` for the explicit user-local registry.\n"
-        "- Discovery never populates the registry. Only bare `blackdog stats` has a compatibility registry fallback; `blackdog repo table` never selects registry scope implicitly.\n\n"
-        "## Docs To Review\n\n"
-        f"{docs}\n"
+        f"- Validate as required by `AGENTS.md`, then land with `{AGENT_WORKFLOW.land_command}` using real `NAME=passed|failed|skipped` evidence and a concise human-readable summary.\n"
     )
 
 
