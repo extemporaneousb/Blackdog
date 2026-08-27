@@ -80,3 +80,11 @@ explicit planned-task WTAM path.
   relevant to the current request instead of loading the full list by default.
 - Validate repo installation and layering through the normal test suite and
   operator-facing `repo analyze`/`worktree preflight` checks.
+
+## Research And Case Studies
+
+These documents are non-authoritative design inputs. They describe measured
+history and proposals, not shipped commands or file formats:
+
+- [AdaptivePlotter sequential execution case study](docs/research/ADAPTIVEPLOTTER_SEQUENTIAL_EXECUTION_CASE_STUDY.md)
+- [Multi-agent sequential-execution research prompt](docs/research/MULTI_AGENT_SEQUENTIAL_EXECUTION_RESEARCH_PROMPT.md)
