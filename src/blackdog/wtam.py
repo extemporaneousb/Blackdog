@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import os
 from pathlib import Path
@@ -249,6 +249,21 @@ def find_primary_worktree(project_root: Path) -> Path:
         if (candidate / ".git").is_dir():
             return candidate
     raise WorktreeError("could not find the primary worktree")
+
+
+def _profile_rooted_at_primary_worktree(profile: RepoProfile) -> RepoProfile:
+    """Retain loaded policy while moving command-local paths to the surviving root."""
+    primary = find_primary_worktree(profile.paths.project_root)
+    if profile.paths.project_root.resolve() == primary:
+        return profile
+    return replace(
+        profile,
+        paths=replace(
+            profile.paths,
+            project_root=primary,
+            profile_file=primary / profile.paths.profile_file.name,
+        ),
+    )
 
 
 def _find_worktree_for_branch(project_root: Path, branch: str) -> Path | None:
@@ -3011,6 +3026,12 @@ def land_task(
         cwd=cwd,
         require_certified_cwd=True,
     )
+    # Default landing removes the task workspace.  From this point onward all
+    # validation, result construction, and exact retry commands must use the
+    # canonical primary checkout, which survives task cleanup.  Keep the
+    # already-loaded policy so an unlanded profile edit cannot change the
+    # transaction that is about to freeze that source.
+    profile = _profile_rooted_at_primary_worktree(profile)
     state = load_runtime_state(profile.paths)
     active = active_task_attempt(state, task.task_id)
     incomplete = _first_incomplete_landing(profile, task)

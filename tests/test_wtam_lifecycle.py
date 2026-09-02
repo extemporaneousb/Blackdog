@@ -940,6 +940,63 @@ class ProductLifecycleTests(unittest.TestCase):
             finally:
                 repo.close()
 
+    def test_task_rooted_landing_partial_retry_uses_surviving_primary_root(self) -> None:
+        repo = ProductRepo("land-task-root-retry")
+        original = wtam._record_phase
+        failed = False
+
+        def lose_target_receipt(profile, intent, phase, data):
+            nonlocal failed
+            if phase == "target_updated" and not failed:
+                failed = True
+                raise OSError("fault after target compare-and-swap")
+            return original(profile, intent, phase, data)
+
+        try:
+            task, _attempt = repo.start()
+            primary_launcher = repo.root / ".VE" / "bin" / "blackdog"
+            primary_launcher.parent.mkdir(parents=True)
+            primary_launcher.write_text("surviving launcher fixture\n", encoding="utf-8")
+            task_profile = load_profile(repo.worktree)
+            kwargs = {
+                "task_id": task.task_id,
+                "actor": repo.actor,
+                "summary": "Retain a valid landing retry root",
+                "validations": (ValidationRecord("unit", "passed"),),
+                "cleanup": True,
+            }
+            with patch.object(wtam, "_record_phase", side_effect=lose_target_receipt):
+                partial = wtam.land_task(
+                    task_profile,
+                    cwd=repo.worktree,
+                    **kwargs,
+                )
+
+            self.assertEqual(partial.operation_status, "partial")
+            self.assertEqual(partial.next_action.action_id, "resume_landing_transaction")
+            self.assertEqual(
+                Path(partial.next_action.argv[0]).resolve(),
+                primary_launcher.resolve(),
+            )
+            retry_root_arg = next(
+                item for item in partial.next_action.argv if item.startswith("--project-root=")
+            )
+            retry_root = Path(retry_root_arg.partition("=")[2]).resolve()
+            self.assertEqual(retry_root, repo.root.resolve())
+            self.assertNotEqual(retry_root, repo.worktree.resolve())
+            self.assertTrue(repo.root.is_dir())
+            self.assertTrue(repo.worktree.is_dir())
+
+            completed = wtam.land_task(
+                load_profile(repo.root),
+                cwd=repo.root,
+                **kwargs,
+            )
+            self.assertEqual(completed.operation_status, "succeeded")
+            self.assertFalse(repo.worktree.exists())
+        finally:
+            repo.close()
+
     def test_post_cas_retry_accepts_landed_commit_below_later_target_advance(self) -> None:
         repo = ProductRepo("land-target-advance")
         original = wtam._record_phase

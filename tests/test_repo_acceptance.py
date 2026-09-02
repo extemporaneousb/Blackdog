@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from blackdog.contract import managed_skill_name, managed_skill_relative_path
+from blackdog.landing import load_landing_transaction
 from blackdog_cli.main import main as blackdog_main
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
@@ -18,7 +19,11 @@ from blackdog_core.state import (
     RUNTIME_SCHEMA_VERSION,
     RUNTIME_STORE_VERSION,
     TASK_STATUS_CANCELED,
+    TASK_STATUS_DONE,
     ValidationRecord,
+    load_events,
+    load_runtime_state,
+    task_record,
 )
 from blackdog_core.tasks import create_task, finish_task, set_task_runtime_status, start_task
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
@@ -460,6 +465,195 @@ class RepoAcceptanceTests(CoreAuditTestCase):
                 subprocess.run(["git", "-C", str(self.root), "worktree", "remove", "--force", str(linked_worktree)], check=False)
             subprocess.run(["git", "-C", str(self.root), "branch", "-D", "feature/acceptance"], check=False, capture_output=True, text=True)
             linked_parent.cleanup()
+
+    def test_default_task_land_from_task_worktree_returns_success_after_cleanup(self) -> None:
+        self.install_with_local_source()
+        launcher = self.root / ".VE" / "bin" / "blackdog"
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "blackdog.toml", "AGENTS.md", ".codex"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "Install Blackdog fixture"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        begin = subprocess.run(
+            [
+                str(launcher),
+                "task",
+                "begin",
+                "--project-root",
+                str(self.root),
+                "--actor",
+                "codex",
+                "--execution-prompt",
+                "Implement the default-cleanup landing fixture.",
+                "--request",
+                "Implement the default-cleanup landing fixture.",
+                "--json",
+            ],
+            cwd=str(self.root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        begun = json.loads(begin.stdout)["task"]
+        task_id = str(begun["task_id"])
+        attempt_id = str(begun["attempt_id"])
+        task_branch = str(begun["branch"])
+        task_worktree = Path(str(begun["worktree_path"]))
+        task_launcher = task_worktree / ".VE" / "bin" / "blackdog"
+        task_context_show = subprocess.run(
+            [
+                str(task_launcher),
+                "task",
+                "show",
+                "--project-root",
+                str(task_worktree),
+                "--json",
+            ],
+            cwd=str(task_worktree),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        shown_before = json.loads(task_context_show.stdout)["task_show"]
+        self.assertEqual(shown_before["task_id"], task_id)
+        self.assertTrue(shown_before["worktree_exists"])
+        (task_worktree / "landed.txt").write_text(
+            "default cleanup landing\n",
+            encoding="utf-8",
+        )
+
+        completed = subprocess.run(
+            [
+                str(task_launcher),
+                "task",
+                "land",
+                "--project-root",
+                str(task_worktree),
+                "--summary",
+                "Complete default cleanup landing",
+                "--validation",
+                "acceptance=passed",
+                "--json",
+            ],
+            cwd=str(task_worktree),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"stderr:\n{completed.stderr}\nstdout:\n{completed.stdout}",
+        )
+        landing = json.loads(completed.stdout)["landing"]
+        self.assertEqual(landing["operation_status"], "succeeded")
+        self.assertEqual(landing["mutation_phase"], "landing_complete")
+        self.assertEqual(landing["next_action"]["action_id"], "landing_complete")
+        self.assertEqual(landing["next_action"]["kind"], "complete")
+        landed_commit = str(landing["landed_commit"])
+        self.assertEqual(self.git_output("rev-parse", "main"), landed_commit)
+        self.assertEqual(
+            self.git_output("show", f"{landed_commit}:landed.txt"),
+            "default cleanup landing",
+        )
+
+        profile = load_profile(self.root)
+        task = task_record(load_runtime_state(profile.paths), task_id)
+        self.assertIsNotNone(task)
+        assert task is not None
+        self.assertEqual(task.status, TASK_STATUS_DONE)
+        attempt = next(item for item in task.attempts if item.attempt_id == attempt_id)
+        self.assertEqual(attempt.status, ATTEMPT_STATUS_SUCCESS)
+        self.assertEqual(attempt.landed_commit, landed_commit)
+        event_types = [str(event["type"]) for event in load_events(profile.paths.events_file)]
+        self.assertIn("worktree.land", event_types)
+        self.assertIn("task.cleanup", event_types)
+        transaction = load_landing_transaction(
+            profile,
+            task_id=task_id,
+            attempt_id=attempt_id,
+        )
+        self.assertIsNotNone(transaction)
+        assert transaction is not None
+        self.assertTrue(transaction.complete)
+        temporary_worktree = Path(transaction.intent.temporary_worktree_path)
+        temporary_branch = f"blackdog/land-{transaction.intent.transaction_id[:16]}"
+        self.assertFalse(temporary_worktree.exists())
+        self.assertNotIn(
+            f"refs/heads/{temporary_branch}",
+            self.git_output("for-each-ref", "--format=%(refname)", "refs/heads"),
+        )
+        self.assertFalse(task_worktree.exists())
+        self.assertNotIn(str(task_worktree), self.git_output("worktree", "list", "--porcelain"))
+        self.assertNotIn(
+            f"refs/heads/{task_branch}",
+            self.git_output("for-each-ref", "--format=%(refname)", "refs/heads"),
+        )
+
+        primary_context_show = subprocess.run(
+            [
+                str(launcher),
+                "task",
+                "show",
+                "--project-root",
+                str(self.root),
+                "--task",
+                task_id,
+                "--json",
+            ],
+            cwd=str(self.root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        shown_after = json.loads(primary_context_show.stdout)["task_show"]
+        self.assertEqual(shown_after["task_id"], task_id)
+        self.assertEqual(shown_after["status"], TASK_STATUS_DONE)
+        self.assertFalse(shown_after["worktree_exists"])
+        self.assertFalse(shown_after["branch_exists"])
+
+        runtime_before_replay = profile.paths.runtime_file.read_bytes()
+        events_before_replay = profile.paths.events_file.read_bytes()
+        target_before_replay = self.git_output("rev-parse", "main")
+        terminal_replay = subprocess.run(
+            [
+                str(launcher),
+                "task",
+                "land",
+                "--project-root",
+                str(self.root),
+                "--task",
+                task_id,
+                "--actor",
+                "codex",
+                "--summary",
+                "Complete default cleanup landing",
+                "--validation",
+                "acceptance=passed",
+                "--json",
+            ],
+            cwd=str(self.root),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(terminal_replay.returncode, 0, terminal_replay.stderr)
+        replayed = json.loads(terminal_replay.stdout)["landing"]
+        self.assertEqual(replayed["operation_status"], "succeeded")
+        self.assertEqual(replayed["next_action"]["action_id"], "landing_complete")
+        self.assertEqual(replayed["next_action"]["kind"], "complete")
+        self.assertEqual(replayed["landed_commit"], landed_commit)
+        self.assertEqual(profile.paths.runtime_file.read_bytes(), runtime_before_replay)
+        self.assertEqual(profile.paths.events_file.read_bytes(), events_before_replay)
+        self.assertEqual(self.git_output("rev-parse", "main"), target_before_replay)
 
     def test_archived_and_unarchived_repos_are_reflected_in_repo_table(self) -> None:
         self.install_with_local_source()
