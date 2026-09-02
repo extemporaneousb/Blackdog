@@ -205,7 +205,7 @@ def _attempt_table_row(attempt: AttemptView) -> dict[str, Any]:
 
 def build_attempts_table(profile: RepoProfile) -> dict[str, Any]:
     model = load_runtime_model(profile)
-    rows = [_attempt_table_row(attempt) for attempt in model.recent_attempts]
+    rows = [_attempt_table_row(attempt) for attempt in model.recent_attempts if not attempt.is_active]
     return {"columns": list(ATTEMPTS_TABLE_COLUMNS), "rows": rows, "counts": dict(model.counts)}
 
 

@@ -1368,6 +1368,9 @@ def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
     for task in state.tasks:
         for attempt in reversed(task.attempts):
             path = Path(attempt.worktree_path).resolve() if attempt.worktree_path else None
+            worktree_exists = bool(path and path.is_dir())
+            if attempt.status != ATTEMPT_STATUS_IN_PROGRESS and not worktree_exists:
+                continue
             rows.append(
                 {
                     "task_id": task.task_id,
@@ -1379,8 +1382,8 @@ def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
                     "branch": attempt.branch,
                     "target_branch": attempt.target_branch,
                     "worktree_path": str(path) if path else None,
-                    "worktree_exists": bool(path and path.is_dir()),
-                    "worktree_dirty": bool(path and path.is_dir() and _implementation_dirty_paths(profile, path)),
+                    "worktree_exists": worktree_exists,
+                    "worktree_dirty": bool(worktree_exists and path and _implementation_dirty_paths(profile, path)),
                     "branch_exists": _git_exists(primary, attempt.branch),
                     "branch_ahead": _ahead(primary, attempt.branch, attempt.target_branch),
                     "landed_commit": attempt.landed_commit,
@@ -1391,10 +1394,13 @@ def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
         "primary_worktree": str(primary),
         "rows": rows,
         "counts": {
-            "tasks": len(state.tasks),
+            "tasks": len({row["task_id"] for row in rows}),
             "attempts": len(rows),
             "active_attempts": sum(row["attempt_status"] == ATTEMPT_STATUS_IN_PROGRESS for row in rows),
-            "retained_worktrees": sum(bool(row["worktree_exists"]) for row in rows),
+            "retained_worktrees": sum(
+                row["attempt_status"] != ATTEMPT_STATUS_IN_PROGRESS and bool(row["worktree_exists"])
+                for row in rows
+            ),
         },
     }
 

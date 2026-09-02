@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .profile import RepoProfile
 from .state import (
     ATTEMPT_STATUS_IN_PROGRESS,
-    TASK_STATUS_CANCELED,
     CodexSessionRefRecord,
     PromptReceiptRecord,
     RuntimeState,
@@ -289,14 +288,6 @@ def project_runtime_model(
     )
 
 
-def hide_canceled_runtime_model(model: RuntimeModel) -> RuntimeModel:
-    tasks = tuple(task for task in model.tasks if task.status != TASK_STATUS_CANCELED)
-    task_ids = {task.task_id for task in tasks}
-    attempts = tuple(attempt for attempt in model.attempts if attempt.task_id in task_ids)
-    recent = tuple(attempt for attempt in model.recent_attempts if attempt.task_id in task_ids)
-    return replace(model, tasks=tasks, attempts=attempts, recent_attempts=recent, counts=_counts(tasks, attempts))
-
-
 def load_runtime_model(profile: RepoProfile) -> RuntimeModel:
     return project_runtime_model(
         profile,
@@ -314,7 +305,6 @@ __all__ = [
     "SNAPSHOT_SCHEMA_VERSION",
     "TaskView",
     "ValidationView",
-    "hide_canceled_runtime_model",
     "load_runtime_model",
     "project_repository",
     "project_runtime_model",

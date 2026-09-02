@@ -86,7 +86,6 @@ from blackdog.codex_sessions import (
     render_codex_history_text,
 )
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
-from blackdog_core.runtime_model import hide_canceled_runtime_model
 from blackdog_core.snapshot import (
     build_attempts_summary,
     build_attempts_table,
@@ -278,7 +277,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_summary = subparsers.add_parser("summary", help="Summarize task runtime state")
     p_summary.add_argument("--project-root", default=".")
-    p_summary.add_argument("--include-canceled", action="store_true")
     p_summary.add_argument("--json", action="store_true")
 
     p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable runtime snapshot")
@@ -329,12 +327,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_attempts_summary = attempts_subparsers.add_parser("summary", help="Summarize completed attempts")
     p_attempts_summary.add_argument("--project-root", default=".")
-    p_attempts_summary.add_argument("--task")
     p_attempts_summary.add_argument("--json", action="store_true")
 
     p_attempts_table = attempts_subparsers.add_parser("table", help="Emit a stable table over completed attempts")
     p_attempts_table.add_argument("--project-root", default=".")
-    p_attempts_table.add_argument("--task")
     p_attempts_table.add_argument("--json", action="store_true")
 
     p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed evidence")
@@ -564,15 +560,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "summary":
             profile, model = _load_model(args.project_root)
-            if not args.include_canceled:
-                model = hide_canceled_runtime_model(model)
             if args.json:
-                _emit_json(
-                    build_runtime_summary(
-                        profile,
-                        include_canceled=args.include_canceled,
-                    )
-                )
+                _emit_json(build_runtime_summary(profile))
             else:
                 print(render_summary_text(model))
             return 0
@@ -654,10 +643,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "attempts" and args.attempts_command == "summary":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = build_attempts_summary(
-                profile,
-                task_id=args.task,
-            )
+            payload = build_attempts_summary(profile)
             if args.json:
                 _emit_json(payload)
             else:
@@ -666,10 +652,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "attempts" and args.attempts_command == "table":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = build_attempts_table(
-                profile,
-                task_id=args.task,
-            )
+            payload = build_attempts_table(profile)
             if args.json:
                 _emit_json(payload)
             else:

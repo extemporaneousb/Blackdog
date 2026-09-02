@@ -60,6 +60,14 @@ class ProductSurfaceTests(unittest.TestCase):
         )
         self.assertEqual(set(_subcommands(commands["worktree"])), {"preflight", "table"})
 
+    def test_root_read_commands_have_only_runtime_v4_arguments(self) -> None:
+        commands = _subcommands(_build_parser())
+        summary_dests = {action.dest for action in commands["summary"]._actions}
+        self.assertNotIn("include_canceled", summary_dests)
+        for command in _subcommands(commands["attempts"]).values():
+            with self.subTest(command=command.prog):
+                self.assertNotIn("task", {action.dest for action in command._actions})
+
     def test_readme_inventory_matches_the_task_only_surface(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         readme = (project_root / "README.md").read_text(encoding="utf-8")

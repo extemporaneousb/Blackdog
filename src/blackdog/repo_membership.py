@@ -42,7 +42,7 @@ from blackdog_core.profile import (
     load_profile,
     resolve_config_path,
 )
-from blackdog_core.runtime_model import AttemptView, hide_canceled_runtime_model, load_runtime_model
+from blackdog_core.runtime_model import AttemptView, load_runtime_model
 from blackdog_core.state import parse_iso
 
 
@@ -723,7 +723,7 @@ def _repo_table_row(
     window_attempt_views: tuple[AttemptView, ...] = ()
 
     try:
-        model = hide_canceled_runtime_model(load_runtime_model(profile))
+        model = load_runtime_model(profile)
         counts = model.counts
         attempts = model.attempts
         row.update(attempt_cleanup_health_counts(attempts))
@@ -737,7 +737,7 @@ def _repo_table_row(
             if attempt.failure_class:
                 window_failure_counts[attempt.failure_class] = window_failure_counts.get(attempt.failure_class, 0) + 1
         row["tasks_total"] = counts.get("tasks", 0)
-        row["current_ready_tasks"] = counts.get("ready", 0)
+        row["current_ready_tasks"] = counts.get("planned", 0)
         row["current_active_attempts"] = counts.get("active_attempts", 0)
         row["current_blocked_tasks"] = counts.get("blocked", 0)
         row["done_tasks_total"] = counts.get("done", 0)

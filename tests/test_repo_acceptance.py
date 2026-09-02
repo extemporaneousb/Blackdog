@@ -7,10 +7,20 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from blackdog.contract import managed_skill_name, managed_skill_relative_path
 from blackdog_cli.main import main as blackdog_main
 from blackdog_core.profile import load_profile
+from blackdog_core.state import (
+    ATTEMPT_STATUS_ABANDONED,
+    ATTEMPT_STATUS_SUCCESS,
+    RUNTIME_SCHEMA_VERSION,
+    RUNTIME_STORE_VERSION,
+    TASK_STATUS_CANCELED,
+    ValidationRecord,
+)
+from blackdog_core.tasks import create_task, finish_task, set_task_runtime_status, start_task
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
@@ -36,6 +46,199 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         )
         self.assertEqual(exit_code, 0, stderr)
         return json.loads(stdout)["repo"]
+
+    def test_root_read_commands_accept_the_runtime_v4_store(self) -> None:
+        self.write_profile(project_name="Runtime V4")
+        profile = load_profile(self.root)
+        cleaned_path = self.root / ".cleaned-terminal-task"
+        completed_task = create_task(profile, title="Cleaned terminal task")
+        completed_attempt = start_task(
+            profile,
+            task_id=completed_task.task_id,
+            actor="codex",
+            workspace_mode="git-worktree",
+            worktree_role="task",
+            worktree_path=str(cleaned_path),
+            branch="agent/cleaned-terminal-task",
+            target_branch="main",
+        )
+        finish_task(
+            profile,
+            task_id=completed_task.task_id,
+            attempt_id=completed_attempt.attempt_id,
+            actor="codex",
+            status=ATTEMPT_STATUS_SUCCESS,
+            summary="Completed runtime-v4 acceptance",
+            validations=(ValidationRecord("focused", "passed"),),
+        )
+        canceled_task = create_task(profile, title="Canceled task")
+        set_task_runtime_status(
+            profile,
+            task_id=canceled_task.task_id,
+            actor="codex",
+            status=TASK_STATUS_CANCELED,
+            summary="Canceled runtime-v4 acceptance",
+        )
+        planned_task = create_task(profile, title="Planned task")
+        active_path = self.root / ".active-task"
+        active_path.mkdir()
+        active_task = create_task(profile, title="Active task")
+        active_attempt = start_task(
+            profile,
+            task_id=active_task.task_id,
+            actor="codex",
+            workspace_mode="git-worktree",
+            worktree_role="task",
+            worktree_path=str(active_path),
+            branch="agent/active-task",
+            target_branch="main",
+        )
+        retained_path = self.root / ".retained-terminal-task"
+        retained_path.mkdir()
+        retained_task = create_task(profile, title="Retained terminal task")
+        retained_attempt = start_task(
+            profile,
+            task_id=retained_task.task_id,
+            actor="codex",
+            workspace_mode="git-worktree",
+            worktree_role="task",
+            worktree_path=str(retained_path),
+            branch="agent/retained-terminal-task",
+            target_branch="main",
+        )
+        finish_task(
+            profile,
+            task_id=retained_task.task_id,
+            attempt_id=retained_attempt.attempt_id,
+            actor="codex",
+            status=ATTEMPT_STATUS_ABANDONED,
+            summary="Retained runtime-v4 acceptance workspace",
+            validations=(ValidationRecord("focused", "passed"),),
+        )
+
+        runtime_payload = json.loads(profile.paths.runtime_file.read_text(encoding="utf-8"))
+        self.assertEqual(runtime_payload["schema_version"], RUNTIME_SCHEMA_VERSION)
+        self.assertEqual(runtime_payload["store_version"], RUNTIME_STORE_VERSION)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary", "--project-root", str(self.root), "--json"
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["counts"]["tasks"], 5)
+        self.assertEqual(summary["counts"]["canceled"], 2)
+        self.assertEqual(summary["counts"]["planned"], 1)
+        self.assertEqual(summary["counts"]["in_progress"], 1)
+        self.assertEqual(
+            {task["task_id"] for task in summary["tasks"]},
+            {
+                completed_task.task_id,
+                canceled_task.task_id,
+                planned_task.task_id,
+                active_task.task_id,
+                retained_task.task_id,
+            },
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "summary", "--project-root", str(self.root)
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertIn(f"[CANCELED] {canceled_task.task_id} Canceled task", stdout)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "snapshot", "--project-root", str(self.root)
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        snapshot = json.loads(stdout)
+        self.assertEqual(snapshot["counts"]["tasks"], 5)
+        self.assertEqual(len(snapshot["attempts"]), 3)
+
+        exit_code, stdout, stderr = self.run_cli(
+            "attempts", "summary", "--project-root", str(self.root), "--json"
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        attempts_summary = json.loads(stdout)
+        self.assertEqual(attempts_summary["completed_attempts"], 2)
+        self.assertEqual(
+            attempts_summary["status_counts"],
+            {"abandoned": 1, "success": 1},
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "attempts", "table", "--project-root", str(self.root), "--json"
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        attempts_table = json.loads(stdout)
+        self.assertEqual(len(attempts_table["rows"]), 2)
+        self.assertEqual(
+            {row["attempt_id"] for row in attempts_table["rows"]},
+            {completed_attempt.attempt_id, retained_attempt.attempt_id},
+        )
+        self.assertNotIn(
+            active_attempt.attempt_id,
+            {row["attempt_id"] for row in attempts_table["rows"]},
+        )
+
+        with patch("blackdog.codex_sessions.collect_codex_turns", return_value=()):
+            exit_code, stdout, stderr = self.run_cli(
+                "codex", "coverage", "--project-root", str(self.root), "--json"
+            )
+            self.assertEqual(exit_code, 0, stderr)
+            coverage = json.loads(stdout)["codex_coverage"]
+            self.assertEqual(coverage["counts"]["blackdog_attempts"], 3)
+
+            exit_code, stdout, stderr = self.run_cli(
+                "codex", "history", "--project-root", str(self.root), "--jsonl"
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        history_rows = [json.loads(line) for line in stdout.splitlines()]
+        self.assertEqual(
+            {row["attempt_id"] for row in history_rows},
+            {
+                completed_attempt.attempt_id,
+                active_attempt.attempt_id,
+                retained_attempt.attempt_id,
+            },
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "worktree", "table", "--project-root", str(self.root), "--json"
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        worktree_table = json.loads(stdout)["worktree_table"]
+        self.assertEqual(
+            {row["attempt_id"] for row in worktree_table["rows"]},
+            {active_attempt.attempt_id, retained_attempt.attempt_id},
+        )
+        self.assertEqual(
+            worktree_table["counts"],
+            {"active_attempts": 1, "attempts": 2, "retained_worktrees": 1, "tasks": 2},
+        )
+
+        exit_code, stdout, stderr = self.run_cli(
+            "repo",
+            "table",
+            "--project-root",
+            str(self.root),
+            "--no-codex",
+            "--json",
+        )
+        self.assertEqual(exit_code, 0, stderr)
+        repo_row = json.loads(stdout)["repo_table"]["rows"][0]
+        self.assertEqual(repo_row["tasks_total"], 5)
+        self.assertEqual(repo_row["current_ready_tasks"], 1)
+        self.assertEqual(repo_row["current_active_attempts"], 1)
+        self.assertEqual(repo_row["attempts_total"], 3)
+
+        with patch("blackdog.stats.collect_codex_turns", return_value=()):
+            exit_code, stdout, stderr = self.run_cli(
+                "stats", "--project-root", str(self.root), "--json"
+            )
+        self.assertEqual(exit_code, 0, stderr)
+        stats = json.loads(stdout)["stats"]["summary"]
+        self.assertEqual(stats["tasks_total"], 5)
+        self.assertEqual(stats["attempts_total"], 3)
 
     def test_repo_install_refresh_and_analyze_keep_target_layering_lean(self) -> None:
         install_payload = self.install_with_local_source()

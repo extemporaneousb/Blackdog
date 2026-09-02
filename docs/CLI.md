@@ -252,9 +252,11 @@ handlers, and task-worktree location. This is diagnosis, not a prerequisite for
 blackdog worktree table --project-root . --json
 ```
 
-Show active and retained task worktrees, branch/target state, size, changed
-paths, and cleanup classification. Mutation is available only through task
-commands.
+Show one row per active attempt or terminal attempt whose recorded worktree
+still exists. Stable fields cover task and attempt identity/status, actor,
+branch and target branch, recorded path and existence/dirty state, branch
+existence/divergence, and landed commit. Mutation is available only through
+task commands.
 
 ## Task and Attempt Reporting
 
@@ -262,11 +264,11 @@ commands.
 
 ```bash
 blackdog summary --project-root .
-blackdog summary --project-root . --include-canceled --json
+blackdog summary --project-root . --json
 ```
 
-Show task counts, active/blocked/ready tasks, and recent attempts. Canceled
-tasks are hidden unless requested.
+Show canonical task counts, tasks, and recent attempts, including terminal and
+canceled task history.
 
 ### `blackdog snapshot`
 
@@ -281,12 +283,11 @@ data is not another state authority.
 
 ```bash
 blackdog attempts summary --project-root . --json
-blackdog attempts table --project-root . --task TASK_ID --json
+blackdog attempts table --project-root . --json
 ```
 
-Report completed attempt history. `summary` aggregates status, landing, and
-validation evidence. `table` emits stable columns for automation. Optional
-`--task` scopes either view.
+Report completed attempt history. `summary` aggregates status and elapsed-time
+evidence. `table` emits stable columns for automation.
 
 ### `blackdog stats`
 
