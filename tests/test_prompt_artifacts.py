@@ -15,7 +15,6 @@ from blackdog.prompt_artifacts import (
 from blackdog_core.state import (
     PROMPT_MODE_RAW,
     PROMPT_MODE_SKILL,
-    PROMPT_MODE_TUNED,
     create_prompt_receipt,
 )
 
@@ -31,17 +30,17 @@ class PromptArtifactTests(unittest.TestCase):
     def test_content_address_is_private_deduplicated_and_mode_preserving(self) -> None:
         receipts = tuple(
             create_prompt_receipt(
-                "  Preserve this normalized private prompt.\n",
+                "Preserve this normalized private prompt.",
                 source=f"{mode}.md",
                 mode=mode,
             )
-            for mode in (PROMPT_MODE_RAW, PROMPT_MODE_SKILL, PROMPT_MODE_TUNED)
+            for mode in (PROMPT_MODE_RAW, PROMPT_MODE_SKILL)
         )
         persisted = persist_prompt_receipts(self.control_dir, receipts)
 
         self.assertEqual(
             [receipt.mode for receipt in persisted],
-            [PROMPT_MODE_RAW, PROMPT_MODE_SKILL, PROMPT_MODE_TUNED],
+            [PROMPT_MODE_RAW, PROMPT_MODE_SKILL],
         )
         self.assertEqual(len({receipt.replay_artifact_path for receipt in persisted}), 1)
         relative = persisted[0].replay_artifact_path

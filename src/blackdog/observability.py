@@ -40,7 +40,6 @@ MAX_HASH_INPUT_BYTES = 4_096
 KNOWN_SURFACES = frozenset(
     {
         "prompt.preview",
-        "prompt.tune",
         "repo.analyze",
         "repo.archive",
         "repo.bind",
@@ -94,7 +93,7 @@ ALLOWED_LABEL_VALUES = {
         {"observed", "succeeded", "blocked", "closed", "partial", "unknown"}
     ),
     "operation_phase": frozenset({"completed", "requested", "unknown"}),
-    "prompt_mode": frozenset({"raw", "skill", "tuned", "unknown"}),
+    "prompt_mode": frozenset({"raw", "skill", "unknown"}),
     "prompt_role": frozenset({"execution", "request", "unknown"}),
     "result": frozenset({"applied", "completed", "deduped", "dry_run", "noop", "unknown"}),
     "retryability": frozenset({"retryable", "terminal", "unknown"}),
@@ -117,7 +116,6 @@ OBSERVATION_ROW_FIELDS = frozenset(
     }
 )
 _OPERATION_IDENTITY_FIELDS = (
-    "workset_id",
     "task_id",
     "attempt_id",
     "action",
@@ -144,7 +142,6 @@ _MUTATION_PHASE_LABELS = {
     "close_core_decision_recorded": "runtime",
     "close_runtime_finalized": "runtime",
     "close_task_release_recorded": "runtime",
-    "close_workset_release_recorded": "runtime",
     "close_task_finish_recorded": "runtime",
     "close_cleanup_pending": "post_git",
     "close_cleanup_finalized": "post_git",

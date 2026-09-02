@@ -74,7 +74,6 @@ MUTATION_PHASES = frozenset(
         "close_core_decision_recorded",
         "close_runtime_finalized",
         "close_task_release_recorded",
-        "close_workset_release_recorded",
         "close_task_finish_recorded",
         "close_cleanup_pending",
         "close_cleanup_finalized",
@@ -566,7 +565,6 @@ class NextAction:
 @dataclass(frozen=True, slots=True)
 class LifecycleContext:
     project_root: str
-    workset_id: str
     task_id: str
     actor: str | None
     task_status: str | None
@@ -638,7 +636,6 @@ def _task_argv(context: LifecycleContext, command: str, *extra: str) -> tuple[st
         "task",
         command,
         _flag("project-root", context.project_root),
-        _flag("workset", context.workset_id),
         _flag("task", context.task_id),
         *extra,
     )
@@ -741,7 +738,7 @@ def _resume_action(context: LifecycleContext) -> LifecycleAction:
         action_id="resume_existing_task",
         disposition="retryable",
         reason_code="terminal_attempt_without_workspace",
-        reason_detail="The terminal attempt has no retained workspace; start a new attempt in the same task envelope.",
+        reason_detail="The terminal attempt has no retained workspace; start a new attempt for the same task.",
         argv=_task_argv(context, "begin", _flag("actor", context.actor), *prompt_args),
         safety_class="validated_mutation",
         mutation_class="git_and_runtime",
@@ -775,7 +772,7 @@ def _reference_repair_required(context: LifecycleContext) -> NextAction:
 
 def _resume_next_action(context: LifecycleContext) -> NextAction:
     if context.actor is None:
-        return _actor_required(context, operation="same-envelope resume")
+        return _actor_required(context, operation="a new attempt for the existing task")
     if context.resume_lineage_issue_code is not None:
         required_inputs = ["execution_prompt_file_matching_recorded_hash", "recorded_prompt_mode"]
         if context.resume_request_distinct or context.request_prompt_hash is None:
@@ -1057,12 +1054,7 @@ def decide_next_action(context: LifecycleContext) -> NextAction:
                     argv=context.landing_reconcile_argv,
                     safety_class="read_only",
                     mutation_class="none",
-                    display=(
-                        "Verify the detected legacy landing reconciliation"
-                        if context.reconciliation_action_id
-                        == "verify_legacy_landing_reconciliation"
-                        else "Verify the late landing reconciliation"
-                    ),
+                    display="Verify the late landing reconciliation",
                 )
             )
         return NextAction.terminal(

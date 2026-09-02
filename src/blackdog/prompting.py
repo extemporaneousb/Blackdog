@@ -40,25 +40,6 @@ class PromptPreview:
         return payload
 
 
-@dataclass(frozen=True, slots=True)
-class TunedPrompt:
-    project_name: str
-    project_root: str
-    workflow_family: str
-    prompt_hash: str
-    prompt_recorded_at: str
-    prompt_source: str | None
-    tuned_prompt: str
-    validation_commands: tuple[str, ...]
-    doc_routing_defaults: tuple[str, ...]
-    contract_documents: tuple[ContractDocument, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        payload["contract_documents"] = [item.to_dict() for item in self.contract_documents]
-        return payload
-
-
 def _compose_prompt(
     profile: RepoProfile,
     *,
@@ -97,7 +78,10 @@ def _compose_prompt(
                 lines.append("")
                 lines.append(f"[{document.kind}] {document.path}")
                 lines.append(document.text.rstrip())
-    return "\n".join(lines).strip() + "\n", documents
+    # Prompt receipts and their content-addressed replay artifacts share this
+    # exact normalized value.  A trailing newline here would be hashed into the
+    # receipt but rejected by the artifact boundary as non-normalized text.
+    return "\n".join(lines).strip(), documents
 
 
 def preview_prompt(
@@ -139,41 +123,6 @@ def preview_prompt(
     )
 
 
-def tune_prompt(
-    profile: RepoProfile,
-    *,
-    request: str,
-    prompt_source: str | None = None,
-    expand_skill_text: bool = False,
-    expand_contract: bool = False,
-) -> TunedPrompt:
-    receipt = create_prompt_receipt(request, source=prompt_source)
-    composed_prompt, documents = _compose_prompt(
-        profile,
-        request=receipt.text,
-        include_skill_text=expand_skill_text,
-        include_doc_text=expand_contract,
-    )
-    observe_lifecycle(
-        profile,
-        surface="prompt.tune",
-        operation_key=receipt.prompt_hash,
-        labels={"prompt_role": "request", "prompt_mode": receipt.mode, "operation_phase": "completed"},
-    )
-    return TunedPrompt(
-        project_name=profile.project_name,
-        project_root=str(profile.paths.project_root),
-        workflow_family="repo-lifecycle",
-        prompt_hash=receipt.prompt_hash,
-        prompt_recorded_at=receipt.recorded_at,
-        prompt_source=receipt.source,
-        tuned_prompt=composed_prompt,
-        validation_commands=profile.validation_commands,
-        doc_routing_defaults=profile.doc_routing_defaults,
-        contract_documents=documents,
-    )
-
-
 def render_prompt_preview_text(preview: PromptPreview, *, show_prompt: bool = False) -> str:
     lines = [
         f"[blackdog-prompt] project: {preview.project_name}",
@@ -203,8 +152,6 @@ def render_prompt_preview_text(preview: PromptPreview, *, show_prompt: bool = Fa
 
 __all__ = [
     "PromptPreview",
-    "TunedPrompt",
     "preview_prompt",
     "render_prompt_preview_text",
-    "tune_prompt",
 ]

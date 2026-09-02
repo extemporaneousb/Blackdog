@@ -3,17 +3,11 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import sys
 from typing import Any
 
 from blackdog.codex_hooks import CodexHookError, load_codex_hook_payload, stamp_codex_task_context
-from blackdog.codex_link import (
-    CodexLinkError,
-    build_codex_workspace_link,
-    render_codex_workspace_link_text,
-)
 from blackdog.handlers import HandlerError
 from blackdog.landing import LandingTransactionError
 from blackdog.local_registry import (
@@ -27,7 +21,7 @@ from blackdog.observability import (
     observe_lifecycle_for_project,
     observe_operation_result,
 )
-from blackdog.prompting import preview_prompt, render_prompt_preview_text, tune_prompt
+from blackdog.prompting import preview_prompt, render_prompt_preview_text
 from blackdog.prompt_artifacts import PromptArtifactError
 from blackdog.repo_lifecycle import (
     RepoLifecycleError,
@@ -64,13 +58,8 @@ from blackdog.wtam import (
     build_worktree_table,
     cancel_task,
     cleanup_task,
-    cleanup_task_worktree,
-    cleanup_worktree_table,
     close_task,
-    close_task_worktree,
-    inspect_task_worktree,
     land_task,
-    land_task_worktree,
     recover_task,
     reconcile_task_landing,
     reopen_task,
@@ -80,21 +69,16 @@ from blackdog.wtam import (
     render_land_text,
     render_landing_reconciliation_text,
     render_preflight_text,
-    render_preview_text,
     render_recover_text,
     render_show_text,
-    render_start_text,
     render_task_state_text,
-    render_worktree_cleanup_all_text,
     render_worktree_table_text,
     show_task,
-    preview_task_worktree,
-    start_task_worktree,
     task_begin_preflight_result,
     worktree_preflight,
 )
-from blackdog_core.backlog import BacklogError, upsert_workset, workset_to_payload
-from blackdog_core.codex_sessions import (
+from blackdog_core.tasks import TaskError
+from blackdog.codex_sessions import (
     CodexSessionError,
     build_codex_coverage,
     build_codex_history,
@@ -102,23 +86,18 @@ from blackdog_core.codex_sessions import (
     render_codex_history_text,
 )
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
-from blackdog_core.runtime_model import hide_canceled_runtime_model, scope_runtime_model
+from blackdog_core.runtime_model import hide_canceled_runtime_model
 from blackdog_core.snapshot import (
     build_attempts_summary,
     build_attempts_table,
-    build_next_payload,
     build_runtime_snapshot,
     build_runtime_summary,
     load_runtime_model,
     render_attempts_summary_text,
     render_attempts_table_text,
-    render_next_text,
     render_summary_text,
 )
 from blackdog_core.state import FAILURE_CLASSES, PROMPT_MODES, StoreError, VALIDATION_STATUSES, ValidationRecord
-
-
-WORKSET_COMMANDS_ENABLE_ENV = "BLACKDOG_ENABLE_WORKSET_COMMANDS"
 
 
 def _resolve_since_window(since: str | None, since_hours: float | None) -> str | None:
@@ -134,45 +113,6 @@ def _resolve_since_window(since: str | None, since_hours: float | None) -> str |
 
 def _emit_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
-
-
-def _workset_commands_enabled() -> bool:
-    return os.environ.get(WORKSET_COMMANDS_ENABLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _require_workset_commands_enabled() -> None:
-    if not _workset_commands_enabled():
-        raise BacklogError(
-            "direct workset authoring is disabled by default; set "
-            f"{WORKSET_COMMANDS_ENABLE_ENV}=1 only for deliberate planned-task migration or repair"
-        )
-
-
-def _hide_subparser_help(subparsers: argparse._SubParsersAction, command: str) -> None:
-    subparsers._choices_actions = [  # noqa: SLF001 - argparse has no public hook for hiding one legacy command.
-        action
-        for action in subparsers._choices_actions  # noqa: SLF001
-        if action.dest != command
-    ]
-
-
-def _load_json_payload(*, raw_json: str | None, file_path: str | None) -> dict[str, Any]:
-    if raw_json is None and file_path is None:
-        raise BacklogError("workset put requires either --json or --file")
-    if raw_json is not None and file_path is not None:
-        raise BacklogError("workset put accepts only one of --json or --file")
-    if raw_json is not None:
-        text = raw_json
-    else:
-        candidate = Path(file_path or "")
-        text = sys.stdin.read() if file_path == "-" else candidate.read_text(encoding="utf-8")
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise BacklogError(f"workset put requires valid JSON: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise BacklogError("workset put requires a JSON object payload")
-    return payload
 
 
 def _load_codex_hook_input(*, raw_json: str | None, file_path: str | None) -> dict[str, Any]:
@@ -198,9 +138,9 @@ def _load_text_input(
     file_flag: str = "--prompt-file",
 ) -> tuple[str, str]:
     if raw_text is None and file_path is None:
-        raise BacklogError(f"{label} requires {inline_flag} or {file_flag}")
+        raise TaskError(f"{label} requires {inline_flag} or {file_flag}")
     if raw_text is not None and file_path is not None:
-        raise BacklogError(f"{label} accepts only one prompt source")
+        raise TaskError(f"{label} accepts only one prompt source")
     if raw_text is not None:
         text = raw_text
         source = inline_source
@@ -210,20 +150,8 @@ def _load_text_input(
         source = "stdin" if file_path == "-" else str(candidate.resolve())
     normalized = str(text).strip()
     if not normalized:
-        raise BacklogError(f"{label} text is required")
+        raise TaskError(f"{label} text is required")
     return normalized, source
-
-
-class _RejectRepeatedPromptAlias(argparse.Action):
-    """Reject repeated canonical/compatibility spellings instead of last-one-wins."""
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        marker = f"_blackdog_seen_{self.dest}"
-        previous = getattr(namespace, marker, None)
-        if previous is not None:
-            parser.error(f"{option_string} cannot be combined with {previous}")
-        setattr(namespace, marker, option_string)
-        setattr(namespace, self.dest, values)
 
 
 def _add_prompt_input_arguments(
@@ -236,16 +164,12 @@ def _add_prompt_input_arguments(
     metavar = "EXECUTION_PROMPT" if contract.role == "execution" else "REQUEST"
     group.add_argument(
         contract.inline_flag,
-        contract.compatibility_inline_flag,
         dest=inline_dest,
-        action=_RejectRepeatedPromptAlias,
         metavar=metavar,
     )
     group.add_argument(
         contract.file_flag,
-        contract.compatibility_file_flag,
         dest=file_dest,
-        action=_RejectRepeatedPromptAlias,
         metavar=f"{metavar}_FILE",
     )
 
@@ -316,14 +240,14 @@ def _parse_validation_flags(values: list[str]) -> tuple[ValidationRecord, ...]:
         if not text:
             continue
         if "=" not in text:
-            raise BacklogError("validation rows must use NAME=STATUS")
+            raise TaskError("validation rows must use NAME=STATUS")
         name, status = text.split("=", 1)
         name = name.strip()
         status = status.strip()
         if not name or not status:
-            raise BacklogError("validation rows must use NAME=STATUS")
+            raise TaskError("validation rows must use NAME=STATUS")
         if status not in VALIDATION_STATUSES:
-            raise BacklogError(f"validation status must be one of {', '.join(sorted(VALIDATION_STATUSES))}")
+            raise TaskError(f"validation status must be one of {', '.join(sorted(VALIDATION_STATUSES))}")
         rows.append(ValidationRecord(name=name, status=status))
     return tuple(rows)
 
@@ -340,18 +264,6 @@ def _add_closeout_record_arguments(
     parser.add_argument("--note")
 
 
-def _add_close_retry_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--close-request", help=argparse.SUPPRESS)
-    parser.add_argument("--failure-class", help=argparse.SUPPRESS)
-    parser.add_argument("--recovery-action", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--prompt-issue", action="store_true", default=None, help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        "--operator-issue", action="store_true", default=None, help=argparse.SUPPRESS
-    )
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackdog")
     subparsers = parser.add_subparsers(
@@ -366,15 +278,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_summary = subparsers.add_parser("summary", help="Summarize task runtime state")
     p_summary.add_argument("--project-root", default=".")
-    p_summary.add_argument("--workset")
     p_summary.add_argument("--include-canceled", action="store_true")
-    p_summary.add_argument("--include-legacy-worksets", action="store_true")
     p_summary.add_argument("--json", action="store_true")
 
     p_snapshot = subparsers.add_parser("snapshot", help="Emit the machine-readable runtime snapshot")
     p_snapshot.add_argument("--project-root", default=".")
-    p_snapshot.add_argument("--workset")
-    p_snapshot.add_argument("--include-legacy-worksets", action="store_true")
 
     p_stats = subparsers.add_parser("stats", help="Report local Blackdog task/attempt/Codex stats")
     stats_scope = p_stats.add_mutually_exclusive_group()
@@ -399,13 +307,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_local_repo_remove.add_argument("--project-root", default=".")
     p_local_repo_remove.add_argument("--json", action="store_true")
 
-    p_next = subparsers.add_parser("next", help=argparse.SUPPRESS)
-    p_next.add_argument("--project-root", default=".")
-    p_next.add_argument("--workset", required=True)
-    p_next.add_argument("--json", action="store_true")
-    _hide_subparser_help(subparsers, "next")
-
-    p_prompt = subparsers.add_parser("prompt", help="Preview or tune prompt composition against the repo contract")
+    p_prompt = subparsers.add_parser("prompt", help="Preview prompt composition against the repo contract")
     prompt_subparsers = p_prompt.add_subparsers(dest="prompt_command", required=True)
 
     p_prompt_preview = prompt_subparsers.add_parser("preview", help="Show repo-contract prompt composition without starting execution")
@@ -422,42 +324,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prompt_preview.add_argument("--expand-contract", action="store_true")
     p_prompt_preview.add_argument("--json", action="store_true")
 
-    p_prompt_tune = prompt_subparsers.add_parser("tune", help="Rewrite a request into a repo-contract-aware prompt")
-    p_prompt_tune.add_argument("--project-root", default=".")
-    tune_input_group = p_prompt_tune.add_mutually_exclusive_group(required=True)
-    _add_prompt_input_arguments(
-        tune_input_group,
-        REQUEST_INPUT,
-        inline_dest="prompt",
-        file_dest="prompt_file",
-    )
-    p_prompt_tune.add_argument("--expand-skill-text", action="store_true")
-    p_prompt_tune.add_argument("--expand-contract", action="store_true")
-    p_prompt_tune.add_argument("--json", action="store_true")
-
     p_attempts = subparsers.add_parser("attempts", help="Inspect completed attempt history")
     attempts_subparsers = p_attempts.add_subparsers(dest="attempts_command", required=True)
 
     p_attempts_summary = attempts_subparsers.add_parser("summary", help="Summarize completed attempts")
     p_attempts_summary.add_argument("--project-root", default=".")
-    p_attempts_summary.add_argument("--workset")
-    p_attempts_summary.add_argument("--include-legacy-worksets", action="store_true")
+    p_attempts_summary.add_argument("--task")
     p_attempts_summary.add_argument("--json", action="store_true")
 
     p_attempts_table = attempts_subparsers.add_parser("table", help="Emit a stable table over completed attempts")
     p_attempts_table.add_argument("--project-root", default=".")
-    p_attempts_table.add_argument("--workset")
-    p_attempts_table.add_argument("--include-legacy-worksets", action="store_true")
+    p_attempts_table.add_argument("--task")
     p_attempts_table.add_argument("--json", action="store_true")
 
-    p_codex = subparsers.add_parser("codex", help="Link workspaces and inspect Codex-backed evidence")
+    p_codex = subparsers.add_parser("codex", help="Inspect Codex-backed evidence")
     codex_subparsers = p_codex.add_subparsers(dest="codex_command", required=True)
-
-    p_codex_link = codex_subparsers.add_parser("link", help="Build a Codex new-chat link for an active Blackdog task")
-    p_codex_link.add_argument("--project-root", default=".")
-    p_codex_link.add_argument("--workset")
-    p_codex_link.add_argument("--task")
-    p_codex_link.add_argument("--json", action="store_true")
 
     p_codex_coverage = codex_subparsers.add_parser("coverage", help="Compare Codex sessions to Blackdog attempts")
     p_codex_coverage.add_argument("--project-root", default=".")
@@ -502,7 +383,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_table.add_argument("--since")
     p_repo_table.add_argument("--since-hours", type=float)
     p_repo_table.add_argument("--include-archived", action="store_true")
-    p_repo_table.add_argument("--include-legacy-worksets", action="store_true")
     p_repo_table.add_argument("--no-codex", action="store_true")
     p_repo_table.add_argument("--json", action="store_true")
 
@@ -542,20 +422,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_refresh.add_argument("--project-root", default=".")
     p_repo_refresh.add_argument("--json", action="store_true")
 
-    p_workset = subparsers.add_parser("workset", help=argparse.SUPPRESS)
-    workset_subparsers = p_workset.add_subparsers(dest="workset_command", required=True)
-    p_workset_put = workset_subparsers.add_parser("put", help="Upsert one workset and optional task runtime rows")
-    p_workset_put.add_argument("--project-root", default=".")
-    p_workset_put.add_argument("--json")
-    p_workset_put.add_argument("--file")
-    _hide_subparser_help(subparsers, "workset")
-
-    p_task = subparsers.add_parser("task", help="Composed single-agent task workflow")
+    p_task = subparsers.add_parser("task", help="Manage executable task lifecycle")
     task_subparsers = p_task.add_subparsers(dest="task_command", required=True)
 
     p_task_begin = task_subparsers.add_parser(
         "begin",
-        help="Create or reuse a task envelope and start the WTAM attempt",
+        help="Create a task and start its WTAM attempt",
     )
     p_task_begin.add_argument("--project-root", default=".")
     p_task_begin.add_argument("--actor", default="codex")
@@ -567,35 +439,7 @@ def _build_parser() -> argparse.ArgumentParser:
         file_dest="prompt_file",
     )
     p_task_begin.add_argument("--prompt-mode", choices=sorted(PROMPT_MODES), default="raw")
-    p_task_begin.add_argument("--expected-actor", help=argparse.SUPPRESS)
-    p_task_begin.add_argument(
-        "--expected-execution-prompt-hash",
-        help=argparse.SUPPRESS,
-    )
-    p_task_begin.add_argument(
-        "--expected-execution-prompt-mode",
-        choices=sorted(PROMPT_MODES),
-        help=argparse.SUPPRESS,
-    )
-    p_task_begin.add_argument("--expected-request-prompt-hash", help=argparse.SUPPRESS)
-    p_task_begin.add_argument(
-        "--expected-request-prompt-mode",
-        choices=sorted(PROMPT_MODES),
-        help=argparse.SUPPRESS,
-    )
-    p_task_begin.add_argument(
-        "--adopt-aborted-landing-source",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    p_task_begin.add_argument("--expected-predecessor-attempt", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-landing-transaction", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-source-commit", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-source-tree", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-branch", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-path", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-target-branch", help=argparse.SUPPRESS)
-    p_task_begin.add_argument("--expected-target-commit", help=argparse.SUPPRESS)
+    p_task_begin.add_argument("--execution-prompt-source", help=argparse.SUPPRESS)
     task_begin_user_prompt_group = p_task_begin.add_mutually_exclusive_group()
     _add_prompt_input_arguments(
         task_begin_user_prompt_group,
@@ -603,8 +447,8 @@ def _build_parser() -> argparse.ArgumentParser:
         inline_dest="user_prompt",
         file_dest="user_prompt_file",
     )
-    p_task_begin.add_argument("--workset", help="advanced: existing workset id; omit with --task for new work")
-    p_task_begin.add_argument("--task", help="advanced: existing task id; omit with --workset for new work")
+    p_task_begin.add_argument("--request-source", help=argparse.SUPPRESS)
+    p_task_begin.add_argument("--task", help=argparse.SUPPRESS)
     p_task_begin.add_argument("--title")
     p_task_begin.add_argument("--branch")
     p_task_begin.add_argument("--from", dest="from_ref")
@@ -617,31 +461,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_task_show = task_subparsers.add_parser("show", help="Inspect the current or latest task for this worktree")
     p_task_show.add_argument("--project-root", default=".")
-    p_task_show.add_argument("--workset")
     p_task_show.add_argument("--task")
     p_task_show.add_argument("--json", action="store_true")
 
-    p_task_recover = task_subparsers.add_parser("recover", help="Inspect recovery state for the current task and optionally release a stale claim")
+    p_task_recover = task_subparsers.add_parser("recover", help="Inspect recovery state or classify an interrupted attempt")
     p_task_recover.add_argument("--project-root", default=".")
-    p_task_recover.add_argument("--workset")
     p_task_recover.add_argument("--task")
-    p_task_recover.add_argument("--release-stale-claim", action="store_true")
     p_task_recover.add_argument("--status", choices=["blocked", "failed", "abandoned"])
     p_task_recover.add_argument("--summary")
     p_task_recover.add_argument("--note")
-    p_task_recover.add_argument(
-        "--stale-claim-release-request",
-        help=argparse.SUPPRESS,
-    )
-    p_task_recover.add_argument(
-        "--stale-claim-release-decision",
-        help=argparse.SUPPRESS,
-    )
     p_task_recover.add_argument("--json", action="store_true")
 
-    p_task_cancel = task_subparsers.add_parser("cancel", help="Cancel a task so normal next and summary views hide it")
+    p_task_cancel = task_subparsers.add_parser("cancel", help="Cancel an inactive task")
     p_task_cancel.add_argument("--project-root", default=".")
-    p_task_cancel.add_argument("--workset", required=True)
     p_task_cancel.add_argument("--task", required=True)
     p_task_cancel.add_argument("--actor", required=True)
     p_task_cancel.add_argument("--summary")
@@ -649,26 +481,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_cancel.add_argument("--recovery-action")
     p_task_cancel.add_argument("--prompt-issue", action="store_true")
     p_task_cancel.add_argument("--operator-issue", action="store_true")
-    p_task_cancel.add_argument("--transition-request", help=argparse.SUPPRESS)
-    p_task_cancel.add_argument("--transition-decision", help=argparse.SUPPRESS)
     p_task_cancel.add_argument("--json", action="store_true")
 
     p_task_reopen = task_subparsers.add_parser("reopen", help="Reopen a canceled task")
     p_task_reopen.add_argument("--project-root", default=".")
-    p_task_reopen.add_argument("--workset", required=True)
     p_task_reopen.add_argument("--task", required=True)
     p_task_reopen.add_argument("--actor", required=True)
     p_task_reopen.add_argument("--summary")
-    p_task_reopen.add_argument("--transition-request", help=argparse.SUPPRESS)
-    p_task_reopen.add_argument("--transition-decision", help=argparse.SUPPRESS)
     p_task_reopen.add_argument("--json", action="store_true")
 
     p_task_land = task_subparsers.add_parser("land", help="Land the current task and close it")
     p_task_land.add_argument("--project-root", default=".")
-    p_task_land.add_argument("--workset")
     p_task_land.add_argument("--task")
     p_task_land.add_argument("--actor")
-    _add_closeout_record_arguments(p_task_land, summary_required=False)
+    _add_closeout_record_arguments(p_task_land, summary_required=True)
     p_task_land.add_argument("--keep-worktree", action="store_true")
     p_task_land.add_argument("--json", action="store_true")
 
@@ -677,7 +503,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Prove and optionally correct a landed commit missing from terminal runtime state",
     )
     p_task_reconcile_landing.add_argument("--project-root", default=".")
-    p_task_reconcile_landing.add_argument("--workset", required=True)
     p_task_reconcile_landing.add_argument("--task", required=True)
     p_task_reconcile_landing.add_argument("--attempt", required=True)
     p_task_reconcile_landing.add_argument("--landed-commit", required=True)
@@ -688,18 +513,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_task_close = task_subparsers.add_parser("close", help="Close the current task without landing code")
     p_task_close.add_argument("--project-root", default=".")
-    p_task_close.add_argument("--workset")
     p_task_close.add_argument("--task")
     p_task_close.add_argument("--actor")
     p_task_close.add_argument("--status", choices=["blocked", "failed", "abandoned"])
     _add_closeout_record_arguments(p_task_close, summary_required=False)
-    _add_close_retry_arguments(p_task_close)
+    p_task_close.add_argument("--failure-class", choices=sorted(FAILURE_CLASSES))
+    p_task_close.add_argument("--recovery-action")
+    p_task_close.add_argument("--prompt-issue", action="store_true")
+    p_task_close.add_argument("--operator-issue", action="store_true")
     p_task_close.add_argument("--cleanup", action="store_true", default=None)
     p_task_close.add_argument("--json", action="store_true")
 
     p_task_cleanup = task_subparsers.add_parser("cleanup", help="Remove a retained or leftover task workspace and delete its branch")
     p_task_cleanup.add_argument("--project-root", default=".")
-    p_task_cleanup.add_argument("--workset")
     p_task_cleanup.add_argument("--task")
     p_task_cleanup.add_argument("--path")
     p_task_cleanup.add_argument("--branch")
@@ -718,86 +544,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_worktree_table.add_argument("--project-root", default=".")
     p_worktree_table.add_argument("--json", action="store_true")
-
-    p_worktree_preview = worktree_subparsers.add_parser("preview", help="Preview the WTAM start plan for an existing task")
-    p_worktree_preview.add_argument("--project-root", default=".")
-    p_worktree_preview.add_argument("--workset", required=True, help="existing workset id; use task begin for new work")
-    p_worktree_preview.add_argument("--task", required=True, help="existing task id; use task begin for new work")
-    p_worktree_preview.add_argument("--actor", required=True)
-    preview_prompt_group = p_worktree_preview.add_mutually_exclusive_group(required=True)
-    _add_prompt_input_arguments(
-        preview_prompt_group,
-        EXECUTION_PROMPT_INPUT,
-        inline_dest="prompt",
-        file_dest="prompt_file",
-    )
-    p_worktree_preview.add_argument("--branch")
-    p_worktree_preview.add_argument("--from", dest="from_ref")
-    p_worktree_preview.add_argument("--path")
-    p_worktree_preview.add_argument("--model")
-    p_worktree_preview.add_argument("--reasoning-effort")
-    p_worktree_preview.add_argument("--note")
-    p_worktree_preview.add_argument("--show-prompt", action="store_true")
-    p_worktree_preview.add_argument("--expand-contract", action="store_true")
-    p_worktree_preview.add_argument("--json", action="store_true")
-
-    p_worktree_start = worktree_subparsers.add_parser("start", help="Create a task worktree for an existing task")
-    p_worktree_start.add_argument("--project-root", default=".")
-    p_worktree_start.add_argument("--workset", required=True, help="existing workset id; use task begin for new work")
-    p_worktree_start.add_argument("--task", required=True, help="existing task id; use task begin for new work")
-    p_worktree_start.add_argument("--actor", required=True)
-    prompt_group = p_worktree_start.add_mutually_exclusive_group(required=True)
-    _add_prompt_input_arguments(
-        prompt_group,
-        EXECUTION_PROMPT_INPUT,
-        inline_dest="prompt",
-        file_dest="prompt_file",
-    )
-    p_worktree_start.add_argument("--branch")
-    p_worktree_start.add_argument("--from", dest="from_ref")
-    p_worktree_start.add_argument("--path")
-    p_worktree_start.add_argument("--model")
-    p_worktree_start.add_argument("--reasoning-effort")
-    p_worktree_start.add_argument("--note")
-    p_worktree_start.add_argument("--json", action="store_true")
-
-    p_worktree_show = worktree_subparsers.add_parser("show", help="Inspect the current or latest WTAM attempt for one task")
-    p_worktree_show.add_argument("--project-root", default=".")
-    p_worktree_show.add_argument("--workset", required=True)
-    p_worktree_show.add_argument("--task", required=True)
-    p_worktree_show.add_argument("--json", action="store_true")
-
-    p_worktree_land = worktree_subparsers.add_parser("land", help="Create the canonical landed commit for the active WTAM task and close it")
-    p_worktree_land.add_argument("--project-root", default=".")
-    p_worktree_land.add_argument("--workset", required=True)
-    p_worktree_land.add_argument("--task", required=True)
-    p_worktree_land.add_argument("--actor", required=True)
-    _add_closeout_record_arguments(p_worktree_land)
-    p_worktree_land.add_argument("--keep-worktree", action="store_true")
-    p_worktree_land.add_argument("--json", action="store_true")
-
-    p_worktree_close = worktree_subparsers.add_parser("close", help="Close the active WTAM task without landing code")
-    p_worktree_close.add_argument("--project-root", default=".")
-    p_worktree_close.add_argument("--workset")
-    p_worktree_close.add_argument("--task")
-    p_worktree_close.add_argument("--actor")
-    p_worktree_close.add_argument("--status", choices=["blocked", "failed", "abandoned"])
-    _add_closeout_record_arguments(p_worktree_close, summary_required=False)
-    _add_close_retry_arguments(p_worktree_close)
-    p_worktree_close.add_argument("--cleanup", action="store_true", default=None)
-    p_worktree_close.add_argument("--json", action="store_true")
-
-    p_worktree_cleanup = worktree_subparsers.add_parser(
-        "cleanup",
-        help="Remove a retained or leftover WTAM worktree and delete its branch",
-    )
-    p_worktree_cleanup.add_argument("--project-root", default=".")
-    p_worktree_cleanup.add_argument("--workset")
-    p_worktree_cleanup.add_argument("--task")
-    p_worktree_cleanup.add_argument("--path")
-    p_worktree_cleanup.add_argument("--branch")
-    p_worktree_cleanup.add_argument("--all", action="store_true")
-    p_worktree_cleanup.add_argument("--json", action="store_true")
 
     return parser
 
@@ -818,17 +564,13 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "summary":
             profile, model = _load_model(args.project_root)
-            if args.workset:
-                model = scope_runtime_model(model, workset_id=args.workset)
             if not args.include_canceled:
                 model = hide_canceled_runtime_model(model)
             if args.json:
                 _emit_json(
                     build_runtime_summary(
                         profile,
-                        workset_id=args.workset,
                         include_canceled=args.include_canceled,
-                        include_legacy_worksets=args.include_legacy_worksets,
                     )
                 )
             else:
@@ -838,11 +580,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "snapshot":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             _emit_json(
-                build_runtime_snapshot(
-                    profile,
-                    workset_id=args.workset,
-                    include_legacy_worksets=args.include_legacy_worksets,
-                )
+                build_runtime_snapshot(profile)
             )
             return 0
 
@@ -888,24 +626,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_local_repo_registry_text(result), end="")
             return 0
 
-        if args.command == "next":
-            _, model = _load_model(args.project_root)
-            payload = build_next_payload(model, workset_id=args.workset)
-            if args.json:
-                _emit_json(payload)
-            else:
-                print(render_next_text(payload))
-            return 0
-
         if args.command == "prompt" and args.prompt_command == "preview":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
                 label="prompt preview",
                 raw_text=args.prompt,
                 file_path=args.prompt_file,
+                inline_source=REQUEST_INPUT.canonical_inline_source,
                 inline_flag=REQUEST_INPUT.inline_flag,
                 file_flag=REQUEST_INPUT.file_flag,
             )
+            if args.execution_prompt_source is not None:
+                prompt_source = args.execution_prompt_source or None
             preview = preview_prompt(
                 profile,
                 request=prompt_text,
@@ -920,34 +652,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_prompt_preview_text(preview, show_prompt=args.show_prompt), end="")
             return 0
 
-        if args.command == "prompt" and args.prompt_command == "tune":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            prompt_text, prompt_source = _load_text_input(
-                label="prompt tune",
-                raw_text=args.prompt,
-                file_path=args.prompt_file,
-                inline_flag=REQUEST_INPUT.inline_flag,
-                file_flag=REQUEST_INPUT.file_flag,
-            )
-            tuned = tune_prompt(
-                profile,
-                request=prompt_text,
-                prompt_source=prompt_source,
-                expand_skill_text=args.expand_skill_text,
-                expand_contract=args.expand_contract,
-            )
-            if args.json:
-                _emit_json({"prompt_tune": tuned.to_dict()})
-            else:
-                print(tuned.tuned_prompt, end="")
-            return 0
-
         if args.command == "attempts" and args.attempts_command == "summary":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = build_attempts_summary(
                 profile,
-                workset_id=args.workset,
-                include_legacy_worksets=args.include_legacy_worksets,
+                task_id=args.task,
             )
             if args.json:
                 _emit_json(payload)
@@ -959,8 +668,7 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = build_attempts_table(
                 profile,
-                workset_id=args.workset,
-                include_legacy_worksets=args.include_legacy_worksets,
+                task_id=args.task,
             )
             if args.json:
                 _emit_json(payload)
@@ -975,20 +683,6 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"codex_coverage": payload})
             else:
                 print(render_codex_coverage_text(payload), end="")
-            return 0
-
-        if args.command == "codex" and args.codex_command == "link":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            link = build_codex_workspace_link(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                cwd=Path.cwd(),
-            )
-            if args.json:
-                _emit_json({"codex_link": link.to_dict()})
-            else:
-                print(render_codex_workspace_link_text(link), end="")
             return 0
 
         if args.command == "codex" and args.codex_command == "history":
@@ -1054,7 +748,6 @@ def main(argv: list[str] | None = None) -> int:
                 since=since,
                 include_archived=args.include_archived,
                 include_codex=not args.no_codex,
-                include_legacy_worksets=args.include_legacy_worksets,
             )
             if args.json:
                 _emit_json({"repo_table": result.to_dict()})
@@ -1176,20 +869,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_repo_lifecycle_text(result), end="")
             return 0
 
-        if args.command == "workset" and args.workset_command == "put":
-            _require_workset_commands_enabled()
-            payload = _load_json_payload(raw_json=args.json, file_path=args.file)
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            workset = upsert_workset(profile, payload)
-            _emit_json({"workset": workset_to_payload(workset)})
-            return 0
-
         if args.command == "task" and args.task_command == "begin":
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
                 label="task begin execution prompt",
                 raw_text=args.prompt,
                 file_path=args.prompt_file,
+                inline_source=EXECUTION_PROMPT_INPUT.canonical_inline_source,
                 inline_flag=EXECUTION_PROMPT_INPUT.inline_flag,
                 file_flag=EXECUTION_PROMPT_INPUT.file_flag,
             )
@@ -1200,10 +886,12 @@ def main(argv: list[str] | None = None) -> int:
                     label="task begin request lineage",
                     raw_text=args.user_prompt,
                     file_path=args.user_prompt_file,
-                    inline_source="inline:--user-prompt",
+                    inline_source=REQUEST_LINEAGE_INPUT.canonical_inline_source,
                     inline_flag=REQUEST_LINEAGE_INPUT.inline_flag,
                     file_flag=REQUEST_LINEAGE_INPUT.file_flag,
                 )
+                if args.request_source is not None:
+                    user_prompt_source = args.request_source or None
             try:
                 spec = begin_task_worktree(
                     profile,
@@ -1213,21 +901,6 @@ def main(argv: list[str] | None = None) -> int:
                     user_prompt=user_prompt_text,
                     user_prompt_source=user_prompt_source,
                     prompt_mode=args.prompt_mode,
-                    expected_actor=args.expected_actor,
-                    expected_execution_prompt_hash=args.expected_execution_prompt_hash,
-                    expected_execution_prompt_mode=args.expected_execution_prompt_mode,
-                    expected_request_prompt_hash=args.expected_request_prompt_hash,
-                    expected_request_prompt_mode=args.expected_request_prompt_mode,
-                    adopt_aborted_landing_source=args.adopt_aborted_landing_source,
-                    expected_predecessor_attempt=args.expected_predecessor_attempt,
-                    expected_landing_transaction=args.expected_landing_transaction,
-                    expected_source_commit=args.expected_source_commit,
-                    expected_source_tree=args.expected_source_tree,
-                    expected_branch=args.expected_branch,
-                    expected_path=args.expected_path,
-                    expected_target_branch=args.expected_target_branch,
-                    expected_target_commit=args.expected_target_commit,
-                    workset_id=args.workset,
                     task_id=args.task,
                     title=args.title,
                     model=args.model,
@@ -1246,7 +919,6 @@ def main(argv: list[str] | None = None) -> int:
                         exc,
                         actor=args.actor,
                         prompt_mode=args.prompt_mode,
-                        workset_id=args.workset,
                         task_id=args.task,
                     ),
                 )
@@ -1260,7 +932,6 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = show_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 cwd=Path.cwd(),
             )
@@ -1274,18 +945,10 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = recover_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
-                release_stale_claim=args.release_stale_claim,
                 status=args.status,
                 summary=args.summary,
                 note=args.note,
-                stale_claim_release_request_event_id=(
-                    args.stale_claim_release_request
-                ),
-                stale_claim_release_decision_event_id=(
-                    args.stale_claim_release_decision
-                ),
                 cwd=Path.cwd(),
             )
             if args.json:
@@ -1302,7 +965,6 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = cancel_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 actor=args.actor,
                 summary=args.summary,
@@ -1310,8 +972,7 @@ def main(argv: list[str] | None = None) -> int:
                 recovery_action=args.recovery_action,
                 prompt_issue=args.prompt_issue,
                 operator_issue=args.operator_issue,
-                transition_request_event_id=args.transition_request,
-                transition_decision_event_id=args.transition_decision,
+                cwd=Path.cwd(),
             )
             if args.json:
                 _emit_json({"task_state": payload.to_dict()})
@@ -1323,12 +984,10 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = reopen_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 actor=args.actor,
                 summary=args.summary,
-                transition_request_event_id=args.transition_request,
-                transition_decision_event_id=args.transition_decision,
+                cwd=Path.cwd(),
             )
             if args.json:
                 _emit_json({"task_state": payload.to_dict()})
@@ -1340,7 +999,6 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = land_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 actor=args.actor,
                 summary=args.summary,
@@ -1361,7 +1019,6 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = reconcile_task_landing(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 attempt_id=args.attempt,
                 landed_commit=args.landed_commit,
@@ -1379,7 +1036,6 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = close_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 actor=args.actor,
                 status=args.status,
@@ -1393,7 +1049,6 @@ def main(argv: list[str] | None = None) -> int:
                 recovery_action=args.recovery_action,
                 prompt_issue=args.prompt_issue,
                 operator_issue=args.operator_issue,
-                close_request_id=args.close_request,
                 cwd=Path.cwd(),
             )
             if args.json:
@@ -1406,7 +1061,6 @@ def main(argv: list[str] | None = None) -> int:
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = cleanup_task(
                 profile,
-                workset_id=args.workset,
                 task_id=args.task,
                 path=args.path,
                 branch=args.branch,
@@ -1436,171 +1090,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_worktree_table_text(payload), end="")
             return 0
 
-        if args.command == "worktree" and args.worktree_command == "preview":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            prompt_text, prompt_source = _load_text_input(
-                label="worktree preview execution prompt",
-                raw_text=args.prompt,
-                file_path=args.prompt_file,
-                inline_flag=EXECUTION_PROMPT_INPUT.inline_flag,
-                file_flag=EXECUTION_PROMPT_INPUT.file_flag,
-            )
-            preview = preview_task_worktree(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                actor=args.actor,
-                prompt=prompt_text,
-                prompt_source=prompt_source,
-                branch=args.branch,
-                from_ref=args.from_ref,
-                path=args.path,
-                model=args.model,
-                reasoning_effort=args.reasoning_effort,
-                cwd=Path.cwd(),
-                note=args.note,
-                include_prompt=args.show_prompt,
-                expand_contract=args.expand_contract,
-            )
-            if args.json:
-                _emit_json({"worktree_preview": preview.to_dict()})
-            else:
-                print(
-                    render_preview_text(
-                        preview,
-                        show_prompt=args.show_prompt,
-                        expand_contract=args.expand_contract,
-                    ),
-                    end="",
-                )
-            return 0
-
-        if args.command == "worktree" and args.worktree_command == "start":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            prompt_text, prompt_source = _load_text_input(
-                label="worktree start execution prompt",
-                raw_text=args.prompt,
-                file_path=args.prompt_file,
-                inline_flag=EXECUTION_PROMPT_INPUT.inline_flag,
-                file_flag=EXECUTION_PROMPT_INPUT.file_flag,
-            )
-            spec = start_task_worktree(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                actor=args.actor,
-                prompt=prompt_text,
-                prompt_source=prompt_source,
-                branch=args.branch,
-                from_ref=args.from_ref,
-                path=args.path,
-                model=args.model,
-                reasoning_effort=args.reasoning_effort,
-                cwd=Path.cwd(),
-                note=args.note,
-            )
-            if args.json:
-                _emit_json({"worktree": spec.to_dict()})
-            else:
-                print(render_start_text(spec), end="")
-            return 0
-
-        if args.command == "worktree" and args.worktree_command == "show":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = inspect_task_worktree(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                include_reconciliation_detection=True,
-            )
-            if args.json:
-                _emit_json({"worktree_show": payload})
-            else:
-                print(render_show_text(payload), end="")
-            return 0
-
-        if args.command == "worktree" and args.worktree_command == "land":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = land_task_worktree(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                actor=args.actor,
-                summary=args.summary,
-                validations=_parse_validation_flags(args.validation),
-                residuals=tuple(args.residual),
-                followup_candidates=tuple(args.followup),
-                note=args.note,
-                cleanup=not args.keep_worktree,
-            )
-            if args.json:
-                _emit_json({"landing": payload})
-            else:
-                print(render_land_text(payload), end="")
-            return 0 if payload.get("status") == "success" else 1
-
-        if args.command == "worktree" and args.worktree_command == "close":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            payload = close_task_worktree(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                actor=args.actor,
-                status=args.status,
-                summary=args.summary,
-                validations=_parse_validation_flags(args.validation),
-                residuals=tuple(args.residual),
-                followup_candidates=tuple(args.followup),
-                note=args.note,
-                cleanup=args.cleanup,
-                failure_class=args.failure_class,
-                recovery_action=args.recovery_action,
-                prompt_issue=args.prompt_issue,
-                operator_issue=args.operator_issue,
-                close_request_id=args.close_request,
-            )
-            if args.json:
-                _emit_json({"closure": payload})
-            else:
-                print(render_close_text(payload), end="")
-            return 0 if (
-                payload.get("operation_status", "succeeded") == "succeeded"
-                and not payload.get("closure_refused")
-                and not payload.get("close_transaction_blocked")
-            ) else 1
-
-        if args.command == "worktree" and args.worktree_command == "cleanup":
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
-            if args.all:
-                if args.workset or args.task or args.path or args.branch:
-                    raise WorktreeError(
-                        "worktree cleanup --all cannot be combined with --workset, --task, --path, or --branch"
-                    )
-                payload = cleanup_worktree_table(profile)
-                if args.json:
-                    _emit_json({"cleanup": payload})
-                else:
-                    print(render_worktree_cleanup_all_text(payload), end="")
-                return 0 if not payload["errors"] else 1
-            if not args.workset or not args.task:
-                raise WorktreeError("worktree cleanup requires --workset and --task unless --all is set")
-            payload = cleanup_task_worktree(
-                profile,
-                workset_id=args.workset,
-                task_id=args.task,
-                path=args.path,
-                branch=args.branch,
-            )
-            if args.json:
-                _emit_json({"cleanup": payload})
-            else:
-                print(render_cleanup_text(payload), end="")
-            return 0 if not payload.get("cleanup_refused") else 1
-
-        raise BacklogError(f"Unsupported command: {args.command}")
+        raise TaskError(f"Unsupported command: {args.command}")
     except (
-        BacklogError,
-        CodexLinkError,
+        TaskError,
         CodexHookError,
         CodexSessionError,
         ConfigError,

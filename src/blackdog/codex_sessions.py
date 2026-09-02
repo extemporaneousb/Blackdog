@@ -13,9 +13,9 @@ import re
 import subprocess
 import tomllib
 
-from .profile import RepoProfile
-from .runtime_model import AttemptView, load_runtime_model
-from .state import (
+from blackdog_core.profile import RepoProfile
+from blackdog_core.runtime_model import AttemptView, load_runtime_model
+from blackdog_core.state import (
     CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN,
     CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH,
     CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR,
@@ -33,10 +33,10 @@ from .state import (
     now_iso,
     parse_iso,
 )
-from .user_state import user_state_file
+from blackdog_core.user_state import user_state_file
 
 
-CODEX_SESSION_HISTORY_SCHEMA_VERSION = 2
+CODEX_SESSION_HISTORY_SCHEMA_VERSION = 3
 CODEX_SESSION_CACHE_SCHEMA_VERSION = 1
 CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION = 1
 HISTORY_DIR_NAME = ".blackdog"
@@ -84,7 +84,7 @@ _ANALYSIS_KEYWORDS = frozenset(
         "understand",
     }
 )
-_WTAM_KEYWORDS = frozenset({"blackdog", "$blackdog", "wtam", "task begin", "worktree start"})
+_WTAM_KEYWORDS = frozenset({"blackdog", "$blackdog", "wtam", "task begin"})
 
 RELATIONSHIP_LAUNCH_TURN = "launch_turn"
 RELATIONSHIP_PROMPT_HASH = "prompt_hash"
@@ -255,7 +255,6 @@ class CodexAttemptRelationship:
 class CodexHookTaskContextStamp:
     thread_id: str
     turn_id: str
-    workset_id: str | None
     task_id: str | None
     attempt_id: str | None
     hook_event_name: str | None
@@ -696,8 +695,7 @@ def build_codex_coverage(
     upper = _parse_until(until)
     attempts = tuple(
         attempt
-        for workset in model.worksets
-        for attempt in workset.attempts
+        for attempt in model.attempts
         if _attempt_in_bounds(
             attempt,
             cutoff=cutoff,
@@ -880,12 +878,7 @@ def build_codex_history(
 ) -> dict[str, Any]:
     model = load_runtime_model(profile)
     cutoff = _parse_since(since)
-    attempts = tuple(
-        attempt
-        for workset in model.worksets
-        for attempt in workset.attempts
-        if _attempt_in_window(attempt, cutoff)
-    )
+    attempts = tuple(attempt for attempt in model.attempts if _attempt_in_window(attempt, cutoff))
     turns, exact_reference_resolution_counts, exact_reference_resolutions = _project_turns_with_exact_attempt_refs(
         profile,
         attempts,
@@ -899,14 +892,12 @@ def build_codex_history(
     rows = [
         _attempt_history_row(
             profile,
-            workset.workset_id,
             attempt,
             relationships_by_attempt.get(attempt.attempt_id, ()),
             _attempt_environment_classes(attempt, relationships_by_attempt.get(attempt.attempt_id, ())),
             exact_reference_resolutions.get(attempt.attempt_id),
         )
-        for workset in model.worksets
-        for attempt in workset.attempts
+        for attempt in model.attempts
         if _attempt_in_window(attempt, cutoff)
     ]
     rows.extend(
@@ -1801,7 +1792,6 @@ def _attempt_coverage_row(
 
 def _attempt_history_row(
     profile: RepoProfile,
-    workset_id: str,
     attempt: AttemptView,
     turn_relationships: tuple[dict[str, Any], ...],
     environment_issue_classes: tuple[str, ...],
@@ -1812,10 +1802,9 @@ def _attempt_history_row(
     return {
         "schema_version": CODEX_SESSION_HISTORY_SCHEMA_VERSION,
         "kind": "attempt",
-        "row_id": _row_id("attempt", profile.project_name, workset_id, attempt.task_id, attempt.attempt_id),
+        "row_id": _row_id("attempt", profile.project_name, attempt.task_id, attempt.attempt_id),
         "project_name": profile.project_name,
         "project_root": str(profile.paths.project_root),
-        "workset_id": workset_id,
         "task_id": attempt.task_id,
         "attempt_id": attempt.attempt_id,
         "status": attempt.status,
@@ -2547,15 +2536,13 @@ def _hook_task_context_stamp_from_event(row: Any) -> CodexHookTaskContextStamp |
     turn_id = _optional_text(hook.get("turn_id"))
     if not all((thread_id, turn_id)):
         return None
-    workset_id = _optional_text(active_attempt.get("workset_id")) if isinstance(active_attempt, Mapping) else None
     task_id = _optional_text(active_attempt.get("task_id")) if isinstance(active_attempt, Mapping) else None
     attempt_id = _optional_text(active_attempt.get("attempt_id")) if isinstance(active_attempt, Mapping) else None
-    if not all((workset_id, task_id, attempt_id)):
-        workset_id = task_id = attempt_id = None
+    if not all((task_id, attempt_id)):
+        task_id = attempt_id = None
     return CodexHookTaskContextStamp(
         thread_id=str(thread_id),
         turn_id=str(turn_id),
-        workset_id=workset_id,
         task_id=task_id,
         attempt_id=attempt_id,
         hook_event_name=_optional_text(hook.get("hook_event_name")),

@@ -32,17 +32,6 @@ from blackdog_core.profile import (
 )
 
 
-LEGACY_BACKLOG_CONTROL_ARTIFACTS = (
-    "backlog-index.html",
-    "backlog-state.json",
-    "backlog.md",
-    "blackdog-backlog.html",
-    "inbox.jsonl",
-    "task-results",
-    "threads",
-    "tracked-installs.json",
-)
-REMOVED_ORCHESTRATION_CONTROL_ARTIFACTS = ("supervisor-runs",)
 AGENTS_FILE_NAME = "AGENTS.md"
 AGENTS_MANAGED_BEGIN = "<!-- BLACKDOG MANAGED CONTRACT:BEGIN -->"
 AGENTS_MANAGED_END = "<!-- BLACKDOG MANAGED CONTRACT:END -->"
@@ -527,11 +516,9 @@ def _prune_obsolete_managed_skill_dirs(profile: RepoProfile) -> tuple[str, ...]:
         if child.resolve() == managed_skill.parent.resolve():
             continue
         marker = child / ".blackdog-managed.json"
-        skill_path = child / "SKILL.md"
         should_remove = (
             child.name == LEGACY_MANAGED_SKILL_NAME
             or marker.exists()
-            or (child.name.endswith("-supervisor") and skill_path.is_file())
         )
         if not should_remove:
             continue
@@ -566,30 +553,17 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         "- Before normal repo-skill implementation, create two mode-0600 UTF-8 temporary files outside the repo: `request_file` contains the exact triggering user request verbatim, and `execution_prompt_file` contains the composed goal, context, constraints, and done condition prompt. Set those shell variables to absolute paths and run the structured begin command below.",
         f"- Normal repo-skill implementation uses `{AGENT_WORKFLOW.begin_command}`. `--actor` defaults to `codex`; the explicit value here makes ownership visible.",
         f"- {PROMPT_INPUT_DISPOSAL_GUIDANCE}",
-        "- `blackdog codex link` is an opt-in continuation into a new Codex local chat for the active task worktree. It does not move the calling thread or create a Codex-managed worktree; Blackdog remains responsible for branch identity, landing, and cleanup.",
         "- Before landing, set `completion_summary` to concise human-readable change statements: the first nonblank line becomes the Git subject and each later nonblank line is one major body item. Do not put Blackdog metadata in it. Build the `validation_args` shell array with at least one repeated `--validation` plus `NAME=passed|failed|skipped`; never submit placeholders or invented evidence.",
-        "- For new work, do not pass `--workset` or `--task`; `task begin` creates the task envelope and returns the task workspace.",
+        "- For new work, do not pass `--task`; `task begin` creates the task and returns its workspace. A machine-emitted retry may identify an existing task explicitly.",
         "- Abandoned work is canceled by default; use `task reopen` only when the work should re-enter the normal queue.",
         f"- {NEXT_ACTION_AUTHORITY_GUIDANCE}",
         f"- {AUTOMATIC_STALE_RECOVERY_GUIDANCE}",
-        (
-            "- Direct read-only `task show`, read-only `task recover`, and CLI `worktree show` may "
-            "report bounded legacy landing detection. Execute only the exact read-only `next_action.argv`; "
-            "never add `--apply` unless the explicit reconciliation proof returns its guarded apply action."
-        ),
-        (
-            "- If any task surface reports `next_action.action_id=retry_stale_claim_release_finalization`, "
-            "execute that exact owner-task argv before claim-mutating begin/land/close or owner cancel/reopen. "
-            "Its hidden request/decision guards are machine-emitted replay capabilities; never invent, edit, "
-            "remove, or reuse them. Stop if Blackdog returns a blocked or conflict action."
-        ),
         (
             "- If any task surface reports `next_action.action_id=retry_task_close_finalization`, "
             "execute that exact argv until close completes. Its hidden close-request guard and terminal "
             "evidence are machine-emitted replay capabilities; never omit, edit, or reconstruct them. "
             "A blocked action has no recovery command and requires evidence inspection."
         ),
-        "- Use low-level `worktree preview` or `worktree start` only when resuming or repairing a known existing task id; do not invent workset or task names.",
         "- Do not launch an external browser, use macOS `open`, use `xdg-open`, or run headed Playwright/browser sessions for agent verification unless the user explicitly asks for a user-visible browser. Prefer Codex in-app browser tools or headless evidence.",
         "- After `repo install`, `repo update`, or `repo refresh`, run `git status --short`; commit or land managed repo changes, or report the checkout as intentionally dirty before finishing.",
         "- Before finishing implementation work, re-check branch and dirty state and do not leave uncommitted changes from your work.",
@@ -718,20 +692,6 @@ def _write_repo_skill(profile: RepoProfile, *, overwrite: bool) -> RepoSkillWrit
         changed.append(metadata_path)
     removed = _prune_managed_skill_auxiliary_files(profile)
     return RepoSkillWriteResult(skill_path=skill_path, metadata_path=metadata_path, changed=tuple(changed), removed=removed)
-
-
-def _prune_repo_refresh_cleanup_artifacts(profile: RepoProfile) -> tuple[str, ...]:
-    removed: list[str] = []
-    for name in (*LEGACY_BACKLOG_CONTROL_ARTIFACTS, *REMOVED_ORCHESTRATION_CONTROL_ARTIFACTS):
-        path = (profile.paths.control_dir / name).resolve()
-        if not path.exists():
-            continue
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-        removed.append(str(path))
-    return tuple(removed)
 
 
 def _require_profile(project_root: Path) -> RepoProfile:
@@ -1314,7 +1274,7 @@ def refresh_repo(project_root: Path) -> RepoLifecycleResult:
     agents_path, agents_status = _write_repo_agents(profile)
     skill_result = _write_repo_skill(profile, overwrite=True)
     skill_path = skill_result.skill_path
-    removed = list(_prune_repo_refresh_cleanup_artifacts(profile))
+    removed: list[str] = []
     removed.extend(str(path) for path in skill_result.removed)
     removed.extend(_prune_obsolete_managed_skill_dirs(profile))
     preserved = [str(profile.paths.profile_file)]

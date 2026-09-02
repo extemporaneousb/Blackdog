@@ -28,7 +28,7 @@ from blackdog.repo_scope import (
     reject_exact_profile_errors,
     resolve_repo_scope,
 )
-from blackdog_core.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
+from blackdog.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
 from blackdog_core.profile import (
     DEFAULT_CONTROL_DIR,
     HANDLER_KIND_BLACKDOG_RUNTIME,
@@ -104,8 +104,6 @@ REPO_TABLE_COLUMNS = (
     "reasoning_efforts",
     "error",
 )
-LEGACY_REPO_TABLE_COLUMNS = ("legacy_worksets",)
-ALL_REPO_TABLE_COLUMNS = (*REPO_TABLE_COLUMNS, *LEGACY_REPO_TABLE_COLUMNS)
 
 @dataclass(frozen=True, slots=True)
 class RepoTableResult:
@@ -121,7 +119,6 @@ class RepoTableResult:
     since: str | None
     include_archived: bool
     include_codex: bool
-    include_legacy_worksets: bool
     columns: tuple[str, ...]
     rows: tuple[dict[str, object], ...]
 
@@ -139,7 +136,6 @@ class RepoTableResult:
             "since": self.since,
             "include_archived": self.include_archived,
             "include_codex": self.include_codex,
-            "include_legacy_worksets": self.include_legacy_worksets,
             "columns": list(self.columns),
             "rows": [dict(row) for row in self.rows],
         }
@@ -273,8 +269,6 @@ def _profile_control_dir(repo_root: Path, payload: dict[str, Any]) -> Path | Non
         raise RepoLifecycleError("paths table must be a TOML table")
     if "control_dir" in raw_paths:
         return resolve_config_path(repo_root, str(raw_paths["control_dir"]))
-    if "planning_file" in raw_paths:
-        return resolve_config_path(repo_root, str(raw_paths["planning_file"])).parent
     return resolve_config_path(repo_root, DEFAULT_CONTROL_DIR)
 
 
@@ -480,7 +474,6 @@ def _empty_table_row(project_root: Path) -> dict[str, object]:
         "prompt_modes": "",
         "models": "",
         "reasoning_efforts": "",
-        "legacy_worksets": None,
         "error": None,
     }
 
@@ -732,7 +725,7 @@ def _repo_table_row(
     try:
         model = hide_canceled_runtime_model(load_runtime_model(profile))
         counts = model.counts
-        attempts = tuple(attempt for workset in model.worksets for attempt in workset.attempts)
+        attempts = model.attempts
         row.update(attempt_cleanup_health_counts(attempts))
         now = datetime.now().astimezone()
         window_attempts = tuple(attempt for attempt in attempts if _attempt_in_window(attempt, cutoff, now))
@@ -743,7 +736,6 @@ def _repo_table_row(
             window_status_counts[attempt.status] = window_status_counts.get(attempt.status, 0) + 1
             if attempt.failure_class:
                 window_failure_counts[attempt.failure_class] = window_failure_counts.get(attempt.failure_class, 0) + 1
-        row["legacy_worksets"] = counts.get("worksets", 0)
         row["tasks_total"] = counts.get("tasks", 0)
         row["current_ready_tasks"] = counts.get("ready", 0)
         row["current_active_attempts"] = counts.get("active_attempts", 0)
@@ -834,7 +826,7 @@ def _repo_table_row(
     row["models"] = _string_set_label(models)
     row["reasoning_efforts"] = _count_label(reasoning_counts)
     row["error"] = "; ".join(errors) if errors else None
-    return {column: row.get(column) for column in ALL_REPO_TABLE_COLUMNS}
+    return {column: row.get(column) for column in REPO_TABLE_COLUMNS}
 
 
 def build_repo_table(
@@ -846,7 +838,6 @@ def build_repo_table(
     since: str | None = None,
     include_archived: bool = False,
     include_codex: bool = True,
-    include_legacy_worksets: bool = False,
 ) -> RepoTableResult:
     scope = resolve_repo_scope(
         command="repo table",
@@ -889,7 +880,6 @@ def build_repo_table(
             since or "unset",
             str(include_archived),
             str(include_codex),
-            str(include_legacy_worksets),
         )
     )
     for profile in canonical_scope.profiles:
@@ -902,7 +892,7 @@ def build_repo_table(
                 "operation_phase": "completed",
             },
         )
-    columns = (*REPO_TABLE_COLUMNS, *LEGACY_REPO_TABLE_COLUMNS) if include_legacy_worksets else REPO_TABLE_COLUMNS
+    columns = REPO_TABLE_COLUMNS
     return RepoTableResult(
         action="table",
         roots=tuple(scope_metadata["supplied_roots"]),
@@ -916,7 +906,6 @@ def build_repo_table(
         since=since,
         include_archived=include_archived,
         include_codex=include_codex,
-        include_legacy_worksets=include_legacy_worksets,
         columns=columns,
         rows=tuple({column: row.get(column) for column in columns} for row in rows),
     )

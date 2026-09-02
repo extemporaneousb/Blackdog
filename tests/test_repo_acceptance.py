@@ -61,6 +61,14 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         self.assertIn("workspace role", agents_text)
         self.assertNotIn("docs/PRODUCT_SPEC.md", agents_text)
         self.assertNotIn("docs/TARGET_MODEL.md", agents_text)
+        retired_contract_terms = (
+            "retry_stale_" + "claim_release_finalization",
+            "work" + "set",
+            "back" + "log",
+            "super" + "visor",
+        )
+        for term in retired_contract_terms:
+            self.assertNotIn(term, agents_text.lower())
 
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn(f"name: {managed_skill_name(profile)}", skill_text)
@@ -82,6 +90,9 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         self.assertEqual(refresh_payload["action"], "refresh")
         self.assertIsNotNone(refresh_payload["handlers"])
         self.assertEqual(skill_path.read_text(encoding="utf-8"), skill_text)
+        refreshed_agents = (self.root / "AGENTS.md").read_text(encoding="utf-8")
+        for term in retired_contract_terms:
+            self.assertNotIn(term, refreshed_agents.lower())
 
         analyze = subprocess.run(
             [str(launcher_path), "repo", "analyze", "--project-root", str(self.root), "--json"],
@@ -105,7 +116,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         )
         preflight_payload = json.loads(preflight.stdout)
         self.assertEqual(preflight_payload["workspace_role"], "primary")
-        self.assertTrue(preflight_payload["current_worktree_has_local_blackdog"])
+        self.assertTrue(preflight_payload["workspace_has_local_blackdog"])
 
     def test_managed_checkout_source_mode_reuses_seeded_managed_source(self) -> None:
         self.install_with_local_source()
@@ -203,7 +214,9 @@ class RepoAcceptanceTests(CoreAuditTestCase):
                     str(linked_worktree),
                     "--actor",
                     "codex",
-                    "--prompt",
+                    "--execution-prompt",
+                    "Implement linked target branch behavior.",
+                    "--request",
                     "Implement linked target branch behavior.",
                     "--json",
                 ],
@@ -213,8 +226,8 @@ class RepoAcceptanceTests(CoreAuditTestCase):
                 text=True,
             )
             payload = json.loads(begin.stdout)["task"]
-            task_worktree = Path(payload["worktree"]["worktree_path"])
-            self.assertEqual(payload["worktree"]["target_branch"], "feature/acceptance")
+            task_worktree = Path(payload["worktree_path"])
+            self.assertEqual(payload["target_branch"], "feature/acceptance")
             close = subprocess.run(
                 [
                     str(linked_launcher),
@@ -226,6 +239,8 @@ class RepoAcceptanceTests(CoreAuditTestCase):
                     "abandoned",
                     "--summary",
                     "acceptance test cleanup",
+                    "--validation",
+                    "acceptance=passed",
                     "--cleanup",
                     "--json",
                 ],
@@ -234,7 +249,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(json.loads(close.stdout)["closure"]["status"], "abandoned")
+            self.assertEqual(json.loads(close.stdout)["closure"]["status"], "canceled")
         finally:
             if task_worktree is not None and task_worktree.exists():
                 subprocess.run(["git", "-C", str(self.root), "worktree", "remove", "--force", str(task_worktree)], check=False)

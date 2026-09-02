@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Mapping
+from dataclasses import replace
 import hashlib
 import json
 import subprocess
 
-from blackdog_core.codex_sessions import CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION, codex_task_context_path
+from blackdog.codex_sessions import CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION, codex_task_context_path
 from blackdog_core.profile import RepoProfile
 from blackdog_core.state import (
     ATTEMPT_ACTIVE_STATUSES,
@@ -73,24 +74,28 @@ def stamp_codex_task_context(
 def _active_attempt_context(profile: RepoProfile, cwd: Path) -> dict[str, Any] | None:
     runtime_state = load_runtime_state(profile.paths)
     current_branch = _current_branch(cwd)
-    candidates: list[tuple[tuple[int, int, str], str, TaskAttemptRecord, str]] = []
-    for workset in runtime_state.worksets:
-        for attempt in workset.attempts:
+    candidates: list[tuple[tuple[int, int, str], TaskAttemptRecord, str]] = []
+    for task in runtime_state.tasks:
+        for stored_attempt in task.attempts:
+            attempt = (
+                stored_attempt
+                if stored_attempt.task_id is not None
+                else replace(stored_attempt, task_id=task.task_id)
+            )
             if attempt.status not in ATTEMPT_ACTIVE_STATUSES or attempt.ended_at is not None:
                 continue
             worktree_path = Path(attempt.worktree_path).expanduser().resolve() if attempt.worktree_path else None
             if worktree_path is not None and _path_contains(worktree_path, cwd):
                 score = (0, -len(str(worktree_path)), attempt.attempt_id)
-                candidates.append((score, workset.workset_id, attempt, "worktree_path"))
+                candidates.append((score, attempt, "worktree_path"))
                 continue
             if current_branch and attempt.branch == current_branch:
                 score = (1, 0, attempt.attempt_id)
-                candidates.append((score, workset.workset_id, attempt, "branch"))
+                candidates.append((score, attempt, "branch"))
     if not candidates:
         return None
-    _score, workset_id, attempt, matched_by = sorted(candidates, key=lambda item: item[0])[0]
+    _score, attempt, matched_by = sorted(candidates, key=lambda item: item[0])[0]
     return {
-        "workset_id": workset_id,
         "task_id": attempt.task_id,
         "attempt_id": attempt.attempt_id,
         "status": attempt.status,

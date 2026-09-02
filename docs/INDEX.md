@@ -1,90 +1,78 @@
-# Blackdog Docs
+# Blackdog Documentation
 
-Blackdog is a machine-native task and attempt runtime for AI-driven local
-development. Keep the docs small and contract-oriented: each file below owns a
-distinct question.
+Blackdog is a deterministic local task protocol for AI-driven development. It
+standardizes task ownership, attempt provenance, isolated workspaces, recovery,
+validation, landing, and cleanup so an agent can concentrate on the requested
+engineering outcome.
 
-## Source Of Truth
+## Product Contract
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): package boundaries, product
-  layers, repo install/layering, and shipped workflow ownership.
-- [docs/CLI.md](docs/CLI.md): current command surface for `blackdog`.
-- [docs/FILE_FORMATS.md](docs/FILE_FORMATS.md): canonical schemas for
-  `blackdog.toml`, `planning.json`, `runtime.json`, `events.jsonl`, history
-  rows, optional lifecycle observations, and managed repo artifacts.
+- A task is one executable intent with repository-unique identity.
+- An attempt is one execution of that task by one actor.
+- At most one attempt is active for a task.
+- `runtime.json` is the only canonical mutable task store.
+- `events.jsonl` is append-only lifecycle evidence.
+- Request and execution prompts are content-addressed private artifacts.
+- Structured lifecycle results expose exactly one authoritative `next_action`.
+- Repository policy stays in `blackdog.toml`; the protocol stays in Blackdog.
+- Provider conversations remain provider-owned. Blackdog records bounded
+  references and task-level evidence, not transcripts.
 
-## Current Product Surface
+## Shipped Commands
 
-- `blackdog init`
-- `blackdog summary`
-- `blackdog snapshot`
-- `blackdog stats`
-- `blackdog local-repo add`
-- `blackdog local-repo list`
-- `blackdog local-repo remove`
-- `blackdog prompt preview`
-- `blackdog prompt tune`
-- `blackdog attempts summary`
-- `blackdog attempts table`
-- `blackdog codex link`
-- `blackdog codex coverage`
-- `blackdog codex history`
-- `blackdog codex hook stamp`
-- `blackdog repo install`
-- `blackdog repo bind`
-- `blackdog repo table`
-- `blackdog repo archive`
-- `blackdog repo unarchive`
-- `blackdog repo unbind`
-- `blackdog repo analyze`
-- `blackdog repo scaffold`
-- `blackdog repo update`
-- `blackdog repo refresh`
-- `blackdog task begin`
-- `blackdog task show`
-- `blackdog task recover`
-- `blackdog task cancel`
-- `blackdog task reopen`
-- `blackdog task land`
-- `blackdog task reconcile-landing`
-- `blackdog task close`
-- `blackdog task cleanup`
-- `blackdog worktree preflight`
-- `blackdog worktree table`
-- `blackdog worktree preview`
-- `blackdog worktree start`
-- `blackdog worktree show`
-- `blackdog worktree land`
-- `blackdog worktree close`
-- `blackdog worktree cleanup`
+```text
+blackdog init
+blackdog summary
+blackdog snapshot
+blackdog stats
+blackdog local-repo add|list|remove
+blackdog prompt preview
+blackdog attempts summary|table
+blackdog codex coverage|history|hook stamp
+blackdog repo analyze|bind|table|install|scaffold|update|refresh|archive|unarchive|unbind
+blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup
+blackdog worktree preflight|table
+```
 
-The shipped surface is intentionally partitioned: `repo`/`prompt`/`attempts`
-own repo lifecycle and operator-read workflows, `local-repo` owns user-local
-registry management, `codex` owns task-worktree links, Codex-session
-coverage/history indexing, and hook-backed task-context observability,
-`stats` owns cross-repo metrics, `summary`/`snapshot` expose task-first current
-state, `task` is the default same-thread WTAM path, and `worktree` is the
-explicit planned-task WTAM path.
+`task begin` is the normal implementation entrypoint. `worktree preflight` and
+`worktree table` are read-only diagnosis. Product code owns all mutation; agents
+must never edit control files directly.
 
-## Direction
+## Documents
 
-- Do not author planning truth in markdown.
-- Do not use architecture prose as an alternate CLI or schema contract.
-- Do not preserve deleted backlog, board, bootstrap, inbox, render, or
-  multi-agent runtime surfaces on the typed model.
-- Keep repository policy in optional, repo-owned `[[guards]]` configuration;
-  Blackdog supplies only the generic execution and evidence contract.
-- Keep generated repo skills thin: route work through the Blackdog CLI and
-  record durable attempts instead of encoding workflow logic in prompt prose.
-  Treat `doc_routing_defaults` as a catalog: agents select only the entries
-  relevant to the current request instead of loading the full list by default.
-- Validate repo installation and layering through the normal test suite and
-  operator-facing `repo analyze`/`worktree preflight` checks.
+- [Architecture](ARCHITECTURE.md) — boundaries, state model, lifecycle, and
+  recovery guarantees.
+- [CLI](CLI.md) — command and structured-result contract.
+- [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
 
-## Research And Case Studies
+`AGENTS.md` contains the repository workflow and the generated contract copied
+into managed repositories.
 
-These documents are non-authoritative design inputs. They describe measured
-history and proposals, not shipped commands or file formats:
+## Scope Boundaries
 
-- [AdaptivePlotter sequential execution case study](docs/research/ADAPTIVEPLOTTER_SEQUENTIAL_EXECUTION_CASE_STUDY.md)
-- [Multi-agent sequential-execution research prompt](docs/research/MULTI_AGENT_SEQUENTIAL_EXECUTION_RESEARCH_PROMPT.md)
+The current core executes directly identified tasks and records their attempts.
+It does not include:
+
+- A background coordination service or workflow language
+- Automatic task decomposition, ordering, or subsequent-task selection
+- Online prompt optimization or self-modification
+- Transcript storage
+- A provider-specific agent runtime
+- A dashboard or board
+- Readers for superseded task-store formats
+
+Future task relationships must connect executable tasks directly. They must not
+introduce another durable planning object or hidden policy inheritance.
+
+## Deferred Runtime Distribution
+
+This contract-removal phase intentionally leaves repository-local `.VE` setup
+unchanged. The next stages are:
+
+1. Decouple Blackdog's executable from target-repository environments.
+2. Test self-contained Python release artifacts built by CI.
+3. Consider a native-language port only if packaging evidence shows that the
+   self-contained Python runtime is insufficient.
+
+No packaging or runtime-distribution behavior is part of the current durable
+task contract.

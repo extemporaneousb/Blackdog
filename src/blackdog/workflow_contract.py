@@ -48,7 +48,7 @@ NEXT_ACTION_AUTHORITY_GUIDANCE = (
     "treat its `next_action` as the sole authority regardless of `operation_status`: execute its "
     "exact `argv` when `kind=command`; choose only a complete action from `choices` or "
     "`alternatives`; stop when `kind=blocked` or `kind=complete`; never infer an action from "
-    "display text, reason or error prose, summaries, or compatibility recommendations."
+    "display text, reason or error prose, or summaries."
 )
 TARGET_BRANCH_GUIDANCE = (
     "Treat the `target_branch` selected and recorded by Blackdog for the task as authoritative "
@@ -69,35 +69,26 @@ class PromptInputContract:
     role: str
     inline_flag: str
     file_flag: str
-    compatibility_inline_flag: str
-    compatibility_file_flag: str
     canonical_inline_source: str
-    compatibility_status: str = "supported_alias"
 
 
 REQUEST_INPUT = PromptInputContract(
     role="request",
     inline_flag="--request",
     file_flag="--request-file",
-    compatibility_inline_flag="--prompt",
-    compatibility_file_flag="--prompt-file",
-    canonical_inline_source="inline:--prompt",
+    canonical_inline_source="inline:--request",
 )
 EXECUTION_PROMPT_INPUT = PromptInputContract(
     role="execution",
     inline_flag="--execution-prompt",
     file_flag="--execution-prompt-file",
-    compatibility_inline_flag="--prompt",
-    compatibility_file_flag="--prompt-file",
-    canonical_inline_source="inline:--prompt",
+    canonical_inline_source="inline:--execution-prompt",
 )
 REQUEST_LINEAGE_INPUT = PromptInputContract(
     role="request_lineage",
     inline_flag="--request",
     file_flag="--request-file",
-    compatibility_inline_flag="--user-prompt",
-    compatibility_file_flag="--user-prompt-file",
-    canonical_inline_source="inline:--user-prompt",
+    canonical_inline_source="inline:--request",
 )
 PROMPT_INPUT_CONTRACTS = (REQUEST_INPUT, EXECUTION_PROMPT_INPUT, REQUEST_LINEAGE_INPUT)
 
@@ -119,7 +110,6 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
         "prompt",
         (
             WorkflowCommand("preview"),
-            WorkflowCommand("tune"),
         ),
     ),
     WorkflowCommand(
@@ -132,7 +122,6 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
     WorkflowCommand(
         "codex",
         (
-            WorkflowCommand("link"),
             WorkflowCommand("coverage"),
             WorkflowCommand("history"),
             WorkflowCommand("hook", (WorkflowCommand("stamp"),)),
@@ -172,12 +161,6 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
         (
             WorkflowCommand("preflight"),
             WorkflowCommand("table"),
-            WorkflowCommand("preview"),
-            WorkflowCommand("start"),
-            WorkflowCommand("show"),
-            WorkflowCommand("land"),
-            WorkflowCommand("close"),
-            WorkflowCommand("cleanup"),
         ),
     ),
 )
@@ -190,7 +173,7 @@ COMMAND_INVENTORY_SECTIONS = (
     CommandInventorySection("local registry", ("local-repo",)),
     CommandInventorySection("prompt composition", ("prompt",)),
     CommandInventorySection("attempt evidence", ("attempts",)),
-    CommandInventorySection("Codex links, evidence, and hooks", ("codex",)),
+    CommandInventorySection("Codex evidence and hooks", ("codex",)),
     CommandInventorySection("repo lifecycle", ("repo",)),
     CommandInventorySection("task execution and repair", ("task",)),
     CommandInventorySection("explicit low-level diagnosis and repair", ("worktree",)),

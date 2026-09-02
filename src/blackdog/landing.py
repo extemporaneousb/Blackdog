@@ -14,7 +14,7 @@ from blackdog_core.profile import RepoProfile
 from blackdog_core.state import append_event_once, exclusive_file_lock, load_events
 
 
-LANDING_EVENT_SCHEMA_VERSION = 1
+LANDING_EVENT_SCHEMA_VERSION = 2
 LANDING_PHASE_EVENT_TYPE = "worktree.landing.phase"
 LANDING_ABORT_EVENT_TYPE = "worktree.landing.abort"
 LANDING_ABORT_CLEANUP_EVENT_TYPE = "worktree.landing.abort-cleanup"
@@ -108,7 +108,6 @@ def _validation_tuple(value: object) -> tuple[tuple[str, str], ...]:
 
 @dataclass(frozen=True, slots=True)
 class LandingIntent:
-    workset_id: str
     task_id: str
     attempt_id: str
     actor: str
@@ -134,14 +133,12 @@ class LandingIntent:
     @property
     def transaction_id(self) -> str:
         return landing_transaction_id(
-            workset_id=self.workset_id,
             task_id=self.task_id,
             attempt_id=self.attempt_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "workset_id": self.workset_id,
             "task_id": self.task_id,
             "attempt_id": self.attempt_id,
             "actor": self.actor,
@@ -176,7 +173,6 @@ class LandingIntent:
                 "landing transaction source_dirty and cleanup values must be booleans"
             )
         return cls(
-            workset_id=_required_text(payload.get("workset_id"), field="workset_id"),
             task_id=_required_text(payload.get("task_id"), field="task_id"),
             attempt_id=_required_text(payload.get("attempt_id"), field="attempt_id"),
             actor=_required_text(payload.get("actor"), field="actor"),
@@ -239,7 +235,6 @@ class LandingIntent:
             "task",
             "land",
             f"--project-root={project_root}",
-            f"--workset={self.workset_id}",
             f"--task={self.task_id}",
             f"--actor={self.actor}",
             f"--summary={self.summary}",
@@ -402,11 +397,10 @@ class LandingTransaction:
         }
 
 
-def landing_transaction_id(*, workset_id: str, task_id: str, attempt_id: str) -> str:
+def landing_transaction_id(*, task_id: str, attempt_id: str) -> str:
     material = "\0".join(
         (
-            "blackdog.worktree.landing.transaction/v1",
-            _required_text(workset_id, field="workset_id"),
+            "blackdog.worktree.landing.transaction/v2",
             _required_text(task_id, field="task_id"),
             _required_text(attempt_id, field="attempt_id"),
         )
@@ -472,7 +466,6 @@ def _phase_payload(
     return {
         "schema_version": LANDING_EVENT_SCHEMA_VERSION,
         "transaction_id": intent.transaction_id,
-        "workset_id": intent.workset_id,
         "task_id": intent.task_id,
         "attempt_id": intent.attempt_id,
         "phase": phase,
@@ -483,12 +476,10 @@ def _phase_payload(
 def load_landing_transaction(
     profile: RepoProfile,
     *,
-    workset_id: str,
     task_id: str,
     attempt_id: str,
 ) -> LandingTransaction | None:
     transaction_id = landing_transaction_id(
-        workset_id=workset_id,
         task_id=task_id,
         attempt_id=attempt_id,
     )
@@ -563,7 +554,6 @@ def load_landing_transaction(
             if set(payload) != {
                 "schema_version",
                 "transaction_id",
-                "workset_id",
                 "task_id",
                 "attempt_id",
                 "data",
@@ -574,7 +564,6 @@ def load_landing_transaction(
             if (
                 type(payload.get("schema_version")) is not int
                 or payload.get("schema_version") != LANDING_EVENT_SCHEMA_VERSION
-                or payload.get("workset_id") != workset_id
                 or payload.get("task_id") != task_id
                 or payload.get("attempt_id") != attempt_id
                 or not isinstance(payload.get("data"), Mapping)
@@ -649,7 +638,6 @@ def load_landing_transaction(
         expected_payload_keys = {
             "schema_version",
             "transaction_id",
-            "workset_id",
             "task_id",
             "attempt_id",
             "phase",
@@ -667,7 +655,6 @@ def load_landing_transaction(
                 f"landing transaction {transaction_id} has unsupported phase schema"
             )
         common = {
-            "workset_id": workset_id,
             "task_id": task_id,
             "attempt_id": attempt_id,
         }
@@ -834,7 +821,6 @@ def record_landing_phase(
         raise LandingTransactionError(f"unknown landing phase: {phase!r}")
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -865,7 +851,6 @@ def _abort_payload(intent: LandingIntent, *, data: Mapping[str, Any]) -> dict[st
     return {
         "schema_version": LANDING_EVENT_SCHEMA_VERSION,
         "transaction_id": intent.transaction_id,
-        "workset_id": intent.workset_id,
         "task_id": intent.task_id,
         "attempt_id": intent.attempt_id,
         "data": dict(data),
@@ -880,7 +865,6 @@ def record_landing_abort(
 ) -> bool:
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -905,7 +889,6 @@ def record_landing_abort_cleanup(
 ) -> bool:
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -945,7 +928,6 @@ def record_landing_abort_superseded(
 ) -> bool:
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -968,7 +950,6 @@ def record_landing_abort_runtime(
 ) -> bool:
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -991,7 +972,6 @@ def record_landing_abort_close_event(
 ) -> bool:
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -1014,7 +994,6 @@ def record_landing_abort_complete(
 ) -> bool:
     current = load_landing_transaction(
         profile,
-        workset_id=intent.workset_id,
         task_id=intent.task_id,
         attempt_id=intent.attempt_id,
     )
@@ -1070,12 +1049,10 @@ def exact_worktree_land_event(
 def attempt_lifecycle_lock(
     profile: RepoProfile,
     *,
-    workset_id: str,
     task_id: str,
     attempt_id: str,
 ) -> Iterator[None]:
     transaction_id = landing_transaction_id(
-        workset_id=workset_id,
         task_id=task_id,
         attempt_id=attempt_id,
     )

@@ -1,4 +1,4 @@
-"""Typed runtime views projected from Blackdog planning and runtime stores."""
+"""Flat derived read model for canonical task state."""
 
 from __future__ import annotations
 
@@ -6,37 +6,23 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .backlog import PlanningState, TaskSpec, Workset, load_planning_state, next_ready_tasks, task_dependencies_ready
 from .profile import RepoProfile
 from .state import (
-    ATTEMPT_ACTIVE_STATUSES,
-    ATTEMPT_STATUS_BLOCKED,
-    ATTEMPT_STATUS_FAILED,
-    ATTEMPT_STATUS_ABANDONED,
-    FAILURE_CLASS_ABANDONED,
-    FAILURE_CLASS_UNKNOWN,
-    TASK_STATUS_BLOCKED,
+    ATTEMPT_STATUS_IN_PROGRESS,
     TASK_STATUS_CANCELED,
-    TASK_STATUS_DONE,
-    TASK_STATUS_IN_PROGRESS,
-    TASK_STATUS_PLANNED,
+    CodexSessionRefRecord,
+    PromptReceiptRecord,
     RuntimeState,
-    TaskClaimRecord,
     TaskAttemptRecord,
-    TaskRuntimeRecord,
+    TaskRecord,
     ValidationRecord,
-    WorksetClaimRecord,
     load_events,
     load_runtime_state,
     parse_iso,
-    task_claim_index,
-    task_attempts_for_workset,
-    task_state_index,
-    workset_claim,
 )
 
 
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +30,6 @@ class Repository:
     project_name: str
     project_root: Path
     control_dir: Path
-    planning_file: Path
     runtime_file: Path
     events_file: Path
     validation_commands: tuple[str, ...]
@@ -59,7 +44,6 @@ class ValidationView:
 
 @dataclass(frozen=True, slots=True)
 class PromptReceiptView:
-    text: str | None
     prompt_hash: str
     recorded_at: str
     source: str | None
@@ -81,27 +65,9 @@ class CodexSessionRefView:
 
 
 @dataclass(frozen=True, slots=True)
-class WorksetClaimView:
-    actor: str
-    execution_model: str
-    claimed_at: str
-    note: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskClaimView:
-    task_id: str
-    actor: str
-    execution_model: str
-    claimed_at: str
-    attempt_id: str | None
-    note: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class AttemptView:
-    attempt_id: str
     task_id: str
+    attempt_id: str
     status: str
     actor: str
     started_at: str
@@ -139,25 +105,13 @@ class AttemptView:
 
 @dataclass(frozen=True, slots=True)
 class TaskView:
-    workset_id: str
     task_id: str
     title: str
-    intent: str
-    description: str | None
-    depends_on: tuple[str, ...]
-    paths: tuple[str, ...]
-    docs: tuple[str, ...]
-    checks: tuple[str, ...]
-    metadata: dict[str, Any]
-    runtime_status: str
-    readiness: str
-    blocked_by: tuple[str, ...]
-    claim_actor: str | None
-    claim_execution_model: str | None
-    claimed_at: str | None
-    note: str | None
+    created_at: str | None
+    status: str
     updated_at: str | None
-    is_ready: bool
+    actor: str | None
+    note: str | None
     attempt_count: int
     latest_attempt_id: str | None
     latest_attempt_status: str | None
@@ -170,30 +124,12 @@ class TaskView:
 
 
 @dataclass(frozen=True, slots=True)
-class WorksetView:
-    workset_id: str
-    title: str
-    scope: dict[str, Any]
-    visibility: dict[str, Any]
-    policies: dict[str, Any]
-    workspace: dict[str, Any]
-    branch_intent: dict[str, Any]
-    metadata: dict[str, Any]
-    claim: WorksetClaimView | None
-    task_claims: tuple[TaskClaimView, ...]
-    tasks: tuple[TaskView, ...]
-    attempts: tuple[AttemptView, ...]
-    counts: dict[str, int]
-    next_task_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class RuntimeModel:
     schema_version: int
     repository: Repository
-    worksets: tuple[WorksetView, ...]
+    tasks: tuple[TaskView, ...]
+    attempts: tuple[AttemptView, ...]
     counts: dict[str, int]
-    next_tasks: tuple[TaskView, ...]
     recent_attempts: tuple[AttemptView, ...]
     events: tuple[dict[str, Any], ...]
 
@@ -203,7 +139,6 @@ def project_repository(profile: RepoProfile) -> Repository:
         project_name=profile.project_name,
         project_root=profile.paths.project_root,
         control_dir=profile.paths.control_dir,
-        planning_file=profile.paths.planning_file,
         runtime_file=profile.paths.runtime_file,
         events_file=profile.paths.events_file,
         validation_commands=profile.validation_commands,
@@ -211,74 +146,42 @@ def project_repository(profile: RepoProfile) -> Repository:
     )
 
 
-def _default_runtime(task_id: str) -> TaskRuntimeRecord:
-    return TaskRuntimeRecord(task_id=task_id, status=TASK_STATUS_PLANNED)
+def _receipt_view(receipt: PromptReceiptRecord | None) -> PromptReceiptView | None:
+    if receipt is None:
+        return None
+    return PromptReceiptView(
+        prompt_hash=receipt.prompt_hash,
+        recorded_at=receipt.recorded_at,
+        source=receipt.source,
+        mode=receipt.mode,
+        replay_artifact_path=receipt.replay_artifact_path,
+    )
+
+
+def _session_view(session: CodexSessionRefRecord | None) -> CodexSessionRefView | None:
+    if session is None:
+        return None
+    return CodexSessionRefView(
+        thread_id=session.thread_id,
+        session_path=session.session_path,
+        turn_id=session.turn_id,
+        turn_started_at=session.turn_started_at,
+        user_prompt_hash=session.user_prompt_hash,
+        execution_prompt_hash=session.execution_prompt_hash,
+        capture_status=session.capture_status,
+        capture_method=session.capture_method,
+        capture_missing_reason=session.capture_missing_reason,
+    )
 
 
 def _validation_view(validation: ValidationRecord) -> ValidationView:
-    return ValidationView(name=validation.name, status=validation.status)
+    return ValidationView(validation.name, validation.status)
 
 
-def _prompt_receipt_view(prompt_receipt) -> PromptReceiptView | None:
-    if prompt_receipt is None:
-        return None
-    return PromptReceiptView(
-        text=prompt_receipt.text,
-        prompt_hash=prompt_receipt.prompt_hash,
-        recorded_at=prompt_receipt.recorded_at,
-        source=prompt_receipt.source,
-        mode=prompt_receipt.mode,
-        replay_artifact_path=prompt_receipt.replay_artifact_path,
-    )
-
-
-def _codex_session_ref_view(codex_session) -> CodexSessionRefView | None:
-    if codex_session is None:
-        return None
-    return CodexSessionRefView(
-        thread_id=codex_session.thread_id,
-        session_path=codex_session.session_path,
-        turn_id=codex_session.turn_id,
-        turn_started_at=codex_session.turn_started_at,
-        user_prompt_hash=codex_session.user_prompt_hash,
-        execution_prompt_hash=codex_session.execution_prompt_hash,
-        capture_status=codex_session.capture_status,
-        capture_method=codex_session.capture_method,
-        capture_missing_reason=codex_session.capture_missing_reason,
-    )
-
-
-def _workset_claim_view(claim: WorksetClaimRecord | None) -> WorksetClaimView | None:
-    if claim is None:
-        return None
-    return WorksetClaimView(
-        actor=claim.actor,
-        execution_model=claim.execution_model,
-        claimed_at=claim.claimed_at,
-        note=claim.note,
-    )
-
-
-def _task_claim_view(claim: TaskClaimRecord) -> TaskClaimView:
-    return TaskClaimView(
-        task_id=claim.task_id,
-        actor=claim.actor,
-        execution_model=claim.execution_model,
-        claimed_at=claim.claimed_at,
-        attempt_id=claim.attempt_id,
-        note=claim.note,
-    )
-
-
-def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
-    failure_class = attempt.failure_class
-    if failure_class is None and attempt.status == ATTEMPT_STATUS_ABANDONED:
-        failure_class = FAILURE_CLASS_ABANDONED
-    elif failure_class is None and attempt.status in {ATTEMPT_STATUS_BLOCKED, ATTEMPT_STATUS_FAILED}:
-        failure_class = FAILURE_CLASS_UNKNOWN
+def _attempt_view(task_id: str, attempt: TaskAttemptRecord) -> AttemptView:
     return AttemptView(
+        task_id=task_id,
         attempt_id=attempt.attempt_id,
-        task_id=attempt.task_id,
         status=attempt.status,
         actor=attempt.actor,
         started_at=attempt.started_at,
@@ -296,9 +199,9 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
         execution_model=attempt.execution_model,
         model=attempt.model,
         reasoning_effort=attempt.reasoning_effort,
-        codex_session=_codex_session_ref_view(attempt.codex_session),
-        prompt_receipt=_prompt_receipt_view(attempt.prompt_receipt),
-        user_prompt_receipt=_prompt_receipt_view(attempt.user_prompt_receipt),
+        codex_session=_session_view(attempt.codex_session),
+        prompt_receipt=_receipt_view(attempt.prompt_receipt),
+        user_prompt_receipt=_receipt_view(attempt.user_prompt_receipt),
         changed_paths=attempt.changed_paths,
         validations=tuple(_validation_view(item) for item in attempt.validations),
         residuals=attempt.residuals,
@@ -306,8 +209,8 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
         note=attempt.note,
         commit=attempt.commit,
         landed_commit=attempt.landed_commit,
-        is_active=attempt.status in ATTEMPT_ACTIVE_STATUSES,
-        failure_class=failure_class,
+        is_active=attempt.status == ATTEMPT_STATUS_IN_PROGRESS,
+        failure_class=attempt.failure_class,
         recovery_action=attempt.recovery_action,
         prompt_issue=attempt.prompt_issue,
         operator_issue=attempt.operator_issue,
@@ -315,289 +218,104 @@ def _attempt_view(attempt: TaskAttemptRecord) -> AttemptView:
     )
 
 
-def _task_view(
-    workset: Workset,
-    task: TaskSpec,
-    runtime_index: dict[str, TaskRuntimeRecord],
-    task_claims_by_task: dict[str, TaskClaimRecord],
-    attempts_by_task: dict[str, tuple[TaskAttemptRecord, ...]],
-) -> TaskView:
-    runtime = runtime_index.get(task.task_id, _default_runtime(task.task_id))
-    task_claim = task_claims_by_task.get(task.task_id)
-    task_attempts = attempts_by_task.get(task.task_id, ())
-    latest_attempt = task_attempts[0] if task_attempts else None
-    active_attempt = next((attempt for attempt in task_attempts if attempt.status in ATTEMPT_ACTIVE_STATUSES), None)
-    if runtime.status == TASK_STATUS_DONE:
-        readiness = "done"
-        blocked_by: tuple[str, ...] = ()
-    elif runtime.status == TASK_STATUS_CANCELED:
-        readiness = "canceled"
-        blocked_by = ()
-    elif runtime.status == TASK_STATUS_IN_PROGRESS:
-        readiness = "in_progress"
-        blocked_by = ()
-    elif runtime.status == TASK_STATUS_BLOCKED:
-        readiness = "blocked"
-        blocked_by = (runtime.note,) if runtime.note else ()
-    else:
-        dependencies_ready, missing_dependencies = task_dependencies_ready(
-            workset,
-            task_id=task.task_id,
-            runtime_index=runtime_index,
-        )
-        readiness = "ready" if dependencies_ready else "blocked"
-        blocked_by = missing_dependencies
+def _task_view(task: TaskRecord) -> TaskView:
+    latest = task.attempts[-1] if task.attempts else None
+    active = next((item for item in reversed(task.attempts) if item.status == ATTEMPT_STATUS_IN_PROGRESS), None)
     return TaskView(
-        workset_id=workset.workset_id,
         task_id=task.task_id,
         title=task.title,
-        intent=task.intent,
-        description=task.description,
-        depends_on=task.depends_on,
-        paths=task.paths,
-        docs=task.docs,
-        checks=task.checks,
-        metadata=dict(task.metadata),
-        runtime_status=runtime.status,
-        readiness=readiness,
-        blocked_by=blocked_by,
-        claim_actor=task_claim.actor if task_claim is not None else None,
-        claim_execution_model=task_claim.execution_model if task_claim is not None else None,
-        claimed_at=task_claim.claimed_at if task_claim is not None else None,
-        note=runtime.note,
-        updated_at=runtime.updated_at,
-        is_ready=readiness == "ready",
-        attempt_count=len(task_attempts),
-        latest_attempt_id=latest_attempt.attempt_id if latest_attempt else None,
-        latest_attempt_status=latest_attempt.status if latest_attempt else None,
-        latest_attempt_summary=latest_attempt.summary if latest_attempt else None,
-        active_attempt_id=active_attempt.attempt_id if active_attempt else None,
-        failure_class=runtime.failure_class,
-        recovery_action=runtime.recovery_action,
-        prompt_issue=runtime.prompt_issue,
-        operator_issue=runtime.operator_issue,
+        created_at=task.created_at,
+        status=task.status,
+        updated_at=task.updated_at,
+        actor=task.actor,
+        note=task.note,
+        attempt_count=len(task.attempts),
+        latest_attempt_id=latest.attempt_id if latest is not None else None,
+        latest_attempt_status=latest.status if latest is not None else None,
+        latest_attempt_summary=latest.summary if latest is not None else None,
+        active_attempt_id=active.attempt_id if active is not None else None,
+        failure_class=task.failure_class,
+        recovery_action=task.recovery_action,
+        prompt_issue=task.prompt_issue,
+        operator_issue=task.operator_issue,
     )
 
 
-def _count_workset(tasks: tuple[TaskView, ...], attempts: tuple[AttemptView, ...]) -> dict[str, int]:
+def _counts(tasks: tuple[TaskView, ...], attempts: tuple[AttemptView, ...]) -> dict[str, int]:
     counts = {
         "tasks": len(tasks),
-        "ready": 0,
+        "planned": 0,
         "in_progress": 0,
         "blocked": 0,
         "done": 0,
         "canceled": 0,
-        "claimed_tasks": 0,
         "attempts": len(attempts),
-        "active_attempts": 0,
+        "active_attempts": sum(1 for attempt in attempts if attempt.is_active),
     }
     for task in tasks:
-        if task.claim_actor:
-            counts["claimed_tasks"] += 1
-        if task.readiness == "ready":
-            counts["ready"] += 1
-        elif task.readiness == "in_progress":
-            counts["in_progress"] += 1
-        elif task.readiness == "done":
-            counts["done"] += 1
-        elif task.readiness == "canceled":
-            counts["canceled"] += 1
-        else:
-            counts["blocked"] += 1
-    for attempt in attempts:
-        if attempt.is_active:
-            counts["active_attempts"] += 1
-    return counts
-
-
-def _workset_view(workset: Workset, runtime_state: RuntimeState) -> WorksetView:
-    runtime_index = task_state_index(runtime_state, workset.workset_id)
-    runtime_task_claims = task_claim_index(runtime_state, workset.workset_id)
-    raw_attempts = tuple(
-        reversed(task_attempts_for_workset(runtime_state, workset.workset_id))
-    )
-    attempts_by_task: dict[str, list[TaskAttemptRecord]] = {}
-    for attempt in raw_attempts:
-        attempts_by_task.setdefault(attempt.task_id, []).append(attempt)
-    task_views = tuple(
-        _task_view(
-            workset,
-            task,
-            runtime_index,
-            runtime_task_claims,
-            {task_id: tuple(items) for task_id, items in attempts_by_task.items()},
-        )
-        for task in workset.tasks
-    )
-    attempt_views = tuple(_attempt_view(attempt) for attempt in raw_attempts)
-    next_task_ids = tuple(task_view.task_id for task_view in task_views if task_view.is_ready)
-    return WorksetView(
-        workset_id=workset.workset_id,
-        title=workset.title,
-        scope=dict(workset.scope),
-        visibility=dict(workset.visibility),
-        policies=dict(workset.policies),
-        workspace=dict(workset.workspace),
-        branch_intent=dict(workset.branch_intent),
-        metadata=dict(workset.metadata),
-        claim=_workset_claim_view(workset_claim(runtime_state, workset.workset_id)),
-        task_claims=tuple(_task_claim_view(item) for item in runtime_task_claims.values()),
-        tasks=task_views,
-        attempts=attempt_views,
-        counts=_count_workset(task_views, attempt_views),
-        next_task_ids=next_task_ids,
-    )
-
-
-def _count_runtime_model(worksets: tuple[WorksetView, ...]) -> dict[str, int]:
-    counts = {
-        "worksets": len(worksets),
-        "claimed_worksets": 0,
-        "tasks": 0,
-        "ready": 0,
-        "in_progress": 0,
-        "blocked": 0,
-        "done": 0,
-        "canceled": 0,
-        "claimed_tasks": 0,
-        "attempts": 0,
-        "active_attempts": 0,
-    }
-    for workset in worksets:
-        if workset.claim is not None:
-            counts["claimed_worksets"] += 1
-        for key, value in workset.counts.items():
-            counts[key] = counts.get(key, 0) + value
+        counts[task.status] = counts.get(task.status, 0) + 1
     return counts
 
 
 def project_runtime_model(
     profile: RepoProfile,
-    planning_state: PlanningState,
     runtime_state: RuntimeState,
     *,
     events: tuple[dict[str, Any], ...] = (),
 ) -> RuntimeModel:
-    worksets = tuple(_workset_view(workset, runtime_state) for workset in planning_state.worksets)
-    next_tasks_lookup = {
-        (workset.workset_id, task.task_id): task
-        for workset in worksets
-        for task in workset.tasks
-    }
-    next_tasks = tuple(
-        next_tasks_lookup[(workset.workset_id, task.task_id)]
-        for workset, task in next_ready_tasks(planning_state, runtime_state=runtime_state)
+    tasks = tuple(_task_view(task) for task in runtime_state.tasks)
+    attempts = tuple(
+        _attempt_view(task.task_id, attempt)
+        for task in runtime_state.tasks
+        for attempt in task.attempts
     )
-    recent_attempts = tuple(
-        attempt
-        for workset in worksets
-        for attempt in workset.attempts
+    epoch = parse_iso("1970-01-01T00:00:00+00:00")
+    assert epoch is not None
+    recent = tuple(
+        sorted(
+            attempts,
+            key=lambda item: (parse_iso(item.ended_at or item.started_at) or epoch).timestamp(),
+            reverse=True,
+        )
     )
-    recent_attempts = tuple(sorted(recent_attempts, key=lambda item: (parse_iso(item.ended_at or item.started_at) or parse_iso("1970-01-01T00:00:00+00:00")).timestamp(), reverse=True))
     return RuntimeModel(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         repository=project_repository(profile),
-        worksets=worksets,
-        counts=_count_runtime_model(worksets),
-        next_tasks=next_tasks,
-        recent_attempts=recent_attempts,
+        tasks=tasks,
+        attempts=attempts,
+        counts=_counts(tasks, attempts),
+        recent_attempts=recent,
         events=events,
     )
 
 
-def scope_runtime_model(model: RuntimeModel, *, workset_id: str | None = None) -> RuntimeModel:
-    if workset_id is None:
-        return model
-    scoped_worksets = tuple(workset for workset in model.worksets if workset.workset_id == workset_id)
-    if not scoped_worksets:
-        raise ValueError(f"Unknown workset: {workset_id!r}")
-    scoped_recent_attempts = tuple(
-        sorted(
-            (attempt for workset in scoped_worksets for attempt in workset.attempts),
-            key=lambda item: (
-                parse_iso(item.ended_at or item.started_at) or parse_iso("1970-01-01T00:00:00+00:00")
-            ).timestamp(),
-            reverse=True,
-        )
-    )
-    scoped_events = tuple(
-        event
-        for event in model.events
-        if isinstance(event.get("payload"), dict) and event["payload"].get("workset_id") == workset_id
-    )
-    return RuntimeModel(
-        schema_version=model.schema_version,
-        repository=model.repository,
-        worksets=scoped_worksets,
-        counts=_count_runtime_model(scoped_worksets),
-        next_tasks=tuple(task for task in model.next_tasks if task.workset_id == workset_id),
-        recent_attempts=scoped_recent_attempts,
-        events=scoped_events,
-    )
-
-
 def hide_canceled_runtime_model(model: RuntimeModel) -> RuntimeModel:
-    visible_worksets: list[WorksetView] = []
-    for workset in model.worksets:
-        visible_tasks = tuple(task for task in workset.tasks if task.runtime_status != TASK_STATUS_CANCELED)
-        if not visible_tasks:
-            continue
-        visible_task_ids = {task.task_id for task in visible_tasks}
-        visible_attempts = tuple(attempt for attempt in workset.attempts if attempt.task_id in visible_task_ids)
-        visible_claims = tuple(claim for claim in workset.task_claims if claim.task_id in visible_task_ids)
-        visible_worksets.append(
-            replace(
-                workset,
-                task_claims=visible_claims,
-                tasks=visible_tasks,
-                attempts=visible_attempts,
-                counts=_count_workset(visible_tasks, visible_attempts),
-                next_task_ids=tuple(task.task_id for task in visible_tasks if task.is_ready),
-            )
-        )
-    next_tasks = tuple(task for workset in visible_worksets for task in workset.tasks if task.is_ready)
-    recent_attempts = tuple(
-        sorted(
-            (attempt for workset in visible_worksets for attempt in workset.attempts),
-            key=lambda item: (
-                parse_iso(item.ended_at or item.started_at) or parse_iso("1970-01-01T00:00:00+00:00")
-            ).timestamp(),
-            reverse=True,
-        )
-    )
-    visible_tuple = tuple(visible_worksets)
-    return RuntimeModel(
-        schema_version=model.schema_version,
-        repository=model.repository,
-        worksets=visible_tuple,
-        counts=_count_runtime_model(visible_tuple),
-        next_tasks=next_tasks,
-        recent_attempts=recent_attempts,
-        events=model.events,
-    )
+    tasks = tuple(task for task in model.tasks if task.status != TASK_STATUS_CANCELED)
+    task_ids = {task.task_id for task in tasks}
+    attempts = tuple(attempt for attempt in model.attempts if attempt.task_id in task_ids)
+    recent = tuple(attempt for attempt in model.recent_attempts if attempt.task_id in task_ids)
+    return replace(model, tasks=tasks, attempts=attempts, recent_attempts=recent, counts=_counts(tasks, attempts))
 
 
 def load_runtime_model(profile: RepoProfile) -> RuntimeModel:
-    planning_state = load_planning_state(profile.paths)
-    runtime_state = load_runtime_state(profile.paths)
-    events = load_events(profile.paths.events_file)
-    return project_runtime_model(profile, planning_state, runtime_state, events=events)
+    return project_runtime_model(
+        profile,
+        load_runtime_state(profile.paths),
+        events=load_events(profile.paths.events_file),
+    )
 
 
 __all__ = [
     "AttemptView",
     "CodexSessionRefView",
-    "TaskClaimView",
+    "PromptReceiptView",
     "Repository",
     "RuntimeModel",
     "SNAPSHOT_SCHEMA_VERSION",
     "TaskView",
     "ValidationView",
-    "WorksetClaimView",
-    "WorksetView",
     "hide_canceled_runtime_model",
     "load_runtime_model",
     "project_repository",
     "project_runtime_model",
-    "scope_runtime_model",
 ]

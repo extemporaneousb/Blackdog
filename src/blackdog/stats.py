@@ -18,7 +18,7 @@ from blackdog.observability import (
 from blackdog.repo_membership import attempt_cleanup_health_counts
 from blackdog.repo_lifecycle import RepoLifecycleError
 from blackdog.repo_scope import canonicalize_repo_scope, reject_exact_profile_errors, resolve_repo_scope
-from blackdog_core.codex_sessions import (
+from blackdog.codex_sessions import (
     CodexTurn,
     build_codex_coverage,
     codex_project_roots,
@@ -390,13 +390,13 @@ def _repo_runtime_stats(
     local_tz: ZoneInfo,
 ) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
     summary = _empty_summary()
-    tasks = tuple(task for workset in model.worksets for task in workset.tasks)
-    attempts = tuple(attempt for workset in model.worksets for attempt in workset.attempts)
+    tasks = model.tasks
+    attempts = model.attempts
     summary["tasks_total"] = len(tasks)
-    summary["current_tasks"] = sum(1 for task in tasks if task.runtime_status not in {"done", "canceled"})
-    summary["current_done_tasks"] = sum(1 for task in tasks if task.runtime_status == "done")
-    summary["current_blocked_tasks"] = sum(1 for task in tasks if task.runtime_status == "blocked")
-    summary["canceled_tasks"] = sum(1 for task in tasks if task.runtime_status == "canceled")
+    summary["current_tasks"] = sum(1 for task in tasks if task.status not in {"done", "canceled"})
+    summary["current_done_tasks"] = sum(1 for task in tasks if task.status == "done")
+    summary["current_blocked_tasks"] = sum(1 for task in tasks if task.status == "blocked")
+    summary["canceled_tasks"] = sum(1 for task in tasks if task.status == "canceled")
     summary["current_attempts"] = sum(1 for attempt in attempts if attempt.is_active)
     summary["attempts_total"] = len(attempts)
     summary.update(attempt_cleanup_health_counts(attempts))

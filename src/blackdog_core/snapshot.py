@@ -1,4 +1,4 @@
-"""Read models and renderers for the Blackdog runtime."""
+"""Stable JSON and text projections of the flat task read model."""
 
 from __future__ import annotations
 
@@ -7,27 +7,17 @@ from pathlib import Path
 from typing import Any
 
 from .profile import RepoProfile
-from .runtime_model import (
-    AttemptView,
-    PromptReceiptView,
-    RuntimeModel,
-    TaskView,
-    WorksetView,
-    hide_canceled_runtime_model,
-    load_runtime_model,
-    scope_runtime_model,
-)
-from .state import now_iso, parse_iso
+from .runtime_model import AttemptView, RuntimeModel, TaskView, load_runtime_model
 
 
-SNAPSHOT_FORMAT = "blackdog.snapshot/vnext1"
+SNAPSHOT_FORMAT = "blackdog.snapshot/v2"
 
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     if is_dataclass(value):
-        return _jsonable(asdict(value))
+        return {key: _jsonable(item) for key, item in asdict(value).items()}
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -35,48 +25,29 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _task_ref(workset_id: str, task_id: str) -> str:
-    return f"{workset_id}/{task_id}"
-
-
-def _bounded_skill_provenance(setup_receipt: dict[str, Any]) -> dict[str, Any] | None:
-    value = setup_receipt.get("skill_provenance")
-    if not isinstance(value, dict):
+def _bounded_skill_provenance(setup_receipt: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not setup_receipt:
         return None
-    path = value.get("path")
-    sha256 = value.get("sha256")
-    if (
-        value.get("schema_version") != 1
-        or value.get("source") != "repo_managed"
-        or not isinstance(path, str)
-        or not path
-        or path.startswith("/")
-        or "\\" in path
-        or ".." in path.split("/")
-        or not isinstance(sha256, str)
-        or len(sha256) != 64
-        or any(character not in "0123456789abcdef" for character in sha256)
-    ):
+    raw = setup_receipt.get("skill_provenance")
+    if not isinstance(raw, dict):
         return None
     return {
-        "schema_version": 1,
-        "path": path,
-        "sha256": sha256,
-        "source": "repo_managed",
+        key: raw.get(key)
+        for key in ("schema_version", "path", "sha256", "source")
+        if raw.get(key) is not None
     }
 
 
-def _task_payload(task: TaskView, *, include_legacy_worksets: bool = False) -> dict[str, Any]:
-    payload = {
-        "task_ref": _task_ref(task.workset_id, task.task_id),
+def _task_payload(task: TaskView) -> dict[str, Any]:
+    return {
         "task_id": task.task_id,
         "title": task.title,
-        "intent": task.intent,
-        "runtime_status": task.runtime_status,
-        "readiness": task.readiness,
-        "blocked_by": list(task.blocked_by),
-        "claim_actor": task.claim_actor,
-        "claim_execution_model": task.claim_execution_model,
+        "created_at": task.created_at,
+        "status": task.status,
+        "updated_at": task.updated_at,
+        "actor": task.actor,
+        "note": task.note,
+        "attempt_count": task.attempt_count,
         "latest_attempt_id": task.latest_attempt_id,
         "latest_attempt_status": task.latest_attempt_status,
         "latest_attempt_summary": task.latest_attempt_summary,
@@ -86,21 +57,12 @@ def _task_payload(task: TaskView, *, include_legacy_worksets: bool = False) -> d
         "prompt_issue": task.prompt_issue,
         "operator_issue": task.operator_issue,
     }
-    if include_legacy_worksets:
-        payload["workset_id"] = task.workset_id
-    return payload
 
 
-def _attempt_payload(
-    workset_id: str,
-    attempt: AttemptView,
-    *,
-    include_legacy_worksets: bool = False,
-) -> dict[str, Any]:
-    setup_receipt = attempt.setup_receipt or {}
-    skill_provenance = _bounded_skill_provenance(setup_receipt)
+def _attempt_payload(attempt: AttemptView) -> dict[str, Any]:
+    execution_receipt = attempt.prompt_receipt
+    user_receipt = attempt.user_prompt_receipt
     payload = {
-        "task_ref": _task_ref(workset_id, attempt.task_id),
         "task_id": attempt.task_id,
         "attempt_id": attempt.attempt_id,
         "status": attempt.status,
@@ -108,171 +70,75 @@ def _attempt_payload(
         "started_at": attempt.started_at,
         "ended_at": attempt.ended_at,
         "elapsed_seconds": attempt.elapsed_seconds,
+        "summary": attempt.summary,
+        "workspace_identity": attempt.workspace_identity,
+        "workspace_mode": attempt.workspace_mode,
+        "worktree_role": attempt.worktree_role,
+        "worktree_path": attempt.worktree_path,
+        "branch": attempt.branch,
+        "target_branch": attempt.target_branch,
+        "integration_branch": attempt.integration_branch,
+        "start_commit": attempt.start_commit,
         "execution_model": attempt.execution_model,
         "model": attempt.model,
         "reasoning_effort": attempt.reasoning_effort,
-        "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session else None,
-        "codex_session_path": attempt.codex_session.session_path if attempt.codex_session else None,
-        "codex_turn_id": attempt.codex_session.turn_id if attempt.codex_session else None,
-        "codex_turn_started_at": attempt.codex_session.turn_started_at if attempt.codex_session else None,
-        "codex_capture_status": attempt.codex_session.capture_status if attempt.codex_session else None,
-        "codex_capture_method": attempt.codex_session.capture_method if attempt.codex_session else None,
-        "codex_capture_missing_reason": (
-            attempt.codex_session.capture_missing_reason if attempt.codex_session else None
+        "codex_session": _jsonable(attempt.codex_session),
+        "execution_prompt_hash": execution_receipt.prompt_hash if execution_receipt else None,
+        "execution_prompt_source": execution_receipt.source if execution_receipt else None,
+        "execution_prompt_mode": execution_receipt.mode if execution_receipt else None,
+        "execution_prompt_replay_artifact_path": (
+            execution_receipt.replay_artifact_path if execution_receipt else None
         ),
-        "worktree_role": attempt.worktree_role,
-        "branch": attempt.branch,
-        "target_branch": attempt.target_branch,
-        "start_commit": attempt.start_commit,
+        "user_prompt_hash": user_receipt.prompt_hash if user_receipt else None,
+        "user_prompt_source": user_receipt.source if user_receipt else None,
+        "user_prompt_mode": user_receipt.mode if user_receipt else None,
+        "user_prompt_replay_artifact_path": user_receipt.replay_artifact_path if user_receipt else None,
+        "changed_paths": list(attempt.changed_paths),
+        "validations": [_jsonable(item) for item in attempt.validations],
+        "residuals": list(attempt.residuals),
+        "followup_candidates": list(attempt.followup_candidates),
+        "note": attempt.note,
         "commit": attempt.commit,
         "landed_commit": attempt.landed_commit,
-        "changed_paths_count": len(attempt.changed_paths),
-        "validation_summary": _validation_summary(attempt),
-        "summary": attempt.summary,
         "failure_class": attempt.failure_class,
         "recovery_action": attempt.recovery_action,
         "prompt_issue": attempt.prompt_issue,
         "operator_issue": attempt.operator_issue,
-        "setup_status": setup_receipt.get("status"),
-        "guard_receipts_count": len(setup_receipt.get("guard_receipts") or ()),
-        "setup_blockers_count": len(setup_receipt.get("blockers") or ()),
-        "skill_path": skill_provenance["path"] if skill_provenance is not None else None,
-        "skill_hash": skill_provenance["sha256"] if skill_provenance is not None else None,
-        "skill_source": skill_provenance["source"] if skill_provenance is not None else None,
-        "setup_receipt": attempt.setup_receipt,
-        **_prompt_lineage_payload(attempt),
+        "setup_receipt": _jsonable(attempt.setup_receipt),
+        "skill_provenance": _bounded_skill_provenance(attempt.setup_receipt),
     }
-    if include_legacy_worksets:
-        payload["workset_id"] = workset_id
     return payload
 
 
-def runtime_model_snapshot(model: RuntimeModel, *, include_legacy_worksets: bool = False) -> dict[str, Any]:
-    payload = _jsonable(model)
-    if not isinstance(payload, dict):
-        raise TypeError("runtime model payload must serialize to a dict")
-    payload["tasks"] = [
-        _task_payload(task, include_legacy_worksets=include_legacy_worksets)
-        for workset in model.worksets
-        for task in workset.tasks
-    ]
-    payload["attempts"] = [
-        _attempt_payload(workset.workset_id, attempt, include_legacy_worksets=include_legacy_worksets)
-        for workset in model.worksets
-        for attempt in workset.attempts
-    ]
-    if not include_legacy_worksets:
-        payload.pop("worksets", None)
-    return payload
-
-
-def _scoped_model(profile: RepoProfile, *, workset_id: str | None = None) -> RuntimeModel:
-    return scope_runtime_model(load_runtime_model(profile), workset_id=workset_id)
-
-
-def build_runtime_snapshot(
-    profile: RepoProfile,
-    *,
-    workset_id: str | None = None,
-    include_legacy_worksets: bool = False,
-) -> dict[str, Any]:
-    model = _scoped_model(profile, workset_id=workset_id)
+def runtime_model_snapshot(model: RuntimeModel) -> dict[str, Any]:
     return {
-        "schema_version": model.schema_version,
         "format": SNAPSHOT_FORMAT,
-        "generated_at": now_iso(),
-        "include_legacy_worksets": include_legacy_worksets,
-        "runtime_model": runtime_model_snapshot(model, include_legacy_worksets=include_legacy_worksets),
-    }
-
-
-def build_runtime_summary(
-    profile: RepoProfile,
-    *,
-    workset_id: str | None = None,
-    include_canceled: bool = False,
-    include_legacy_worksets: bool = False,
-) -> dict[str, Any]:
-    model = _scoped_model(profile, workset_id=workset_id)
-    if not include_canceled:
-        model = hide_canceled_runtime_model(model)
-    payload: dict[str, Any] = {
-        "project_name": model.repository.project_name,
-        "workset_scope": workset_id,
-        "include_legacy_worksets": include_legacy_worksets,
+        "schema_version": model.schema_version,
+        "repository": _jsonable(model.repository),
         "counts": dict(model.counts),
-        "tasks": [
-            _task_payload(task, include_legacy_worksets=include_legacy_worksets)
-            for workset in model.worksets
-            for task in workset.tasks
-        ],
-        "ready_tasks": [
-            _task_payload(task, include_legacy_worksets=include_legacy_worksets)
-            for task in model.next_tasks
-        ],
-        "active_tasks": [
-            _task_payload(task, include_legacy_worksets=include_legacy_worksets)
-            for workset in model.worksets
-            for task in workset.tasks
-            if task.active_attempt_id is not None or task.runtime_status == "in_progress" or task.claim_actor is not None
-        ],
-        "blocked_tasks": [
-            _task_payload(task, include_legacy_worksets=include_legacy_worksets)
-            for workset in model.worksets
-            for task in workset.tasks
-            if task.readiness == "blocked"
-        ],
-        "recent_attempts": [],
+        "tasks": [_task_payload(task) for task in model.tasks],
+        "attempts": [_attempt_payload(attempt) for attempt in model.attempts],
+        "recent_attempts": [_attempt_payload(attempt) for attempt in model.recent_attempts],
+        "events": [_jsonable(event) for event in model.events],
     }
-    attempt_workset_index = {
-        attempt.attempt_id: workset.workset_id
-        for workset in model.worksets
-        for attempt in workset.attempts
+
+
+def build_runtime_snapshot(profile: RepoProfile) -> dict[str, Any]:
+    return runtime_model_snapshot(load_runtime_model(profile))
+
+
+def build_runtime_summary(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    return {
+        "format": SNAPSHOT_FORMAT,
+        "repository": model.repository.project_name,
+        "counts": dict(model.counts),
+        "tasks": [_task_payload(task) for task in model.tasks],
+        "recent_attempts": [_attempt_payload(attempt) for attempt in model.recent_attempts[:10]],
     }
-    payload["recent_attempts"] = [
-        _attempt_payload(attempt_workset_index[attempt.attempt_id], attempt, include_legacy_worksets=include_legacy_worksets)
-        for attempt in model.recent_attempts[:5]
-        if attempt.attempt_id in attempt_workset_index
-    ]
-    if include_legacy_worksets:
-        payload["worksets"] = [
-            {
-                "id": workset.workset_id,
-                "title": workset.title,
-                "counts": dict(workset.counts),
-                "claim": _jsonable(workset.claim),
-                "target_branch": workset.branch_intent.get("target_branch"),
-                "integration_branch": workset.branch_intent.get("integration_branch"),
-                "workspace": dict(workset.workspace),
-                "next_task_ids": list(workset.next_task_ids),
-                "recent_attempts": [
-                    {
-                        "attempt_id": attempt.attempt_id,
-                        "task_id": attempt.task_id,
-                        "status": attempt.status,
-                        "actor": attempt.actor,
-                        "worktree_role": attempt.worktree_role,
-                        "branch": attempt.branch,
-                        "start_commit": attempt.start_commit,
-                        "execution_model": attempt.execution_model,
-                        "summary": attempt.summary,
-                        "elapsed_seconds": attempt.elapsed_seconds,
-                        "failure_class": attempt.failure_class,
-                        "recovery_action": attempt.recovery_action,
-                        "prompt_issue": attempt.prompt_issue,
-                        "operator_issue": attempt.operator_issue,
-                        **_prompt_lineage_payload(attempt),
-                    }
-                    for attempt in workset.attempts[:3]
-                ],
-            }
-            for workset in model.worksets
-        ]
-    return payload
 
 
 ATTEMPTS_TABLE_COLUMNS = (
-    "task_ref",
     "task_id",
     "attempt_id",
     "status",
@@ -284,24 +150,6 @@ ATTEMPTS_TABLE_COLUMNS = (
     "model",
     "reasoning_effort",
     "codex_thread_id",
-    "codex_session_path",
-    "codex_turn_id",
-    "codex_turn_started_at",
-    "codex_capture_status",
-    "codex_capture_method",
-    "codex_capture_missing_reason",
-    "execution_prompt_source",
-    "user_prompt_source",
-    "prompt_source",
-    "execution_prompt_replay_artifact_path",
-    "user_prompt_replay_artifact_path",
-    "prompt_replay_artifact_path",
-    "execution_prompt_mode",
-    "user_prompt_mode",
-    "prompt_mode",
-    "skill_path",
-    "skill_hash",
-    "skill_source",
     "branch",
     "target_branch",
     "start_commit",
@@ -309,464 +157,126 @@ ATTEMPTS_TABLE_COLUMNS = (
     "landed_commit",
     "execution_prompt_hash",
     "user_prompt_hash",
-    "prompt_hash",
     "changed_paths_count",
     "validation_summary",
     "failure_class",
     "recovery_action",
     "prompt_issue",
     "operator_issue",
-    "setup_status",
-    "guard_receipts_count",
-    "setup_blockers_count",
     "summary",
 )
-LEGACY_ATTEMPTS_TABLE_COLUMNS = ("workset_id",)
-
-
-def _prompt_lineage_payload(attempt: AttemptView) -> dict[str, Any]:
-    execution_prompt = attempt.prompt_receipt
-    user_prompt = attempt.user_prompt_receipt or execution_prompt
-    shared_prompt = execution_prompt if _same_prompt_lineage(execution_prompt, user_prompt) else None
-    return {
-        "execution_prompt_source": execution_prompt.source if execution_prompt else None,
-        "execution_prompt_hash": execution_prompt.prompt_hash if execution_prompt else None,
-        "execution_prompt_mode": execution_prompt.mode if execution_prompt else None,
-        "execution_prompt_replay_artifact_path": (
-            execution_prompt.replay_artifact_path if execution_prompt else None
-        ),
-        "user_prompt_source": user_prompt.source if user_prompt else None,
-        "user_prompt_hash": user_prompt.prompt_hash if user_prompt else None,
-        "user_prompt_mode": user_prompt.mode if user_prompt else None,
-        "user_prompt_replay_artifact_path": (
-            user_prompt.replay_artifact_path if user_prompt else None
-        ),
-        "prompt_source": shared_prompt.source if shared_prompt else None,
-        "prompt_hash": shared_prompt.prompt_hash if shared_prompt else None,
-        "prompt_mode": shared_prompt.mode if shared_prompt else None,
-        "prompt_replay_artifact_path": (
-            shared_prompt.replay_artifact_path if shared_prompt else None
-        ),
-    }
-
-
-def _prompt_receipt_label(source: str | None, prompt_hash: str | None, mode: str | None) -> str | None:
-    if prompt_hash is None:
-        return None
-    label = prompt_hash[:10]
-    if source:
-        label = f"{source}:{label}"
-    if mode:
-        label = f"{label}/{mode}"
-    return label
-
-
-def _same_prompt_lineage(left: PromptReceiptView | None, right: PromptReceiptView | None) -> bool:
-    if left is None or right is None:
-        return left is right
-    return (
-        left.prompt_hash == right.prompt_hash
-        and left.source == right.source
-        and left.mode == right.mode
-    )
-
-
-def _attempt_prompt_lineage_text(attempt: AttemptView) -> str:
-    payload = _prompt_lineage_payload(attempt)
-    execution_label = _prompt_receipt_label(
-        payload["execution_prompt_source"],
-        payload["execution_prompt_hash"],
-        payload["execution_prompt_mode"],
-    )
-    user_label = _prompt_receipt_label(
-        payload["user_prompt_source"],
-        payload["user_prompt_hash"],
-        payload["user_prompt_mode"],
-    )
-    if execution_label is None:
-        return ""
-    if user_label is None or user_label == execution_label:
-        return f" prompt={execution_label}"
-    return f" user_prompt={user_label} execution_prompt={execution_label}"
-
-
-def _completed_attempt_items(model: RuntimeModel) -> list[tuple[WorksetView, AttemptView]]:
-    rows = [
-        (workset, attempt)
-        for workset in model.worksets
-        for attempt in workset.attempts
-        if not attempt.is_active
-    ]
-    rows.sort(
-        key=lambda item: (
-            parse_iso(item[1].ended_at or item[1].started_at)
-            or parse_iso("1970-01-01T00:00:00+00:00")
-        ).timestamp(),
-        reverse=True,
-    )
-    return rows
 
 
 def _validation_summary(attempt: AttemptView) -> str:
-    if not attempt.validations:
-        return "none"
-    passed = sum(1 for item in attempt.validations if item.status == "passed")
-    failed = sum(1 for item in attempt.validations if item.status == "failed")
-    skipped = sum(1 for item in attempt.validations if item.status == "skipped")
-    return f"passed={passed} failed={failed} skipped={skipped}"
+    return ",".join(f"{item.name}={item.status}" for item in attempt.validations)
 
 
-def build_attempts_table(
-    profile: RepoProfile,
-    *,
-    workset_id: str | None = None,
-    include_legacy_worksets: bool = False,
-) -> dict[str, Any]:
-    model = _scoped_model(profile, workset_id=workset_id)
-    rows = []
-    for workset, attempt in _completed_attempt_items(model):
-        rows.append(_attempt_payload(workset.workset_id, attempt, include_legacy_worksets=include_legacy_worksets))
-    columns = (
-        (*LEGACY_ATTEMPTS_TABLE_COLUMNS, *ATTEMPTS_TABLE_COLUMNS)
-        if include_legacy_worksets
-        else ATTEMPTS_TABLE_COLUMNS
-    )
+def _attempt_table_row(attempt: AttemptView) -> dict[str, Any]:
+    execution_receipt = attempt.prompt_receipt
+    user_receipt = attempt.user_prompt_receipt
     return {
-        "project_name": model.repository.project_name,
-        "workset_scope": workset_id,
-        "include_legacy_worksets": include_legacy_worksets,
-        "columns": list(columns),
-        "rows": [{column: row.get(column) for column in columns} for row in rows],
+        "task_id": attempt.task_id,
+        "attempt_id": attempt.attempt_id,
+        "status": attempt.status,
+        "actor": attempt.actor,
+        "started_at": attempt.started_at,
+        "ended_at": attempt.ended_at,
+        "elapsed_seconds": attempt.elapsed_seconds,
+        "execution_model": attempt.execution_model,
+        "model": attempt.model,
+        "reasoning_effort": attempt.reasoning_effort,
+        "codex_thread_id": attempt.codex_session.thread_id if attempt.codex_session else None,
+        "branch": attempt.branch,
+        "target_branch": attempt.target_branch,
+        "start_commit": attempt.start_commit,
+        "commit": attempt.commit,
+        "landed_commit": attempt.landed_commit,
+        "execution_prompt_hash": execution_receipt.prompt_hash if execution_receipt else None,
+        "user_prompt_hash": user_receipt.prompt_hash if user_receipt else None,
+        "changed_paths_count": len(attempt.changed_paths),
+        "validation_summary": _validation_summary(attempt),
+        "failure_class": attempt.failure_class,
+        "recovery_action": attempt.recovery_action,
+        "prompt_issue": attempt.prompt_issue,
+        "operator_issue": attempt.operator_issue,
+        "summary": attempt.summary,
     }
 
 
-def build_attempts_summary(
-    profile: RepoProfile,
-    *,
-    workset_id: str | None = None,
-    include_legacy_worksets: bool = False,
-) -> dict[str, Any]:
-    model = _scoped_model(profile, workset_id=workset_id)
-    completed = _completed_attempt_items(model)
-    validation_totals = {"passed": 0, "failed": 0, "skipped": 0}
-    by_task = []
-    by_workset = []
-    landed_total = 0
-    not_landed_total = 0
-    attempts_by_task: dict[tuple[str, str], list[AttemptView]] = {}
-    for _, attempt in completed:
-        if attempt.landed_commit:
-            landed_total += 1
-        else:
-            not_landed_total += 1
-        for validation in attempt.validations:
-            validation_totals[validation.status] = validation_totals.get(validation.status, 0) + 1
-    for workset, attempt in completed:
-        attempts_by_task.setdefault((workset.workset_id, attempt.task_id), []).append(attempt)
-    for workset in model.worksets:
-        workset_completed = [attempt for item_workset, attempt in completed if item_workset.workset_id == workset.workset_id]
-        if include_legacy_worksets:
-            landed = sum(1 for attempt in workset_completed if attempt.landed_commit)
-            not_landed = len(workset_completed) - landed
-            by_workset.append(
-                {
-                    "workset_id": workset.workset_id,
-                    "title": workset.title,
-                    "completed_attempts": len(workset_completed),
-                    "landed": landed,
-                    "not_landed": not_landed,
-                }
-            )
-        for task in workset.tasks:
-            task_attempts = attempts_by_task.get((workset.workset_id, task.task_id), [])
-            if not task_attempts:
-                continue
-            landed = sum(1 for attempt in task_attempts if attempt.landed_commit)
-            by_task.append(
-                {
-                    "task_ref": _task_ref(workset.workset_id, task.task_id),
-                    "task_id": task.task_id,
-                    "title": task.title,
-                    "completed_attempts": len(task_attempts),
-                    "landed": landed,
-                    "not_landed": len(task_attempts) - landed,
-                    **({"workset_id": workset.workset_id} if include_legacy_worksets else {}),
-                }
-            )
-    payload: dict[str, Any] = {
-        "project_name": model.repository.project_name,
-        "workset_scope": workset_id,
-        "include_legacy_worksets": include_legacy_worksets,
-        "counts": {
-            "completed_attempts": len(completed),
-            "landed": landed_total,
-            "not_landed": not_landed_total,
-            "validation_passed": validation_totals["passed"],
-            "validation_failed": validation_totals["failed"],
-            "validation_skipped": validation_totals["skipped"],
-        },
-        "tasks": by_task,
-        "recent_completed_attempts": [
-            _attempt_payload(workset.workset_id, attempt, include_legacy_worksets=include_legacy_worksets)
-            for workset, attempt in completed[:10]
-        ],
-    }
-    if include_legacy_worksets:
-        payload["worksets"] = by_workset
-    return payload
+def build_attempts_table(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    rows = [_attempt_table_row(attempt) for attempt in model.recent_attempts]
+    return {"columns": list(ATTEMPTS_TABLE_COLUMNS), "rows": rows, "counts": dict(model.counts)}
 
 
-def build_next_payload(model: RuntimeModel, *, workset_id: str) -> dict[str, Any]:
-    scoped = scope_runtime_model(model, workset_id=workset_id)
-    workset = scoped.worksets[0]
-    active_tasks = [
-        task
-        for task in workset.tasks
-        if task.active_attempt_id is not None or task.runtime_status == "in_progress" or task.claim_actor is not None
-    ]
-    ready_tasks = [task for task in workset.tasks if task.is_ready]
-    blocked_tasks = [task for task in workset.tasks if task.readiness == "blocked"]
-    if active_tasks:
-        selection_mode = "continue"
-        selected_task = active_tasks[0]
-    elif ready_tasks:
-        selection_mode = "start"
-        selected_task = ready_tasks[0]
-    elif blocked_tasks:
-        selection_mode = "blocked"
-        selected_task = None
-    else:
-        selection_mode = "none"
-        selected_task = None
+def build_attempts_summary(profile: RepoProfile) -> dict[str, Any]:
+    model = load_runtime_model(profile)
+    completed = [attempt for attempt in model.recent_attempts if not attempt.is_active]
+    status_counts: dict[str, int] = {}
+    elapsed = 0
+    elapsed_count = 0
+    for attempt in completed:
+        status_counts[attempt.status] = status_counts.get(attempt.status, 0) + 1
+        if attempt.elapsed_seconds is not None:
+            elapsed += attempt.elapsed_seconds
+            elapsed_count += 1
     return {
-        "project_name": scoped.repository.project_name,
-        "workset_id": workset.workset_id,
-        "workset_title": workset.title,
-        "selection_mode": selection_mode,
-        "counts": dict(workset.counts),
-        "selected_task": _task_payload(selected_task) if selected_task is not None else None,
-        "ready_tasks": [_task_payload(task) for task in ready_tasks],
-        "blocked_tasks": [_task_payload(task) for task in blocked_tasks],
-        "active_tasks": [_task_payload(task) for task in active_tasks],
+        "counts": dict(model.counts),
+        "completed_attempts": len(completed),
+        "status_counts": status_counts,
+        "mean_elapsed_seconds": elapsed / elapsed_count if elapsed_count else None,
+        "recent_attempts": [_attempt_payload(attempt) for attempt in completed[:10]],
     }
-
-
-def _task_label(task: TaskView) -> str:
-    if task.readiness == "blocked" and task.blocked_by:
-        return f"{task.task_id} {task.title} ({', '.join(task.blocked_by)})"
-    return f"{task.task_id} {task.title}"
 
 
 def render_summary_text(model: RuntimeModel) -> str:
-    canceled_suffix = f" | Canceled: {model.counts.get('canceled', 0)}" if model.counts.get("canceled", 0) else ""
-    all_tasks = [task for workset in model.worksets for task in workset.tasks]
-    active_tasks = [
-        task
-        for task in all_tasks
-        if task.active_attempt_id is not None or task.runtime_status == "in_progress" or task.claim_actor is not None
-    ]
-    blocked_tasks = [task for task in all_tasks if task.readiness == "blocked"]
+    counts = model.counts
     lines = [
-        f"Project: {model.repository.project_name}",
-        f"Tasks: {model.counts['tasks']}",
-        f"Ready: {model.counts['ready']} | In progress: {model.counts['in_progress']} | Blocked: {model.counts['blocked']} | Done: {model.counts['done']}{canceled_suffix}",
-        f"Claimed tasks: {model.counts['claimed_tasks']}",
-        f"Attempts: {model.counts['attempts']} | Active attempts: {model.counts['active_attempts']}",
+        f"Blackdog: {model.repository.project_name}",
+        (
+            f"Tasks: total={counts.get('tasks', 0)} planned={counts.get('planned', 0)} "
+            f"in_progress={counts.get('in_progress', 0)} blocked={counts.get('blocked', 0)} "
+            f"done={counts.get('done', 0)} canceled={counts.get('canceled', 0)}"
+        ),
+        f"Attempts: total={counts.get('attempts', 0)} active={counts.get('active_attempts', 0)}",
     ]
-    if not all_tasks:
-        lines.append("")
-        lines.append("No tasks have been defined.")
-        return "\n".join(lines)
-    if active_tasks:
-        lines.append("")
-        lines.append("Active tasks:")
-        for task in active_tasks:
-            detail = ""
-            if task.latest_attempt_status:
-                detail = f" latest_attempt={task.latest_attempt_status}"
-            if task.claim_actor:
-                detail = f"{detail} claim={task.claim_actor}/{task.claim_execution_model}"
-            lines.append(f"  - [{task.readiness.upper()}] {_task_ref(task.workset_id, task.task_id)} {task.title}{detail}")
-    if model.next_tasks:
-        lines.append("")
-        lines.append("Ready tasks:")
-        for task in model.next_tasks:
-            lines.append(f"  - {_task_ref(task.workset_id, task.task_id)} {task.title}")
-    if blocked_tasks:
-        lines.append("")
-        lines.append("Blocked tasks:")
-        for task in blocked_tasks:
-            blockers = f" ({', '.join(task.blocked_by)})" if task.blocked_by else ""
-            failure = f" failure_class={task.failure_class}" if task.failure_class else ""
-            lines.append(f"  - {_task_ref(task.workset_id, task.task_id)} {task.title}{blockers}{failure}")
-    if model.recent_attempts:
-        attempt_workset_index = {
-            attempt.attempt_id: workset.workset_id
-            for workset in model.worksets
-            for attempt in workset.attempts
-        }
-        lines.append("")
-        lines.append("Recent attempts:")
-        for attempt in model.recent_attempts[:5]:
-            workset_id = attempt_workset_index.get(attempt.attempt_id, "")
-            detail = attempt.summary or attempt.note or ""
-            elapsed = f" elapsed={attempt.elapsed_seconds}s" if attempt.elapsed_seconds is not None else ""
-            branch = f" branch={attempt.branch}" if attempt.branch else ""
-            worktree = f" worktree={attempt.worktree_role}" if attempt.worktree_role else ""
-            execution_model = f" exec={attempt.execution_model}" if attempt.execution_model else ""
-            failure = f" failure_class={attempt.failure_class}" if attempt.failure_class else ""
-            prompt_hash = _attempt_prompt_lineage_text(attempt)
-            lines.append(
-                (
-                    f"  - {attempt.attempt_id} task={_task_ref(workset_id, attempt.task_id)} status={attempt.status} "
-                    f"actor={attempt.actor}{branch}{worktree}{execution_model}{prompt_hash}{elapsed}{failure} {detail}"
-                ).rstrip()
-            )
-    return "\n".join(lines)
-
-
-def render_next_text(payload: dict[str, Any]) -> str:
-    lines = [f"Workset: {payload['workset_id']} {payload['workset_title']}"]
-    selected = payload["selected_task"]
-    if selected is None:
-        lines.append("Selected: none")
-    else:
-        lines.append(
-            f"Selected ({payload['selection_mode']}): {selected['task_id']} {selected['title']}"
-        )
-        lines.append(f"Intent: {selected['intent']}")
-        if selected["claim_actor"]:
-            lines.append(
-                f"Claim: {selected['claim_actor']}/{selected['claim_execution_model'] or 'unknown'}"
-            )
-        if selected["latest_attempt_status"]:
-            lines.append(
-                f"Latest attempt: {selected['latest_attempt_status']} {selected['latest_attempt_id'] or ''}".rstrip()
-            )
-    if payload["blocked_tasks"]:
-        lines.append("")
-        lines.append("Blocked tasks:")
-        for task in payload["blocked_tasks"]:
-            blockers = ", ".join(task["blocked_by"]) if task["blocked_by"] else "unspecified"
-            lines.append(f"  - {task['task_id']} {task['title']} ({blockers})")
-    elif selected is None:
-        lines.append("")
-        lines.append("No blocked tasks are recorded.")
+    if model.tasks:
+        lines.append("Tasks:")
+        for task in model.tasks:
+            lines.append(f"  - [{task.status.upper()}] {task.task_id} {task.title}")
     return "\n".join(lines)
 
 
 def render_attempts_summary_text(payload: dict[str, Any]) -> str:
-    counts = payload["counts"]
-    scope = payload.get("workset_scope")
-    header = f"Project: {payload['project_name']}"
-    if scope:
-        header = f"{header} | Workset: {scope}"
-    lines = [
-        header,
-        (
-            "Completed attempts: "
-            f"{counts['completed_attempts']} | Landed: {counts['landed']} | Not landed: {counts['not_landed']}"
-        ),
-        (
-            "Validations: "
-            f"passed={counts['validation_passed']} failed={counts['validation_failed']} skipped={counts['validation_skipped']}"
-        ),
-    ]
-    if payload["tasks"]:
-        lines.append("")
-        lines.append("By task:")
-        for task in payload["tasks"]:
-            lines.append(
-                (
-                    f"  - {task['task_ref']}: completed={task['completed_attempts']} "
-                    f"landed={task['landed']} not_landed={task['not_landed']}"
-                )
-            )
-    if payload.get("worksets"):
-        lines.append("")
-        lines.append("Legacy worksets:")
-        for workset in payload["worksets"]:
-            lines.append(
-                (
-                    f"  - {workset['workset_id']}: completed={workset['completed_attempts']} "
-                    f"landed={workset['landed']} not_landed={workset['not_landed']}"
-                )
-            )
-    if payload["recent_completed_attempts"]:
-        lines.append("")
-        lines.append("Recent completed attempts:")
-        for attempt in payload["recent_completed_attempts"]:
-            landed = f" landed={attempt['landed_commit']}" if attempt["landed_commit"] else ""
-            commit = f" commit={attempt['commit']}" if attempt["commit"] else ""
-            model = (
-                f" model={attempt['model']}/{attempt['reasoning_effort']}"
-                if attempt["model"] or attempt["reasoning_effort"]
-                else ""
-            )
-            shared_label = _prompt_receipt_label(
-                attempt["prompt_source"],
-                attempt["prompt_hash"],
-                attempt["prompt_mode"],
-            )
-            execution_label = _prompt_receipt_label(
-                attempt["execution_prompt_source"],
-                attempt["execution_prompt_hash"],
-                attempt["execution_prompt_mode"],
-            )
-            user_label = _prompt_receipt_label(
-                attempt["user_prompt_source"],
-                attempt["user_prompt_hash"],
-                attempt["user_prompt_mode"],
-            )
-            if shared_label:
-                prompt = f" prompt={shared_label}"
-            elif execution_label and user_label:
-                prompt = f" user_prompt={user_label} execution_prompt={execution_label}"
-            elif execution_label:
-                prompt = f" execution_prompt={execution_label}"
-            elif user_label:
-                prompt = f" user_prompt={user_label}"
-            else:
-                prompt = ""
-            summary = f" {attempt['summary']}" if attempt["summary"] else ""
-            failure = f" failure_class={attempt['failure_class']}" if attempt["failure_class"] else ""
-            lines.append(
-                (
-                    f"  - {attempt['attempt_id']} task={attempt['task_ref']} "
-                    f"status={attempt['status']} actor={attempt['actor']} validation={attempt['validation_summary']}{model}{prompt}{commit}{landed}{failure}{summary}"
-                ).rstrip()
-            )
-    elif counts["completed_attempts"] == 0:
-        lines.append("")
-        lines.append("No completed attempts.")
-    return "\n".join(lines)
+    counts = payload.get("status_counts") or {}
+    statuses = " ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+    mean = payload.get("mean_elapsed_seconds")
+    return (
+        f"Completed attempts: {payload.get('completed_attempts', 0)}"
+        + (f" | {statuses}" if statuses else "")
+        + (f" | mean_elapsed={mean:.1f}s" if isinstance(mean, (int, float)) else "")
+    )
 
 
 def render_attempts_table_text(payload: dict[str, Any]) -> str:
-    rows = payload["rows"]
-    columns = payload["columns"]
-    if not rows:
-        return "\t".join(columns) + "\n"
+    columns = tuple(payload.get("columns") or ATTEMPTS_TABLE_COLUMNS)
+    rows = payload.get("rows") or []
     lines = ["\t".join(columns)]
     for row in rows:
-        lines.append(
-            "\t".join("" if row.get(column) is None else str(row.get(column)) for column in columns)
-        )
-    return "\n".join(lines) + "\n"
+        lines.append("\t".join("" if row.get(column) is None else str(row.get(column)) for column in columns))
+    return "\n".join(lines)
 
 
 __all__ = [
     "SNAPSHOT_FORMAT",
-    "RuntimeModel",
+    "ATTEMPTS_TABLE_COLUMNS",
     "build_runtime_snapshot",
     "build_runtime_summary",
     "build_attempts_summary",
     "build_attempts_table",
-    "build_next_payload",
     "load_runtime_model",
     "render_attempts_summary_text",
     "render_attempts_table_text",
-    "render_next_text",
     "render_summary_text",
     "runtime_model_snapshot",
 ]

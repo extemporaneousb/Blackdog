@@ -1,47 +1,35 @@
-"""Machine-native runtime state and append-only event helpers."""
+"""Canonical task, attempt, and event storage."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Protocol
+from threading import RLock, get_ident
+from typing import Any, Iterator, Mapping, Protocol
 import hashlib
 import json
 import math
 import os
+import re
+import shutil
+import stat
 import tempfile
-import threading
 import time
 import uuid
-
-try:  # pragma: no cover - exercised through the locking behavior on platforms with fcntl.
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None  # type: ignore[assignment]
 
 from .profile import BlackdogPaths
 
 
-RUNTIME_SCHEMA_VERSION = 3
-RUNTIME_STORE_VERSION = "blackdog.runtime/vnext3"
-_READABLE_RUNTIME_FORMATS = frozenset(
-    {
-        (2, "blackdog.runtime/vnext2"),
-        (RUNTIME_SCHEMA_VERSION, RUNTIME_STORE_VERSION),
-    }
-)
-_UNSET = object()
-_FILE_LOCK_STATE = threading.local()
-
+RUNTIME_SCHEMA_VERSION = 4
+RUNTIME_STORE_VERSION = "blackdog.runtime/v4"
 EXECUTION_MODEL_DIRECT_WTAM = "direct_wtam"
 EXECUTION_MODELS = frozenset({EXECUTION_MODEL_DIRECT_WTAM})
-# Older runtime.json files may still carry the removed managed-claim token.
-# Keep it readable at the storage boundary, but do not expose it as part of
-# the writable runtime contract.
-_LEGACY_MANAGED_EXECUTION_MODEL = "workset_manager"
-_READABLE_EXECUTION_MODELS = frozenset({*EXECUTION_MODELS, _LEGACY_MANAGED_EXECUTION_MODEL})
+WORKSPACE_MODE_GIT_WORKTREE = "git-worktree"
+WORKSPACE_MODES = frozenset({WORKSPACE_MODE_GIT_WORKTREE})
+WORKTREE_ROLE_TASK = "task"
+WORKTREE_ROLES = frozenset({WORKTREE_ROLE_TASK})
 
 TASK_STATUS_PLANNED = "planned"
 TASK_STATUS_IN_PROGRESS = "in_progress"
@@ -49,13 +37,7 @@ TASK_STATUS_BLOCKED = "blocked"
 TASK_STATUS_DONE = "done"
 TASK_STATUS_CANCELED = "canceled"
 TASK_STATUSES = frozenset(
-    {
-        TASK_STATUS_PLANNED,
-        TASK_STATUS_IN_PROGRESS,
-        TASK_STATUS_BLOCKED,
-        TASK_STATUS_DONE,
-        TASK_STATUS_CANCELED,
-    }
+    {TASK_STATUS_PLANNED, TASK_STATUS_IN_PROGRESS, TASK_STATUS_BLOCKED, TASK_STATUS_DONE, TASK_STATUS_CANCELED}
 )
 
 ATTEMPT_STATUS_IN_PROGRESS = "in_progress"
@@ -78,32 +60,20 @@ VALIDATION_STATUS_PASSED = "passed"
 VALIDATION_STATUS_FAILED = "failed"
 VALIDATION_STATUS_SKIPPED = "skipped"
 VALIDATION_STATUSES = frozenset(
-    {
-        VALIDATION_STATUS_PASSED,
-        VALIDATION_STATUS_FAILED,
-        VALIDATION_STATUS_SKIPPED,
-    }
+    {VALIDATION_STATUS_PASSED, VALIDATION_STATUS_FAILED, VALIDATION_STATUS_SKIPPED}
 )
+
 PROMPT_MODE_RAW = "raw"
-PROMPT_MODE_TUNED = "tuned"
 PROMPT_MODE_SKILL = "skill"
-PROMPT_MODES = frozenset({PROMPT_MODE_RAW, PROMPT_MODE_TUNED, PROMPT_MODE_SKILL})
+PROMPT_MODES = frozenset({PROMPT_MODE_RAW, PROMPT_MODE_SKILL})
 
 CODEX_CAPTURE_STATUS_CAPTURED = "captured"
 CODEX_CAPTURE_STATUS_MISSING = "missing"
-CODEX_CAPTURE_STATUSES = frozenset(
-    {
-        CODEX_CAPTURE_STATUS_CAPTURED,
-        CODEX_CAPTURE_STATUS_MISSING,
-    }
-)
+CODEX_CAPTURE_STATUSES = frozenset({CODEX_CAPTURE_STATUS_CAPTURED, CODEX_CAPTURE_STATUS_MISSING})
 CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH = "exact_prompt_hash"
 CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN = "exact_active_turn"
 CODEX_CAPTURE_METHODS = frozenset(
-    {
-        CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH,
-        CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN,
-    }
+    {CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH, CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN}
 )
 CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING = "session_path_missing"
 CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING = "session_missing"
@@ -145,40 +115,86 @@ FAILURE_CLASSES = frozenset(
     }
 )
 
+_TASK_ID = re.compile(r"task-[0-9a-f]{32}\Z")
+_ATTEMPT_ID = re.compile(r"attempt-[0-9a-f]{32}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+_RUNTIME_KEYS = frozenset({"schema_version", "store_version", "tasks"})
+_TASK_KEYS = frozenset(
+    {
+        "id",
+        "title",
+        "created_at",
+        "status",
+        "updated_at",
+        "actor",
+        "note",
+        "failure_class",
+        "recovery_action",
+        "prompt_issue",
+        "operator_issue",
+        "attempts",
+    }
+)
+_ATTEMPT_KEYS = frozenset(
+    {
+        "attempt_id",
+        "status",
+        "actor",
+        "started_at",
+        "ended_at",
+        "summary",
+        "workspace_identity",
+        "workspace_mode",
+        "worktree_role",
+        "worktree_path",
+        "branch",
+        "target_branch",
+        "integration_branch",
+        "start_commit",
+        "execution_model",
+        "model",
+        "reasoning_effort",
+        "codex_session",
+        "prompt_receipt",
+        "user_prompt_receipt",
+        "changed_paths",
+        "validations",
+        "residuals",
+        "followup_candidates",
+        "note",
+        "commit",
+        "landed_commit",
+        "elapsed_seconds",
+        "failure_class",
+        "recovery_action",
+        "prompt_issue",
+        "operator_issue",
+        "setup_receipt",
+    }
+)
+_PROMPT_RECEIPT_KEYS = frozenset(
+    {"prompt_hash", "recorded_at", "source", "mode", "replay_artifact_path"}
+)
+_CODEX_SESSION_KEYS = frozenset(
+    {
+        "thread_id",
+        "session_path",
+        "turn_id",
+        "turn_started_at",
+        "user_prompt_hash",
+        "execution_prompt_hash",
+        "capture_status",
+        "capture_method",
+        "capture_missing_reason",
+    }
+)
+_VALIDATION_KEYS = frozenset({"name", "status"})
+_EVENT_KEYS = frozenset({"event_id", "type", "at", "actor", "payload"})
+
 
 class StoreError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRuntimeRecord:
-    task_id: str
-    status: str
-    updated_at: str | None = None
-    actor: str | None = None
-    note: str | None = None
-    failure_class: str | None = None
-    recovery_action: str | None = None
-    prompt_issue: bool = False
-    operator_issue: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class WorksetClaimRecord:
-    actor: str
-    execution_model: str
-    claimed_at: str
-    note: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskClaimRecord:
-    task_id: str
-    actor: str
-    execution_model: str
-    claimed_at: str
-    attempt_id: str | None = None
-    note: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,10 +229,10 @@ class CodexSessionRefRecord:
 @dataclass(frozen=True, slots=True)
 class TaskAttemptRecord:
     attempt_id: str
-    task_id: str
     status: str
     actor: str
     started_at: str
+    task_id: str | None = None  # Derived context; not serialized in a task row.
     ended_at: str | None = None
     summary: str | None = None
     workspace_identity: str | None = None
@@ -249,145 +265,179 @@ class TaskAttemptRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class WorksetRuntime:
-    workset_id: str
-    workset_claim: WorksetClaimRecord | None
-    task_claims: tuple[TaskClaimRecord, ...]
-    task_states: tuple[TaskRuntimeRecord, ...]
-    attempts: tuple[TaskAttemptRecord, ...]
+class TaskRecord:
+    task_id: str
+    title: str
+    created_at: str | None = None
+    status: str = TASK_STATUS_PLANNED
+    updated_at: str | None = None
+    actor: str | None = None
+    note: str | None = None
+    failure_class: str | None = None
+    recovery_action: str | None = None
+    prompt_issue: bool = False
+    operator_issue: bool = False
+    attempts: tuple[TaskAttemptRecord, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeState:
     schema_version: int
     store_version: str
-    worksets: tuple[WorksetRuntime, ...]
+    tasks: tuple[TaskRecord, ...]
 
 
 class RuntimeStore(Protocol):
-    def load(self, path: Path) -> RuntimeState:
-        ...
+    def load(self, path: Path) -> RuntimeState: ...
 
-    def save(self, path: Path, state: RuntimeState) -> None:
-        ...
+    def save(self, path: Path, state: RuntimeState) -> None: ...
 
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def new_task_id() -> str:
+    return f"task-{uuid.uuid4().hex}"
+
+
+def new_attempt_id() -> str:
+    return f"attempt-{uuid.uuid4().hex}"
+
+
+def is_canonical_task_id(value: str) -> bool:
+    return isinstance(value, str) and _TASK_ID.fullmatch(value) is not None
+
+
+def is_canonical_attempt_id(value: str) -> bool:
+    return isinstance(value, str) and _ATTEMPT_ID.fullmatch(value) is not None
 
 
 def create_prompt_receipt(
     text: str,
     *,
-    recorded_at: str | None = None,
     source: str | None = None,
-    mode: str | None = PROMPT_MODE_RAW,
+    mode: str | None = None,
+    recorded_at: str | None = None,
+    replay_artifact_path: str | None = None,
 ) -> PromptReceiptRecord:
-    normalized = str(text).strip()
-    if not normalized:
-        raise ValueError("prompt receipt text is required")
-    resolved_mode = _optional_text(mode)
-    if resolved_mode is not None and resolved_mode not in PROMPT_MODES:
-        raise ValueError(f"prompt receipt mode must be one of {', '.join(sorted(PROMPT_MODES))}")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return PromptReceiptRecord(
         text=normalized,
         prompt_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
         recorded_at=recorded_at or now_iso(),
-        source=_optional_text(source),
-        mode=resolved_mode,
+        source=source,
+        mode=mode,
+        replay_artifact_path=replay_artifact_path,
     )
 
 
-def prompt_receipt_reference(prompt_receipt: PromptReceiptRecord | None) -> PromptReceiptRecord | None:
-    if prompt_receipt is None or prompt_receipt.text is None:
-        return prompt_receipt
-    return replace(prompt_receipt, text=None)
+def prompt_receipt_reference(receipt: PromptReceiptRecord | None) -> PromptReceiptRecord | None:
+    return replace(receipt, text=None) if receipt is not None else None
 
 
 def parse_iso(value: str | None) -> datetime | None:
-    if value is None:
+    if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
-        handle.write(text)
-        temp_path = Path(handle.name)
-    os.replace(temp_path, path)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+_LOCK_REGISTRY_GUARD = RLock()
+_LOCK_REGISTRY: dict[tuple[str, int], tuple[int, Any, Path | None]] = {}
 
 
 @contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
-    """Hold a thread-reentrant interprocess lock next to a state file.
+    """Hold one thread-reentrant interprocess lock adjacent to ``path``."""
 
-    A conforming ``RuntimeStore`` may implement ``save`` by delegating to
-    ``JsonRuntimeStore.save``. Runtime mutation already holds this lock before
-    calling that protocol method, so the nested save must reuse the outer lock
-    in the same thread. Other threads and processes still acquire the real
-    interprocess lock and remain serialized.
-    """
-    # Resolve directory and file symlinks before choosing both the reentrancy
-    # identity and the adjacent lock location. ``flock`` ultimately targets an
-    # inode, so spelling aliases must not create a second in-thread identity or
-    # a different lock file for the same runtime file.
-    resolved_path = Path(path).expanduser().resolve(strict=False)
-    lock_key = (os.getpid(), str(resolved_path))
-    held_locks = getattr(_FILE_LOCK_STATE, "held_locks", None)
-    if held_locks is None:
-        held_locks = {}
-        _FILE_LOCK_STATE.held_locks = held_locks
-    if held_locks.get(lock_key, 0):
-        held_locks[lock_key] += 1
+    target = path.expanduser().resolve(strict=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    key = (str(target), get_ident())
+    with _LOCK_REGISTRY_GUARD:
+        existing = _LOCK_REGISTRY.get(key)
+        if existing is not None:
+            depth, handle, lockdir = existing
+            _LOCK_REGISTRY[key] = (depth + 1, handle, lockdir)
+            nested = True
+        else:
+            nested = False
+    if nested:
         try:
             yield
         finally:
-            held_locks[lock_key] -= 1
+            with _LOCK_REGISTRY_GUARD:
+                depth, handle, lockdir = _LOCK_REGISTRY[key]
+                _LOCK_REGISTRY[key] = (depth - 1, handle, lockdir)
         return
 
-    lock_path = resolved_path.with_name(f"{resolved_path.name}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if fcntl is None:
-        lock_dir = resolved_path.with_name(f"{resolved_path.name}.lockdir")
-        while True:
-            try:
-                lock_dir.mkdir()
-                break
-            except FileExistsError:
-                time.sleep(0.05)
-        held_locks[lock_key] = 1
-        try:
-            yield
-        finally:
-            held_locks.pop(lock_key, None)
-            lock_dir.rmdir()
-        return
-    with lock_path.open("a+", encoding="utf-8") as handle:
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        held_locks[lock_key] = 1
-        try:
-            yield
-        finally:
-            held_locks.pop(lock_key, None)
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-
-def _read_json_file(path: Path) -> dict[str, Any]:
+    lock_path = target.with_name(f"{target.name}.lock")
+    handle = lock_path.open("a+")
+    lockdir: Path | None = None
+    used_flock = False
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise
-    except json.JSONDecodeError as exc:
-        raise StoreError(f"Invalid JSON in {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise StoreError(f"{path} must contain a JSON object")
-    return payload
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            used_flock = True
+        except (ImportError, OSError):
+            lockdir = target.with_name(f"{target.name}.lockdir")
+            while True:
+                try:
+                    lockdir.mkdir()
+                    break
+                except FileExistsError:
+                    time.sleep(0.01)
+        with _LOCK_REGISTRY_GUARD:
+            _LOCK_REGISTRY[key] = (1, handle, lockdir)
+        yield
+    finally:
+        with _LOCK_REGISTRY_GUARD:
+            _LOCK_REGISTRY.pop(key, None)
+        if lockdir is not None:
+            shutil.rmtree(lockdir, ignore_errors=True)
+        elif used_flock:
+            try:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+        handle.close()
 
 
 def _optional_text(value: Any) -> str | None:
@@ -397,32 +447,37 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
-def _normalize_non_negative_int(value: Any, *, field: str, source: Path) -> int | None:
-    if value is None:
-        return None
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError) as exc:
-        raise StoreError(f"{field} must be an integer in {source}") from exc
-    if normalized < 0:
-        raise StoreError(f"{field} must be non-negative in {source}")
-    return normalized
+def _reject_unknown_keys(payload: Mapping[str, Any], *, allowed: frozenset[str], field: str, source: Path) -> None:
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise StoreError(f"{field} has unknown fields {', '.join(unknown)} in {source}")
 
 
-def _normalize_string_list(value: Any, *, field: str, source: Path) -> tuple[str, ...]:
+def _string_tuple(value: Any, *, field: str, source: Path) -> tuple[str, ...]:
     if value is None:
         return ()
-    if not isinstance(value, list):
-        raise StoreError(f"{field} must be a list in {source}")
-    items: list[str] = []
-    for item in value:
-        text = _optional_text(item)
-        if text:
-            items.append(text)
-    return tuple(items)
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise StoreError(f"{field} must be a list of nonempty strings in {source}")
+    return tuple(item.strip() for item in value)
 
 
-def _normalize_optional_mapping(value: Any, *, field: str, source: Path) -> dict[str, Any] | None:
+def _bool(value: Any, *, field: str, source: Path) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise StoreError(f"{field} must be a boolean in {source}")
+    return value
+
+
+def _nonnegative_int(value: Any, *, field: str, source: Path) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise StoreError(f"{field} must be a non-negative integer in {source}")
+    return value
+
+
+def _mapping(value: Any, *, field: str, source: Path) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
@@ -430,93 +485,32 @@ def _normalize_optional_mapping(value: Any, *, field: str, source: Path) -> dict
     return dict(value)
 
 
-def _normalize_bool(value: Any, *, field: str, source: Path) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    raise StoreError(f"{field} must be a boolean in {source}")
-
-
-def _normalize_failure_class(value: Any, *, field: str, source: Path) -> str | None:
-    failure_class = _optional_text(value)
-    if failure_class is None:
-        return None
-    if failure_class not in FAILURE_CLASSES:
-        raise StoreError(f"{field} must be one of {sorted(FAILURE_CLASSES)} in {source}")
-    return failure_class
-
-
-def _normalize_execution_model(value: Any, *, field: str, source: Path) -> str:
-    return _normalize_execution_model_for_runtime(value, field=field, source=source, allow_legacy=False)
-
-
-def _normalize_execution_model_for_runtime(
-    value: Any,
-    *,
-    field: str,
-    source: Path,
-    allow_legacy: bool,
-) -> str:
-    execution_model = _optional_text(value)
-    if execution_model is None:
-        raise StoreError(f"{field} is required in {source}")
-    allowed = _READABLE_EXECUTION_MODELS if allow_legacy else EXECUTION_MODELS
-    if execution_model not in allowed:
-        raise StoreError(f"{field} must be one of {sorted(allowed)} in {source}")
-    return execution_model
-
-
-def is_legacy_managed_execution_model(value: str | None) -> bool:
-    return value == _LEGACY_MANAGED_EXECUTION_MODEL
-
-
-def _validation_from_payload(payload: Mapping[str, Any], *, source: Path) -> ValidationRecord:
+def _validation_from_payload(payload: Any, *, source: Path) -> ValidationRecord:
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"validation must be an object in {source}")
+    _reject_unknown_keys(payload, allowed=_VALIDATION_KEYS, field="validation", source=source)
     name = _optional_text(payload.get("name"))
-    if name is None:
-        raise StoreError(f"validation.name is required in {source}")
-    status = _optional_text(payload.get("status")) or VALIDATION_STATUS_PASSED
-    if status not in VALIDATION_STATUSES:
-        raise StoreError(f"validation.status must be one of {sorted(VALIDATION_STATUSES)} in {source}")
+    status = _optional_text(payload.get("status"))
+    if name is None or status not in VALIDATION_STATUSES:
+        raise StoreError(f"validation requires name and valid status in {source}")
     return ValidationRecord(name=name, status=status)
 
 
-def _validations_from_payload(payload: Any, *, field: str, source: Path) -> tuple[ValidationRecord, ...]:
-    if payload is None:
-        return ()
-    if not isinstance(payload, list):
-        raise StoreError(f"{field} must be a list in {source}")
-    rows = tuple(_validation_from_payload(item, source=source) for item in payload if isinstance(item, Mapping))
-    if len(rows) != len(payload):
-        raise StoreError(f"{field} must contain only objects in {source}")
-    return rows
-
-
-def _prompt_receipt_from_payload(payload: Any, *, field: str, source: Path) -> PromptReceiptRecord | None:
+def _receipt_from_payload(payload: Any, *, field: str, source: Path) -> PromptReceiptRecord | None:
     if payload is None:
         return None
     if not isinstance(payload, Mapping):
         raise StoreError(f"{field} must be an object in {source}")
-    text = _optional_text(payload.get("text"))
+    _reject_unknown_keys(payload, allowed=_PROMPT_RECEIPT_KEYS, field=field, source=source)
     prompt_hash = _optional_text(payload.get("prompt_hash"))
-    if prompt_hash is None:
-        if text is None:
-            raise StoreError(f"{field}.text or {field}.prompt_hash is required in {source}")
-        prompt_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     recorded_at = _optional_text(payload.get("recorded_at"))
-    if recorded_at is None:
-        raise StoreError(f"{field}.recorded_at is required in {source}")
+    if prompt_hash is None or recorded_at is None:
+        raise StoreError(f"{field} requires prompt_hash and recorded_at in {source}")
     mode = _optional_text(payload.get("mode"))
     if mode is not None and mode not in PROMPT_MODES:
-        raise StoreError(f"{field}.mode must be one of {sorted(PROMPT_MODES)} in {source}")
+        raise StoreError(f"{field}.mode is invalid in {source}")
     return PromptReceiptRecord(
-        text=text,
+        text=None,
         prompt_hash=prompt_hash,
         recorded_at=recorded_at,
         source=_optional_text(payload.get("source")),
@@ -525,174 +519,44 @@ def _prompt_receipt_from_payload(payload: Any, *, field: str, source: Path) -> P
     )
 
 
-def _codex_session_ref_from_payload(payload: Any, *, field: str, source: Path) -> CodexSessionRefRecord | None:
+def _session_from_payload(payload: Any, *, source: Path) -> CodexSessionRefRecord | None:
     if payload is None:
         return None
     if not isinstance(payload, Mapping):
-        raise StoreError(f"{field} must be an object in {source}")
+        raise StoreError(f"codex_session must be an object in {source}")
+    _reject_unknown_keys(payload, allowed=_CODEX_SESSION_KEYS, field="codex_session", source=source)
     thread_id = _optional_text(payload.get("thread_id"))
     if thread_id is None:
-        raise StoreError(f"{field}.thread_id is required in {source}")
-    session_path = _optional_text(payload.get("session_path"))
-    turn_id = _optional_text(payload.get("turn_id"))
-    turn_started_at = _optional_text(payload.get("turn_started_at"))
-    user_prompt_hash = _optional_text(payload.get("user_prompt_hash"))
-    execution_prompt_hash = _optional_text(payload.get("execution_prompt_hash"))
-    capture_payload = payload.get("capture")
-    capture_status: str | None = None
-    capture_method: str | None = None
-    capture_missing_reason: str | None = None
-    if capture_payload is not None:
-        if not isinstance(capture_payload, Mapping):
-            raise StoreError(f"{field}.capture must be an object in {source}")
-        capture_status = _optional_text(capture_payload.get("status"))
-        capture_method = _optional_text(capture_payload.get("method"))
-        capture_missing_reason = _optional_text(capture_payload.get("missing_reason"))
-        if capture_status not in CODEX_CAPTURE_STATUSES:
-            raise StoreError(
-                f"{field}.capture.status must be one of {sorted(CODEX_CAPTURE_STATUSES)} in {source}"
-            )
-        if capture_status == CODEX_CAPTURE_STATUS_CAPTURED:
-            if capture_method not in CODEX_CAPTURE_METHODS:
-                raise StoreError(
-                    f"{field}.capture.method must be one of {sorted(CODEX_CAPTURE_METHODS)} "
-                    f"when capture status is captured in {source}"
-                )
-            if capture_missing_reason is not None:
-                raise StoreError(
-                    f"{field}.capture.missing_reason must be null when capture status is captured in {source}"
-                )
-            if session_path is None or turn_id is None:
-                raise StoreError(
-                    f"{field}.session_path and {field}.turn_id are required when capture status is captured in {source}"
-                )
-        else:
-            if capture_method is not None:
-                raise StoreError(
-                    f"{field}.capture.method must be null when capture status is missing in {source}"
-                )
-            if capture_missing_reason not in CODEX_CAPTURE_MISSING_REASONS:
-                raise StoreError(
-                    f"{field}.capture.missing_reason must be one of "
-                    f"{sorted(CODEX_CAPTURE_MISSING_REASONS)} when capture status is missing in {source}"
-                )
-            if turn_id is not None or turn_started_at is not None:
-                raise StoreError(
-                    f"{field}.turn_id and {field}.turn_started_at must be null when capture status is missing in {source}"
-                )
+        raise StoreError(f"codex_session.thread_id is required in {source}")
     return CodexSessionRefRecord(
         thread_id=thread_id,
-        session_path=session_path,
-        turn_id=turn_id,
-        turn_started_at=turn_started_at,
-        user_prompt_hash=user_prompt_hash,
-        execution_prompt_hash=execution_prompt_hash,
-        capture_status=capture_status,
-        capture_method=capture_method,
-        capture_missing_reason=capture_missing_reason,
+        session_path=_optional_text(payload.get("session_path")),
+        turn_id=_optional_text(payload.get("turn_id")),
+        turn_started_at=_optional_text(payload.get("turn_started_at")),
+        user_prompt_hash=_optional_text(payload.get("user_prompt_hash")),
+        execution_prompt_hash=_optional_text(payload.get("execution_prompt_hash")),
+        capture_status=_optional_text(payload.get("capture_status")),
+        capture_method=_optional_text(payload.get("capture_method")),
+        capture_missing_reason=_optional_text(payload.get("capture_missing_reason")),
     )
 
 
-def _task_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -> TaskRuntimeRecord:
-    task_id = _optional_text(payload.get("task_id"))
-    if task_id is None:
-        raise StoreError(f"task_state.task_id is required in {source}")
-    status = _optional_text(payload.get("status")) or TASK_STATUS_PLANNED
-    if status not in TASK_STATUSES:
-        raise StoreError(f"task_state.status must be one of {sorted(TASK_STATUSES)} in {source}")
-    return TaskRuntimeRecord(
-        task_id=task_id,
-        status=status,
-        updated_at=_optional_text(payload.get("updated_at")),
-        actor=_optional_text(payload.get("actor")),
-        note=_optional_text(payload.get("note")),
-        failure_class=_normalize_failure_class(payload.get("failure_class"), field="task_state.failure_class", source=source),
-        recovery_action=_optional_text(payload.get("recovery_action")),
-        prompt_issue=_normalize_bool(payload.get("prompt_issue"), field="task_state.prompt_issue", source=source),
-        operator_issue=_normalize_bool(payload.get("operator_issue"), field="task_state.operator_issue", source=source),
-    )
-
-
-def _workset_claim_from_payload(payload: Any, *, field: str, source: Path) -> WorksetClaimRecord | None:
-    if payload is None:
-        return None
+def _attempt_from_payload(payload: Any, *, task_id: str, source: Path) -> TaskAttemptRecord:
     if not isinstance(payload, Mapping):
-        raise StoreError(f"{field} must be an object in {source}")
-    actor = _optional_text(payload.get("actor"))
-    if actor is None:
-        raise StoreError(f"{field}.actor is required in {source}")
-    claimed_at = _optional_text(payload.get("claimed_at"))
-    if claimed_at is None:
-        raise StoreError(f"{field}.claimed_at is required in {source}")
-    return WorksetClaimRecord(
-        actor=actor,
-        execution_model=_normalize_execution_model_for_runtime(
-            payload.get("execution_model"),
-            field=f"{field}.execution_model",
-            source=source,
-            allow_legacy=True,
-        ),
-        claimed_at=claimed_at,
-        note=_optional_text(payload.get("note")),
-    )
-
-
-def _task_claim_from_payload(payload: Any, *, field: str, source: Path) -> TaskClaimRecord:
-    if not isinstance(payload, Mapping):
-        raise StoreError(f"{field} must be an object in {source}")
-    task_id = _optional_text(payload.get("task_id"))
-    if task_id is None:
-        raise StoreError(f"{field}.task_id is required in {source}")
-    actor = _optional_text(payload.get("actor"))
-    if actor is None:
-        raise StoreError(f"{field}.actor is required in {source}")
-    claimed_at = _optional_text(payload.get("claimed_at"))
-    if claimed_at is None:
-        raise StoreError(f"{field}.claimed_at is required in {source}")
-    return TaskClaimRecord(
-        task_id=task_id,
-        actor=actor,
-        execution_model=_normalize_execution_model_for_runtime(
-            payload.get("execution_model"),
-            field=f"{field}.execution_model",
-            source=source,
-            allow_legacy=True,
-        ),
-        claimed_at=claimed_at,
-        attempt_id=_optional_text(payload.get("attempt_id")),
-        note=_optional_text(payload.get("note")),
-    )
-
-
-def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> TaskAttemptRecord:
+        raise StoreError(f"task[{task_id}].attempts must contain objects in {source}")
+    _reject_unknown_keys(payload, allowed=_ATTEMPT_KEYS, field=f"task[{task_id}].attempt", source=source)
     attempt_id = _optional_text(payload.get("attempt_id"))
-    if attempt_id is None:
-        raise StoreError(f"attempt.attempt_id is required in {source}")
-    task_id = _optional_text(payload.get("task_id"))
-    if task_id is None:
-        raise StoreError(f"attempt.task_id is required in {source}")
+    status = _optional_text(payload.get("status"))
     actor = _optional_text(payload.get("actor"))
-    if actor is None:
-        raise StoreError(f"attempt.actor is required in {source}")
     started_at = _optional_text(payload.get("started_at"))
-    if started_at is None:
-        raise StoreError(f"attempt.started_at is required in {source}")
-    status = _optional_text(payload.get("status")) or ATTEMPT_STATUS_IN_PROGRESS
-    if status not in ATTEMPT_STATUSES:
-        raise StoreError(f"attempt.status must be one of {sorted(ATTEMPT_STATUSES)} in {source}")
-    prompt_receipt = _prompt_receipt_from_payload(
-        payload.get("prompt_receipt"),
-        field="attempt.prompt_receipt",
-        source=source,
-    )
-    user_prompt_receipt = _prompt_receipt_from_payload(
-        payload.get("user_prompt_receipt"),
-        field="attempt.user_prompt_receipt",
-        source=source,
-    ) or prompt_receipt
+    if attempt_id is None or status not in ATTEMPT_STATUSES or actor is None or started_at is None:
+        raise StoreError(f"task[{task_id}] has an invalid attempt in {source}")
+    validations = payload.get("validations") or []
+    if not isinstance(validations, list):
+        raise StoreError(f"validations must be a list in {source}")
     return TaskAttemptRecord(
-        attempt_id=attempt_id,
         task_id=task_id,
+        attempt_id=attempt_id,
         status=status,
         actor=actor,
         started_at=started_at,
@@ -706,486 +570,562 @@ def _task_attempt_from_payload(payload: Mapping[str, Any], *, source: Path) -> T
         target_branch=_optional_text(payload.get("target_branch")),
         integration_branch=_optional_text(payload.get("integration_branch")),
         start_commit=_optional_text(payload.get("start_commit")),
-        execution_model=(
-            _normalize_execution_model_for_runtime(
-                payload.get("execution_model"),
-                field="attempt.execution_model",
-                source=source,
-                allow_legacy=True,
-            )
-            if payload.get("execution_model") is not None
-            else None
-        ),
+        execution_model=_optional_text(payload.get("execution_model")),
         model=_optional_text(payload.get("model")),
         reasoning_effort=_optional_text(payload.get("reasoning_effort")),
-        codex_session=_codex_session_ref_from_payload(
-            payload.get("codex_session"),
-            field="attempt.codex_session",
-            source=source,
-        ),
-        prompt_receipt=prompt_receipt,
-        user_prompt_receipt=user_prompt_receipt,
-        changed_paths=_normalize_string_list(payload.get("changed_paths"), field="attempt.changed_paths", source=source),
-        validations=_validations_from_payload(payload.get("validations"), field="attempt.validations", source=source),
-        residuals=_normalize_string_list(payload.get("residuals"), field="attempt.residuals", source=source),
-        followup_candidates=_normalize_string_list(
-            payload.get("followup_candidates"),
-            field="attempt.followup_candidates",
-            source=source,
-        ),
+        codex_session=_session_from_payload(payload.get("codex_session"), source=source),
+        prompt_receipt=_receipt_from_payload(payload.get("prompt_receipt"), field="prompt_receipt", source=source),
+        user_prompt_receipt=_receipt_from_payload(payload.get("user_prompt_receipt"), field="user_prompt_receipt", source=source),
+        changed_paths=_string_tuple(payload.get("changed_paths"), field="changed_paths", source=source),
+        validations=tuple(_validation_from_payload(item, source=source) for item in validations),
+        residuals=_string_tuple(payload.get("residuals"), field="residuals", source=source),
+        followup_candidates=_string_tuple(payload.get("followup_candidates"), field="followup_candidates", source=source),
         note=_optional_text(payload.get("note")),
         commit=_optional_text(payload.get("commit")),
         landed_commit=_optional_text(payload.get("landed_commit")),
-        elapsed_seconds=_normalize_non_negative_int(payload.get("elapsed_seconds"), field="attempt.elapsed_seconds", source=source),
-        failure_class=_normalize_failure_class(payload.get("failure_class"), field="attempt.failure_class", source=source),
+        elapsed_seconds=_nonnegative_int(payload.get("elapsed_seconds"), field="elapsed_seconds", source=source),
+        failure_class=_optional_text(payload.get("failure_class")),
         recovery_action=_optional_text(payload.get("recovery_action")),
-        prompt_issue=_normalize_bool(payload.get("prompt_issue"), field="attempt.prompt_issue", source=source),
-        operator_issue=_normalize_bool(payload.get("operator_issue"), field="attempt.operator_issue", source=source),
-        setup_receipt=_normalize_optional_mapping(payload.get("setup_receipt"), field="attempt.setup_receipt", source=source),
+        prompt_issue=_bool(payload.get("prompt_issue"), field="prompt_issue", source=source),
+        operator_issue=_bool(payload.get("operator_issue"), field="operator_issue", source=source),
+        setup_receipt=_mapping(payload.get("setup_receipt"), field="setup_receipt", source=source),
     )
 
 
-def _workset_runtime_from_payload(payload: Mapping[str, Any], *, source: Path) -> WorksetRuntime:
-    workset_id = _optional_text(payload.get("id")) or _optional_text(payload.get("workset_id"))
-    if workset_id is None:
-        raise StoreError(f"runtime workset id is required in {source}")
-    raw_states = payload.get("task_states")
-    if raw_states is None:
-        task_states: tuple[TaskRuntimeRecord, ...] = ()
-    else:
-        if not isinstance(raw_states, list):
-            raise StoreError(f"runtime workset task_states must be a list in {source}")
-        task_states = tuple(_task_runtime_from_payload(item, source=source) for item in raw_states if isinstance(item, Mapping))
-        if len(task_states) != len(raw_states):
-            raise StoreError(f"runtime workset task_states must contain only objects in {source}")
-    raw_task_claims = payload.get("task_claims")
-    if raw_task_claims is None:
-        task_claims: tuple[TaskClaimRecord, ...] = ()
-    else:
-        if not isinstance(raw_task_claims, list):
-            raise StoreError(f"runtime workset task_claims must be a list in {source}")
-        task_claims = tuple(_task_claim_from_payload(item, field="task_claim", source=source) for item in raw_task_claims)
-    raw_attempts = payload.get("attempts")
-    if raw_attempts is None:
-        attempts: tuple[TaskAttemptRecord, ...] = ()
-    else:
-        if not isinstance(raw_attempts, list):
-            raise StoreError(f"runtime workset attempts must be a list in {source}")
-        attempts = tuple(_task_attempt_from_payload(item, source=source) for item in raw_attempts if isinstance(item, Mapping))
-        if len(attempts) != len(raw_attempts):
-            raise StoreError(f"runtime workset attempts must contain only objects in {source}")
-    seen_task_ids: set[str] = set()
-    for state in task_states:
-        if state.task_id in seen_task_ids:
-            raise StoreError(f"duplicate runtime task state {state.task_id!r} in {source}")
-        seen_task_ids.add(state.task_id)
-    seen_claim_task_ids: set[str] = set()
-    for claim in task_claims:
-        if claim.task_id in seen_claim_task_ids:
-            raise StoreError(f"duplicate runtime task claim {claim.task_id!r} in {source}")
-        seen_claim_task_ids.add(claim.task_id)
-    seen_attempt_ids: set[str] = set()
-    for attempt in attempts:
-        if attempt.attempt_id in seen_attempt_ids:
-            raise StoreError(f"duplicate runtime attempt {attempt.attempt_id!r} in {source}")
-        seen_attempt_ids.add(attempt.attempt_id)
-    return WorksetRuntime(
-        workset_id=workset_id,
-        workset_claim=_workset_claim_from_payload(payload.get("workset_claim"), field="workset_claim", source=source),
-        task_claims=task_claims,
-        task_states=task_states,
+def _task_from_payload(payload: Any, *, source: Path) -> TaskRecord:
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"tasks must contain objects in {source}")
+    _reject_unknown_keys(payload, allowed=_TASK_KEYS, field="task", source=source)
+    task_id = _optional_text(payload.get("id"))
+    title = _optional_text(payload.get("title"))
+    status = _optional_text(payload.get("status"))
+    if task_id is None or title is None or status not in TASK_STATUSES:
+        raise StoreError(f"task id, title, and valid status are required in {source}")
+    raw_attempts = payload.get("attempts") or []
+    if not isinstance(raw_attempts, list):
+        raise StoreError(f"task[{task_id}].attempts must be a list in {source}")
+    attempts = tuple(_attempt_from_payload(item, task_id=task_id, source=source) for item in raw_attempts)
+    if len({attempt.attempt_id for attempt in attempts}) != len(attempts):
+        raise StoreError(f"task {task_id!r} has duplicate attempt ids in {source}")
+    return TaskRecord(
+        task_id=task_id,
+        title=title,
+        created_at=_optional_text(payload.get("created_at")),
+        status=status,
+        updated_at=_optional_text(payload.get("updated_at")),
+        actor=_optional_text(payload.get("actor")),
+        note=_optional_text(payload.get("note")),
+        failure_class=_optional_text(payload.get("failure_class")),
+        recovery_action=_optional_text(payload.get("recovery_action")),
+        prompt_issue=_bool(payload.get("prompt_issue"), field="prompt_issue", source=source),
+        operator_issue=_bool(payload.get("operator_issue"), field="operator_issue", source=source),
         attempts=attempts,
     )
 
 
 def default_runtime_state() -> RuntimeState:
-    return RuntimeState(
-        schema_version=RUNTIME_SCHEMA_VERSION,
-        store_version=RUNTIME_STORE_VERSION,
-        worksets=(),
-    )
+    return RuntimeState(RUNTIME_SCHEMA_VERSION, RUNTIME_STORE_VERSION, ())
 
 
-def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
-    def prompt_payload(prompt_receipt: PromptReceiptRecord | None) -> dict[str, Any] | None:
-        if prompt_receipt is None:
-            return None
-        payload: dict[str, Any] = {
-            "prompt_hash": prompt_receipt.prompt_hash,
-            "recorded_at": prompt_receipt.recorded_at,
-            "source": prompt_receipt.source,
-            "mode": prompt_receipt.mode,
-            "replay_artifact_path": prompt_receipt.replay_artifact_path,
-        }
-        if prompt_receipt.text is not None:
-            payload["text"] = prompt_receipt.text
-        return payload
-
-    def codex_session_payload(codex_session: CodexSessionRefRecord | None) -> dict[str, Any] | None:
-        if codex_session is None:
-            return None
-        payload: dict[str, Any] = {
-            "thread_id": codex_session.thread_id,
-            "session_path": codex_session.session_path,
-            "turn_id": codex_session.turn_id,
-            "turn_started_at": codex_session.turn_started_at,
-            "user_prompt_hash": codex_session.user_prompt_hash,
-            "execution_prompt_hash": codex_session.execution_prompt_hash,
-        }
-        if codex_session.capture_status is not None:
-            payload["capture"] = {
-                "status": codex_session.capture_status,
-                "method": codex_session.capture_method,
-                "missing_reason": codex_session.capture_missing_reason,
-            }
-        return payload
-
+def _receipt_payload(receipt: PromptReceiptRecord | None) -> dict[str, Any] | None:
+    if receipt is None:
+        return None
     return {
-        "schema_version": RUNTIME_SCHEMA_VERSION,
-        "store_version": RUNTIME_STORE_VERSION,
-        "worksets": [
-            {
-                "id": workset.workset_id,
-                "workset_claim": (
-                    {
-                        "actor": workset.workset_claim.actor,
-                        "execution_model": workset.workset_claim.execution_model,
-                        "claimed_at": workset.workset_claim.claimed_at,
-                        "note": workset.workset_claim.note,
-                    }
-                    if workset.workset_claim is not None
-                    else None
-                ),
-                "task_claims": [
-                    {
-                        "task_id": task_claim.task_id,
-                        "actor": task_claim.actor,
-                        "execution_model": task_claim.execution_model,
-                        "claimed_at": task_claim.claimed_at,
-                        "attempt_id": task_claim.attempt_id,
-                        "note": task_claim.note,
-                    }
-                    for task_claim in workset.task_claims
-                ],
-                "task_states": [
-                    {
-                        "task_id": task_state.task_id,
-                        "status": task_state.status,
-                        "updated_at": task_state.updated_at,
-                        "actor": task_state.actor,
-                        "note": task_state.note,
-                        "failure_class": task_state.failure_class,
-                        "recovery_action": task_state.recovery_action,
-                        "prompt_issue": task_state.prompt_issue,
-                        "operator_issue": task_state.operator_issue,
-                    }
-                    for task_state in workset.task_states
-                ],
-                "attempts": [
-                    {
-                        "attempt_id": attempt.attempt_id,
-                        "task_id": attempt.task_id,
-                        "status": attempt.status,
-                        "actor": attempt.actor,
-                        "started_at": attempt.started_at,
-                        "ended_at": attempt.ended_at,
-                        "summary": attempt.summary,
-                        "workspace_identity": attempt.workspace_identity,
-                        "workspace_mode": attempt.workspace_mode,
-                        "worktree_role": attempt.worktree_role,
-                        "worktree_path": attempt.worktree_path,
-                        "branch": attempt.branch,
-                        "target_branch": attempt.target_branch,
-                        "integration_branch": attempt.integration_branch,
-                        "start_commit": attempt.start_commit,
-                        "execution_model": attempt.execution_model,
-                        "model": attempt.model,
-                        "reasoning_effort": attempt.reasoning_effort,
-                        "codex_session": codex_session_payload(attempt.codex_session),
-                        "prompt_receipt": prompt_payload(attempt.prompt_receipt),
-                        "user_prompt_receipt": prompt_payload(attempt.user_prompt_receipt),
-                        "changed_paths": list(attempt.changed_paths),
-                        "validations": [
-                            {"name": validation.name, "status": validation.status}
-                            for validation in attempt.validations
-                        ],
-                        "residuals": list(attempt.residuals),
-                        "followup_candidates": list(attempt.followup_candidates),
-                        "note": attempt.note,
-                        "commit": attempt.commit,
-                        "landed_commit": attempt.landed_commit,
-                        "elapsed_seconds": attempt.elapsed_seconds,
-                        "failure_class": attempt.failure_class,
-                        "recovery_action": attempt.recovery_action,
-                        "prompt_issue": attempt.prompt_issue,
-                        "operator_issue": attempt.operator_issue,
-                        "setup_receipt": attempt.setup_receipt,
-                    }
-                    for attempt in workset.attempts
-                ],
-            }
-            for workset in state.worksets
-        ],
+        "prompt_hash": receipt.prompt_hash,
+        "recorded_at": receipt.recorded_at,
+        "source": receipt.source,
+        "mode": receipt.mode,
+        "replay_artifact_path": receipt.replay_artifact_path,
     }
 
 
+def _session_payload(session: CodexSessionRefRecord | None) -> dict[str, Any] | None:
+    if session is None:
+        return None
+    return {
+        "thread_id": session.thread_id,
+        "session_path": session.session_path,
+        "turn_id": session.turn_id,
+        "turn_started_at": session.turn_started_at,
+        "user_prompt_hash": session.user_prompt_hash,
+        "execution_prompt_hash": session.execution_prompt_hash,
+        "capture_status": session.capture_status,
+        "capture_method": session.capture_method,
+        "capture_missing_reason": session.capture_missing_reason,
+    }
+
+
+def _attempt_payload(attempt: TaskAttemptRecord) -> dict[str, Any]:
+    return {
+        "attempt_id": attempt.attempt_id,
+        "status": attempt.status,
+        "actor": attempt.actor,
+        "started_at": attempt.started_at,
+        "ended_at": attempt.ended_at,
+        "summary": attempt.summary,
+        "workspace_identity": attempt.workspace_identity,
+        "workspace_mode": attempt.workspace_mode,
+        "worktree_role": attempt.worktree_role,
+        "worktree_path": attempt.worktree_path,
+        "branch": attempt.branch,
+        "target_branch": attempt.target_branch,
+        "integration_branch": attempt.integration_branch,
+        "start_commit": attempt.start_commit,
+        "execution_model": attempt.execution_model,
+        "model": attempt.model,
+        "reasoning_effort": attempt.reasoning_effort,
+        "codex_session": _session_payload(attempt.codex_session),
+        "prompt_receipt": _receipt_payload(attempt.prompt_receipt),
+        "user_prompt_receipt": _receipt_payload(attempt.user_prompt_receipt),
+        "changed_paths": list(attempt.changed_paths),
+        "validations": [{"name": item.name, "status": item.status} for item in attempt.validations],
+        "residuals": list(attempt.residuals),
+        "followup_candidates": list(attempt.followup_candidates),
+        "note": attempt.note,
+        "commit": attempt.commit,
+        "landed_commit": attempt.landed_commit,
+        "elapsed_seconds": attempt.elapsed_seconds,
+        "failure_class": attempt.failure_class,
+        "recovery_action": attempt.recovery_action,
+        "prompt_issue": attempt.prompt_issue,
+        "operator_issue": attempt.operator_issue,
+        "setup_receipt": attempt.setup_receipt,
+    }
+
+
+def task_record_to_payload(task: TaskRecord) -> dict[str, Any]:
+    return {
+        "id": task.task_id,
+        "title": task.title,
+        "created_at": task.created_at,
+        "status": task.status,
+        "updated_at": task.updated_at,
+        "actor": task.actor,
+        "note": task.note,
+        "failure_class": task.failure_class,
+        "recovery_action": task.recovery_action,
+        "prompt_issue": task.prompt_issue,
+        "operator_issue": task.operator_issue,
+        "attempts": [_attempt_payload(attempt) for attempt in task.attempts],
+    }
+
+
+def runtime_state_to_payload(state: RuntimeState) -> dict[str, Any]:
+    return {
+        "schema_version": state.schema_version,
+        "store_version": state.store_version,
+        "tasks": [task_record_to_payload(task) for task in state.tasks],
+    }
+
+
+def _require_timestamp(value: str | None, *, field: str, source: Path, required: bool = False) -> datetime | None:
+    if value is None:
+        if required:
+            raise StoreError(f"{field} requires a timestamp in {source}")
+        return None
+    parsed = parse_iso(value)
+    if parsed is None:
+        raise StoreError(f"{field} has an invalid timestamp in {source}")
+    return parsed
+
+
+def _require_canonical_text(value: Any, *, field: str, source: Path) -> None:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise StoreError(f"{field} must be a canonical nonempty string in {source}")
+
+
+def _require_canonical_optional_text(value: Any, *, field: str, source: Path) -> None:
+    if value is None:
+        return
+    _require_canonical_text(value, field=field, source=source)
+
+
+def _require_string_tuple(value: Any, *, field: str, source: Path) -> None:
+    if not isinstance(value, tuple):
+        raise StoreError(f"{field} must be an immutable string sequence in {source}")
+    for item in value:
+        if not isinstance(item, str) or not item.strip() or item != item.strip():
+            raise StoreError(f"{field} contains a non-canonical string in {source}")
+
+
+def _validate_prompt_receipt(
+    receipt: PromptReceiptRecord | None,
+    *,
+    field: str,
+    source: Path,
+    artifact_root: Path,
+) -> None:
+    if receipt is None:
+        return
+    if not isinstance(receipt, PromptReceiptRecord):
+        raise StoreError(f"{field} must be a prompt receipt in {source}")
+    _require_canonical_optional_text(receipt.source, field=f"{field}.source", source=source)
+    _require_canonical_optional_text(receipt.mode, field=f"{field}.mode", source=source)
+    _require_canonical_optional_text(
+        receipt.replay_artifact_path,
+        field=f"{field}.replay_artifact_path",
+        source=source,
+    )
+    if not isinstance(receipt.prompt_hash, str) or _SHA256.fullmatch(receipt.prompt_hash) is None:
+        raise StoreError(f"{field}.prompt_hash must be lowercase SHA-256 in {source}")
+    _require_timestamp(receipt.recorded_at, field=f"{field}.recorded_at", source=source, required=True)
+    if receipt.mode is not None and receipt.mode not in PROMPT_MODES:
+        raise StoreError(f"{field}.mode is invalid in {source}")
+    if receipt.text is not None:
+        if not isinstance(receipt.text, str):
+            raise StoreError(f"{field}.text must be a string in {source}")
+        if hashlib.sha256(receipt.text.encode("utf-8")).hexdigest() != receipt.prompt_hash:
+            raise StoreError(f"{field}.text does not match prompt_hash in {source}")
+    if receipt.replay_artifact_path is None:
+        return
+    expected = Path("prompts") / "sha256" / f"{receipt.prompt_hash}.txt"
+    relative = Path(receipt.replay_artifact_path)
+    if relative.is_absolute() or relative.as_posix() != expected.as_posix():
+        raise StoreError(f"{field}.replay_artifact_path is not content-addressed in {source}")
+    artifact = artifact_root / relative
+    try:
+        artifact.parent.resolve(strict=False).relative_to(artifact_root)
+    except (OSError, ValueError) as exc:
+        raise StoreError(f"{field}.replay_artifact_path escapes the control directory in {source}") from exc
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(artifact, flags)
+    except OSError as exc:
+        raise StoreError(f"{field} replay artifact is unavailable at {artifact}: {exc}") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise StoreError(f"{field} replay artifact must be a mode-0600 regular file in {source}")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            raw = handle.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if hashlib.sha256(raw).hexdigest() != receipt.prompt_hash:
+        raise StoreError(f"{field} replay artifact content does not match prompt_hash in {source}")
+
+
+def _validate_codex_session(session: CodexSessionRefRecord | None, *, source: Path) -> None:
+    if session is None:
+        return
+    if not isinstance(session, CodexSessionRefRecord):
+        raise StoreError(f"codex_session must be a session reference in {source}")
+    _require_canonical_text(session.thread_id, field="codex_session.thread_id", source=source)
+    for field, value in (
+        ("codex_session.session_path", session.session_path),
+        ("codex_session.turn_id", session.turn_id),
+        ("codex_session.capture_status", session.capture_status),
+        ("codex_session.capture_method", session.capture_method),
+        ("codex_session.capture_missing_reason", session.capture_missing_reason),
+    ):
+        _require_canonical_optional_text(value, field=field, source=source)
+    if session.capture_status is not None and session.capture_status not in CODEX_CAPTURE_STATUSES:
+        raise StoreError(f"codex_session.capture_status is invalid in {source}")
+    if session.capture_method is not None and session.capture_method not in CODEX_CAPTURE_METHODS:
+        raise StoreError(f"codex_session.capture_method is invalid in {source}")
+    if session.capture_missing_reason is not None and session.capture_missing_reason not in CODEX_CAPTURE_MISSING_REASONS:
+        raise StoreError(f"codex_session.capture_missing_reason is invalid in {source}")
+    _require_timestamp(session.turn_started_at, field="codex_session.turn_started_at", source=source)
+    for field, value in (
+        ("codex_session.user_prompt_hash", session.user_prompt_hash),
+        ("codex_session.execution_prompt_hash", session.execution_prompt_hash),
+    ):
+        if value is not None and (not isinstance(value, str) or _SHA256.fullmatch(value) is None):
+            raise StoreError(f"{field} must be lowercase SHA-256 in {source}")
+    if session.capture_status == CODEX_CAPTURE_STATUS_CAPTURED:
+        if session.capture_method is None or session.capture_missing_reason is not None:
+            raise StoreError(f"captured codex_session requires method and no missing reason in {source}")
+    if session.capture_status == CODEX_CAPTURE_STATUS_MISSING:
+        if session.capture_missing_reason is None or session.capture_method is not None:
+            raise StoreError(f"missing codex_session requires reason and no capture method in {source}")
+    if session.capture_status is None and (
+        session.capture_method is not None or session.capture_missing_reason is not None
+    ):
+        raise StoreError(f"codex_session capture details require capture_status in {source}")
+
+
+def _validate_state(state: RuntimeState, *, source: Path, artifact_root: Path | None = None) -> None:
+    if state.schema_version != RUNTIME_SCHEMA_VERSION or state.store_version != RUNTIME_STORE_VERSION:
+        raise StoreError(f"unsupported runtime state {state.schema_version!r}/{state.store_version!r} in {source}")
+    resolved_artifact_root = (artifact_root or source.parent).resolve(strict=False)
+    if not isinstance(state.tasks, tuple):
+        raise StoreError(f"runtime tasks must be an immutable sequence in {source}")
+    if any(not isinstance(task, TaskRecord) for task in state.tasks):
+        raise StoreError(f"runtime tasks must contain task records in {source}")
+    ids = [task.task_id for task in state.tasks]
+    if len(set(ids)) != len(ids):
+        raise StoreError(f"duplicate task ids in {source}")
+    attempts: set[str] = set()
+    for task in state.tasks:
+        if not is_canonical_task_id(task.task_id):
+            raise StoreError(f"task id {task.task_id!r} is not a canonical globally unique id in {source}")
+        _require_canonical_text(task.title, field=f"task[{task.task_id}].title", source=source)
+        if not isinstance(task.status, str) or task.status not in TASK_STATUSES:
+            raise StoreError(f"task {task.task_id!r} has invalid status in {source}")
+        created_at = _require_timestamp(task.created_at, field=f"task[{task.task_id}].created_at", source=source)
+        updated_at = _require_timestamp(task.updated_at, field=f"task[{task.task_id}].updated_at", source=source)
+        if created_at is not None and updated_at is not None and updated_at < created_at:
+            raise StoreError(f"task {task.task_id!r} is updated before it is created in {source}")
+        for field, value in (
+            ("actor", task.actor),
+            ("note", task.note),
+            ("failure_class", task.failure_class),
+            ("recovery_action", task.recovery_action),
+        ):
+            _require_canonical_optional_text(value, field=f"task[{task.task_id}].{field}", source=source)
+        if type(task.prompt_issue) is not bool or type(task.operator_issue) is not bool:
+            raise StoreError(f"task {task.task_id!r} issue flags must be booleans in {source}")
+        if task.failure_class is not None and task.failure_class not in FAILURE_CLASSES:
+            raise StoreError(f"task {task.task_id!r} has invalid failure_class in {source}")
+        if not isinstance(task.attempts, tuple):
+            raise StoreError(f"task {task.task_id!r} attempts must be an immutable sequence in {source}")
+        if any(not isinstance(attempt, TaskAttemptRecord) for attempt in task.attempts):
+            raise StoreError(f"task {task.task_id!r} attempts must contain attempt records in {source}")
+        active = [attempt for attempt in task.attempts if attempt.status in ATTEMPT_ACTIVE_STATUSES]
+        if len(active) > 1:
+            raise StoreError(f"task {task.task_id!r} has multiple in-progress attempts in {source}")
+        if bool(active) != (task.status == TASK_STATUS_IN_PROGRESS):
+            raise StoreError(f"task {task.task_id!r} status and active attempt disagree in {source}")
+        successful = [attempt for attempt in task.attempts if attempt.status == ATTEMPT_STATUS_SUCCESS]
+        if successful and (len(successful) != 1 or successful[0] is not task.attempts[-1]):
+            raise StoreError(f"task {task.task_id!r} has execution after successful completion in {source}")
+        if successful and task.status != TASK_STATUS_DONE:
+            raise StoreError(f"task {task.task_id!r} completion status and successful attempt disagree in {source}")
+        if task.status == TASK_STATUS_DONE and task.attempts and not successful:
+            raise StoreError(f"task {task.task_id!r} is done without a successful retained attempt in {source}")
+        previous_started_at: datetime | None = None
+        for attempt in task.attempts:
+            if attempt.task_id != task.task_id:
+                raise StoreError(f"attempt {attempt.attempt_id!r} has conflicting task context in {source}")
+            if not isinstance(attempt.status, str) or attempt.status not in ATTEMPT_STATUSES:
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid status in {source}")
+            _require_canonical_text(
+                attempt.actor,
+                field=f"attempt[{attempt.attempt_id}].actor",
+                source=source,
+            )
+            if not is_canonical_attempt_id(attempt.attempt_id):
+                raise StoreError(
+                    f"attempt id {attempt.attempt_id!r} is not a canonical globally unique id in {source}"
+                )
+            if attempt.attempt_id in attempts:
+                raise StoreError(f"duplicate attempt id {attempt.attempt_id!r} in {source}")
+            attempts.add(attempt.attempt_id)
+            started_at = _require_timestamp(
+                attempt.started_at,
+                field=f"attempt[{attempt.attempt_id}].started_at",
+                source=source,
+                required=True,
+            )
+            ended_at = _require_timestamp(
+                attempt.ended_at,
+                field=f"attempt[{attempt.attempt_id}].ended_at",
+                source=source,
+                required=attempt.status != ATTEMPT_STATUS_IN_PROGRESS,
+            )
+            assert started_at is not None
+            if previous_started_at is not None and started_at < previous_started_at:
+                raise StoreError(f"task {task.task_id!r} attempts are not append-ordered in {source}")
+            previous_started_at = started_at
+            if attempt.status == ATTEMPT_STATUS_IN_PROGRESS and ended_at is not None:
+                raise StoreError(f"active attempt {attempt.attempt_id!r} has ended_at in {source}")
+            if ended_at is not None and ended_at < started_at:
+                raise StoreError(f"attempt {attempt.attempt_id!r} ends before it starts in {source}")
+            if attempt.execution_model is not None and (
+                not isinstance(attempt.execution_model, str)
+                or attempt.execution_model not in EXECUTION_MODELS
+            ):
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid execution_model in {source}")
+            if attempt.workspace_mode is not None and (
+                not isinstance(attempt.workspace_mode, str)
+                or attempt.workspace_mode not in WORKSPACE_MODES
+            ):
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid workspace_mode in {source}")
+            if attempt.worktree_role is not None and (
+                not isinstance(attempt.worktree_role, str)
+                or attempt.worktree_role not in WORKTREE_ROLES
+            ):
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid worktree_role in {source}")
+            if attempt.failure_class is not None and (
+                not isinstance(attempt.failure_class, str)
+                or attempt.failure_class not in FAILURE_CLASSES
+            ):
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid failure_class in {source}")
+            for field, value in (
+                ("summary", attempt.summary),
+                ("workspace_identity", attempt.workspace_identity),
+                ("workspace_mode", attempt.workspace_mode),
+                ("worktree_role", attempt.worktree_role),
+                ("worktree_path", attempt.worktree_path),
+                ("branch", attempt.branch),
+                ("target_branch", attempt.target_branch),
+                ("integration_branch", attempt.integration_branch),
+                ("execution_model", attempt.execution_model),
+                ("model", attempt.model),
+                ("reasoning_effort", attempt.reasoning_effort),
+                ("note", attempt.note),
+                ("failure_class", attempt.failure_class),
+                ("recovery_action", attempt.recovery_action),
+            ):
+                _require_canonical_optional_text(
+                    value,
+                    field=f"attempt[{attempt.attempt_id}].{field}",
+                    source=source,
+                )
+            if type(attempt.prompt_issue) is not bool or type(attempt.operator_issue) is not bool:
+                raise StoreError(f"attempt {attempt.attempt_id!r} issue flags must be booleans in {source}")
+            if attempt.elapsed_seconds is not None and (
+                type(attempt.elapsed_seconds) is not int or attempt.elapsed_seconds < 0
+            ):
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid elapsed_seconds in {source}")
+            for field, value in (
+                ("start_commit", attempt.start_commit),
+                ("commit", attempt.commit),
+                ("landed_commit", attempt.landed_commit),
+            ):
+                if value is not None and (
+                    not isinstance(value, str)
+                    or len(value) != 40
+                    or any(item not in "0123456789abcdef" for item in value)
+                ):
+                    raise StoreError(f"attempt {attempt.attempt_id!r} has invalid {field} in {source}")
+            _require_string_tuple(
+                attempt.changed_paths,
+                field=f"attempt[{attempt.attempt_id}].changed_paths",
+                source=source,
+            )
+            _require_string_tuple(
+                attempt.residuals,
+                field=f"attempt[{attempt.attempt_id}].residuals",
+                source=source,
+            )
+            _require_string_tuple(
+                attempt.followup_candidates,
+                field=f"attempt[{attempt.attempt_id}].followup_candidates",
+                source=source,
+            )
+            if not isinstance(attempt.validations, tuple) or any(
+                not isinstance(item, ValidationRecord)
+                or item.status not in VALIDATION_STATUSES
+                or not isinstance(item.name, str)
+                or not item.name.strip()
+                or item.name != item.name.strip()
+                for item in attempt.validations
+            ):
+                raise StoreError(f"attempt {attempt.attempt_id!r} has invalid validation evidence in {source}")
+            if attempt.setup_receipt is not None:
+                if not isinstance(attempt.setup_receipt, dict):
+                    raise StoreError(f"attempt {attempt.attempt_id!r} setup_receipt must be an object in {source}")
+                _normalize_json(
+                    attempt.setup_receipt,
+                    source=f"attempt[{attempt.attempt_id}].setup_receipt",
+                )
+            _validate_codex_session(attempt.codex_session, source=source)
+            _validate_prompt_receipt(
+                attempt.prompt_receipt,
+                field=f"attempt[{attempt.attempt_id}].prompt_receipt",
+                source=source,
+                artifact_root=resolved_artifact_root,
+            )
+            _validate_prompt_receipt(
+                attempt.user_prompt_receipt,
+                field=f"attempt[{attempt.attempt_id}].user_prompt_receipt",
+                source=source,
+                artifact_root=resolved_artifact_root,
+            )
 class JsonRuntimeStore:
     def load(self, path: Path) -> RuntimeState:
         try:
-            payload = _read_json_file(path)
+            payload = json.loads(
+                path.read_text(encoding="utf-8"),
+                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid number {value}")),
+            )
         except FileNotFoundError:
             return default_runtime_state()
-        schema_version = int(payload.get("schema_version") or RUNTIME_SCHEMA_VERSION)
-        store_version = _optional_text(payload.get("store_version")) or RUNTIME_STORE_VERSION
-        if (schema_version, store_version) not in _READABLE_RUNTIME_FORMATS:
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            raise StoreError(f"Invalid runtime store {path}: {exc}") from exc
+        if not isinstance(payload, Mapping):
+            raise StoreError(f"{path} must contain a JSON object")
+        schema = payload.get("schema_version")
+        version = payload.get("store_version")
+        if schema != RUNTIME_SCHEMA_VERSION or version != RUNTIME_STORE_VERSION:
             raise StoreError(
-                f"Unsupported runtime format schema_version={schema_version} store_version={store_version!r} in {path}"
+                f"Unsupported runtime store {schema!r}/{version!r} in {path}; run the one-shot store migration"
             )
-        raw_worksets = payload.get("worksets") or []
-        if not isinstance(raw_worksets, list):
-            raise StoreError(f"worksets must be a list in {path}")
-        worksets = tuple(_workset_runtime_from_payload(item, source=path) for item in raw_worksets if isinstance(item, Mapping))
-        if len(worksets) != len(raw_worksets):
-            raise StoreError(f"runtime worksets must contain only objects in {path}")
-        seen_workset_ids: set[str] = set()
-        for workset in worksets:
-            if workset.workset_id in seen_workset_ids:
-                raise StoreError(f"duplicate runtime workset {workset.workset_id!r} in {path}")
-            seen_workset_ids.add(workset.workset_id)
-        return RuntimeState(
-            schema_version=RUNTIME_SCHEMA_VERSION,
-            store_version=RUNTIME_STORE_VERSION,
-            worksets=worksets,
-        )
+        _reject_unknown_keys(payload, allowed=_RUNTIME_KEYS, field="runtime", source=path)
+        raw_tasks = payload.get("tasks")
+        if not isinstance(raw_tasks, list):
+            raise StoreError(f"tasks must be a list in {path}")
+        state = RuntimeState(schema, version, tuple(_task_from_payload(item, source=path) for item in raw_tasks))
+        _validate_state(state, source=path)
+        return state
 
     def save(self, path: Path, state: RuntimeState) -> None:
-        with exclusive_file_lock(path):
-            state_to_write = _merge_runtime_save_state(path, state)
-            self._save_unlocked(path, state_to_write)
-
-    def _save_unlocked(self, path: Path, state: RuntimeState) -> None:
-        atomic_write_text(path, json.dumps(runtime_state_to_payload(state), indent=2, sort_keys=True) + "\n")
+        if state.schema_version != RUNTIME_SCHEMA_VERSION or state.store_version != RUNTIME_STORE_VERSION:
+            raise StoreError("refusing to save an unsupported runtime state")
+        _validate_state(state, source=path)
+        try:
+            serialized = json.dumps(
+                runtime_state_to_payload(state),
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise StoreError(f"runtime state is not strict JSON: {exc}") from exc
+        atomic_write_text(path, serialized + "\n")
 
 
 def load_runtime_state(paths: BlackdogPaths, store: RuntimeStore | None = None) -> RuntimeState:
     return (store or JsonRuntimeStore()).load(paths.runtime_file)
 
 
-def save_runtime_state(paths: BlackdogPaths, state: RuntimeState, store: RuntimeStore | None = None) -> None:
-    (store or JsonRuntimeStore()).save(paths.runtime_file, state)
+def task_index(state: RuntimeState) -> dict[str, TaskRecord]:
+    return {task.task_id: task for task in state.tasks}
 
 
-def mutate_runtime_state(
-    paths: BlackdogPaths,
-    mutator: Callable[[RuntimeState], RuntimeState],
-    store: RuntimeStore | None = None,
-    *,
-    after_save: Callable[[RuntimeState], None] | None = None,
-    save_unchanged: bool = True,
-) -> RuntimeState:
-    """Load, mutate, and save runtime state while holding the runtime file lock.
-
-    ``after_save`` runs under the same lock after the replacement succeeds. It
-    is intentionally allowed to fail: callers that coordinate runtime state
-    with a second durable store can retry from the now-written runtime state.
-    ``save_unchanged=False`` lets those retry paths avoid replacing an already
-    canonical runtime file while still running the after-save repair callback.
-    """
-    runtime_store = store or JsonRuntimeStore()
-    with exclusive_file_lock(paths.runtime_file):
-        current = runtime_store.load(paths.runtime_file)
-        next_state = mutator(current)
-        if save_unchanged or next_state != current:
-            unlocked_save = getattr(runtime_store, "_save_unlocked", None)
-            if callable(unlocked_save):
-                unlocked_save(paths.runtime_file, next_state)
-            else:
-                runtime_store.save(paths.runtime_file, next_state)
-        if after_save is not None:
-            after_save(next_state)
-        return next_state
+def task_record(state: RuntimeState, task_id: str) -> TaskRecord | None:
+    return task_index(state).get(task_id)
 
 
-def _merge_runtime_save_state(path: Path, incoming: RuntimeState) -> RuntimeState:
-    """Preserve worksets written by another process between this caller's load and save."""
-    try:
-        current = JsonRuntimeStore().load(path)
-    except FileNotFoundError:
-        current = default_runtime_state()
-    if not current.worksets:
-        return incoming
-    incoming_by_id = {workset.workset_id: workset for workset in incoming.worksets}
-    merged: list[WorksetRuntime] = []
-    seen: set[str] = set()
-    for workset in current.worksets:
-        replacement = incoming_by_id.get(workset.workset_id)
-        merged.append(replacement or workset)
-        seen.add(workset.workset_id)
-    for workset in incoming.worksets:
-        if workset.workset_id not in seen:
-            merged.append(workset)
-    return RuntimeState(
-        schema_version=incoming.schema_version,
-        store_version=incoming.store_version,
-        worksets=tuple(merged),
-    )
+find_task = task_record
 
 
-def workset_runtime(state: RuntimeState, workset_id: str) -> WorksetRuntime | None:
-    for workset in state.worksets:
-        if workset.workset_id == workset_id:
-            return workset
+def task_attempts(state: RuntimeState, task_id: str) -> tuple[TaskAttemptRecord, ...]:
+    task = task_record(state, task_id)
+    return task.attempts if task is not None else ()
+
+
+def find_task_attempt(state: RuntimeState, attempt_id: str) -> TaskAttemptRecord | None:
+    for task in state.tasks:
+        for attempt in task.attempts:
+            if attempt.attempt_id == attempt_id:
+                return attempt
     return None
 
 
-def workset_claim(state: RuntimeState, workset_id: str) -> WorksetClaimRecord | None:
-    runtime = workset_runtime(state, workset_id)
-    if runtime is None:
-        return None
-    return runtime.workset_claim
+def active_task_attempt(state: RuntimeState, task_id: str) -> TaskAttemptRecord | None:
+    return next((item for item in reversed(task_attempts(state, task_id)) if item.status in ATTEMPT_ACTIVE_STATUSES), None)
 
 
-def task_claim_index(state: RuntimeState, workset_id: str) -> dict[str, TaskClaimRecord]:
-    runtime = workset_runtime(state, workset_id)
-    if runtime is None:
-        return {}
-    return {task_claim.task_id: task_claim for task_claim in runtime.task_claims}
+def latest_task_attempt(state: RuntimeState, task_id: str) -> TaskAttemptRecord | None:
+    attempts = task_attempts(state, task_id)
+    return attempts[-1] if attempts else None
 
 
-def task_state_index(state: RuntimeState, workset_id: str) -> dict[str, TaskRuntimeRecord]:
-    runtime = workset_runtime(state, workset_id)
-    if runtime is None:
-        return {}
-    return {task_state.task_id: task_state for task_state in runtime.task_states}
-
-
-def task_attempts_for_workset(state: RuntimeState, workset_id: str) -> tuple[TaskAttemptRecord, ...]:
-    runtime = workset_runtime(state, workset_id)
-    if runtime is None:
-        return ()
-    return runtime.attempts
-
-
-def find_task_attempt(state: RuntimeState, workset_id: str, attempt_id: str) -> TaskAttemptRecord | None:
-    for attempt in task_attempts_for_workset(state, workset_id):
-        if attempt.attempt_id == attempt_id:
-            return attempt
-    return None
-
-
-def active_task_attempt(state: RuntimeState, workset_id: str, task_id: str) -> TaskAttemptRecord | None:
-    for attempt in task_attempts_for_workset(state, workset_id):
-        if (
-            attempt.task_id == task_id
-            and attempt.status in ATTEMPT_ACTIVE_STATUSES
-            and attempt.ended_at is None
-        ):
-            return attempt
-    return None
-
-
-def latest_task_attempt(state: RuntimeState, workset_id: str, task_id: str) -> TaskAttemptRecord | None:
-    for attempt in reversed(task_attempts_for_workset(state, workset_id)):
-        if attempt.task_id == task_id:
-            return attempt
-    return None
-
-
-def coerce_task_runtime_records(
-    payload: Any,
-    *,
-    known_task_ids: set[str],
-    source_name: str,
-) -> tuple[TaskRuntimeRecord, ...]:
-    if payload is None:
-        return ()
-    source = Path(source_name)
-    if not isinstance(payload, list):
-        raise StoreError(f"task_states must be a list in {source}")
-    rows = tuple(_task_runtime_from_payload(item, source=source) for item in payload if isinstance(item, Mapping))
-    if len(rows) != len(payload):
-        raise StoreError(f"task_states must contain only objects in {source}")
-    for row in rows:
-        if row.task_id not in known_task_ids:
-            raise StoreError(f"task_states references unknown task {row.task_id!r} in {source}")
-    return rows
-
-
-def merge_workset_runtime(
-    state: RuntimeState,
-    *,
-    workset_id: str,
-    task_ids: set[str],
-    incoming_records: tuple[TaskRuntimeRecord, ...] | None,
-    incoming_workset_claim: WorksetClaimRecord | None | object = _UNSET,
-    incoming_task_claims: tuple[TaskClaimRecord, ...] | None = None,
-    released_task_claim_ids: tuple[str, ...] = (),
-    incoming_attempts: tuple[TaskAttemptRecord, ...] | None = None,
-) -> RuntimeState:
-    current_runtime = workset_runtime(state, workset_id)
-    preserved_workset_claim = current_runtime.workset_claim if current_runtime is not None else None
-    if incoming_workset_claim is not _UNSET:
-        preserved_workset_claim = incoming_workset_claim
-
-    preserved_records = dict(task_state_index(state, workset_id))
-    if incoming_records is not None:
-        for record in incoming_records:
-            preserved_records[record.task_id] = record
-    filtered_records = tuple(
-        preserved_records[task_id]
-        for task_id in sorted(task_ids)
-        if task_id in preserved_records
-    )
-
-    preserved_task_claims = {
-        task_claim.task_id: task_claim
-        for task_claim in (current_runtime.task_claims if current_runtime is not None else ())
-        if task_claim.task_id in task_ids
-    }
-    for task_id in released_task_claim_ids:
-        preserved_task_claims.pop(task_id, None)
-    if incoming_task_claims is not None:
-        for task_claim in incoming_task_claims:
-            if task_claim.task_id in task_ids:
-                preserved_task_claims[task_claim.task_id] = task_claim
-    filtered_task_claims = tuple(
-        preserved_task_claims[task_id]
-        for task_id in sorted(task_ids)
-        if task_id in preserved_task_claims
-    )
-
-    # Terminal attempts are durable execution history.  Planning membership
-    # updates may prune a quiescent task's current state, but must not erase the
-    # attempts used by audit and statistics surfaces.
-    preserved_attempts = [
-        attempt
-        for attempt in (current_runtime.attempts if current_runtime is not None else ())
-        if (
-            attempt.task_id in task_ids
-            or attempt.status not in ATTEMPT_ACTIVE_STATUSES
-        )
-    ]
-    attempt_positions = {attempt.attempt_id: index for index, attempt in enumerate(preserved_attempts)}
-    if incoming_attempts is not None:
-        for attempt in incoming_attempts:
-            if attempt.attempt_id in attempt_positions:
-                preserved_attempts[attempt_positions[attempt.attempt_id]] = attempt
-            else:
-                attempt_positions[attempt.attempt_id] = len(preserved_attempts)
-                preserved_attempts.append(attempt)
-    updated_workset = WorksetRuntime(
-        workset_id=workset_id,
-        workset_claim=preserved_workset_claim,
-        task_claims=filtered_task_claims,
-        task_states=filtered_records,
-        attempts=tuple(preserved_attempts),
-    )
-    remaining_worksets = [workset for workset in state.worksets if workset.workset_id != workset_id]
-    return RuntimeState(
-        schema_version=state.schema_version,
-        store_version=state.store_version,
-        worksets=tuple([*remaining_worksets, updated_workset]),
-    )
+def replace_task(state: RuntimeState, task: TaskRecord) -> RuntimeState:
+    found = False
+    rows: list[TaskRecord] = []
+    for current in state.tasks:
+        if current.task_id == task.task_id:
+            rows.append(task)
+            found = True
+        else:
+            rows.append(current)
+    if not found:
+        rows.append(task)
+    return replace(state, tasks=tuple(rows))
 
 
 def load_events(path: Path) -> tuple[dict[str, Any], ...]:
@@ -1194,17 +1134,37 @@ def load_events(path: Path) -> tuple[dict[str, Any], ...]:
     except FileNotFoundError:
         return ()
     rows: list[dict[str, Any]] = []
-    for lineno, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
             continue
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
+            row = json.loads(
+                raw,
+                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid number {value}")),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
             raise StoreError(f"Invalid JSONL row at {path}:{lineno}: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise StoreError(f"Event row at {path}:{lineno} must be a JSON object")
-        rows.append(payload)
+        if not isinstance(row, dict):
+            raise StoreError(f"Event row at {path}:{lineno} must be an object")
+        _reject_unknown_keys(row, allowed=_EVENT_KEYS, field=f"event row {lineno}", source=path)
+        event_id = row.get("event_id")
+        event_type = row.get("type")
+        actor = row.get("actor")
+        payload = row.get("payload")
+        if not isinstance(event_id, str) or not event_id.strip() or event_id != event_id.strip():
+            raise StoreError(f"Event row at {path}:{lineno} has invalid event_id")
+        _event_semantics(
+            event_type=event_type,
+            actor=actor,
+            payload=payload,
+            source=f"{path}:{lineno}",
+        )
+        if not isinstance(row.get("at"), str) or parse_iso(row["at"]) is None:
+            raise StoreError(f"Event row at {path}:{lineno} has invalid at timestamp")
+        rows.append(row)
+    event_ids = [row["event_id"] for row in rows]
+    if len(set(event_ids)) != len(event_ids):
+        raise StoreError(f"Event identities are not unique in {path}")
     return tuple(rows)
 
 
@@ -1217,20 +1177,66 @@ def append_event(
     event_id: str | None = None,
     durable: bool = False,
 ) -> dict[str, Any]:
+    normalized, _ = _event_semantics(
+        event_type=event_type,
+        actor=actor,
+        payload=payload,
+        source=str(event_id or event_type),
+    )
+    resolved_event_id = event_id or uuid.uuid4().hex
+    if not isinstance(resolved_event_id, str) or not resolved_event_id.strip():
+        raise StoreError("event_id must be a nonempty string")
     row = {
-        "event_id": event_id or uuid.uuid4().hex,
+        "event_id": resolved_event_id,
         "type": event_type,
         "at": now_iso(),
         "actor": actor,
-        "payload": dict(payload),
+        "payload": normalized,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
+    created = not path.exists()
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, sort_keys=True) + "\n")
+        handle.write(json.dumps(row, allow_nan=False, sort_keys=True) + "\n")
         if durable:
             handle.flush()
             os.fsync(handle.fileno())
+    if created and durable:
+        _fsync_directory(path.parent)
     return row
+
+
+def _normalize_json(value: Any, *, source: str) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise StoreError(f"{source} contains a non-finite number")
+        return value
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise StoreError(f"{source} contains a non-string key")
+        return {key: _normalize_json(item, source=f"{source}.{key}") for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_json(item, source=f"{source}[]") for item in value]
+    raise StoreError(f"{source} contains non-JSON value {type(value).__name__}")
+
+
+def _event_semantics(*, event_type: Any, actor: Any, payload: Any, source: str) -> tuple[dict[str, Any], str]:
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise StoreError(f"{source} has invalid type")
+    if not isinstance(actor, str) or not actor.strip():
+        raise StoreError(f"{source} has invalid actor")
+    if not isinstance(payload, Mapping):
+        raise StoreError(f"{source} payload must be an object")
+    normalized = _normalize_json(payload, source=f"{source}.payload")
+    semantics = json.dumps(
+        {"type": event_type, "actor": actor, "payload": normalized},
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return normalized, semantics
 
 
 def append_event_once(
@@ -1241,198 +1247,58 @@ def append_event_once(
     payload: Mapping[str, Any],
     actor: str = "blackdog",
 ) -> bool:
-    """Durably append one deterministically identified event.
-
-    Repeating the exact identity and semantic content is a no-op. Reusing an
-    identity for different content is a hard storage conflict. The timestamp is
-    intentionally excluded from the comparison because it is assigned only on
-    the first append.
-    """
     if not isinstance(event_id, str) or not event_id.strip():
-        raise StoreError("append_event_once requires a nonempty event_id")
-    resolved_event_id = event_id.strip()
-    if not isinstance(event_type, str) or not event_type.strip():
-        raise StoreError("append_event_once requires a nonempty event_type")
-    resolved_event_type = event_type
-    if not isinstance(actor, str) or not actor.strip():
-        raise StoreError("append_event_once requires a nonempty actor")
-    resolved_actor = actor
-    resolved_payload, candidate_semantics = _canonical_event_semantics(
-        event_type=resolved_event_type,
-        actor=resolved_actor,
-        payload=payload,
-        source=f"event {resolved_event_id!r}",
-    )
-
+        raise StoreError("append_event_once requires event_id")
+    normalized, semantics = _event_semantics(event_type=event_type, actor=actor, payload=payload, source=event_id)
     with exclusive_file_lock(path):
-        matches = [event for event in load_events(path) if event.get("event_id") == resolved_event_id]
+        matches = [row for row in load_events(path) if row.get("event_id") == event_id]
         if len(matches) > 1:
-            raise StoreError(f"Event identity {resolved_event_id!r} occurs more than once in {path}")
+            raise StoreError(f"Event identity {event_id!r} occurs more than once in {path}")
         if matches:
-            existing = matches[0]
-            _existing_payload, existing_semantics = _canonical_event_semantics(
-                event_type=existing.get("type"),
-                actor=existing.get("actor"),
-                payload=existing.get("payload"),
-                source=f"existing event {resolved_event_id!r} in {path}",
+            row = matches[0]
+            _, existing = _event_semantics(
+                event_type=row.get("type"), actor=row.get("actor"), payload=row.get("payload"), source=event_id
             )
-            if existing_semantics != candidate_semantics:
-                raise StoreError(
-                    f"Event identity {resolved_event_id!r} already exists with different content in {path}"
-                )
-            with path.open("a", encoding="utf-8") as handle:
-                handle.flush()
-                os.fsync(handle.fileno())
+            if existing != semantics:
+                raise StoreError(f"Event identity {event_id!r} already has different content")
             return False
-        append_event(
-            path,
-            event_id=resolved_event_id,
-            event_type=resolved_event_type,
-            actor=resolved_actor,
-            payload=resolved_payload,
-            durable=True,
-        )
+        append_event(path, event_id=event_id, event_type=event_type, actor=actor, payload=normalized, durable=True)
         return True
 
 
-def _canonical_event_semantics(
-    *,
-    event_type: Any,
-    actor: Any,
-    payload: Any,
-    source: str,
-) -> tuple[dict[str, Any], str]:
-    if not isinstance(event_type, str) or not event_type.strip():
-        raise StoreError(f"{source} has a non-string or empty event type")
-    if not isinstance(actor, str) or not actor.strip():
-        raise StoreError(f"{source} has a non-string or empty actor")
-    if not isinstance(payload, Mapping):
-        raise StoreError(f"{source} payload must be a JSON object")
-    normalized = _normalize_json_value(payload, source=f"{source} payload")
-    if not isinstance(normalized, dict):  # Defensive: Mapping normalizes to dict.
-        raise StoreError(f"{source} payload must be a JSON object")
-    semantics = json.dumps(
-        {
-            "actor": actor,
-            "payload": normalized,
-            "type": event_type,
-        },
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return normalized, semantics
-
-
-def _normalize_json_value(value: Any, *, source: str) -> Any:
-    """Return a strict JSON value without Python's loose equality semantics.
-
-    Tuple and list inputs normalize to the same JSON array. Numeric spellings
-    retain their JSON representation, so ``1``, ``1.0``, and ``true`` cannot
-    compare equal merely because Python considers some of them equal.
-    """
-    if value is None or isinstance(value, str) or isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise StoreError(f"{source} contains a non-finite JSON number")
-        return value
-    if isinstance(value, Mapping):
-        normalized: dict[str, Any] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise StoreError(f"{source} contains a non-string JSON object key")
-            normalized[key] = _normalize_json_value(item, source=f"{source}.{key}")
-        return normalized
-    if isinstance(value, (list, tuple)):
-        return [
-            _normalize_json_value(item, source=f"{source}[{index}]")
-            for index, item in enumerate(value)
-        ]
-    raise StoreError(f"{source} contains non-JSON value of type {type(value).__name__}")
-
-
-__all__ = [
-    "ATTEMPT_ACTIVE_STATUSES",
-    "ATTEMPT_STATUSES",
-    "ATTEMPT_STATUS_ABANDONED",
-    "ATTEMPT_STATUS_BLOCKED",
-    "ATTEMPT_STATUS_FAILED",
-    "ATTEMPT_STATUS_IN_PROGRESS",
-    "ATTEMPT_STATUS_SUCCESS",
-    "CODEX_CAPTURE_METHODS",
-    "CODEX_CAPTURE_METHOD_EXACT_ACTIVE_TURN",
-    "CODEX_CAPTURE_METHOD_EXACT_PROMPT_HASH",
-    "CODEX_CAPTURE_MISSING_REASONS",
-    "CODEX_CAPTURE_MISSING_REASON_CAPTURE_ERROR",
-    "CODEX_CAPTURE_MISSING_REASON_MULTIPLE_OPEN_TURNS",
-    "CODEX_CAPTURE_MISSING_REASON_NO_OPEN_TURN",
-    "CODEX_CAPTURE_MISSING_REASON_PROMPT_HASH_AMBIGUOUS",
-    "CODEX_CAPTURE_MISSING_REASON_SESSION_MISSING",
-    "CODEX_CAPTURE_MISSING_REASON_SESSION_PATH_MISSING",
-    "CODEX_CAPTURE_MISSING_REASON_SESSION_UNREADABLE",
-    "CODEX_CAPTURE_MISSING_REASON_THREAD_MISMATCH",
-    "CODEX_CAPTURE_STATUSES",
-    "CODEX_CAPTURE_STATUS_CAPTURED",
-    "CODEX_CAPTURE_STATUS_MISSING",
-    "EXECUTION_MODELS",
-    "EXECUTION_MODEL_DIRECT_WTAM",
-    "FAILURE_CLASSES",
-    "FAILURE_CLASS_ABANDONED",
-    "FAILURE_CLASS_DIRTY_PRIMARY",
-    "FAILURE_CLASS_MISSING_WORKTREE",
-    "FAILURE_CLASS_NO_CHANGES",
-    "FAILURE_CLASS_STALE_BRANCH",
-    "FAILURE_CLASS_SUPERSEDED",
-    "FAILURE_CLASS_UNKNOWN",
-    "PROMPT_MODES",
-    "PROMPT_MODE_RAW",
-    "PROMPT_MODE_SKILL",
-    "PROMPT_MODE_TUNED",
-    "RUNTIME_SCHEMA_VERSION",
-    "RUNTIME_STORE_VERSION",
-    "TASK_STATUSES",
-    "TASK_STATUS_BLOCKED",
-    "TASK_STATUS_CANCELED",
-    "TASK_STATUS_DONE",
-    "TASK_STATUS_IN_PROGRESS",
-    "TASK_STATUS_PLANNED",
-    "VALIDATION_STATUSES",
-    "VALIDATION_STATUS_FAILED",
-    "VALIDATION_STATUS_PASSED",
-    "VALIDATION_STATUS_SKIPPED",
-    "JsonRuntimeStore",
+__all__ = [name for name in globals() if name.isupper()] + [
+    "StoreError",
+    "ValidationRecord",
+    "PromptReceiptRecord",
     "CodexSessionRefRecord",
+    "TaskAttemptRecord",
+    "TaskRecord",
     "RuntimeState",
     "RuntimeStore",
-    "StoreError",
-    "TaskClaimRecord",
-    "TaskAttemptRecord",
-    "TaskRuntimeRecord",
-    "ValidationRecord",
-    "WorksetClaimRecord",
-    "WorksetRuntime",
+    "JsonRuntimeStore",
+    "new_task_id",
+    "new_attempt_id",
+    "is_canonical_task_id",
+    "is_canonical_attempt_id",
+    "now_iso",
+    "create_prompt_receipt",
+    "prompt_receipt_reference",
+    "parse_iso",
+    "atomic_write_text",
+    "exclusive_file_lock",
+    "default_runtime_state",
+    "task_record_to_payload",
+    "runtime_state_to_payload",
+    "load_runtime_state",
+    "task_index",
+    "task_record",
+    "find_task",
+    "task_attempts",
+    "find_task_attempt",
+    "active_task_attempt",
+    "latest_task_attempt",
+    "replace_task",
+    "load_events",
     "append_event",
     "append_event_once",
-    "atomic_write_text",
-    "coerce_task_runtime_records",
-    "create_prompt_receipt",
-    "default_runtime_state",
-    "find_task_attempt",
-    "load_events",
-    "load_runtime_state",
-    "merge_workset_runtime",
-    "mutate_runtime_state",
-    "now_iso",
-    "parse_iso",
-    "prompt_receipt_reference",
-    "save_runtime_state",
-    "task_claim_index",
-    "task_attempts_for_workset",
-    "task_state_index",
-    "workset_claim",
-    "workset_runtime",
 ]

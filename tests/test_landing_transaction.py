@@ -25,7 +25,6 @@ class LandingLedgerTests(CoreAuditTestCase):
         self.write_profile("Landing ledger")
         self.profile = self.load_test_profile()
         self.intent = LandingIntent(
-            workset_id="ledger-workset",
             task_id="LEDGER-1",
             attempt_id="LEDGER-1-attempt",
             actor="codex",
@@ -52,7 +51,6 @@ class LandingLedgerTests(CoreAuditTestCase):
     def _load(self):
         return load_landing_transaction(
             self.profile,
-            workset_id=self.intent.workset_id,
             task_id=self.intent.task_id,
             attempt_id=self.intent.attempt_id,
         )
@@ -129,7 +127,6 @@ class LandingLedgerTests(CoreAuditTestCase):
             payload={
                 "schema_version": LANDING_EVENT_SCHEMA_VERSION,
                 "transaction_id": self.intent.transaction_id,
-                "workset_id": self.intent.workset_id,
                 "task_id": self.intent.task_id,
                 "attempt_id": self.intent.attempt_id,
                 "phase": "source_prepared",

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from blackdog.codex_hooks import stamp_codex_task_context
-from blackdog_core.backlog import start_task, upsert_workset
-from blackdog_core.codex_sessions import codex_task_context_path
-from blackdog_core.state import CodexSessionRefRecord, create_prompt_receipt, load_events
+from blackdog.codex_sessions import codex_task_context_path
+from blackdog_core.state import CodexSessionRefRecord, create_prompt_receipt, load_events, new_task_id
+from blackdog_core.tasks import create_task, start_task
 from tests.core_audit_support import CoreAuditTestCase
 
 
@@ -13,20 +13,13 @@ class CodexHookTests(CoreAuditTestCase):
     def test_hook_stamp_records_active_attempt_context_without_prompt_text(self) -> None:
         self.write_profile("Hook Demo")
         profile = self.load_test_profile()
-        upsert_workset(
-            profile,
-            {
-                "id": "hook-workset",
-                "title": "Hook workset",
-                "tasks": [{"id": "TASK-1", "title": "Hook task"}],
-            },
-        )
+        task_id = new_task_id()
+        create_task(profile, task_id=task_id, title="Hook task")
         worktree_path = self.root / "task-worktree"
         worktree_path.mkdir()
         attempt = start_task(
             profile,
-            workset_id="hook-workset",
-            task_id="TASK-1",
+            task_id=task_id,
             actor="codex",
             prompt_receipt=create_prompt_receipt("Implement hook stamping."),
             worktree_path=str(worktree_path),
@@ -61,7 +54,7 @@ class CodexHookTests(CoreAuditTestCase):
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["hook"]["session_id"], "thread-hook")
         self.assertEqual(payload["hook"]["turn_id"], "turn-hook")
-        self.assertEqual(payload["active_attempt"]["workset_id"], "hook-workset")
+        self.assertEqual(payload["active_attempt"]["task_id"], task_id)
         self.assertEqual(payload["active_attempt"]["matched_by"], "worktree_path")
         self.assertNotIn("turn_classification", payload)
         self.assertIn("prompt_hash", payload["hook"])

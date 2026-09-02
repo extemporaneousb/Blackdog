@@ -10,6 +10,8 @@ import tempfile
 import time
 
 from blackdog_cli.main import main as blackdog_main
+from blackdog.contract import managed_skill_relative_path
+from blackdog_core.profile import load_profile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,12 +47,12 @@ def _timed_cli(name: str, *args: str) -> BenchmarkResult:
     payload = _run_cli(*args)
     total_ms = int((time.perf_counter() - started) * 1000)
     repo_payload = payload.get("repo")
-    worktree_payload = payload.get("worktree")
+    task_payload = payload.get("task")
     handlers: list[dict[str, object]] = []
     if isinstance(repo_payload, dict) and isinstance(repo_payload.get("handlers"), dict):
         handlers = list(repo_payload["handlers"].get("actions") or [])
-    if isinstance(worktree_payload, dict) and isinstance(worktree_payload.get("handlers"), dict):
-        handlers = list(worktree_payload["handlers"].get("actions") or [])
+    if isinstance(task_payload, dict) and isinstance(task_payload.get("setup_receipt"), dict):
+        handlers = list(task_payload["setup_receipt"].get("actions") or [])
     return BenchmarkResult(name=name, total_ms=total_ms, handler_actions=handlers)
 
 
@@ -64,8 +66,9 @@ def _init_repo(root: Path) -> None:
 
 
 def _commit_runtime_contract(root: Path) -> None:
+    skill_path = managed_skill_relative_path(load_profile(root))
     subprocess.run(
-        ["git", "-C", str(root), "add", "blackdog.toml", ".codex/skills/blackdog/SKILL.md"],
+        ["git", "-C", str(root), "add", "-A", "--", "blackdog.toml", str(skill_path), "AGENTS.md", ".codex"],
         check=True,
         capture_output=True,
         text=True,
@@ -78,22 +81,6 @@ def _commit_runtime_contract(root: Path) -> None:
     ).stdout.strip()
     if status:
         subprocess.run(["git", "-C", str(root), "commit", "-m", "Add Blackdog repo runtime"], check=True, capture_output=True, text=True)
-
-
-def _put_workset(root: Path, workset_id: str, task_id: str) -> None:
-    payload = {
-        "id": workset_id,
-        "title": workset_id,
-        "tasks": [{"id": task_id, "title": task_id, "intent": "benchmark worktree start"}],
-    }
-    _run_cli(
-        "workset",
-        "put",
-        "--project-root",
-        str(root),
-        "--json",
-        json.dumps(payload),
-    )
 
 
 def run_benchmarks() -> dict[str, object]:
@@ -125,40 +112,35 @@ def run_benchmarks() -> dict[str, object]:
             str(REPO_ROOT),
             "--json",
         )
+        _commit_runtime_contract(root)
 
-        _put_workset(root, "bench-cold", "BENCH-1")
         cold_start = _timed_cli(
-            "cold_worktree_start",
-            "worktree",
-            "start",
+            "cold_task_begin",
+            "task",
+            "begin",
             "--project-root",
             str(root),
-            "--workset",
-            "bench-cold",
-            "--task",
-            "BENCH-1",
             "--actor",
             "codex",
-            "--prompt",
-            "Benchmark cold worktree start.",
+            "--execution-prompt",
+            "Benchmark cold task begin.",
+            "--request",
+            "Benchmark cold task begin.",
             "--json",
         )
 
-        _put_workset(root, "bench-warm", "BENCH-2")
         warm_start = _timed_cli(
-            "warm_worktree_start",
-            "worktree",
-            "start",
+            "warm_task_begin",
+            "task",
+            "begin",
             "--project-root",
             str(root),
-            "--workset",
-            "bench-warm",
-            "--task",
-            "BENCH-2",
             "--actor",
             "codex",
-            "--prompt",
-            "Benchmark warm worktree start.",
+            "--execution-prompt",
+            "Benchmark warm task begin.",
+            "--request",
+            "Benchmark warm task begin.",
             "--json",
         )
 

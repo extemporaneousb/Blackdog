@@ -71,7 +71,6 @@ class BlackdogPaths:
     project_root: Path
     profile_file: Path
     control_dir: Path
-    planning_file: Path
     runtime_file: Path
     events_file: Path
     worktrees_dir: Path
@@ -215,7 +214,6 @@ def resolve_config_path(project_root: Path, value: str) -> Path:
 
 def _default_control_paths(control_dir: Path) -> dict[str, Path]:
     return {
-        "planning_file": control_dir / "planning.json",
         "runtime_file": control_dir / "runtime.json",
         "events_file": control_dir / "events.jsonl",
     }
@@ -509,12 +507,11 @@ def _paths_from_raw(
             return defaults[key]
         raise ConfigError(f"Profile is missing path keys: ['{key}']")
 
-    resolved_control_dir = control_dir or resolve_runtime_path("planning_file").parent
+    resolved_control_dir = control_dir or resolve_runtime_path("runtime_file").parent
     return BlackdogPaths(
         project_root=project_root,
         profile_file=(project_root / PROFILE_FILE_NAME).resolve(),
         control_dir=resolved_control_dir,
-        planning_file=resolve_runtime_path("planning_file"),
         runtime_file=resolve_runtime_path("runtime_file"),
         events_file=resolve_runtime_path("events_file"),
         worktrees_dir=_resolve_path_value(
@@ -576,7 +573,7 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
             )
 
     if "control_dir" not in raw_paths:
-        required_runtime = {"planning_file", "runtime_file", "events_file"}
+        required_runtime = {"runtime_file", "events_file"}
         missing_runtime = sorted(required_runtime - set(raw_paths))
         if missing_runtime:
             raise ConfigError(

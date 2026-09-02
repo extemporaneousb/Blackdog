@@ -7,7 +7,7 @@ Codex-session coverage.
 
 ## Packages
 
-- `blackdog_core`: durable profile, planning/runtime contracts, typed
+- `blackdog_core`: durable task runtime contract, typed
   semantics, and derived read models.
 - `blackdog`: product-layer WTAM orchestration and repo lifecycle workflows on
   top of the core contract.
@@ -74,12 +74,12 @@ workspace role before kept edits.
 
 - `blackdog repo analyze|bind|table|scaffold|install|update|refresh|archive|unarchive|unbind`
 - `blackdog local-repo add|list|remove`
-- `blackdog prompt preview|tune`
+- `blackdog prompt preview`
 - `blackdog attempts summary|table`
-- `blackdog codex coverage|history|hook`
+- `blackdog codex coverage|history|hook stamp`
 - `blackdog stats`
 - `blackdog task begin|show|recover|land|reconcile-landing|close|cancel|reopen|cleanup`
-- `blackdog worktree preflight|table|preview|start|show|land|close|cleanup`
+- `blackdog worktree preflight|table`
 - `blackdog summary`
 - `blackdog snapshot`
 

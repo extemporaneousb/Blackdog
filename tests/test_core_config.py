@@ -14,7 +14,6 @@ class CoreConfigTests(CoreAuditTestCase):
 
         self.assertEqual(profile.status, profile_module.PROJECT_STATUS_ACTIVE)
         self.assertEqual(profile.paths.control_dir, (self.root / ".git" / "blackdog").resolve())
-        self.assertEqual(profile.paths.planning_file, profile.paths.control_dir / "planning.json")
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
         self.assertEqual(profile.paths.worktrees_dir, (self.root.parent / f".worktrees-{self.root.name}").resolve())
@@ -49,7 +48,6 @@ class CoreConfigTests(CoreAuditTestCase):
         (self.root / "blackdog.toml").write_text(
             "[project]\nname = \"Demo\"\n\n"
             "[paths]\n"
-            "planning_file = \".git/coord/planning.json\"\n"
             "runtime_file = \".git/coord/runtime.json\"\n"
             "events_file = \".git/coord/events.jsonl\"\n\n"
             "[taxonomy]\n"
@@ -60,7 +58,6 @@ class CoreConfigTests(CoreAuditTestCase):
         profile = self.load_test_profile()
 
         self.assertEqual(profile.paths.control_dir, (self.root / ".git" / "coord").resolve())
-        self.assertEqual(profile.paths.planning_file, profile.paths.control_dir / "planning.json")
         self.assertEqual(profile.paths.runtime_file, profile.paths.control_dir / "runtime.json")
         self.assertEqual(profile.paths.events_file, profile.paths.control_dir / "events.jsonl")
         self.assertEqual(profile.validation_commands, ("make test",))
