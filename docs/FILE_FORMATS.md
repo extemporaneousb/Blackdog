@@ -459,10 +459,32 @@ Task-only schema 4 is an explicit format boundary:
 - Unknown or older stores fail closed without mutation.
 - Historical control directories are preserved as immutable archives when
   needed for audit.
-- Any one-shot converter exists only outside the active runtime and is removed
-  after cutover.
+- `blackdog repo migrate` is the explicit lifecycle boundary for supported older
+  stores; ordinary runtime readers never interpret legacy schemas. The command
+  archives original bytes and identity mappings before publishing schema 4.
 - Old event identities are never imported into the new ledger with changed
   semantics.
 
 This boundary preserves evidence while keeping the active runtime limited to
 current-format state.
+
+### Supported store migration
+
+`repo migrate` currently supports runtime schema 3 with its matching planning
+schema 1 when every task is terminal and all claims and retained worktrees are
+absent. It preserves completed task/attempt evidence with deterministic IDs,
+flattens legacy session-capture metadata, and validates existing content-addressed
+prompt artifacts using the normal schema-4 validator. It never invents completion
+or takes over an active claim. Other schemas and unfinished work fail closed.
+
+The default preview performs no target writes and returns counts, a source digest,
+archive location, and an exact guarded apply action. Under runtime/event locks,
+apply rechecks the digest, writes private original files, hashes and ID mappings
+under `migrations/<digest>/`, and records `migration-pending.json` before replacing
+active files. All normal runtime loads reject a pending migration. Replay validates
+archived bytes, publication hashes, mappings, and allowed intermediate file states
+before completing. Unexpected changes stop recovery without overwriting them.
+Original event IDs remain only in the archived ledger; the current ledger begins
+with one migration event. The old planning file is removed only after its archived
+copy and the new runtime are durable. Prompts and historical sidecars remain
+untouched. A completed retry is a no-op.

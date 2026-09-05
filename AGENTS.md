@@ -34,7 +34,7 @@ development.
 ## Shipped CLI
 
 - `blackdog init`
-- `blackdog repo analyze|bind|table|install|scaffold|update|refresh|archive|unarchive|unbind`
+- `blackdog repo analyze|bind|table|install|scaffold|update|refresh|migrate|archive|unarchive|unbind`
 - `blackdog local-repo add|list|remove`
 - `blackdog prompt preview`
 - `blackdog attempts summary|table`

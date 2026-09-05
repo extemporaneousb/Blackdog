@@ -78,6 +78,7 @@ from blackdog.wtam import (
     worktree_preflight,
 )
 from blackdog_core.tasks import TaskError
+from blackdog.store_migration import migrate_store
 from blackdog.codex_sessions import (
     CodexSessionError,
     build_codex_coverage,
@@ -96,7 +97,7 @@ from blackdog_core.snapshot import (
     render_attempts_table_text,
     render_summary_text,
 )
-from blackdog_core.state import FAILURE_CLASSES, PROMPT_MODES, StoreError, VALIDATION_STATUSES, ValidationRecord
+from blackdog_core.state import FAILURE_CLASSES, PROMPT_MODES, StoreError, StoreMigrationRequired, VALIDATION_STATUSES, ValidationRecord
 
 
 def _resolve_since_window(since: str | None, since_hours: float | None) -> str | None:
@@ -358,6 +359,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_repo = subparsers.add_parser("repo", help="Manage repo-local Blackdog install and contract surfaces")
     repo_subparsers = p_repo.add_subparsers(dest="repo_command", required=True)
+
+    p_repo_migrate = repo_subparsers.add_parser("migrate", help="Preview or apply a guarded legacy store migration")
+    p_repo_migrate.add_argument("--project-root", default=".")
+    p_repo_migrate.add_argument("--apply", action="store_true")
+    p_repo_migrate.add_argument("--expected-digest")
+    p_repo_migrate.add_argument("--json", action="store_true")
 
     p_repo_install = repo_subparsers.add_parser("install", help="Install or repair repo-local Blackdog runtime handlers")
     p_repo_install.add_argument("--project-root", default=".")
@@ -821,6 +828,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_repo_scaffold_text(result), end="")
             return 0
 
+        if args.command == "repo" and args.repo_command == "migrate":
+            result = migrate_store(
+                Path(args.project_root).resolve(),
+                apply=args.apply,
+                expected_digest=args.expected_digest,
+            )
+            _emit_json({"migration": result})
+            return 0
+
         if args.command == "repo" and args.repo_command == "update":
             result = update_repo(
                 Path(args.project_root).resolve(),
@@ -1074,6 +1090,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         raise TaskError(f"Unsupported command: {args.command}")
+    except StoreMigrationRequired as exc:
+        root = Path(getattr(args, "project_root", None) or ".").resolve()
+        argv = [str(root / ".VE/bin/blackdog"), "repo", "migrate", "--project-root", str(root), "--json"]
+        if getattr(args, "json", False):
+            _emit_json({"error": "store_migration_required", "next_action": {"kind": "command", "argv": argv}})
+        else:
+            import shlex
+            print(f"{exc}\nNext action: {shlex.join(argv)}", file=sys.stderr)
+        return 1
     except (
         TaskError,
         CodexHookError,

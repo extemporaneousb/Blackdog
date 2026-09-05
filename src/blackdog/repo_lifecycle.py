@@ -30,6 +30,7 @@ from blackdog_core.profile import (
     load_profile,
     write_default_profile,
 )
+from blackdog_core.state import JsonRuntimeStore
 
 
 AGENTS_FILE_NAME = "AGENTS.md"
@@ -1210,6 +1211,8 @@ def update_repo(
 ) -> RepoLifecycleResult:
     repo_root = _resolve_repo_root(project_root)
     profile = _require_profile(repo_root)
+    # Check compatibility before replacing launchers or updating managed sources.
+    JsonRuntimeStore().load(profile.paths.runtime_file)
     created: list[str] = []
     updated: list[str] = []
     removed: list[str] = []

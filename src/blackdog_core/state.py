@@ -197,6 +197,10 @@ class StoreError(RuntimeError):
     pass
 
 
+class StoreMigrationRequired(StoreError):
+    """An old or partially migrated store needs the explicit lifecycle route."""
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationRecord:
     name: str
@@ -1036,6 +1040,8 @@ def _validate_state(state: RuntimeState, *, source: Path, artifact_root: Path | 
             )
 class JsonRuntimeStore:
     def load(self, path: Path) -> RuntimeState:
+        if path.with_name("migration-pending.json").exists():
+            raise StoreMigrationRequired("Store migration is pending; run blackdog repo migrate --project-root PROJECT --json")
         try:
             payload = json.loads(
                 path.read_text(encoding="utf-8"),
@@ -1050,16 +1056,10 @@ class JsonRuntimeStore:
         schema = payload.get("schema_version")
         version = payload.get("store_version")
         if schema != RUNTIME_SCHEMA_VERSION or version != RUNTIME_STORE_VERSION:
-            raise StoreError(
-                f"Unsupported runtime store {schema!r}/{version!r} in {path}; run the one-shot store migration"
+            raise StoreMigrationRequired(
+                f"Unsupported runtime store {schema!r}/{version!r} in {path}; run blackdog repo migrate --project-root PROJECT --json"
             )
-        _reject_unknown_keys(payload, allowed=_RUNTIME_KEYS, field="runtime", source=path)
-        raw_tasks = payload.get("tasks")
-        if not isinstance(raw_tasks, list):
-            raise StoreError(f"tasks must be a list in {path}")
-        state = RuntimeState(schema, version, tuple(_task_from_payload(item, source=path) for item in raw_tasks))
-        _validate_state(state, source=path)
-        return state
+        return runtime_state_from_payload(payload, source=path)
 
     def save(self, path: Path, state: RuntimeState) -> None:
         if state.schema_version != RUNTIME_SCHEMA_VERSION or state.store_version != RUNTIME_STORE_VERSION:
@@ -1079,6 +1079,20 @@ class JsonRuntimeStore:
 
 def load_runtime_state(paths: BlackdogPaths, store: RuntimeStore | None = None) -> RuntimeState:
     return (store or JsonRuntimeStore()).load(paths.runtime_file)
+
+
+def runtime_state_from_payload(payload: Mapping[str, Any], *, source: Path) -> RuntimeState:
+    """Validate a current-format payload, including its private replay artifacts."""
+    _reject_unknown_keys(payload, allowed=_RUNTIME_KEYS, field="runtime", source=source)
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list):
+        raise StoreError(f"tasks must be a list in {source}")
+    state = RuntimeState(
+        payload.get("schema_version"), payload.get("store_version"),
+        tuple(_task_from_payload(item, source=source) for item in raw_tasks),
+    )
+    _validate_state(state, source=source)
+    return state
 
 
 def task_index(state: RuntimeState) -> dict[str, TaskRecord]:

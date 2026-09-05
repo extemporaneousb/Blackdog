@@ -435,3 +435,25 @@ mutation alias. Do not reconstruct these flows from internal functions.
 
 Direct task relationships, runtime independence from repo-local `.VE`, and
 self-contained release packaging remain separate future stages.
+
+## Store upgrades
+
+When an installed runtime rejects an older store, use the explicit migration
+preview. The CLI emits this concrete action for old or pending stores:
+
+```bash
+blackdog repo migrate --project-root /path/to/repo --json
+```
+
+Review the task/attempt counts and archive location, then execute the returned
+`next_action.argv`. Apply requires `--apply` and the preview's exact
+`--expected-digest`; never invent that digest. Re-run the same action after an
+interruption. Source drift or unfinished legacy work stops without discarding
+history. This release migrates terminal schema-3 stores with matching planning
+schema 1; active claims, retained workspaces, and other formats require resolution
+before cutover. Normal `summary` and task creation work after migration.
+
+`repo update` checks the existing store before changing launchers or managed
+sources. It returns the migration action on a version mismatch instead of
+installing an unusable launcher. This cannot prevent an externally shared source
+checkout from advancing independently; the same migration route repairs that case.
