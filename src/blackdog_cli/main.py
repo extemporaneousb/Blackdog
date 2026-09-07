@@ -235,6 +235,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_stats.add_argument("--until")
     p_stats.add_argument("--by", choices=["day"], default="day")
     p_stats.add_argument("--timezone", default="UTC")
+    p_stats.add_argument("--no-codex", action="store_true", help="Read only durable runtime and outcome evidence")
     p_stats.add_argument("--json", action="store_true")
     p_stats.add_argument("--tsv", action="store_true")
 
@@ -477,10 +478,51 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_cleanup.add_argument("--branch")
     p_task_cleanup.add_argument("--json", action="store_true")
 
-    p_worktree = subparsers.add_parser("worktree", help="WTAM branch-backed implementation workflow")
-    worktree_subparsers = p_worktree.add_subparsers(dest="worktree_command", required=True)
+    p_worktree = subparsers.add_parser(
+        "worktree", help="WTAM branch-backed implementation workflow"
+    )
+    worktree_subparsers = p_worktree.add_subparsers(
+        dest="worktree_command", required=True
+    )
 
-    p_worktree_preflight = worktree_subparsers.add_parser("preflight", help="Show the current WTAM worktree contract")
+    p_task_outcome = task_subparsers.add_parser(
+        "outcome",
+        help="Read or record typed task outcome evidence",
+        description="Read or record typed task outcome evidence. Output is always JSON.",
+    )
+    p_task_outcome.add_argument("--project-root", default=".")
+    p_task_outcome.add_argument("--task", required=True)
+    p_task_outcome.add_argument(
+        "--attempt", help="Required when recording; unused for reports"
+    )
+    p_task_outcome.add_argument(
+        "--actor", default="codex", help="Recording actor; unused for reports"
+    )
+    evidence_input = p_task_outcome.add_mutually_exclusive_group()
+    evidence_input.add_argument("--definition-file")
+    evidence_input.add_argument("--assessment-file")
+    evidence_input.add_argument("--measurement-file")
+    p_task_outcome.add_argument(
+        "--json", action="store_true", help="Explicitly request the default JSON output"
+    )
+
+    p_task_validate = task_subparsers.add_parser(
+        "validate",
+        help="Run configured validation with durable typed evidence",
+        description="Run configured validation with durable typed evidence. Output is always JSON.",
+    )
+    p_task_validate.add_argument("--project-root", default=".")
+    p_task_validate.add_argument("--task", required=True)
+    p_task_validate.add_argument("--attempt", required=True)
+    p_task_validate.add_argument("--actor", default="codex")
+    p_task_validate.add_argument("--run-id", required=True)
+    p_task_validate.add_argument(
+        "--json", action="store_true", help="Explicitly request the default JSON output"
+    )
+
+    p_worktree_preflight = worktree_subparsers.add_parser(
+        "preflight", help="Show the current WTAM worktree contract"
+    )
     p_worktree_preflight.add_argument("--project-root", default=".")
     p_worktree_preflight.add_argument("--json", action="store_true")
 
@@ -538,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
                 until=args.until,
                 by=args.by,
                 timezone_name=args.timezone,
+                no_codex=args.no_codex,
             )
             if args.json:
                 _emit_json({"stats": result.to_dict()})
@@ -1053,13 +1096,66 @@ def main(argv: list[str] | None = None) -> int:
                 print(render_task_state_text(payload), end="")
             return 0 if payload.operation_status == "succeeded" else 1
 
+        if args.command == "task" and args.task_command == "outcome":
+            from blackdog.evidence import record_outcome, read_document
+            from blackdog.outcome_reporting import outcome_report
+            from blackdog_core.evidence import ASSESSMENT, DEFINITION, INTERVENTION
+
+            profile = load_profile(Path(args.project_root).resolve())
+            supplied = [
+                (DEFINITION, args.definition_file),
+                (ASSESSMENT, args.assessment_file),
+                (INTERVENTION, args.measurement_file),
+            ]
+            selected = next(((kind, path) for kind, path in supplied if path), None)
+            if selected:
+                if args.attempt is None:
+                    raise TaskError("recording outcome evidence requires --attempt")
+                kind, path = selected
+                result = record_outcome(
+                    profile,
+                    task_id=args.task,
+                    attempt_id=args.attempt,
+                    actor=args.actor,
+                    kind=kind,
+                    document=read_document(Path(path)),
+                )
+            else:
+                result = outcome_report(profile, task_id=args.task)
+                if not result["tasks"]:
+                    raise TaskError("unknown task for outcome report")
+            _emit_json({"outcome": result})
+            return 0
+
+        if args.command == "task" and args.task_command == "validate":
+            from blackdog.evidence import validate_task
+
+            profile = load_profile(Path(args.project_root).resolve())
+            result = validate_task(
+                profile,
+                task_id=args.task,
+                attempt_id=args.attempt,
+                actor=args.actor,
+                run_id=args.run_id,
+            )
+            _emit_json({"validation": result})
+            return (
+                0
+                if result["status"] == "completed"
+                and result["receipt"]["run"]["all_passed"]
+                and result["applicability"]["status"] == "current"
+                else 1
+            )
+
         if args.command == "task" and args.task_command == "land":
             from blackdog.wtam import (
                 land_task,
                 render_land_text,
             )
 
-            profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
+            profile = load_profile(
+                Path(args.project_root).resolve() if args.project_root else None
+            )
             payload = land_task(
                 profile,
                 task_id=args.task,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import blackdog.codex_sessions as codex_sessions
 import blackdog.stats as stats
@@ -56,6 +57,8 @@ class ProductSurfaceTests(unittest.TestCase):
                 "cancel",
                 "reopen",
                 "cleanup",
+                "outcome",
+                "validate",
             },
         )
         self.assertEqual(set(_subcommands(commands["worktree"])), {"preflight", "table"})
@@ -100,6 +103,8 @@ class ProductSurfaceTests(unittest.TestCase):
                 ),
                 "close": "Close the current task without landing code",
                 "cleanup": "Remove a retained or leftover task workspace and delete its branch",
+                "outcome": "Read or record typed task outcome evidence",
+                "validate": "Run configured validation with durable typed evidence",
             },
         )
 
@@ -148,7 +153,9 @@ class ProductSurfaceTests(unittest.TestCase):
         module_path = Path(codex_sessions.__file__).resolve()
         self.assertEqual(module_path.parent.name, "blackdog")
         self.assertTrue(callable(codex_sessions.collect_codex_sessions))
-        self.assertIs(stats.collect_codex_turns, codex_sessions.collect_codex_turns)
+        with patch.object(codex_sessions, "collect_codex_turns", return_value=()) as collect:
+            self.assertEqual(stats.collect_codex_turns(since=None), ())
+            collect.assert_called_once_with(since=None)
 
 
 if __name__ == "__main__":

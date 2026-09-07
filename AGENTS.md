@@ -40,7 +40,7 @@ development.
 - `blackdog attempts summary|table`
 - `blackdog codex coverage|history|hook stamp`
 - `blackdog stats`
-- `blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup`
+- `blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup|outcome|validate`
 - `blackdog summary`
 - `blackdog snapshot`
 - `blackdog worktree preflight|table`

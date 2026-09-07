@@ -19,6 +19,20 @@ import time
 from typing import Any
 
 from blackdog.runtime_distribution import runtime_executable
+
+from blackdog.git_worktrees import (
+    TaskWorktreeProof as _AttemptWorktreeProof,
+    inspect_task_worktree as _attempt_worktree_proof,
+    _run_git,
+    _run_git_no_check,
+    _repo_root,
+    _git_common_dir,
+    _parse_worktree_list,
+    find_primary_worktree,
+    _find_worktree_for_branch,
+    _current_branch,
+)
+from blackdog.measurement import measure_task_phase
 from blackdog.contract import managed_skill_relative_path
 from blackdog.guards import (
     GuardTaskInput,
@@ -67,6 +81,7 @@ from blackdog.prompt_artifacts import persist_prompt_receipts, verify_prompt_art
 from blackdog.prompting import _compose_prompt
 from blackdog.validation import run_validation_commands
 from blackdog.codex_sessions import current_codex_runtime_context, current_codex_session_ref
+from blackdog_core.evidence import SetupMeasurement
 from blackdog_core.profile import RepoProfile, slugify
 from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
@@ -167,53 +182,6 @@ class WorktreeSpec:
         return asdict(self)
 
 
-@dataclass(frozen=True, slots=True)
-class _AttemptWorktreeProof:
-    valid: bool
-    path: str | None
-    branch: str | None
-    registered_path: str | None
-    head_commit: str | None
-    start_commit: str | None
-    reason: str | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-def _run_git(repo_root: Path, *args: str, input_text: str | None = None) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        input=input_text,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
-        raise WorktreeError(f"git {' '.join(args)} failed: {detail}")
-    return completed.stdout.strip()
-
-
-def _run_git_no_check(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def _repo_root(path: Path) -> Path:
-    return Path(_run_git(path, "rev-parse", "--show-toplevel")).resolve()
-
-
-def _git_common_dir(path: Path) -> Path:
-    root = _repo_root(path)
-    value = Path(_run_git(root, "rev-parse", "--git-common-dir"))
-    return value.resolve() if value.is_absolute() else (root / value).resolve()
-
-
 def command_workspace_root(profile: RepoProfile, *, cwd: Path | None = None) -> Path:
     """Use the caller's linked worktree only when it belongs to this repository."""
     configured = _repo_root(profile.paths.project_root)
@@ -225,31 +193,6 @@ def command_workspace_root(profile: RepoProfile, *, cwd: Path | None = None) -> 
     except WorktreeError:
         pass
     return configured
-
-
-def _parse_worktree_list(repo_root: Path) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    current: dict[str, str] = {}
-    for line in _run_git(repo_root, "worktree", "list", "--porcelain").splitlines():
-        if not line.strip():
-            if current:
-                rows.append(current)
-                current = {}
-            continue
-        key, _, value = line.partition(" ")
-        current[key] = value.strip()
-    if current:
-        rows.append(current)
-    return rows
-
-
-def find_primary_worktree(project_root: Path) -> Path:
-    root = _repo_root(project_root)
-    for row in _parse_worktree_list(root):
-        candidate = Path(str(row.get("worktree") or "")).resolve()
-        if (candidate / ".git").is_dir():
-            return candidate
-    raise WorktreeError("could not find the primary worktree")
 
 
 def _profile_rooted_at_primary_worktree(profile: RepoProfile) -> RepoProfile:
@@ -267,25 +210,9 @@ def _profile_rooted_at_primary_worktree(profile: RepoProfile) -> RepoProfile:
     )
 
 
-def _find_worktree_for_branch(project_root: Path, branch: str) -> Path | None:
-    root = _repo_root(project_root)
-    branch_ref = branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
-    for row in _parse_worktree_list(root):
-        if row.get("branch") == branch_ref:
-            return Path(row["worktree"]).resolve()
-    return None
-
-
 def find_worktree_for_branch(profile: RepoProfile, branch: str) -> str | None:
     path = _find_worktree_for_branch(profile.paths.project_root, branch)
     return str(path) if path is not None else None
-
-
-def _current_branch(repo_root: Path) -> str:
-    branch = _run_git(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
-    if branch == "HEAD":
-        raise WorktreeError(f"detached HEAD at {repo_root}")
-    return branch
 
 
 def _is_within(parent: Path, child: Path) -> bool:
@@ -707,6 +634,7 @@ def _setup_receipt(
     *,
     guard_receipt: Mapping[str, Any],
     skill_provenance: Mapping[str, Any] | None,
+    setup_elapsed_ms: int | None = None,
 ) -> dict[str, Any]:
     handler_payload = dict(handlers.to_dict())
     actions = handler_payload.get("actions")
@@ -743,6 +671,14 @@ def _setup_receipt(
         "script_policy": handler_payload.get("script_policy"),
         "probes": probes,
     }
+    receipt["setup_measurement"] = SetupMeasurement(
+        schema_version=1,
+        phase="setup",
+        unit="ms",
+        source="monotonic_clock",
+        value=setup_elapsed_ms,
+        missing_reason="not_recorded" if setup_elapsed_ms is None else None,
+    ).to_dict()
     if skill_provenance is not None:
         receipt["skill_provenance"] = dict(skill_provenance)
     return receipt
@@ -989,7 +925,9 @@ def begin_task_worktree(
                 raise TaskError("resume path conflicts with the retained task workspace")
             if branch is not None and branch != latest.branch:
                 raise TaskError("resume branch conflicts with the retained task workspace")
+            setup_started_ns = time.monotonic_ns()
             setup = validate_existing_worktree_handlers(profile, worktree_path=retained_path)
+            setup_elapsed_ms = (time.monotonic_ns() - setup_started_ns) // 1_000_000
             if not setup.ready:
                 raise TaskBeginPreflightError(setup.remediation or "retained task handlers are not ready")
             request_receipt, execution_receipt = _persist_prompt_receipts(
@@ -1025,6 +963,7 @@ def begin_task_worktree(
                     setup,
                     guard_receipt=guard_receipt,
                     skill_provenance=skill_provenance,
+                    setup_elapsed_ms=setup_elapsed_ms,
                 ),
                 attempt_id=task_resume_attempt_id(
                     task_id=task.task_id,
@@ -1082,7 +1021,9 @@ def begin_task_worktree(
     try:
         _run_git(primary, "worktree", "add", str(resolved_path), "-b", resolved_branch, base_ref)
         created = True
+        setup_started_ns = time.monotonic_ns()
         setup = execute_worktree_handlers(profile, worktree_path=resolved_path)
+        setup_elapsed_ms = (time.monotonic_ns() - setup_started_ns) // 1_000_000
         if not setup.ready:
             raise TaskBeginPreflightError(setup.remediation or "worktree handlers did not produce a ready workspace")
         request_receipt, execution_receipt = _persist_prompt_receipts(
@@ -1135,6 +1076,7 @@ def begin_task_worktree(
                 setup,
                 guard_receipt=guard_receipt,
                 skill_provenance=skill_provenance,
+                setup_elapsed_ms=setup_elapsed_ms,
             ),
         )
     except Exception as exc:
@@ -1312,69 +1254,6 @@ def _is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
         ).returncode
         == 0
     )
-
-
-def _attempt_worktree_proof(
-    profile: RepoProfile,
-    attempt: TaskAttemptRecord,
-) -> _AttemptWorktreeProof:
-    path = Path(attempt.worktree_path).resolve() if attempt.worktree_path else None
-    primary = find_primary_worktree(profile.paths.project_root)
-    branch = attempt.branch
-    registered = _find_worktree_for_branch(primary, branch) if branch else None
-
-    def result(
-        valid: bool,
-        reason: str | None,
-        *,
-        head: str | None = None,
-    ) -> _AttemptWorktreeProof:
-        return _AttemptWorktreeProof(
-            valid=valid,
-            path=str(path) if path is not None else None,
-            branch=branch,
-            registered_path=str(registered) if registered is not None else None,
-            head_commit=head,
-            start_commit=attempt.start_commit,
-            reason=reason,
-        )
-
-    if (
-        attempt.workspace_mode != WORKSPACE_MODE_GIT_WORKTREE
-        or attempt.worktree_role != WORKTREE_ROLE_TASK
-    ):
-        return result(False, "attempt does not declare the task Git-worktree contract")
-    if path is None or branch is None or attempt.start_commit is None:
-        return result(False, "attempt worktree, branch, or start lineage metadata is missing")
-    if path == primary:
-        return result(False, "attempt resolves to the primary worktree")
-    if registered != path:
-        return result(False, "attempt branch is not registered at the durable task-worktree path")
-    if not path.is_dir():
-        return result(False, "registered task-worktree path is missing")
-    try:
-        if _current_branch(path) != branch:
-            return result(False, "registered task worktree is checked out on a different branch")
-        head = _run_git(path, "rev-parse", "HEAD^{commit}")
-        branch_head = _run_git(primary, "rev-parse", f"refs/heads/{branch}^{{commit}}")
-        if head != branch_head:
-            return result(False, "task branch and registered worktree HEAD disagree", head=head)
-        lineage = _run_git_no_check(
-            primary,
-            "merge-base",
-            "--is-ancestor",
-            attempt.start_commit,
-            head,
-        )
-        if lineage.returncode != 0:
-            return result(
-                False,
-                "task worktree HEAD is not descended from its recorded start commit",
-                head=head,
-            )
-    except (OSError, WorktreeError) as exc:
-        return result(False, f"task-worktree Git proof failed: {exc}")
-    return result(True, None, head=head)
 
 
 def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
@@ -1751,6 +1630,7 @@ def show_task(profile: RepoProfile, *, task_id: str | None, cwd: Path | None = N
     )
 
 
+@measure_task_phase("recovery")
 def recover_task(
     profile: RepoProfile,
     *,
@@ -3007,6 +2887,7 @@ def _finish_landing_abort_result(
     )
 
 
+@measure_task_phase("landing")
 def land_task(
     profile: RepoProfile,
     *,
@@ -3810,6 +3691,7 @@ def _cleanup_workspace(
     return payload
 
 
+@measure_task_phase("cleanup")
 def cleanup_task(
     profile: RepoProfile,
     *,
@@ -3931,6 +3813,7 @@ def cleanup_task(
     )
 
 
+@measure_task_phase("close")
 def close_task(
     profile: RepoProfile,
     *,

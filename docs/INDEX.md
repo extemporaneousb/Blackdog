@@ -30,7 +30,7 @@ blackdog prompt preview
 blackdog attempts summary|table
 blackdog codex coverage|history|hook stamp
 blackdog repo analyze|bind|table|install|scaffold|update|refresh|archive|unarchive|unbind
-blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup
+blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup|outcome|validate
 blackdog worktree preflight|table
 ```
 
@@ -50,6 +50,8 @@ must never edit control files directly.
   archives, installation, upgrades, and optional project environments.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
+
+- [Outcome evidence](OUTCOME_EVIDENCE.md) — typed criteria, validation, measurement and reports.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied
 into managed repositories.

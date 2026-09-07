@@ -3,13 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 import hashlib
 import json
 import re
 import shutil
 import subprocess
 import tomllib
+
+if TYPE_CHECKING:
+    from blackdog.codex_sessions import CodexTurn
+
 
 from blackdog import __version__ as BLACKDOG_VERSION
 from blackdog.contract import LEGACY_MANAGED_SKILL_NAME, MANAGED_SKILLS_ROOT, managed_skill_name, managed_skill_relative_path
@@ -28,7 +32,6 @@ from blackdog.repo_scope import (
     reject_exact_profile_errors,
     resolve_repo_scope,
 )
-from blackdog.codex_sessions import CodexTurn, build_codex_coverage, collect_codex_turns
 from blackdog_core.profile import (
     DEFAULT_CONTROL_DIR,
     HANDLER_KIND_BLACKDOG_RUNTIME,
@@ -765,6 +768,7 @@ def _repo_table_row(
         try:
             if codex_read_error is not None:
                 raise RepoLifecycleError(codex_read_error)
+            from blackdog.codex_sessions import build_codex_coverage
             coverage = build_codex_coverage(profile, since=since, codex_turns=codex_turns)
             coverage_counts = coverage["counts"]
             row["codex_sessions"] = coverage_counts.get("codex_sessions", 0)
@@ -854,6 +858,7 @@ def build_repo_table(
     codex_read_error: str | None = None
     if include_codex:
         try:
+            from blackdog.codex_sessions import collect_codex_turns
             codex_turns = collect_codex_turns(since=since)
         except Exception as exc:
             codex_read_error = str(exc)

@@ -1142,6 +1142,15 @@ def replace_task(state: RuntimeState, task: TaskRecord) -> RuntimeState:
     return replace(state, tasks=tuple(rows))
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        value[key] = item
+    return value
+
+
 def load_events(path: Path) -> tuple[dict[str, Any], ...]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1154,6 +1163,7 @@ def load_events(path: Path) -> tuple[dict[str, Any], ...]:
         try:
             row = json.loads(
                 raw,
+                object_pairs_hook=_unique_json_object,
                 parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"invalid number {value}")),
             )
         except (json.JSONDecodeError, ValueError) as exc:

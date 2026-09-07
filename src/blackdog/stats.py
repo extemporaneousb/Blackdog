@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from blackdog.outcome_reporting import outcome_report
 from blackdog.local_registry import registered_project_roots
 from blackdog.observability import (
     LifecycleObservationReport,
@@ -18,15 +19,25 @@ from blackdog.observability import (
 from blackdog.repo_membership import attempt_cleanup_health_counts
 from blackdog.repo_lifecycle import RepoLifecycleError
 from blackdog.repo_scope import canonicalize_repo_scope, reject_exact_profile_errors, resolve_repo_scope
-from blackdog.codex_sessions import (
-    CodexTurn,
-    build_codex_coverage,
-    codex_project_roots,
-    collect_codex_turns,
-)
+
 from blackdog_core.profile import RepoProfile
 from blackdog_core.runtime_model import AttemptView, RuntimeModel, load_runtime_model
 from blackdog_core.state import now_iso, parse_iso
+
+if TYPE_CHECKING:
+    from blackdog.codex_sessions import CodexTurn
+
+
+def collect_codex_turns(**kwargs: Any) -> tuple[CodexTurn, ...]:
+    from blackdog.codex_sessions import collect_codex_turns as collect
+
+    return collect(**kwargs)
+
+
+def build_codex_coverage(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    from blackdog.codex_sessions import build_codex_coverage as build
+
+    return build(*args, **kwargs)
 
 
 STATS_BUCKET_COLUMNS = (
@@ -81,15 +92,20 @@ class StatsResult:
     until: str | None
     by: str
     timezone: str
-    summary: dict[str, int]
+    summary: dict[str, int | None]
     repos: tuple[dict[str, object], ...]
     buckets: tuple[dict[str, object], ...]
     deduped_project_roots: tuple[str, ...]
     lifecycle_observability: dict[str, object]
+    outcome_evidence: tuple[dict[str, Any], ...] = ()
+    provider_data_read: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return {
             "generated_at": now_iso(),
+            "outcome_evidence": list(self.outcome_evidence),
+            "provider_data_read": self.provider_data_read,
+            "provider_missing_reason": None if self.provider_data_read else "not_requested",
             "scope_source": self.scope_source,
             "supplied_roots": list(self.supplied_roots),
             "discovery_roots": list(self.discovery_roots),
@@ -117,6 +133,7 @@ def build_stats(
     until: str | None = None,
     by: str = "day",
     timezone_name: str = "UTC",
+    no_codex: bool = False,
 ) -> StatsResult:
     if by != "day":
         raise RepoLifecycleError("--by currently supports only day")
@@ -156,7 +173,7 @@ def build_stats(
 
     codex_since = since_dt.astimezone(timezone.utc).isoformat() if since_dt else None
     codex_until = until_dt.astimezone(timezone.utc).isoformat() if until_dt else None
-    all_codex_turns = collect_codex_turns(
+    all_codex_turns = () if no_codex else collect_codex_turns(
         since=codex_since,
         until=codex_until,
         cwd_roots=_stats_codex_cwd_roots(profiles),
@@ -185,7 +202,7 @@ def build_stats(
             until_dt=until_dt,
             local_tz=local_tz,
         )
-        coverage = build_codex_coverage(
+        coverage = {} if no_codex else build_codex_coverage(
             profile,
             since=codex_since,
             until=codex_until,
@@ -244,6 +261,11 @@ def build_stats(
         )
 
     buckets = tuple(_clean_bucket(bucket_rows[key]) for key in sorted(bucket_rows))
+    if no_codex:
+        for row in (summary, *repo_rows, *buckets):
+            for key in row:
+                if key.startswith("codex_"):
+                    row[key] = None
     scope_metadata = canonical_scope.metadata()
     return StatsResult(
         scope_source=str(scope_metadata["scope_source"]),
@@ -261,6 +283,17 @@ def build_stats(
         buckets=buckets,
         deduped_project_roots=tuple(scope_metadata["deduped_project_roots"]),
         lifecycle_observability=aggregate_lifecycle_observability(observation_reports),
+        outcome_evidence=tuple(
+            {
+                "project_name": p.project_name,
+                "project_root": str(p.paths.project_root),
+                **outcome_report(
+                    p, since=since_dt, until=until_dt, include_tasks=False
+                ),
+            }
+            for p in profiles
+        ),
+        provider_data_read=not no_codex,
     )
 
 
@@ -269,6 +302,12 @@ def render_stats_text(result: StatsResult) -> str:
     lines = [
         f"Blackdog stats ({result.timezone})",
         f"Repos: {len(result.project_roots)}",
+        "Outcome evidence: "
+        + ", ".join(
+            f"{r['project_name']}: {r['task_count']} tasks, {r['definitions_missing']} definitions missing, outcomes={r['outcomes']}"
+            for r in result.outcome_evidence
+        ),
+        f"Provider data read: {result.provider_data_read}",
         (
             "Tasks: "
             f"total={summary['tasks_total']} current={summary['current_tasks']} "
@@ -291,15 +330,19 @@ def render_stats_text(result: StatsResult) -> str:
             f"unlanded_terminal={summary['cleanup_unlanded_terminal_attempts']}"
         ),
         (
-            "Codex: "
-            f"sessions={summary['codex_sessions']} turns={summary['codex_user_turns']} "
-            f"linked_turns={summary['codex_linked_user_turns']} "
-            f"unlinked_turns={summary['codex_unlinked_user_turns']} "
-            f"implementation_like_unlinked={summary['codex_implementation_like_unlinked_turns']} "
-            f"linked_attempts={summary['codex_linked_attempts']} "
-            f"unlinked_attempts={summary['codex_unlinked_attempts']} "
-            f"tools={summary['codex_tool_calls']} "
-            f"tokens={summary['codex_total_tokens']}"
+            (
+                "Codex: "
+                f"sessions={summary['codex_sessions']} turns={summary['codex_user_turns']} "
+                f"linked_turns={summary['codex_linked_user_turns']} "
+                f"unlinked_turns={summary['codex_unlinked_user_turns']} "
+                f"implementation_like_unlinked={summary['codex_implementation_like_unlinked_turns']} "
+                f"linked_attempts={summary['codex_linked_attempts']} "
+                f"unlinked_attempts={summary['codex_unlinked_attempts']} "
+                f"tools={summary['codex_tool_calls']} "
+                f"tokens={summary['codex_total_tokens']}"
+            )
+            if result.provider_data_read
+            else "Codex: not requested; measurements unavailable"
         ),
     ]
     if result.deduped_project_roots:
@@ -375,6 +418,7 @@ def _looks_like_date(value: str) -> bool:
 
 
 def _stats_codex_cwd_roots(profiles: Iterable[RepoProfile]) -> tuple[Path, ...]:
+    from blackdog.codex_sessions import codex_project_roots
     roots: set[Path] = set()
     for profile in profiles:
         roots.update(codex_project_roots(profile))

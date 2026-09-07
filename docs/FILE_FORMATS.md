@@ -493,3 +493,25 @@ Original event IDs remain only in the archived ledger; the current ledger begins
 with one migration event. The old planning file is removed only after its archived
 copy and the new runtime are durable. Prompts and historical sidecars remain
 untouched. A completed retry is a no-op.
+
+## Typed outcome evidence (schema 1)
+
+The existing event ledger additionally accepts strictly validated
+`task.evidence.definition`, `task.evidence.assessment`,
+`task.evidence.intervention`, `task.evidence.validation-intent`,
+`task.evidence.validation-result`, and `task.evidence.phase` families.
+Each payload contains exactly `schema_version`, `task_id`, `attempt_id`, and
+`data`. Identities bind event kind, task, attempt and immutable request ID;
+measured clocks and durations are not identity inputs.
+
+Definitions are immutable, criterion assessments form predecessor chains, and
+validation results reference durable invocation intents. Machine command-result
+contracts live in `blackdog_core.validation`. Binding and outcome contracts
+live in `blackdog_core.evidence`; known malformed or unsupported records fail
+closed in outcome reporting. Setup receipts may include a schema-1
+`setup_measurement` with bounded handler duration in milliseconds, monotonic
+source and explicit missingness.
+
+This is an additive event format. Runtime v4 and historical bytes are preserved;
+there is no evidence backfill, task-store migration or new landing authority.
+[Outcome evidence](OUTCOME_EVIDENCE.md) documents field schemas and semantics.

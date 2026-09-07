@@ -315,3 +315,18 @@ interpreter or a language port requires separate evidence and is not shipped.
 
 The accepted [execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) defines
 this stage, typed outcome evidence, and the proof required for completion.
+
+## Outcome Evidence Boundary
+
+The task/attempt core now includes strict outcome and measurement contracts.
+An immutable criterion definition states what a task intends to achieve;
+append-only assessments describe the latest recorded evaluation. Machine
+validation records bind actual command observations to Git content, configured
+commands, timeout and a bounded runtime descriptor. The product owns execution;
+the core owns serialization, identity and reference integrity.
+
+These events share the canonical ledger and remain separate from lifecycle
+state. They cannot authorize landing, authenticate a reviewer, or turn a passed
+command into accepted intent. Reports distinguish execution, integration and
+caller-assessed outcome, and preserve unknown historical coverage. See
+[Outcome evidence](OUTCOME_EVIDENCE.md) for the exact boundary and interpretation.

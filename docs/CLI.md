@@ -458,3 +458,25 @@ before cutover. Normal `summary` and task creation work after migration.
 sources. It returns the migration action on a version mismatch instead of
 installing an unusable launcher. This cannot prevent an externally shared source
 checkout from advancing independently; the same migration route repairs that case.
+
+### Typed outcome and machine validation evidence
+
+`blackdog task outcome --task TASK_ID --json` reads typed outcome detail.
+`--attempt ATTEMPT_ID` plus exactly one of `--definition-file`,
+`--assessment-file`, or `--measurement-file` records bounded JSON evidence.
+`--actor` defaults to `codex`. Outcome and validation commands always return
+JSON. They record evidence and do not change task lifecycle state.
+
+`blackdog task validate --task TASK_ID --attempt ATTEMPT_ID --run-id RUN_ID
+--json` runs configured commands with an immutable invocation receipt. A
+completed retry does not rerun commands; interrupted invocations without
+results remain indeterminate. Failed, stale, unknown or indeterminate results
+exit nonzero. Receipt applicability does not authorize landing.
+
+`blackdog stats --no-codex --json` reads runtime and typed outcome evidence
+without provider history. Its compact outcome cohorts expose comparable
+identities, sample denominators and missingness; per-task detail is available
+through `task outcome`.
+
+See [Outcome evidence](OUTCOME_EVIDENCE.md) for complete input schemas,
+provenance boundaries, correction semantics and timing interpretation.
