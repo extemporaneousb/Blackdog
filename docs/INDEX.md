@@ -46,6 +46,8 @@ must never edit control files directly.
 - [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
 - [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — accepted next-stage
   decisions, worker sequence, and acceptance evidence; implementation is pending.
+- [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
+  checks and comparable measurement conditions.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied
 into managed repositories.
