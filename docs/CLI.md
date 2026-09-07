@@ -6,7 +6,8 @@ available. Agents should prefer JSON for lifecycle control.
 
 ## Invocation Rules
 
-- Use the current checkout's `./.VE/bin/blackdog` when present.
+- Use the installed standalone executable; Blackdog source development uses
+  `./scripts/blackdog`. Use the exact workspace executable in the task receipt.
 - `--project-root` defaults to the current directory unless documented
   otherwise.
 - Never edit `runtime.json`, `events.jsonl`, prompt artifacts, or transaction
@@ -433,8 +434,8 @@ The CLI intentionally has no hidden task authoring, automatic subsequent-task
 selection, prompt rewriting, provider chat launcher, or low-level worktree
 mutation alias. Do not reconstruct these flows from internal functions.
 
-Direct task relationships, runtime independence from repo-local `.VE`, and
-self-contained release packaging remain separate future stages.
+Direct task relationships remain deferred. Runtime independence and standalone
+Python release packaging are shipped; see [runtime distribution](RUNTIME_DISTRIBUTION.md).
 
 ## Store upgrades
 

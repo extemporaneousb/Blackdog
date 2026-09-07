@@ -387,8 +387,12 @@ tell agents to select relevant entries; listing a document does not inject its
 text into every prompt.
 
 Each handler has an ID, kind, enabled state, and kind-specific setup fields.
-Handlers own target-repository environment setup. Their effective actions and
-probes are recorded on attempts.
+The default Blackdog handler selects `source_mode = "installed-runtime"` and
+needs no Python project handler. It stores release archives under the configured
+control root. Explicit Python and legacy source handlers retain their existing
+configuration. Effective setup actions and probes are recorded on attempts.
+Release archives carry a versioned source manifest; their SHA-256 filenames bind
+exact recovery executables. See [runtime distribution](RUNTIME_DISTRIBUTION.md).
 
 Each guard has a unique ID, phase, command, timeout, required flag, and optional
 message. Guard commands receive bounded task inputs and return typed pass or
@@ -404,7 +408,8 @@ Repository lifecycle commands may create or maintain:
 - `AGENTS.md` managed contract block
 - `.codex/skills/<repo-slug>/SKILL.md`
 - Managed skill metadata
-- A repo-local launcher and environment artifacts configured by handlers
+- Immutable control-root release archives and their selected runtime reference
+- Optional project environment artifacts configured by explicit handlers
 
 Generated skills route the agent to task commands and contain no lifecycle
 implementation.

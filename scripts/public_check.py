@@ -54,6 +54,10 @@ EMAIL_RE = re.compile(
     r"(?![A-Za-z0-9.-])"
 )
 PUBLIC_EXAMPLE_DOMAINS = frozenset({"example.com", "example.net", "example.org"})
+PINNED_ACTION_RE = re.compile(
+    r"^\s*-\s+uses:\s+actions/(?:checkout|setup-python|upload-artifact)@[0-9a-f]{40}(?=\s|$)",
+    re.MULTILINE,
+)
 
 
 def _run_git(root: Path, *args: str) -> bytes:
@@ -150,6 +154,11 @@ def _scan_hashed_markers(
 
 def _scan_generic_private_content(data: bytes, path: str) -> list[Violation]:
     text = data.decode("utf-8", errors="replace")
+    action_refs = (
+        tuple(match.span() for match in PINNED_ACTION_RE.finditer(text))
+        if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))
+        else ()
+    )
     violations: list[Violation] = []
     for match in HOME_PATH_RE.finditer(text):
         violations.append(
@@ -161,6 +170,8 @@ def _scan_generic_private_content(data: bytes, path: str) -> list[Violation]:
         )
     for match in EMAIL_RE.finditer(text):
         if match.group(2).lower() in PUBLIC_EXAMPLE_DOMAINS:
+            continue
+        if any(start <= match.start() and match.end() <= end for start, end in action_refs):
             continue
         violations.append(
             Violation(

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import blackdog.wtam as wtam
 import blackdog_core.tasks as core_tasks
+from blackdog.runtime_distribution import install_runtime
 from blackdog.contract import managed_skill_relative_path
 from blackdog.landing import load_landing_transaction
 from blackdog.prompt_artifacts import persist_prompt_receipts
@@ -954,9 +955,7 @@ class ProductLifecycleTests(unittest.TestCase):
 
         try:
             task, _attempt = repo.start()
-            primary_launcher = repo.root / ".VE" / "bin" / "blackdog"
-            primary_launcher.parent.mkdir(parents=True)
-            primary_launcher.write_text("surviving launcher fixture\n", encoding="utf-8")
+            primary_launcher = install_runtime(repo.profile)
             task_profile = load_profile(repo.worktree)
             kwargs = {
                 "task_id": task.task_id,

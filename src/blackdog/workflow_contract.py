@@ -181,15 +181,15 @@ COMMAND_INVENTORY_SECTIONS = (
 
 AGENT_WORKFLOW = AgentWorkflow(
     begin_command=(
-        "./.VE/bin/blackdog task begin --project-root . --actor codex "
+        "blackdog task begin --project-root . --actor codex "
         "--execution-prompt-file \"$execution_prompt_file\" --prompt-mode skill "
         "--request-file \"$request_file\" --json"
     ),
     land_command=(
-        './.VE/bin/blackdog task land --project-root . --summary "$completion_summary" '
+        'blackdog task land --project-root . --summary "$completion_summary" '
         '"${validation_args[@]}" --json'
     ),
-    preflight_command="./.VE/bin/blackdog worktree preflight --project-root .",
+    preflight_command="blackdog worktree preflight --project-root .",
 )
 
 

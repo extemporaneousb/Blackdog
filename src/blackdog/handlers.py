@@ -10,6 +10,7 @@ import sys
 import time
 import tomllib
 
+from blackdog.errors import BlackdogError
 from blackdog_core.profile import (
     BlackdogRuntimeHandlerConfig,
     HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE,
@@ -17,6 +18,7 @@ from blackdog_core.profile import (
     HANDLER_KIND_BLACKDOG_RUNTIME,
     HANDLER_KIND_PYTHON_OVERLAY_VENV,
     HANDLER_SCRIPT_POLICY_ROOT_BIN_FALLBACK,
+    HANDLER_SOURCE_MODE_INSTALLED_RUNTIME,
     HANDLER_SOURCE_MODE_LOCAL_OVERRIDE,
     HANDLER_SOURCE_MODE_MANAGED_CHECKOUT,
     HANDLER_SOURCE_MODE_TARGET_REPO,
@@ -25,6 +27,9 @@ from blackdog_core.profile import (
     RepoProfile,
     resolve_config_path,
 )
+
+
+from blackdog.runtime_distribution import install_runtime, installed_runtime
 
 
 DEFAULT_SOURCE_REMOTE = "https://github.com/extemporaneousb/Blackdog.git"
@@ -49,7 +54,7 @@ _ROOT_BIN_FALLBACK_EXCLUDES = {
 _WORKTREE_EDITABLE_OVERLAY = "blackdog-worktree-editables.pth"
 
 
-class HandlerError(RuntimeError):
+class HandlerError(BlackdogError):
     pass
 
 
@@ -803,13 +808,69 @@ def _blackdog_launcher_text(python_path: Path, *, source_root: Path | None) -> s
     )
 
 
+def _installed_runtime_handler(
+    config: BlackdogRuntimeHandlerConfig,
+    context: _HandlerContext,
+    *,
+    execute: bool,
+) -> _HandlerStepResult:
+    canonical_launcher = context.profile.paths.control_dir / "bin" / "blackdog"
+    if config.launcher_path:
+        launcher = _resolve_handler_path(context.project_root, context.project_root, config.launcher_path)
+        if launcher.resolve() != canonical_launcher.resolve():
+            raise HandlerError("installed-runtime launcher_path must name the control root's bin/blackdog")
+    archive = installed_runtime(context.profile)
+    if execute:
+        started = time.perf_counter()
+        archive = install_runtime(
+            context.profile,
+            source_root=context.source_root_override if context.operation in {"repo-install", "repo-update"} else None,
+            update=context.operation == "repo-update",
+        )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+    else:
+        elapsed_ms = None
+    source_root = context.worktree_path or context.project_root
+    development = _looks_like_blackdog_source_checkout(context.project_root)
+    source_launcher = source_root / "scripts" / "blackdog"
+    required_source_launcher = (
+        source_launcher
+        if execute or context.operation == "worktree-adopt"
+        else context.project_root / "scripts" / "blackdog"
+    )
+    if development and not required_source_launcher.is_file():
+        raise HandlerError("Blackdog development checkout is missing scripts/blackdog")
+    selected = source_launcher if development else archive or canonical_launcher
+    action = HandlerAction(
+        handler_id=config.handler_id,
+        kind=config.kind,
+        action="install-runtime-snapshot",
+        target_path=str(archive or canonical_launcher),
+        status=HANDLER_STATUS_VALIDATED if archive is not None else HANDLER_STATUS_PLANNED,
+        message="immutable Blackdog runtime, independent of project Python environments",
+        elapsed_ms=elapsed_ms,
+    )
+    return _HandlerStepResult(
+        ready=True,
+        actions=(action,),
+        state=_BlackdogRuntimeState(
+            blackdog_path=selected,
+            source_root=source_root if development else None,
+            source_mode=HANDLER_SOURCE_MODE_TARGET_REPO if development else HANDLER_SOURCE_MODE_INSTALLED_RUNTIME,
+            runtime_mode=HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE if development else "release-archive",
+        ),
+    )
+
+
 def _preview_blackdog_runtime_handler(
     config: BlackdogRuntimeHandlerConfig,
     context: _HandlerContext,
     prior_state: _PythonOverlayState | None,
 ) -> _HandlerStepResult:
+    if config.source_mode == HANDLER_SOURCE_MODE_INSTALLED_RUNTIME:
+        return _installed_runtime_handler(config, context, execute=False)
     if prior_state is None:
-        raise HandlerError("blackdog-runtime requires the python handler output")
+        raise HandlerError("legacy blackdog-runtime source modes require a Python handler")
     base_root = context.worktree_path or context.project_root
     launcher_path = _resolve_handler_path(context.project_root, base_root, config.launcher_path)
     source_root, source_mode, source_actions, remediation = _ensure_managed_source_checkout(context, config)
@@ -861,6 +922,9 @@ def _execute_blackdog_runtime_handler(
     context: _HandlerContext,
     prior_state: _PythonOverlayState | None,
 ) -> _HandlerStepResult:
+    if config.source_mode == HANDLER_SOURCE_MODE_INSTALLED_RUNTIME:
+        return _installed_runtime_handler(config, context, execute=True)
+    install_runtime(context.profile)
     preview = _preview_blackdog_runtime_handler(config, context, prior_state)
     state = preview.state
     if not isinstance(state, _BlackdogRuntimeState):
@@ -1226,8 +1290,31 @@ def validate_existing_worktree_handlers(
                 if not fallbacks_valid:
                     blockers.append("validate-root-bin-fallback")
         elif handler.kind == HANDLER_KIND_BLACKDOG_RUNTIME:
-            if not isinstance(handler, BlackdogRuntimeHandlerConfig) or python_state is None:
-                raise HandlerError("blackdog-runtime requires validated Python handler state")
+            if not isinstance(handler, BlackdogRuntimeHandlerConfig):
+                raise HandlerError("blackdog-runtime handler has an invalid type")
+            if handler.source_mode == HANDLER_SOURCE_MODE_INSTALLED_RUNTIME:
+                retained = _installed_runtime_handler(handler, context, execute=False)
+                runtime_state = retained.state
+                archive = installed_runtime(context.profile)
+                valid = archive is not None
+                if valid:
+                    try:
+                        _run_command(str(runtime_state.blackdog_path), "--help")
+                    except HandlerError:
+                        valid = False
+                actions.append(HandlerAction(
+                    handler_id=handler.handler_id,
+                    kind=handler.kind,
+                    action="validate-runtime-snapshot",
+                    target_path=str(runtime_state.blackdog_path),
+                    status=HANDLER_STATUS_VALIDATED if valid else HANDLER_STATUS_BLOCKED,
+                    message="validate retained standalone Blackdog runtime",
+                ))
+                if not valid:
+                    blockers.append("validate-runtime-snapshot")
+                continue
+            if python_state is None:
+                raise HandlerError("legacy blackdog-runtime requires validated Python handler state")
             preview = _preview_blackdog_runtime_handler(handler, context, python_state)
             if not isinstance(preview.state, _BlackdogRuntimeState):
                 raise HandlerError("blackdog-runtime produced an invalid retained state")

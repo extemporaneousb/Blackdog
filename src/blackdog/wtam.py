@@ -18,6 +18,7 @@ import subprocess
 import time
 from typing import Any
 
+from blackdog.runtime_distribution import runtime_executable
 from blackdog.contract import managed_skill_relative_path
 from blackdog.guards import (
     GuardTaskInput,
@@ -115,8 +116,8 @@ from blackdog_core.tasks import (
 
 
 WTAM_WORKTREE_VE_NOTE = (
-    ".VE is unversioned and bound to this worktree path; bootstrap one per "
-    "worktree and do not reuse another worktree's .VE."
+    "Blackdog runs independently of .VE. Explicit project Python environments "
+    "remain bound to their worktree; never copy virtual environments."
 )
 WORKSPACE_MODE_GIT_WORKTREE = "git-worktree"
 WORKTREE_ROLE_PRIMARY = "primary"
@@ -1247,7 +1248,7 @@ def worktree_contract(
         if attempt.status == ATTEMPT_STATUS_IN_PROGRESS
     )
     role = WORKTREE_ROLE_PRIMARY if current == primary else WORKTREE_ROLE_TASK if task_branch else WORKTREE_ROLE_LINKED
-    blackdog_path = current / ".VE" / "bin" / "blackdog"
+    blackdog_path = Path(runtime_executable(profile.paths.project_root, profile=profile))
     return {
         "workspace_mode": workspace_mode or WORKSPACE_MODE_GIT_WORKTREE,
         "current_worktree": str(current),
@@ -1421,8 +1422,7 @@ def build_worktree_table(profile: RepoProfile) -> dict[str, Any]:
 
 
 def _task_executable(profile: RepoProfile) -> str:
-    local = profile.paths.project_root / ".VE" / "bin" / "blackdog"
-    return str(local) if local.is_file() else "blackdog"
+    return runtime_executable(profile.paths.project_root, profile=profile)
 
 
 def _resume_begin_argv(profile: RepoProfile, task: TaskRecord, attempt: TaskAttemptRecord) -> tuple[str, ...] | None:

@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import tomllib
 
+from blackdog.errors import BlackdogError
+from blackdog.runtime_distribution import installed_runtime
 from blackdog.contract import (
     LEGACY_MANAGED_SKILL_NAME,
     legacy_managed_skill_relative_path,
@@ -25,6 +27,7 @@ from blackdog.workflow_contract import (
 from blackdog_core.profile import (
     RepoProfile,
     ConfigError,
+    resolve_config_path,
     suggest_default_doc_routing,
     ensure_default_handlers_in_profile,
     load_profile,
@@ -61,7 +64,7 @@ _SKIPPED_SCAN_DIRS = {
 }
 
 
-class RepoLifecycleError(RuntimeError):
+class RepoLifecycleError(BlackdogError):
     pass
 
 
@@ -446,7 +449,7 @@ def _shell_command(*parts: str) -> str:
 
 
 def _recommended_install_command(repo_root: Path) -> str:
-    parts = ["./.VE/bin/blackdog", "repo", "install", "--project-root", str(repo_root)]
+    parts = ["blackdog", "repo", "install", "--project-root", str(repo_root)]
     source_root = _stable_blackdog_source_root()
     if source_root is not None and source_root != repo_root:
         parts.extend(["--source-root", str(source_root)])
@@ -454,11 +457,11 @@ def _recommended_install_command(repo_root: Path) -> str:
 
 
 def _recommended_refresh_command(repo_root: Path) -> str:
-    return _shell_command("./.VE/bin/blackdog", "repo", "refresh", "--project-root", str(repo_root))
+    return _shell_command("blackdog", "repo", "refresh", "--project-root", str(repo_root))
 
 
 def _recommended_scaffold_install_command(repo_root: Path, *, source_root: str | None) -> str:
-    parts = ["./.VE/bin/blackdog", "repo", "install", "--project-root", str(repo_root)]
+    parts = ["blackdog", "repo", "install", "--project-root", str(repo_root)]
     if source_root:
         parts.extend(["--source-root", str(Path(source_root).resolve())])
     else:
@@ -538,7 +541,7 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         "This section is managed by `blackdog repo install` and `blackdog repo refresh`.",
         "Keep repo-specific requirements outside this block.",
         "",
-        "- Use the repo-local `./.VE/bin/blackdog` when it exists instead of mutating Blackdog control files by hand.",
+        "- Use the installed `blackdog` executable or the exact workspace executable returned by Blackdog; do not mutate control files by hand.",
         "- `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.",
         (
             "- `task begin` is the one normal implementation entrypoint. Run it directly; it performs "
@@ -550,7 +553,7 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         ),
         "- Implementation edits belong only in the `workspace role: task` workspace returned by `task begin`; analysis-only work may stay in the current checkout but must not leave implementation edits there.",
         "- When `task begin` runs from a normal linked worktree, Blackdog treats that linked branch as the target branch and lands the task back there.",
-        "- `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.",
+        "- Blackdog does not require `.VE/`. Explicit project environment handlers may create one; virtual environments are unversioned and bound to one worktree path, so never copy them.",
         "- Before normal repo-skill implementation, create two mode-0600 UTF-8 temporary files outside the repo: `request_file` contains the exact triggering user request verbatim, and `execution_prompt_file` contains the composed goal, context, constraints, and done condition prompt. Set those shell variables to absolute paths and run the structured begin command below.",
         f"- Normal repo-skill implementation uses `{AGENT_WORKFLOW.begin_command}`. `--actor` defaults to `codex`; the explicit value here makes ownership visible.",
         f"- {PROMPT_INPUT_DISPOSAL_GUIDANCE}",
@@ -622,7 +625,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
     scaffold_workflow = ""
     if blackdog_source_skill:
         scaffold_workflow = (
-            f"- `${skill_name} scaffold project <description>`: ask only for missing durable choices such as target path, project name, exemplar repo, validation commands, routed docs, local project access, and app/runtime needs; preview with `./.VE/bin/blackdog repo scaffold --target-root TARGET --like EXEMPLAR --project-name NAME --dry-run`, then apply without adding scaffold logic to the generated project skill.\n"
+            f"- `${skill_name} scaffold project <description>`: ask only for missing durable choices such as target path, project name, exemplar repo, validation commands, routed docs, local project access, and app/runtime needs; preview with `blackdog repo scaffold --target-root TARGET --like EXEMPLAR --project-name NAME --dry-run`, then apply without adding scaffold logic to the generated project skill.\n"
         )
     return (
         "---\n"
@@ -635,7 +638,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "and a document-routing catalog. Read only catalog entries relevant to the current task; do not "
         "load every routed document by default.\n\n"
         "## Workflow\n\n"
-        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `./.VE/bin/blackdog repo install --project-root .` when missing or `./.VE/bin/blackdog repo update --project-root .` followed by `./.VE/bin/blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
+        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `blackdog repo install --project-root .` when missing or `blackdog repo update --project-root .` followed by `blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
         f"- `${skill_name} do <task-description>`: create the two mode-0600 UTF-8 temporary prompt files required by `AGENTS.md`; keep the exact triggering request in `request_file` and a concise goal, relevant context, constraints, and done condition in `execution_prompt_file`. Run `{AGENT_WORKFLOW.begin_command}` directly. {PROMPT_INPUT_DISPOSAL_GUIDANCE}\n"
         "- Make implementation changes only in the returned task workspace.\n"
@@ -885,8 +888,17 @@ def analyze_repo(project_root: Path) -> RepoConversionAnalysis:
     agents_path = (repo_root / AGENTS_FILE_NAME).resolve()
     agents_text = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
     managed_agents_block_present = AGENTS_MANAGED_BEGIN in agents_text and AGENTS_MANAGED_END in agents_text
-    ve_path = (repo_root / ".VE").resolve()
-    blackdog_path = (ve_path / "bin" / "blackdog").resolve()
+    python_handler = next((handler for handler in profile.handlers if handler.enabled and handler.kind == "python-overlay-venv"), None) if profile is not None else None
+    ve_path = resolve_config_path(repo_root, python_handler.root_path) if python_handler is not None else repo_root / ".VE"
+    runtime_handler = next((handler for handler in profile.handlers if handler.enabled and handler.kind == "blackdog-runtime"), None) if profile is not None else None
+    if runtime_handler is not None:
+        blackdog_path = (
+            installed_runtime(profile) or profile.paths.control_dir / "bin" / "blackdog"
+            if runtime_handler.source_mode == "installed-runtime"
+            else resolve_config_path(repo_root, runtime_handler.launcher_path)
+        )
+    else:
+        blackdog_path = repo_root / ".git" / "blackdog" / "bin" / "blackdog"
     managed_skill_path = (repo_root / managed_skill_relative_path(profile or repo_root)).resolve()
     legacy_skill_path = (repo_root / legacy_managed_skill_relative_path()).resolve()
     agent_docs, entrypoint_docs, package_agent_docs = _find_agent_docs(repo_root)
@@ -950,21 +962,22 @@ def analyze_repo(project_root: Path) -> RepoConversionAnalysis:
                 paths=(str(managed_skill_path),),
             )
         )
-    if profile_exists and not ve_path.is_dir():
+    python_required = python_handler is not None
+    if python_required and not ve_path.is_dir():
         findings.append(
             RepoConversionFinding(
                 code="missing-root-venv",
                 severity="medium",
-                message="The repo is missing the repo-local `.VE`, so the Blackdog runtime is not bootstrapped here.",
+                message="An explicit project Python handler requires its configured environment; Blackdog itself does not require it.",
                 paths=(str(ve_path),),
             )
         )
-    if profile_exists and ve_path.is_dir() and not blackdog_path.is_file():
+    if profile_exists and not blackdog_path.is_file():
         findings.append(
             RepoConversionFinding(
                 code="missing-blackdog-launcher",
                 severity="medium",
-                message="The repo-local `.VE` exists, but the `blackdog` launcher is missing from it.",
+                message="The Blackdog executable is missing.",
                 paths=(str(blackdog_path),),
             )
         )
@@ -1045,7 +1058,7 @@ def analyze_repo(project_root: Path) -> RepoConversionAnalysis:
         RepoConversionStep(
             phase="blackdog-managed",
             summary="Install or repair the repo-local Blackdog runtime and managed scaffold in the target repo.",
-            details="This creates or repairs `blackdog.toml`, the repo-local `.VE`, the managed AGENTS contract block, and the managed skill.",
+            details="This creates or repairs `blackdog.toml`, the standalone runtime, explicit project handlers, the managed AGENTS contract block, and the managed skill.",
             paths=(str(profile_path), str(agents_path), str(managed_skill_path), str(blackdog_path)),
             command=_recommended_install_command(repo_root),
             managed_by_blackdog=True,

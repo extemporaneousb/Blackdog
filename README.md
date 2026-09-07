@@ -16,42 +16,35 @@ Codex-session coverage.
 
 ## Repo Use
 
-In this repo, use `./.VE/bin/blackdog` when the worktree has a local `.VE`.
-Before kept implementation edits, run:
+Blackdog requires Python 3.11 or newer and Git, with no project virtual
+environment or third-party Python dependencies. In this source repository use
+`./scripts/blackdog`; installed consumers use the standalone `blackdog.pyz`
+archive (or install it on `PATH` as `blackdog`).
 
-```bash
-./.VE/bin/blackdog worktree preflight --project-root .
-```
-
-Implementation edits belong in `workspace role: task`. From the primary or a
-normal linked worktree, start a task with `blackdog task begin`, make changes
-only in the returned task workspace, validate, then close with
-`blackdog task land` or `blackdog task close`.
+Implementation edits belong in `workspace role: task`. Start with
+`blackdog task begin`, use the exact workspace executable returned in
+`setup_receipt.workspace_blackdog_path`, validate, then land through
+`blackdog task land`. The task's recorded target branch remains authoritative.
 
 ## Install And Layering Model
 
-Blackdog installs a thin repo-local contract into target repos:
+- `blackdog.toml` owns control paths, routed docs, validation, and handlers.
+- `AGENTS.md` and `.codex/skills/<repo-slug>/SKILL.md` hold the managed contract.
+- The default `installed-runtime` handler stores an immutable release beneath
+  the private control root, addressed by its SHA-256. Recovery commands name
+  this exact archive, so removing a task workspace or updating Blackdog does
+  not invalidate previously emitted recovery commands.
+- Blackdog self-development deliberately uses `scripts/blackdog` from the
+  returned task checkout. Recovery uses the standalone control-root snapshot.
+- The Python project handler is optional. Existing explicit Python/legacy
+  source handlers remain supported; install and update preserve them and their
+  environments. Blackdog never deletes an existing `.VE` during this upgrade.
 
-- `blackdog.toml` is the machine-readable source of truth for control paths,
-  routed docs, validation commands, and runtime handlers.
-- `AGENTS.md` keeps repo-owned instructions outside a managed Blackdog
-  contract block.
-- `.codex/skills/<repo-slug>/SKILL.md` is a generated, thin user workflow
-  overlay that delegates state, setup, recovery, and landing to the CLI.
-- `.VE/bin/blackdog` is the repo-local launcher.
-
-Repo-root `.VE` is the base runtime for that checkout. Each task worktree gets
-its own `.VE`; the Python handler wires the repo-root package overlay and
-fallback tool scripts into the task worktree. The Blackdog runtime handler
-resolves the source layer:
-
-- In Blackdog itself, task worktrees use the current worktree source so changes
-  are exercised before landing.
-- In target repos, the default install uses a managed Blackdog source checkout
-  under the Git common control root and writes a launcher shim into the
-  target repo.
-- `--source-root /path/to/blackdog` is the explicit local override for testing
-  or development.
+Run `make release` to create `dist/blackdog.pyz` and its checksum. The archive
+contains all three Blackdog packages and a versioned source manifest. It uses
+system Python in isolated mode without site packages. It does **not** bundle
+Python. See [runtime distribution](docs/RUNTIME_DISTRIBUTION.md) for installation,
+upgrade, packaging, and acceptance details.
 
 ## Install And Update Runbook
 

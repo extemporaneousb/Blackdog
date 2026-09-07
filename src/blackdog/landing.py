@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from blackdog.errors import BlackdogError
 from blackdog_core.profile import RepoProfile
 from blackdog_core.state import append_event_once, exclusive_file_lock, load_events
 
@@ -35,7 +36,7 @@ LANDING_PHASES = (
 )
 
 
-class LandingTransactionError(RuntimeError):
+class LandingTransactionError(BlackdogError):
     """The append-only landing ledger is corrupt or semantically inconsistent."""
 
 

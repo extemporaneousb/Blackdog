@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+blackdog_source=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec python3 -I -S -c 'import sys; sys.version_info >= (3, 11) or sys.exit("Blackdog requires Python 3.11 or newer."); sys.path.insert(0, sys.argv.pop(1)); from blackdog_cli.main import main; raise SystemExit(main())' "$blackdog_source/src" "$@"

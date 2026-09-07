@@ -23,8 +23,10 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertTrue(profile.validation_commands_explicit)
         self.assertEqual(profile.guards, ())
         self.assertTrue(profile.handlers_explicit)
-        self.assertEqual(profile.handlers[0].kind, profile_module.HANDLER_KIND_PYTHON_OVERLAY_VENV)
-        self.assertEqual(profile.handlers[1].kind, profile_module.HANDLER_KIND_BLACKDOG_RUNTIME)
+        self.assertEqual(len(profile.handlers), 1)
+        self.assertEqual(profile.handlers[0].kind, profile_module.HANDLER_KIND_BLACKDOG_RUNTIME)
+        self.assertEqual(profile.handlers[0].depends_on, ())
+        self.assertEqual(profile.handlers[0].source_mode, "installed-runtime")
 
     def test_load_profile_read_only_does_not_prepare_control_layout(self) -> None:
         self.write_profile("Demo")
@@ -63,8 +65,7 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertEqual(profile.validation_commands, ("make test",))
         self.assertEqual(profile.status, profile_module.PROJECT_STATUS_ACTIVE)
         self.assertFalse(profile.handlers_explicit)
-        self.assertEqual(profile.handlers[0].handler_id, "python")
-        self.assertEqual(profile.handlers[1].handler_id, "blackdog")
+        self.assertEqual(profile.handlers[0].handler_id, "blackdog")
 
     def test_load_profile_accepts_automatic_stale_rebase_policy(self) -> None:
         self.write_profile("Demo")
@@ -273,7 +274,7 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertFalse(profile_module.ensure_default_handlers_in_profile(profile_path))
         profile = self.load_test_profile()
         self.assertTrue(profile.handlers_explicit)
-        self.assertEqual(len(profile.handlers), 2)
+        self.assertEqual(len(profile.handlers), 1)
 
     def test_git_common_resolution_uses_repo_common_dir(self) -> None:
         with patch("blackdog_core.profile._run_git", return_value=".git"):

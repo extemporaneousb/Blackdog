@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 
+from blackdog.errors import BlackdogError
 from blackdog.codex_sessions import CODEX_HOOK_TASK_CONTEXT_SCHEMA_VERSION, codex_task_context_path
 from blackdog_core.profile import RepoProfile
 from blackdog_core.state import (
@@ -17,7 +18,7 @@ from blackdog_core.state import (
 )
 
 
-class CodexHookError(RuntimeError):
+class CodexHookError(BlackdogError):
     pass
 
 

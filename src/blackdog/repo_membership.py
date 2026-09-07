@@ -1069,7 +1069,18 @@ def unbind_repo(
     agents_path = (repo_root / AGENTS_FILE_NAME).resolve()
     managed_skill_dir = _managed_skill_dir(repo_root, context.project_name)
     legacy_skill_dir = _legacy_managed_skill_dir(repo_root)
-    launcher_path = (repo_root / ".VE" / "bin" / "blackdog").resolve()
+    handler_rows = _load_toml_payload(context.profile_path).get("handlers", [])
+    legacy_launchers = []
+    for handler in handler_rows if isinstance(handler_rows, list) else []:
+        if not isinstance(handler, dict) or handler.get("kind") != HANDLER_KIND_BLACKDOG_RUNTIME:
+            continue
+        if handler.get("source_mode") == "installed-runtime":
+            continue
+        configured = handler.get("launcher_path")
+        if isinstance(configured, str) and configured:
+            candidate = Path(configured)
+            if not candidate.is_absolute() and ".." not in candidate.parts and not configured.startswith("@"):
+                legacy_launchers.append(repo_root / candidate)
     planned_updates: list[Path] = []
     planned_removals: list[Path] = []
     preserved: list[str] = []
@@ -1097,8 +1108,9 @@ def unbind_repo(
             preserved.append(str(legacy_skill_dir))
             notes.append("preserved legacy .codex/skills/blackdog because it does not look Blackdog-managed")
 
-    if launcher_path.exists():
-        planned_removals.append(launcher_path)
+    for launcher_path in legacy_launchers:
+        if launcher_path.exists() or launcher_path.is_symlink():
+            planned_removals.append(launcher_path)
 
     control_dir = context.control_dir
     if control_dir is not None:

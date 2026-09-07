@@ -255,10 +255,12 @@ Git state as part of ownership proof.
 low-level worktree mutation aliases have been removed; normal mutation flows
 through task lifecycle commands.
 
-Repository handlers remain configured in `blackdog.toml`. The current Python
-handler may create a worktree-local `.VE`, link the managed source, and install
-a local launcher. That setup is intentionally separate from task-state
-semantics.
+Repository handlers remain configured in `blackdog.toml`. The default runtime
+handler uses an immutable, digest-addressed standalone archive under the control
+root. Optional Python project handlers may create worktree-local `.VE` tool
+environments; task execution and recovery do not depend on those environments.
+Blackdog self-development explicitly executes the task checkout's source while
+recovery retains its immutable archive. See [runtime distribution](RUNTIME_DISTRIBUTION.md).
 
 ## Provider References
 
@@ -306,10 +308,10 @@ The current architecture deliberately excludes:
 - A dashboard
 - Readers for superseded state formats
 
-Environment independence is the next stage, not part of this cutover. Blackdog
-will first be decoupled from repository-local `.VE` availability, then tested as
-self-contained Python release artifacts built by CI. A Go or Rust port is a
-later evidence-based decision, not current functionality.
+Blackdog ships reproducible Python release archives and defaults to a runtime
+independent of repository `.VE` environments. The archive requires system Python
+3.11 or newer; CI builds and exercises it on Linux and macOS. A bundled
+interpreter or a language port requires separate evidence and is not shipped.
 
 The accepted [execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) defines
-this next stage, typed outcome evidence, and the proof required for completion.
+this stage, typed outcome evidence, and the proof required for completion.

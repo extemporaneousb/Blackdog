@@ -15,6 +15,7 @@ import re
 import subprocess
 from typing import Any
 
+from blackdog.runtime_distribution import runtime_executable
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
     JsonRuntimeStore, StoreError, atomic_write_text, exclusive_file_lock,
@@ -148,7 +149,7 @@ def _durable_unlink(path: Path) -> None:
 
 
 def _result(root: Path, digest: str, payload: dict[str, Any], status: str, archive: Path) -> dict[str, Any]:
-    argv = [str(root / ".VE/bin/blackdog"), "repo", "migrate", "--project-root", str(root), "--apply", "--expected-digest", digest, "--json"]
+    argv = [runtime_executable(root), "repo", "migrate", "--project-root", str(root), "--apply", "--expected-digest", digest, "--json"]
     return {
         "status": status, "source_digest": digest, "archive_path": str(archive),
         "task_count": len(payload["tasks"]),

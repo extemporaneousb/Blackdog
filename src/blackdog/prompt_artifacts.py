@@ -9,6 +9,7 @@ import stat
 import tempfile
 from typing import Iterable
 
+from blackdog.errors import BlackdogError
 from blackdog_core.state import PromptReceiptRecord
 
 
@@ -17,7 +18,7 @@ PROMPT_ARTIFACT_ROOT = Path("prompts") / "sha256"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-class PromptArtifactError(RuntimeError):
+class PromptArtifactError(BlackdogError):
     """A bounded prompt-artifact persistence or verification failure."""
 
     def __init__(self, code: str, detail: str) -> None:

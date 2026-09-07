@@ -12,8 +12,8 @@ development.
   landing.
 - Keep the core dependency-light. Prefer the Python standard library unless a
   dependency is clearly justified.
-- Use the current worktree's top-level `.VE` for Blackdog CLI calls when it
-  exists; prefer `./.VE/bin/blackdog` to another executable on `PATH`.
+- Use `./scripts/blackdog` to execute this checkout's Blackdog source.
+  Installed consumers use the standalone release; Blackdog does not need `.VE`.
 - Never copy `.VE` between worktrees. A virtual environment contains absolute
   paths and belongs to one checkout.
 - Kept implementation edits belong in the task worktree returned by
@@ -90,15 +90,15 @@ represented directly between executable tasks.
 This section is managed by `blackdog repo install` and `blackdog repo refresh`.
 Keep repo-specific requirements outside this block.
 
-- Use the repo-local `./.VE/bin/blackdog` when it exists instead of mutating Blackdog control files by hand.
+- Use the installed `blackdog` executable or the exact workspace executable returned by Blackdog; do not mutate control files by hand.
 - `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.
 - `task begin` is the one normal implementation entrypoint. Run it directly; it performs its own readiness checks and returns the branch-backed task workspace where implementation edits belong.
-- `./.VE/bin/blackdog worktree preflight --project-root .` is explicit read-only diagnosis. It does not start work and is not a separate prerequisite for `task begin`.
+- `blackdog worktree preflight --project-root .` is explicit read-only diagnosis. It does not start work and is not a separate prerequisite for `task begin`.
 - Implementation edits belong only in the `workspace role: task` workspace returned by `task begin`; analysis-only work may stay in the current checkout but must not leave implementation edits there.
 - When `task begin` runs from a normal linked worktree, Blackdog treats that linked branch as the target branch and lands the task back there.
-- `.VE/` is unversioned and bound to one worktree path; create one per worktree and do not copy virtualenvs between worktrees.
+- Blackdog does not require `.VE/`. Explicit project environment handlers may create one; virtual environments are unversioned and bound to one worktree path, so never copy them.
 - Before normal repo-skill implementation, create two mode-0600 UTF-8 temporary files outside the repo: `request_file` contains the exact triggering user request verbatim, and `execution_prompt_file` contains the composed goal, context, constraints, and done condition prompt. Set those shell variables to absolute paths and run the structured begin command below.
-- Normal repo-skill implementation uses `./.VE/bin/blackdog task begin --project-root . --actor codex --execution-prompt-file "$execution_prompt_file" --prompt-mode skill --request-file "$request_file" --json`. `--actor` defaults to `codex`; the explicit value here makes ownership visible.
+- Normal repo-skill implementation uses `blackdog task begin --project-root . --actor codex --execution-prompt-file "$execution_prompt_file" --prompt-mode skill --request-file "$request_file" --json`. `--actor` defaults to `codex`; the explicit value here makes ownership visible.
 - Delete `request_file` and `execution_prompt_file` only when the structured `task begin` result contains both a nonempty `execution_prompt_replay_artifact_path` and a nonempty `user_prompt_replay_artifact_path`; otherwise preserve both temporary inputs.
 - Before landing, set `completion_summary` to concise human-readable change statements: the first nonblank line becomes the Git subject and each later nonblank line is one major body item. Do not put Blackdog metadata in it. Build the `validation_args` shell array with at least one repeated `--validation` plus `NAME=passed|failed|skipped`; never submit placeholders or invented evidence.
 - For new work, do not pass `--task`; `task begin` creates the task and returns its workspace. A machine-emitted retry may identify an existing task explicitly.

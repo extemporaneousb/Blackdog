@@ -7,85 +7,14 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from blackdog.codex_hooks import CodexHookError, load_codex_hook_payload, stamp_codex_task_context
-from blackdog.handlers import HandlerError
-from blackdog.landing import LandingTransactionError
-from blackdog.local_registry import (
-    add_local_repo,
-    list_local_repos,
-    remove_local_repo,
-    render_local_repo_registry_text,
-)
-from blackdog.observability import (
-    KNOWN_SURFACES,
-    observe_lifecycle_for_project,
-    observe_operation_result,
-)
-from blackdog.prompting import preview_prompt, render_prompt_preview_text
-from blackdog.prompt_artifacts import PromptArtifactError
-from blackdog.repo_lifecycle import (
-    RepoLifecycleError,
-    analyze_repo,
-    install_repo,
-    refresh_repo,
-    render_repo_analysis_text,
-    render_repo_lifecycle_text,
-    render_repo_scaffold_text,
-    scaffold_repo,
-    update_repo,
-)
-from blackdog.repo_membership import (
-    archive_repo,
-    bind_repo,
-    build_repo_table,
-    render_repo_status_text,
-    render_repo_table_text,
-    render_repo_unbind_text,
-    unarchive_repo,
-    unbind_repo,
-)
-from blackdog.stats import build_stats, render_stats_text, render_stats_tsv
+from blackdog.errors import BlackdogError
 from blackdog.workflow_contract import (
     EXECUTION_PROMPT_INPUT,
     REQUEST_INPUT,
     REQUEST_LINEAGE_INPUT,
     PromptInputContract,
 )
-from blackdog.wtam import (
-    TaskBeginPreflightError,
-    WorktreeError,
-    begin_task_worktree,
-    build_worktree_table,
-    cancel_task,
-    cleanup_task,
-    close_task,
-    land_task,
-    recover_task,
-    reconcile_task_landing,
-    reopen_task,
-    render_task_begin_text,
-    render_cleanup_text,
-    render_close_text,
-    render_land_text,
-    render_landing_reconciliation_text,
-    render_preflight_text,
-    render_recover_text,
-    render_show_text,
-    render_task_state_text,
-    render_worktree_table_text,
-    show_task,
-    task_begin_preflight_result,
-    worktree_preflight,
-)
 from blackdog_core.tasks import TaskError
-from blackdog.store_migration import migrate_store
-from blackdog.codex_sessions import (
-    CodexSessionError,
-    build_codex_coverage,
-    build_codex_history,
-    render_codex_coverage_text,
-    render_codex_history_text,
-)
 from blackdog_core.profile import ConfigError, load_profile, write_default_profile
 from blackdog_core.snapshot import (
     build_attempts_summary,
@@ -101,6 +30,8 @@ from blackdog_core.state import FAILURE_CLASSES, PROMPT_MODES, StoreError, Store
 
 
 def _resolve_since_window(since: str | None, since_hours: float | None) -> str | None:
+    from blackdog.repo_lifecycle import RepoLifecycleError
+
     if since and since_hours is not None:
         raise RepoLifecycleError("--since and --since-hours are mutually exclusive")
     if since_hours is None:
@@ -116,6 +47,11 @@ def _emit_json(payload: Any) -> None:
 
 
 def _load_codex_hook_input(*, raw_json: str | None, file_path: str | None) -> dict[str, Any]:
+    from blackdog.codex_hooks import (
+        CodexHookError,
+        load_codex_hook_payload,
+    )
+
     if raw_json is not None and file_path is not None:
         raise CodexHookError("codex hook stamp accepts only one of --event-json or --event-file")
     if raw_json is not None:
@@ -181,6 +117,8 @@ def _observe_repo_cli_result(
     action: str,
     result: str = "completed",
 ) -> None:
+    from blackdog.observability import observe_lifecycle_for_project
+
     try:
         observe_lifecycle_for_project(
             project_root,
@@ -194,6 +132,11 @@ def _observe_repo_cli_result(
 
 def _observe_failed_product_cli(args: argparse.Namespace, exc: Exception) -> None:
     """Best-effort failure evidence for prompt, repo, and stats surfaces."""
+
+    from blackdog.observability import (
+        KNOWN_SURFACES,
+        observe_lifecycle_for_project,
+    )
 
     try:
         surface: str | None = None
@@ -581,6 +524,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "stats":
+            from blackdog.stats import (
+                build_stats,
+                render_stats_text,
+                render_stats_tsv,
+            )
+
             result = build_stats(
                 project_roots=tuple(Path(root).resolve() for root in args.project_root),
                 discovery_roots=tuple(Path(root).resolve() for root in args.root),
@@ -599,6 +548,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "local-repo" and args.local_repo_command == "add":
+            from blackdog.local_registry import (
+                add_local_repo,
+                render_local_repo_registry_text,
+            )
+
             result = add_local_repo(Path(args.project_root).resolve())
             if args.json:
                 _emit_json({"local_repos": result.to_dict()})
@@ -607,6 +561,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "local-repo" and args.local_repo_command == "list":
+            from blackdog.local_registry import (
+                list_local_repos,
+                render_local_repo_registry_text,
+            )
+
             result = list_local_repos()
             if args.json:
                 _emit_json({"local_repos": result.to_dict()})
@@ -615,6 +574,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "local-repo" and args.local_repo_command == "remove":
+            from blackdog.local_registry import (
+                remove_local_repo,
+                render_local_repo_registry_text,
+            )
+
             result = remove_local_repo(Path(args.project_root).resolve())
             if args.json:
                 _emit_json({"local_repos": result.to_dict()})
@@ -623,6 +587,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "prompt" and args.prompt_command == "preview":
+            from blackdog.prompting import (
+                preview_prompt,
+                render_prompt_preview_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
                 label="prompt preview",
@@ -667,6 +636,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "codex" and args.codex_command == "coverage":
+            from blackdog.codex_sessions import (
+                build_codex_coverage,
+                render_codex_coverage_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = build_codex_coverage(profile, since=args.since)
             if args.json:
@@ -676,6 +650,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "codex" and args.codex_command == "history":
+            from blackdog.codex_sessions import (
+                build_codex_history,
+                render_codex_history_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = build_codex_history(profile, since=args.since, write=args.write)
             if args.jsonl:
@@ -686,6 +665,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "codex" and args.codex_command == "hook" and args.codex_hook_command == "stamp":
+            from blackdog.codex_hooks import stamp_codex_task_context
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             hook_payload = _load_codex_hook_input(raw_json=args.event_json, file_path=args.event_file)
             payload = stamp_codex_task_context(profile, hook_payload=hook_payload, cwd=Path.cwd())
@@ -694,6 +675,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "install":
+            from blackdog.repo_lifecycle import (
+                install_repo,
+                render_repo_lifecycle_text,
+            )
+
             result = install_repo(
                 Path(args.project_root).resolve(),
                 project_name=args.project_name,
@@ -712,6 +698,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "bind":
+            from blackdog.repo_lifecycle import render_repo_lifecycle_text
+            from blackdog.repo_membership import bind_repo
+
             result = bind_repo(
                 Path(args.project_root).resolve(),
                 project_name=args.project_name,
@@ -730,6 +719,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "table":
+            from blackdog.repo_membership import (
+                build_repo_table,
+                render_repo_table_text,
+            )
+
             since = _resolve_since_window(args.since, args.since_hours)
             result = build_repo_table(
                 tuple(Path(root).resolve() for root in args.root),
@@ -746,6 +740,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "archive":
+            from blackdog.repo_membership import (
+                archive_repo,
+                render_repo_status_text,
+            )
+
             result = archive_repo(Path(args.project_root).resolve(), reason=args.reason)
             _observe_repo_cli_result(
                 Path(result.project_root),
@@ -760,6 +759,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "unarchive":
+            from blackdog.repo_membership import (
+                render_repo_status_text,
+                unarchive_repo,
+            )
+
             result = unarchive_repo(Path(args.project_root).resolve())
             _observe_repo_cli_result(
                 Path(result.project_root),
@@ -774,6 +778,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "unbind":
+            from blackdog.repo_membership import (
+                render_repo_unbind_text,
+                unbind_repo,
+            )
+
             result = unbind_repo(
                 Path(args.project_root).resolve(),
                 confirm=args.confirm,
@@ -796,6 +805,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "analyze":
+            from blackdog.repo_lifecycle import (
+                analyze_repo,
+                render_repo_analysis_text,
+            )
+
             result = analyze_repo(Path(args.project_root).resolve())
             _observe_repo_cli_result(
                 Path(result.project_root),
@@ -809,6 +823,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "scaffold":
+            from blackdog.repo_lifecycle import (
+                render_repo_scaffold_text,
+                scaffold_repo,
+            )
+
             result = scaffold_repo(
                 target_root=Path(args.target_root),
                 project_name=args.project_name,
@@ -829,6 +848,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "migrate":
+            from blackdog.store_migration import migrate_store
+
             result = migrate_store(
                 Path(args.project_root).resolve(),
                 apply=args.apply,
@@ -838,6 +859,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "update":
+            from blackdog.repo_lifecycle import (
+                render_repo_lifecycle_text,
+                update_repo,
+            )
+
             result = update_repo(
                 Path(args.project_root).resolve(),
                 source_root=args.source_root,
@@ -855,6 +881,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "repo" and args.repo_command == "refresh":
+            from blackdog.repo_lifecycle import (
+                refresh_repo,
+                render_repo_lifecycle_text,
+            )
+
             result = refresh_repo(Path(args.project_root).resolve())
             _observe_repo_cli_result(
                 Path(result.project_root),
@@ -869,6 +900,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "task" and args.task_command == "begin":
+            from blackdog.observability import observe_operation_result
+            from blackdog.wtam import (
+                TaskBeginPreflightError,
+                begin_task_worktree,
+                render_task_begin_text,
+                task_begin_preflight_result,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             prompt_text, prompt_source = _load_text_input(
                 label="task begin execution prompt",
@@ -928,6 +967,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if spec.operation_status == "succeeded" else 1
 
         if args.command == "task" and args.task_command == "show":
+            from blackdog.wtam import (
+                render_show_text,
+                show_task,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = show_task(
                 profile,
@@ -941,6 +985,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "task" and args.task_command == "recover":
+            from blackdog.wtam import (
+                recover_task,
+                render_recover_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = recover_task(
                 profile,
@@ -961,6 +1010,11 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.command == "task" and args.task_command == "cancel":
+            from blackdog.wtam import (
+                cancel_task,
+                render_task_state_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = cancel_task(
                 profile,
@@ -980,6 +1034,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload.operation_status == "succeeded" else 1
 
         if args.command == "task" and args.task_command == "reopen":
+            from blackdog.wtam import (
+                render_task_state_text,
+                reopen_task,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = reopen_task(
                 profile,
@@ -995,6 +1054,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload.operation_status == "succeeded" else 1
 
         if args.command == "task" and args.task_command == "land":
+            from blackdog.wtam import (
+                land_task,
+                render_land_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = land_task(
                 profile,
@@ -1015,6 +1079,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload.operation_status == "succeeded" else 1
 
         if args.command == "task" and args.task_command == "reconcile-landing":
+            from blackdog.wtam import (
+                reconcile_task_landing,
+                render_landing_reconciliation_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = reconcile_task_landing(
                 profile,
@@ -1032,6 +1101,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if not args.apply or payload.operation_status == "succeeded" else 1
 
         if args.command == "task" and args.task_command == "close":
+            from blackdog.wtam import (
+                close_task,
+                render_close_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = close_task(
                 profile,
@@ -1057,6 +1131,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload.operation_status == "succeeded" else 1
 
         if args.command == "task" and args.task_command == "cleanup":
+            from blackdog.wtam import (
+                cleanup_task,
+                render_cleanup_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = cleanup_task(
                 profile,
@@ -1072,6 +1151,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if payload.operation_status == "succeeded" else 1
 
         if args.command == "worktree" and args.worktree_command == "preflight":
+            from blackdog.wtam import (
+                render_preflight_text,
+                worktree_preflight,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = worktree_preflight(profile, cwd=Path.cwd())
             if args.json:
@@ -1081,6 +1165,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "worktree" and args.worktree_command == "table":
+            from blackdog.wtam import (
+                build_worktree_table,
+                render_worktree_table_text,
+            )
+
             profile = load_profile(Path(args.project_root).resolve() if args.project_root else None)
             payload = build_worktree_table(profile)
             if args.json:
@@ -1091,8 +1180,15 @@ def main(argv: list[str] | None = None) -> int:
 
         raise TaskError(f"Unsupported command: {args.command}")
     except StoreMigrationRequired as exc:
+        from blackdog.runtime_distribution import runtime_executable
+
         root = Path(getattr(args, "project_root", None) or ".").resolve()
-        argv = [str(root / ".VE/bin/blackdog"), "repo", "migrate", "--project-root", str(root), "--json"]
+        try:
+            executable = runtime_executable(root)
+        except (BlackdogError, ConfigError, OSError) as runtime_error:
+            print(str(runtime_error), file=sys.stderr)
+            return 1
+        argv = [executable, "repo", "migrate", "--project-root", str(root), "--json"]
         if getattr(args, "json", False):
             _emit_json({"error": "store_migration_required", "next_action": {"kind": "command", "argv": argv}})
         else:
@@ -1101,15 +1197,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except (
         TaskError,
-        CodexHookError,
-        CodexSessionError,
+        BlackdogError,
         ConfigError,
-        HandlerError,
-        LandingTransactionError,
-        PromptArtifactError,
-        RepoLifecycleError,
         StoreError,
-        WorktreeError,
         OSError,
         ValueError,
     ) as exc:

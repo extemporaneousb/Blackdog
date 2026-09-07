@@ -1,4 +1,4 @@
-.PHONY: acceptance public-check test test-core
+.PHONY: acceptance public-check test test-core release
 
 CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py'
 
@@ -13,3 +13,6 @@ test: public-check
 
 test-core:
 	$(CORE_AUDIT_COMMAND)
+
+release: public-check
+	python3 scripts/build_release.py

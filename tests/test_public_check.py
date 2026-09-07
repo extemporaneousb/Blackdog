@@ -13,6 +13,15 @@ from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
 
 
 class PublicContentCheckTests(CoreAuditTestCase):
+    def test_pinned_official_workflow_actions_are_distinguished_from_emails(self) -> None:
+        reference = "actions/checkout" + "@" + "a" * 40
+        line = f"      - uses: {reference} # reviewed revision\n"
+        self.assertEqual(scan_bytes(line.encode(), path=".github/workflows/release.yml", markers=()), ())
+        self.assertTrue(scan_bytes(line.encode(), path="notes.txt", markers=()))
+        email = "person" + "@" + "company.com"
+        findings = scan_bytes((line + f"# {email}\n").encode(), path=".github/workflows/release.yml", markers=())
+        self.assertEqual([(row.line, row.rule) for row in findings], [(2, "non-example-email")])
+
     def test_current_repository_passes(self) -> None:
         violations, scanned = scan_repository(REPO_ROOT)
 

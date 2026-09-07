@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 from typing import Any
 
+from blackdog.errors import BlackdogError
 from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
     ATTEMPT_STATUS_BLOCKED,
@@ -102,7 +103,7 @@ MUTATION_PHASES = frozenset(
 REFERENCE_INSPECTION_STATES = frozenset({"exists", "missing", "metadata_missing", "error"})
 
 
-class WorktreeError(RuntimeError):
+class WorktreeError(BlackdogError):
     """Base product-layer Git/worktree error."""
 
 

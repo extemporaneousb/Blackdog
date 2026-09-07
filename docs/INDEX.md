@@ -46,6 +46,8 @@ must never edit control files directly.
 - [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
 - [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — accepted next-stage
   decisions, worker sequence, and acceptance evidence; implementation is pending.
+- [Runtime distribution](RUNTIME_DISTRIBUTION.md) — reproducible executable
+  archives, installation, upgrades, and optional project environments.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
 
@@ -68,15 +70,14 @@ It does not include:
 Future task relationships must connect executable tasks directly. They must not
 introduce another durable planning object or hidden policy inheritance.
 
-## Deferred Runtime Distribution
+## Runtime Distribution
 
-This contract-removal phase intentionally leaves repository-local `.VE` setup
-unchanged. The next stages are:
+Blackdog ships a reproducible standalone Python archive and needs no repository
+or task `.VE` to run. Git and system Python 3.11 or newer are required. The
+[distribution runbook](RUNTIME_DISTRIBUTION.md) describes immutable control-root
+snapshots, cleanup-safe recovery, deliberate source execution for Blackdog
+development, and preservation of explicit project environment handlers.
 
-1. Decouple Blackdog's executable from target-repository environments.
-2. Test self-contained Python release artifacts built by CI.
-3. Consider a native-language port only if packaging evidence shows that the
-   self-contained Python runtime is insufficient.
-
-No packaging or runtime-distribution behavior is part of the current durable
-task contract.
+Bundling an interpreter or moving to a native language remains deferred pending
+packaging and performance evidence. Distribution changes do not replace the
+canonical task store or its migration protocol.

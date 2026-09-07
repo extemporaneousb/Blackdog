@@ -22,6 +22,7 @@ HANDLER_KIND_PYTHON_OVERLAY_VENV = "python-overlay-venv"
 HANDLER_KIND_BLACKDOG_RUNTIME = "blackdog-runtime"
 HANDLER_SCRIPT_POLICY_ROOT_BIN_FALLBACK = "root-bin-fallback"
 HANDLER_SOURCE_MODE_MANAGED_CHECKOUT = "managed-checkout"
+HANDLER_SOURCE_MODE_INSTALLED_RUNTIME = "installed-runtime"
 HANDLER_SOURCE_MODE_TARGET_REPO = "target-repo"
 HANDLER_SOURCE_MODE_LOCAL_OVERRIDE = "local-override"
 HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE = "editable-worktree-source"
@@ -272,9 +273,9 @@ def _blackdog_runtime_handler_defaults() -> BlackdogRuntimeHandlerConfig:
         handler_id="blackdog",
         kind=HANDLER_KIND_BLACKDOG_RUNTIME,
         enabled=True,
-        depends_on=("python",),
-        launcher_path=".VE/bin/blackdog",
-        source_mode=HANDLER_SOURCE_MODE_MANAGED_CHECKOUT,
+        depends_on=(),
+        launcher_path="",
+        source_mode=HANDLER_SOURCE_MODE_INSTALLED_RUNTIME,
         managed_source_dir=f"{GIT_COMMON_TOKEN}/blackdog/source/blackdog",
         self_repo_install_mode=HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE,
         other_repo_install_mode=HANDLER_INSTALL_MODE_LAUNCHER_SHIM,
@@ -283,7 +284,6 @@ def _blackdog_runtime_handler_defaults() -> BlackdogRuntimeHandlerConfig:
 
 def default_handler_configs() -> tuple[RepoHandlerConfig, ...]:
     return (
-        _python_overlay_handler_defaults(),
         _blackdog_runtime_handler_defaults(),
     )
 
@@ -325,16 +325,22 @@ def _handler_from_payload(payload: dict[str, object], *, index: int) -> RepoHand
         managed_source_dir = _optional_text(payload.get("managed_source_dir"))
         self_repo_install_mode = _optional_text(payload.get("self_repo_install_mode"))
         other_repo_install_mode = _optional_text(payload.get("other_repo_install_mode"))
+        if source_mode == HANDLER_SOURCE_MODE_INSTALLED_RUNTIME:
+            launcher_path = launcher_path or ""
+            managed_source_dir = managed_source_dir or f"{GIT_COMMON_TOKEN}/blackdog/source/blackdog"
+            self_repo_install_mode = self_repo_install_mode or HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE
+            other_repo_install_mode = other_repo_install_mode or HANDLER_INSTALL_MODE_LAUNCHER_SHIM
         if launcher_path is None:
             raise ConfigError(f"{field_prefix}.launcher_path is required")
         if source_mode not in {
             HANDLER_SOURCE_MODE_MANAGED_CHECKOUT,
+            HANDLER_SOURCE_MODE_INSTALLED_RUNTIME,
             HANDLER_SOURCE_MODE_TARGET_REPO,
             HANDLER_SOURCE_MODE_LOCAL_OVERRIDE,
         }:
             raise ConfigError(
                 f"{field_prefix}.source_mode must be one of "
-                f"{sorted({HANDLER_SOURCE_MODE_MANAGED_CHECKOUT, HANDLER_SOURCE_MODE_TARGET_REPO, HANDLER_SOURCE_MODE_LOCAL_OVERRIDE})}"
+                f"{sorted({HANDLER_SOURCE_MODE_INSTALLED_RUNTIME, HANDLER_SOURCE_MODE_MANAGED_CHECKOUT, HANDLER_SOURCE_MODE_TARGET_REPO, HANDLER_SOURCE_MODE_LOCAL_OVERRIDE})}"
             )
         if managed_source_dir is None:
             raise ConfigError(f"{field_prefix}.managed_source_dir is required")
@@ -616,22 +622,10 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
 def render_default_handlers() -> str:
     return (
         "[[handlers]]\n"
-        'id = "python"\n'
-        f'kind = "{HANDLER_KIND_PYTHON_OVERLAY_VENV}"\n'
-        "enabled = true\n"
-        'root_path = ".VE"\n'
-        'worktree_path = ".VE"\n'
-        f'script_policy = "{HANDLER_SCRIPT_POLICY_ROOT_BIN_FALLBACK}"\n\n'
-        "[[handlers]]\n"
         'id = "blackdog"\n'
         f'kind = "{HANDLER_KIND_BLACKDOG_RUNTIME}"\n'
         "enabled = true\n"
-        'depends_on = ["python"]\n'
-        'launcher_path = ".VE/bin/blackdog"\n'
-        f'source_mode = "{HANDLER_SOURCE_MODE_MANAGED_CHECKOUT}"\n'
-        f'managed_source_dir = "{GIT_COMMON_TOKEN}/blackdog/source/blackdog"\n'
-        f'self_repo_install_mode = "{HANDLER_INSTALL_MODE_EDITABLE_WORKTREE_SOURCE}"\n'
-        f'other_repo_install_mode = "{HANDLER_INSTALL_MODE_LAUNCHER_SHIM}"\n'
+        f'source_mode = "{HANDLER_SOURCE_MODE_INSTALLED_RUNTIME}"\n'
     )
 
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from blackdog.contract import managed_skill_name, managed_skill_relative_path
 from blackdog.landing import load_landing_transaction
+from blackdog.runtime_distribution import installed_runtime
 from blackdog_cli.main import main as blackdog_main
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
@@ -37,7 +38,28 @@ class RepoAcceptanceTests(CoreAuditTestCase):
             exit_code = blackdog_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
 
-    def install_with_local_source(self, *, project_name: str = "Acceptance Demo") -> dict[str, object]:
+    def install_with_local_source(self, *, project_name: str = "Acceptance Demo", legacy_python: bool = False) -> dict[str, object]:
+        if legacy_python and not (self.root / "blackdog.toml").exists():
+            self.write_profile(project_name)
+            profile_path = self.root / "blackdog.toml"
+            text = profile_path.read_text(encoding="utf-8")
+            text = text[:text.index("[[handlers]]")] + """[[handlers]]
+id = "python"
+kind = "python-overlay-venv"
+root_path = ".VE"
+worktree_path = ".VE"
+script_policy = "root-bin-fallback"
+[[handlers]]
+id = "blackdog"
+kind = "blackdog-runtime"
+depends_on = ["python"]
+launcher_path = ".VE/bin/blackdog"
+source_mode = "managed-checkout"
+managed_source_dir = "@git-common/blackdog/source/blackdog"
+self_repo_install_mode = "editable-worktree-source"
+other_repo_install_mode = "launcher-shim"
+"""
+            profile_path.write_text(text, encoding="utf-8")
         exit_code, stdout, stderr = self.run_cli(
             "repo",
             "install",
@@ -248,16 +270,17 @@ class RepoAcceptanceTests(CoreAuditTestCase):
     def test_repo_install_refresh_and_analyze_keep_target_layering_lean(self) -> None:
         install_payload = self.install_with_local_source()
         self.assertEqual(install_payload["action"], "install")
-        self.assertEqual(install_payload["source_mode"], "local-override")
+        self.assertEqual(install_payload["source_mode"], "installed-runtime")
 
         profile = load_profile(self.root)
         skill_path = self.root / managed_skill_relative_path(profile)
         metadata_path = skill_path.parent / "agents" / "openai.yaml"
-        launcher_path = self.root / ".VE" / "bin" / "blackdog"
+        launcher_path = installed_runtime(load_profile(self.root))
 
         self.assertEqual(profile.project_name, "Acceptance Demo")
         self.assertEqual(profile.doc_routing_defaults, ("AGENTS.md",))
-        self.assertEqual([handler.kind for handler in profile.handlers], ["python-overlay-venv", "blackdog-runtime"])
+        self.assertEqual([handler.kind for handler in profile.handlers], ["blackdog-runtime"])
+        self.assertFalse((self.root / ".VE").exists())
         self.assertTrue((self.root / "blackdog.toml").is_file())
         self.assertTrue((self.root / "AGENTS.md").is_file())
         self.assertTrue(skill_path.is_file())
@@ -327,8 +350,8 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         self.assertTrue(preflight_payload["workspace_has_local_blackdog"])
 
     def test_managed_checkout_source_mode_reuses_seeded_managed_source(self) -> None:
-        self.install_with_local_source()
-        launcher_path = self.root / ".VE" / "bin" / "blackdog"
+        self.install_with_local_source(legacy_python=True)
+        launcher_path = installed_runtime(load_profile(self.root))
 
         updated = subprocess.run(
             [str(launcher_path), "repo", "update", "--project-root", str(self.root), "--json"],
@@ -344,7 +367,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         self.assertTrue((self.root / ".git" / "blackdog" / "source" / "blackdog").is_dir())
 
     def test_repo_install_repairs_missing_root_venv_and_launcher(self) -> None:
-        self.install_with_local_source()
+        self.install_with_local_source(legacy_python=True)
         shutil.rmtree(self.root / ".VE")
 
         exit_code, stdout, stderr = self.run_cli("repo", "analyze", "--project-root", str(self.root), "--json")
@@ -385,7 +408,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
             capture_output=True,
             text=True,
         )
-        launcher_path = self.root / ".VE" / "bin" / "blackdog"
+        launcher_path = installed_runtime(load_profile(self.root))
         linked_parent = tempfile.TemporaryDirectory()
         linked_worktree = Path(linked_parent.name) / "linked"
         task_worktree: Path | None = None
@@ -411,7 +434,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
                 capture_output=True,
                 text=True,
             )
-            linked_launcher = linked_worktree / ".VE" / "bin" / "blackdog"
+            linked_launcher = installed_runtime(load_profile(linked_worktree))
             self.assertTrue(linked_launcher.is_file())
             begin = subprocess.run(
                 [
@@ -468,7 +491,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
 
     def test_default_task_land_from_task_worktree_returns_success_after_cleanup(self) -> None:
         self.install_with_local_source()
-        launcher = self.root / ".VE" / "bin" / "blackdog"
+        launcher = installed_runtime(load_profile(self.root))
         subprocess.run(
             ["git", "-C", str(self.root), "add", "blackdog.toml", "AGENTS.md", ".codex"],
             check=True,
@@ -506,7 +529,7 @@ class RepoAcceptanceTests(CoreAuditTestCase):
         attempt_id = str(begun["attempt_id"])
         task_branch = str(begun["branch"])
         task_worktree = Path(str(begun["worktree_path"]))
-        task_launcher = task_worktree / ".VE" / "bin" / "blackdog"
+        task_launcher = Path(begun["setup_receipt"]["workspace_blackdog_path"])
         task_context_show = subprocess.run(
             [
                 str(task_launcher),

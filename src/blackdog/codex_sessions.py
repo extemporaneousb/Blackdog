@@ -13,6 +13,7 @@ import re
 import subprocess
 import tomllib
 
+from blackdog.errors import BlackdogError
 from blackdog_core.profile import RepoProfile
 from blackdog_core.runtime_model import AttemptView, load_runtime_model
 from blackdog_core.state import (
@@ -302,7 +303,7 @@ class CodexSession:
     turns: tuple[CodexTurn, ...]
 
 
-class CodexSessionError(RuntimeError):
+class CodexSessionError(BlackdogError):
     pass
 
 

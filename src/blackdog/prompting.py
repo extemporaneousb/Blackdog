@@ -55,7 +55,7 @@ def _compose_prompt(
     lines = [
         f"You are working in the repo {profile.project_name} at {profile.paths.project_root}.",
         "Follow the repo-local managed `AGENTS.md` Blackdog contract.",
-        "Use `./.VE/bin/blackdog` when it exists.",
+        "Use the installed `blackdog` or the exact returned workspace executable. Blackdog does not require a project virtual environment.",
         f"Normal implementation starts with `{AGENT_WORKFLOW.begin_command}`.",
         "The returned task workspace is the only place for implementation edits.",
     ]
