@@ -11,7 +11,7 @@ engineering outcome.
 - An attempt is one execution of that task by one actor.
 - At most one attempt is active for a task.
 - `runtime.json` is the only canonical mutable task store.
-- `events.jsonl` is append-only lifecycle evidence.
+- `events.jsonl` is append-only lifecycle and outcome evidence.
 - Request and execution prompts are content-addressed private artifacts.
 - Structured lifecycle results expose exactly one authoritative `next_action`.
 - Repository policy stays in `blackdog.toml`; the protocol stays in Blackdog.
@@ -29,7 +29,7 @@ blackdog local-repo add|list|remove
 blackdog prompt preview
 blackdog attempts summary|table
 blackdog codex coverage|history|hook stamp
-blackdog repo analyze|bind|table|install|scaffold|update|refresh|archive|unarchive|unbind
+blackdog repo analyze|bind|table|install|scaffold|update|refresh|migrate|archive|unarchive|unbind
 blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup|outcome|validate
 blackdog worktree preflight|table
 ```
@@ -44,13 +44,14 @@ must never edit control files directly.
   recovery guarantees.
 - [CLI](CLI.md) — command and structured-result contract.
 - [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
-- [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — accepted next-stage
-  decisions, worker sequence, and acceptance evidence; implementation is pending.
+- [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — implemented core
+  decisions, worker sequence, and A1-A9 acceptance evidence.
+- [Release acceptance](RELEASE_ACCEPTANCE.md) — final workload measurements,
+  canonical implementation commits, review proof, and delivery limits.
 - [Runtime distribution](RUNTIME_DISTRIBUTION.md) — reproducible executable
   archives, installation, upgrades, and optional project environments.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
-
 - [Outcome evidence](OUTCOME_EVIDENCE.md) — typed criteria, validation, measurement and reports.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied

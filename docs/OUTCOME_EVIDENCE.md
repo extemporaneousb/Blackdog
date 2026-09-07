@@ -188,8 +188,9 @@ performance-improvement claim is derived automatically.
 Compact aggregates and cohorts retain required-criterion assessment coverage
 by provenance, historical assertion counts, and outcome provenance counts.
 They also retain explicit intervention totals and correction observations,
-with task and criterion coverage. No observed interventions or assessments
-produce null values; recorded zero observations do not prove complete coverage.
+with task and criterion coverage. When no interventions or assessments are
+observed, totals remain null; recorded zero observations do not prove complete
+coverage.
 Corrections preserve both their earlier assertion and current head without
 counting the same criterion twice as currently assessed. Reviewer assertions
 remain unauthenticated in every view.

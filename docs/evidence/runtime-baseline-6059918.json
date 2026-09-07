@@ -1,0 +1,278 @@
+{
+  "artifact_sha256": null,
+  "durations": {
+    "begin_close": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 2406.622667,
+      "p95_method": "nearest_rank",
+      "p95_ms": 2509.604708,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "begin_land": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 2137.0585,
+      "p95_method": "nearest_rank",
+      "p95_ms": 2175.69725,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "cleanup": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 810.004917,
+      "p95_method": "nearest_rank",
+      "p95_ms": 826.167666,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "cleanup_replay": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 489.010417,
+      "p95_method": "nearest_rank",
+      "p95_ms": 497.659333,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "close": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 401.885792,
+      "p95_method": "nearest_rank",
+      "p95_ms": 410.0285,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "install": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 3975.051667,
+      "p95_method": "nearest_rank",
+      "p95_ms": 4045.5215,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "land": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 3958.620167,
+      "p95_method": "nearest_rank",
+      "p95_ms": 4059.342959,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "recover": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 615.451875,
+      "p95_method": "nearest_rank",
+      "p95_ms": 639.839041,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "recover_after_land": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 505.041583,
+      "p95_method": "nearest_rank",
+      "p95_ms": 517.206,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "scenario_wall": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 18405.76,
+      "p95_method": "nearest_rank",
+      "p95_ms": 18653.018041,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "show": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 619.105208,
+      "p95_method": "nearest_rank",
+      "p95_ms": 625.038791,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "summary": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 162.95325,
+      "p95_method": "nearest_rank",
+      "p95_ms": 203.495875,
+      "sample_count": 7,
+      "small_sample": true
+    },
+    "validation": {
+      "eligible_count": 7,
+      "missing_count": 0,
+      "p50_ms": 25.163,
+      "p95_method": "nearest_rank",
+      "p95_ms": 26.049,
+      "sample_count": 7,
+      "small_sample": true
+    }
+  },
+  "limitations": [
+    "Synthetic local workload; no agent execution or human waiting measured.",
+    "Scenario wall time includes fixture setup and read checks; phases are not a decomposition.",
+    "Small samples provide descriptive percentiles, not a stable tail-latency estimate.",
+    "Source baseline uses the supplied checkout and its explicit environment handlers."
+  ],
+  "platform": "darwin",
+  "python_version": "3.14.6",
+  "runtime_mode": "source_baseline",
+  "sample_count": 7,
+  "samples": [
+    {
+      "durations_ms": {
+        "begin_close": 2509.604708,
+        "begin_land": 2133.272583,
+        "cleanup": 806.280958,
+        "cleanup_replay": 488.152959,
+        "close": 393.578584,
+        "install": 4045.5215,
+        "land": 3961.75675,
+        "recover": 615.451875,
+        "recover_after_land": 495.887541,
+        "scenario_wall": 18524.571292,
+        "show": 619.105208,
+        "summary": 162.95325,
+        "validation": 26.049
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    },
+    {
+      "durations_ms": {
+        "begin_close": 2422.837125,
+        "begin_land": 2137.0585,
+        "cleanup": 819.796,
+        "cleanup_replay": 494.029791,
+        "close": 398.777542,
+        "install": 3923.932375,
+        "land": 3958.620167,
+        "recover": 614.942625,
+        "recover_after_land": 499.102959,
+        "scenario_wall": 18343.423958,
+        "show": 623.450625,
+        "summary": 159.572042,
+        "validation": 25.207417
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    },
+    {
+      "durations_ms": {
+        "begin_close": 2381.274083,
+        "begin_land": 2175.69725,
+        "cleanup": 819.911916,
+        "cleanup_replay": 497.659333,
+        "close": 405.922208,
+        "install": 3981.184,
+        "land": 3936.217958,
+        "recover": 612.443333,
+        "recover_after_land": 509.731083,
+        "scenario_wall": 18387.9065,
+        "show": 613.983666,
+        "summary": 158.73675,
+        "validation": 24.722041
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    },
+    {
+      "durations_ms": {
+        "begin_close": 2389.84625,
+        "begin_land": 2164.346125,
+        "cleanup": 826.167666,
+        "cleanup_replay": 480.1215,
+        "close": 410.0285,
+        "install": 3935.621917,
+        "land": 3974.027292,
+        "recover": 632.539459,
+        "recover_after_land": 511.059125,
+        "scenario_wall": 18405.76,
+        "show": 621.979791,
+        "summary": 159.230291,
+        "validation": 25.143167
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    },
+    {
+      "durations_ms": {
+        "begin_close": 2382.237625,
+        "begin_land": 2129.898,
+        "cleanup": 803.619292,
+        "cleanup_replay": 493.485708,
+        "close": 402.222917,
+        "install": 3955.004917,
+        "land": 3947.989458,
+        "recover": 639.839041,
+        "recover_after_land": 505.041583,
+        "scenario_wall": 18336.373166,
+        "show": 609.308292,
+        "summary": 167.081334,
+        "validation": 25.163
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    },
+    {
+      "durations_ms": {
+        "begin_close": 2406.622667,
+        "begin_land": 2132.9015,
+        "cleanup": 810.004917,
+        "cleanup_replay": 479.607041,
+        "close": 393.320209,
+        "install": 3975.051667,
+        "land": 3948.215583,
+        "recover": 605.139792,
+        "recover_after_land": 517.206,
+        "scenario_wall": 18419.661833,
+        "show": 625.038791,
+        "summary": 175.299125,
+        "validation": 25.835875
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    },
+    {
+      "durations_ms": {
+        "begin_close": 2461.462583,
+        "begin_land": 2167.343208,
+        "cleanup": 802.484,
+        "cleanup_replay": 489.010417,
+        "close": 401.885792,
+        "install": 3994.900125,
+        "land": 4059.342959,
+        "recover": 622.993625,
+        "recover_after_land": 497.900542,
+        "scenario_wall": 18653.018041,
+        "show": 618.215166,
+        "summary": 203.495875,
+        "validation": 24.981458
+      },
+      "landed_tasks": 1,
+      "status": "passed",
+      "terminal_tasks": 2
+    }
+  ],
+  "scenario": "fresh_install_close_cleanup_replay_and_land_v1",
+  "schema_version": 1,
+  "source_revision": "605991856e54cbf34804365e241c4455ca6c09ec",
+  "validation": "public fixture content assertion before landing"
+}

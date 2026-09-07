@@ -1,8 +1,10 @@
 # Environment Independence and Outcome Evidence
 
-Status: accepted implementation plan. The acceptance criteria below remain open
-until implementation, independent review, and final target-branch verification
-provide the listed evidence. This document does not introduce shipped commands.
+Status: implemented and independently reviewed. A1-A8 have the local evidence
+listed below. A9 closure is recorded through the final acceptance task's terminal
+typed assessment only after canonical landing and exact-commit hosted verification.
+[Release acceptance](RELEASE_ACCEPTANCE.md) records fixed code, artifact, and
+measurement evidence; delivery receipts carry the current hosted run proof.
 
 ## Decision
 
@@ -65,35 +67,34 @@ granting a second source of lifecycle execution authority.
 
 | ID | Required behavior | Completion evidence |
 | --- | --- | --- |
-| A1 | Task, attempt, evidence, and repository-effect boundaries are explicit. Outcome assessment, execution status, and integration stay distinct. | This decision, strict schema tests, package-boundary tests, and independent architecture review. |
-| A2 | Blackdog runs without a repository `.VE`, source checkout, `PYTHONPATH`, or third-party runtime packages. Python requirements and supported platforms are explicit. | Reproducible artifact build; isolated subprocess checks including paths with spaces; CI build/test configuration; actual CI results reported separately from local results. |
-| A3 | Fresh-repository begin, show, recovery, close, land, and cleanup work with the portable runtime. Explicit Python handlers still work. | End-to-end subprocess scenarios, existing-environment preservation, linked-target-branch checks, and executable exact recovery commands after worktree removal. |
-| A4 | Product-observed validation binds the tested tree, commands, environment, task, and attempt. Caller assertions cannot impersonate the runner. | Reject forged provenance and stale bindings; command failure/timeout cases; unchanged-tree checks; completed replay without reexecution; indeterminate-run crash tests. |
-| A5 | Defined criteria have explicit assessments and provenance; corrections preserve history. Missing assessments are visible. | Definition/assessment round trips, identity and supersession conflict tests, malformed/unknown-version rejection, and separate execution/integration/outcome report examples. |
-| A6 | Measurements declare source, units, phase, eligibility, and missingness. Reports compare defined cohorts without counting missing values as zero. | Known-value fixtures for sample, eligible, and missing counts; documented percentile method; task versus attempt denominators; retry, intervention, acceptance, and regression coverage. |
-| A7 | Optimization improves a measured part of the real workflow without weakening validation or acceptance. | Comparable baseline/candidate fresh-repository lifecycle runs, sample counts and conditions, phase timings, observed changes, and limitations. Help latency alone is insufficient. |
-| A8 | Evidence and distribution changes preserve history, exclusive ownership, deterministic retries, and recovery after interrupted writes. | Migration fixtures, event conflict/corruption tests, crash injection at changed persistence boundaries, concurrent unrelated-task preservation, and old-reader evidence preservation. |
-| A9 | Every implementation item reaches the recorded target branch and remains usable after landing and cleanup. | Worker check results, independent review findings and resolutions, canonical commit/ancestry proof, clean target checkout, rebuilt artifact, and post-land CLI acceptance. |
+| A1 | Task, attempt, evidence, and repository-effect boundaries are explicit. Outcome assessment, execution status, and integration stay distinct. | Verified: documented boundaries, strict schema tests, package-boundary checks, and independent architecture review. |
+| A2 | Blackdog runs without a repository `.VE`, source checkout, `PYTHONPATH`, or third-party runtime packages. Python requirements and supported platforms are explicit. | Verified locally: reproducible final archive, isolated subprocess acceptance, and configured four-job CI matrix. Hosted proof belongs to A9. |
+| A3 | Fresh-repository begin, show, recovery, close, land, and cleanup work with the portable runtime. Explicit Python handlers still work. | Verified: seven final full-lifecycle scenarios, optional Python-handler preservation, existing linked-target tests, and exact cleanup replay after removal. |
+| A4 | Product-observed validation binds the tested tree, commands, environment, task, and attempt. Caller assertions cannot impersonate the runner. | Verified: strict provenance/binding and failure/timeout tests, stable replay and indeterminate fault checks, plus exact-archive typed CLI acceptance. |
+| A5 | Defined criteria have explicit assessments and provenance; corrections preserve history. Missing assessments are visible. | Verified: 31 evidence tests, immutable definitions, concurrent correction conflicts, terminal assessment and stale-tree checks, and provenance-preserving aggregate reports. |
+| A6 | Measurements declare source, units, phase, eligibility, and missingness. Reports compare defined cohorts without counting missing values as zero. | Verified: known-value cohort, missingness, canceled-versus-met, intervention, and repeated-regression fixtures; explicit coverage and percentile limits. |
+| A7 | Optimization improves a measured part of the real workflow without weakening validation or acceptance. | Verified: [baseline and final samples](RELEASE_ACCEPTANCE.md#final-workload-measurements), n=7 each; whole scenario 27.8% faster with every measured regression retained. |
+| A8 | Evidence and distribution changes preserve history, exclusive ownership, deterministic retries, and recovery after interrupted writes. | Verified: integrated fault/migration suite, independent zero-outside-write containment cases, concurrent invocation/observation checks, and exact old-reader byte preservation. |
+| A9 | Every implementation item reaches the recorded target branch and remains usable after landing and cleanup. | Canonical implementation commits are [listed in release acceptance](RELEASE_ACCEPTANCE.md#delivered-work). The final delivery receipt pairs terminal typed assessment with all four exact-pushed-main CI jobs and artifact hashes; configuration alone never closes this criterion. |
 
 ## Work and Review Sequence
 
-1. Land this decision and acceptance matrix after both implementation workers
-   and the independent reviewer agree on the interfaces.
-2. Implement runtime independence, optional project environment handling, stable
-   recovery command resolution, and tested release packaging. Review and land
-   this item before the evidence implementation.
-3. Implement typed evidence admission, outcome assessment, observed validation,
-   and phase/report contracts. Work may proceed in a separate task workspace
-   after interface agreement. Review against the landed runtime implementation.
-4. Complete integrated fault tests, comparable lifecycle benchmarks, measured
-   optimization, and independent acceptance. Return concrete defects to the
-   owning worker until resolved; then land and verify the final target state.
+1. The decision and acceptance matrix landed after both implementation workers
+   and the independent reviewer agreed on interfaces.
+2. The standalone external harness landed next so the first runtime workflow
+   could invoke a reviewed, already-shipped acceptance entrypoint.
+3. Runtime independence, optional project environments, stable recovery, release
+   packaging, and measured startup changes landed after adversarial review.
+4. Typed evidence admission, observed validation, and phase/report contracts
+   landed after integration with the runtime and independent fault review.
+5. Final acceptance records combined benchmarks, real typed task adoption,
+   canonical target verification, and exact-commit hosted release evidence.
 
 The coordinator assigns work and evaluates evidence. Worker agents implement,
 test, and execute canonical Blackdog landing. A reviewer must assess changed
 contracts and adverse scenarios, rather than infer correctness from test count.
-Each item names its acceptance IDs and records changed behavior, checks,
-remaining gaps, and canonical commit. Configuration, checks, local acceptance,
+Each delivered item names its acceptance IDs and records changed behavior,
+checks, remaining limits, and canonical commit. Configuration, checks, local acceptance,
 and actual CI execution are separate evidence claims.
 
 ## Measurement Rules and Baseline
@@ -111,4 +112,4 @@ Baseline commit: `605991856e54cbf34804365e241c4455ca6c09ec`.
 58 candidate files. This verifies the existing suite, not the new criteria.
 The baseline has no CI workflow or tested release-artifact surface. Existing
 handler and validation command durations provide reusable instrumentation;
-whole-lifecycle benchmark evidence will accompany implementation acceptance.
+the final whole-lifecycle evidence appears in [release acceptance](RELEASE_ACCEPTANCE.md).
