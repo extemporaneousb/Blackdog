@@ -310,3 +310,6 @@ Environment independence is the next stage, not part of this cutover. Blackdog
 will first be decoupled from repository-local `.VE` availability, then tested as
 self-contained Python release artifacts built by CI. A Go or Rust port is a
 later evidence-based decision, not current functionality.
+
+The accepted [execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) defines
+this next stage, typed outcome evidence, and the proof required for completion.

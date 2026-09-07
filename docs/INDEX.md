@@ -44,6 +44,8 @@ must never edit control files directly.
   recovery guarantees.
 - [CLI](CLI.md) — command and structured-result contract.
 - [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
+- [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — accepted next-stage
+  decisions, worker sequence, and acceptance evidence; implementation is pending.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied
 into managed repositories.
