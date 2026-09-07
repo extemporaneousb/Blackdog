@@ -50,6 +50,8 @@ must never edit control files directly.
   canonical implementation commits, review proof, and delivery limits.
 - [Runtime distribution](RUNTIME_DISTRIBUTION.md) — reproducible executable
   archives, installation, upgrades, and optional project environments.
+- [Runtime and worktree preparation contract](WORKTREE_PREPARATION.md) — accepted
+  isolation boundary, declared preparation requirements, current gaps and staged proof.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
 - [Outcome evidence](OUTCOME_EVIDENCE.md) — typed criteria, validation, measurement and reports.

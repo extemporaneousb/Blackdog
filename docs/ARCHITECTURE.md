@@ -262,6 +262,12 @@ environments; task execution and recovery do not depend on those environments.
 Blackdog self-development explicitly executes the task checkout's source while
 recovery retains its immutable archive. See [runtime distribution](RUNTIME_DISTRIBUTION.md).
 
+The accepted [runtime and worktree preparation contract](WORKTREE_PREPARATION.md)
+keeps one `task begin` workflow while separating Blackdog import isolation from
+repository preparation. Its declared-recipe, verified-reuse and readiness
+requirements are implementation targets; current overlay handlers do not yet
+provide those guarantees.
+
 ## Provider References
 
 Blackdog stores bounded references to provider-owned conversations, including

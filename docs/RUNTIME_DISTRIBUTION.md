@@ -2,9 +2,15 @@
 
 Blackdog requires Git and Python 3.11 or newer on Linux or macOS. Its executable
 archive includes the three Blackdog packages and no third-party dependencies.
-It runs Python with `-I -S`, so `PYTHONPATH`, user packages, and project virtual
-environments do not select its imports. The interpreter remains a system
-requirement; this is not a bundled-interpreter binary.
+Direct execution uses `python3 -I -S`, so `PYTHONPATH`, current-directory
+modules and automatic site-package initialization do not select its imports.
+The interpreter is selected through `PATH`; activating an environment can
+change that selection. The interpreter, standard library and native libraries
+remain trusted system dependencies, not bundled or fully pinned components.
+An explicit Python invocation must include `-I -S` to retain isolation;
+`python3 blackdog.pyz` bypasses the shebang flags. The accepted
+[runtime and worktree preparation contract](WORKTREE_PREPARATION.md) defines
+this assurance and the separate repository preparation requirements.
 
 ## Build and install
 
