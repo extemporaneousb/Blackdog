@@ -35,6 +35,7 @@ from blackdog_core.evidence import (
 from blackdog_core.profile import load_profile
 from blackdog_core.state import append_event_once, load_events, load_runtime_state
 from blackdog_core.tasks import create_task, finish_task, start_task
+from tests.process_support import configure_test_git
 
 
 class EvidenceContractTests(TestCase):
@@ -95,6 +96,7 @@ class EvidenceTests(TestCase):
         self.workspace = Path(self.temp.name) / "task worktree"
         self.root.mkdir()
         self.git("init", "-q")
+        configure_test_git(self.root)
         self.git("config", "user.name", "Test")
         self.git("config", "user.email", "test@example.com")
         (self.root / "blackdog.toml").write_text("""[project]

@@ -1,9 +1,12 @@
-.PHONY: acceptance public-check test test-core release
+.PHONY: acceptance acceptance-artifact public-check test test-core release
 
 CORE_AUDIT_COMMAND = PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py'
 
-acceptance:
-	$(MAKE) test
+acceptance: test
+	$(MAKE) acceptance-artifact
+
+acceptance-artifact: release
+	python3 scripts/acceptance_runtime.py --artifact dist/blackdog.pyz --samples 1 --output dist/runtime-acceptance.json
 
 public-check:
 	python3 scripts/public_check.py

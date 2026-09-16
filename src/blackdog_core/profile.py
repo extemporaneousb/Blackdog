@@ -20,6 +20,7 @@ PROJECT_STATUS_ARCHIVED = "archived"
 PROJECT_STATUSES = (PROJECT_STATUS_ACTIVE, PROJECT_STATUS_ARCHIVED)
 HANDLER_KIND_PYTHON_OVERLAY_VENV = "python-overlay-venv"
 HANDLER_KIND_BLACKDOG_RUNTIME = "blackdog-runtime"
+HANDLER_KIND_WORKTREE_PREPARATION = "worktree-preparation"
 HANDLER_SCRIPT_POLICY_ROOT_BIN_FALLBACK = "root-bin-fallback"
 HANDLER_SOURCE_MODE_MANAGED_CHECKOUT = "managed-checkout"
 HANDLER_SOURCE_MODE_INSTALLED_RUNTIME = "installed-runtime"
@@ -101,7 +102,42 @@ class BlackdogRuntimeHandlerConfig(HandlerConfig):
     other_repo_install_mode: str
 
 
-RepoHandlerConfig = PythonOverlayVenvHandlerConfig | BlackdogRuntimeHandlerConfig
+@dataclass(frozen=True)
+class PreparationTool:
+    name: str
+    executable: str
+    version_args: tuple[str, ...]
+    version: str
+
+
+@dataclass(frozen=True)
+class PreparationInput:
+    source: str
+    destination: str
+    sha256: str
+    mode: int
+
+
+@dataclass(frozen=True)
+class PreparationCommand:
+    name: str
+    argv: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorktreePreparationHandlerConfig(HandlerConfig):
+    schema_version: int
+    revision: str
+    tracked_inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    tools: tuple[PreparationTool, ...]
+    inputs: tuple[PreparationInput, ...]
+    setup: tuple[PreparationCommand, ...]
+    checks: tuple[PreparationCommand, ...]
+    timeout_seconds: int
+
+
+RepoHandlerConfig = PythonOverlayVenvHandlerConfig | BlackdogRuntimeHandlerConfig | WorktreePreparationHandlerConfig
 
 
 @dataclass(frozen=True)
@@ -288,6 +324,123 @@ def default_handler_configs() -> tuple[RepoHandlerConfig, ...]:
     )
 
 
+def _preparation_path(value: object, *, field: str) -> str:
+    if (
+        not isinstance(value, str) or not value or "\x00" in value
+        or Path(value).is_absolute()
+        or any(part in {".", "..", ".git"} for part in value.split("/"))
+        or str(Path(value)) != value
+    ):
+        raise ConfigError(f"{field} must be a normalized repository-relative path outside .git")
+    return value
+
+
+def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreePreparationHandlerConfig:
+    allowed = {
+        "id", "kind", "enabled", "depends_on", "schema_version", "revision",
+        "tracked_inputs", "outputs", "tools", "inputs", "setup", "checks", "timeout_seconds",
+    }
+    unknown = set(payload) - allowed
+    if unknown:
+        raise ConfigError(f"{field} has unsupported preparation fields: {', '.join(sorted(unknown))}")
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
+        raise ConfigError(f"{field}.schema_version must be 1")
+    revision = payload.get("revision")
+    if not isinstance(revision, str) or not revision.strip() or len(revision) > 128:
+        raise ConfigError(f"{field}.revision must be a nonempty string of at most 128 characters")
+    handler_id = str(payload["id"])
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", handler_id) is None:
+        raise ConfigError(f"{field}.id must be a bounded lowercase preparation identifier")
+    timeout = payload.get("timeout_seconds", 300)
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise ConfigError(f"{field}.timeout_seconds must be an integer from 1 to 3600")
+
+    def strings(value: object, key: str) -> tuple[str, ...]:
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item or "\x00" in item for item in value):
+            raise ConfigError(f"{field}.{key} must be an array of nonempty strings")
+        return tuple(value)
+
+    def paths(key: str) -> tuple[str, ...]:
+        values = strings(payload.get(key), key)
+        if not values or len(values) > 256 or len(set(values)) != len(values):
+            raise ConfigError(f"{field}.{key} must have 1 to 256 unique paths")
+        return tuple(_preparation_path(v, field=f"{field}.{key}") for v in values)
+
+    tracked_inputs = paths("tracked_inputs")
+    outputs = paths("outputs")
+    if any(a != b and Path(a) in Path(b).parents for a in outputs for b in outputs):
+        raise ConfigError(f"{field}.outputs must not overlap")
+    if any(i == o or Path(o) in Path(i).parents for i in tracked_inputs for o in outputs):
+        raise ConfigError(f"{field}.outputs must not contain tracked_inputs")
+
+    def rows(key: str, allowed_keys: set[str], *, required: bool = True) -> list[dict[str, object]]:
+        value = payload.get(key, [])
+        if not isinstance(value, list) or (required and not value) or len(value) > 64:
+            raise ConfigError(f"{field}.{key} must contain {'1' if required else '0'} to 64 tables")
+        if any(not isinstance(row, dict) or set(row) != allowed_keys for row in value):
+            raise ConfigError(f"{field}.{key} requires exactly these fields: {', '.join(sorted(allowed_keys))}")
+        return value
+
+    tools = []
+    for row in rows("tools", {"name", "executable", "version_args", "version"}):
+        name, executable, version = row["name"], row["executable"], row["version"]
+        if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) is None or name == "worktree":
+            raise ConfigError(f"{field}.tools.name must be a bounded identifier other than worktree")
+        if not isinstance(executable, str) or re.fullmatch(r"[a-zA-Z0-9_.+-]+", executable) is None:
+            raise ConfigError(f"{field}.tools.executable must be a PATH executable name")
+        if not isinstance(version, str) or not version or len(version) > 4096:
+            raise ConfigError(f"{field}.tools.version must be the exact bounded version output")
+        args = strings(row["version_args"], "tools.version_args")
+        if not args or len(args) > 32 or any(len(arg) > 4096 for arg in args):
+            raise ConfigError(f"{field}.tools.version_args cannot be empty")
+        tools.append(PreparationTool(name, executable, args, version))
+    if len({tool.name for tool in tools}) != len(tools):
+        raise ConfigError(f"{field}.tools names must be unique")
+    inputs = []
+    for row in rows("inputs", {"source", "destination", "sha256", "mode"}, required=False):
+        source = _preparation_path(row["source"], field=f"{field}.inputs.source")
+        destination = _preparation_path(row["destination"], field=f"{field}.inputs.destination")
+        if not any(Path(output) in Path(destination).parents for output in outputs):
+            raise ConfigError(f"{field}.inputs.destination must be inside an owned output directory")
+        digest = row["sha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ConfigError(f"{field}.inputs.sha256 must be a lowercase SHA-256 digest")
+        if type(row["mode"]) is not int or row["mode"] not in {0o600, 0o644, 0o700, 0o755}:
+            raise ConfigError(f"{field}.inputs.mode must be 0o600, 0o644, 0o700, or 0o755")
+        inputs.append(PreparationInput(source, destination, digest, row["mode"]))
+    if len({item.destination for item in inputs}) != len(inputs):
+        raise ConfigError(f"{field}.inputs destinations must be unique")
+
+    def commands(key: str) -> tuple[PreparationCommand, ...]:
+        result = []
+        for row in rows(key, {"name", "argv"}):
+            name = row["name"]
+            if not isinstance(name, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name) is None:
+                raise ConfigError(f"{field}.{key}.name must be a bounded identifier")
+            argv = strings(row["argv"], f"{key}.argv")
+            if not argv or len(argv) > 128 or any(len(arg) > 16384 or "\x00" in arg for arg in argv):
+                raise ConfigError(f"{field}.{key}.argv must be a nonempty bounded argument array")
+            if argv[0] not in {"{" + tool.name + "}" for tool in tools} and not argv[0].startswith("{worktree}/"):
+                raise ConfigError(f"{field}.{key}.argv executable must reference a declared tool or worktree output")
+            if argv[0].startswith("{worktree}/"):
+                executable = _preparation_path(argv[0][len("{worktree}/"):], field=f"{field}.{key}.argv executable")
+                if not any(Path(output) in Path(executable).parents for output in outputs):
+                    raise ConfigError(f"{field}.{key}.argv executable must be inside an owned output")
+            result.append(PreparationCommand(name, argv))
+        if len({item.name for item in result}) != len(result):
+            raise ConfigError(f"{field}.{key} names must be unique")
+        return tuple(result)
+
+    return WorktreePreparationHandlerConfig(
+        handler_id=handler_id, kind=HANDLER_KIND_WORKTREE_PREPARATION,
+        enabled=True if "enabled" not in payload else _bool_value(payload["enabled"], field=f"{field}.enabled"),
+        depends_on=_string_tuple(payload.get("depends_on"), field=f"{field}.depends_on"),
+        schema_version=1, revision=revision, tracked_inputs=tracked_inputs, outputs=outputs,
+        tools=tuple(tools), inputs=tuple(inputs), setup=commands("setup"), checks=commands("checks"),
+        timeout_seconds=timeout,
+    )
+
+
 def _handler_from_payload(payload: dict[str, object], *, index: int) -> RepoHandlerConfig:
     field_prefix = f"handlers[{index}]"
     handler_id = _optional_text(payload.get("id"))
@@ -298,6 +451,8 @@ def _handler_from_payload(payload: dict[str, object], *, index: int) -> RepoHand
         raise ConfigError(f"{field_prefix}.kind is required")
     enabled = True if "enabled" not in payload else _bool_value(payload.get("enabled"), field=f"{field_prefix}.enabled")
     depends_on = _string_tuple(payload.get("depends_on"), field=f"{field_prefix}.depends_on")
+    if kind == HANDLER_KIND_WORKTREE_PREPARATION:
+        return _preparation_handler(payload, field=field_prefix)
     if kind == HANDLER_KIND_PYTHON_OVERLAY_VENV:
         root_path = _optional_text(payload.get("root_path"))
         worktree_path = _optional_text(payload.get("worktree_path"))

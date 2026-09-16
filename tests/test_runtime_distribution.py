@@ -6,8 +6,10 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
+import signal
+import sys
 import tempfile
+import time
 from unittest import TestCase
 from unittest.mock import patch
 import zipfile
@@ -15,6 +17,83 @@ import zipfile
 from blackdog import runtime_distribution as runtime
 from blackdog_core.profile import load_profile
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
+from tests.process_support import run_cli
+
+
+class FixtureProcessTests(TestCase):
+    def test_cli_timeout_reports_output_and_reaps_owned_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            child_pid = Path(directory) / "child.pid"
+            script = """
+import signal, subprocess, sys, time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+def stop(signum, frame):
+    child.wait(timeout=1)
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+Path(sys.argv[1]).write_text(str(child.pid))
+print('available stdout', flush=True)
+print('available stderr', file=sys.stderr, flush=True)
+time.sleep(60)
+"""
+            started = time.monotonic()
+            try:
+                with self.assertRaises(AssertionError) as raised:
+                    run_cli([sys.executable, "-c", script, str(child_pid)], timeout=1)
+                self.assertLess(time.monotonic() - started, 4)
+                message = str(raised.exception)
+                self.assertIn("exceeded 1s", message)
+                self.assertIn(sys.executable, message)
+                self.assertIn(str(child_pid), message)
+                self.assertIn("available stdout", message)
+                self.assertIn("available stderr", message)
+                self.assertTrue(child_pid.is_file(), "hung fixture did not start its child")
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(child_pid.read_text()), 0)
+            finally:
+                if child_pid.is_file():
+                    try:
+                        os.kill(int(child_pid.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_git_fixtures_override_inherited_signing_and_hooks_locally(self) -> None:
+        from tests.test_evidence import EvidenceTests
+        from tests.test_wtam_lifecycle import ProductRepo
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            hooks = base / "personal-hooks"
+            hooks.mkdir()
+            hook = hooks / "pre-commit"
+            hook.write_text("#!/bin/sh\nexit 73\n", encoding="utf-8")
+            hook.chmod(0o755)
+            config = base / "personal.gitconfig"
+            config.write_text(
+                f"[commit]\n gpgsign = true\n[tag]\n gpgsign = true\n"
+                f"[gpg]\n program = unavailable-test-signing-program\n"
+                f"[core]\n hooksPath = {hooks}\n",
+                encoding="utf-8",
+            )
+            original = config.read_bytes()
+            with patch.dict(os.environ, {
+                "GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1",
+            }):
+                for fixture in (CoreAuditTestCase(), EvidenceTests()):
+                    with self.subTest(fixture=type(fixture).__name__):
+                        fixture.setUp()
+                        try:
+                            self.assertTrue((fixture.root / ".git").is_dir())
+                        finally:
+                            fixture.tearDown()
+                repo = ProductRepo("inherited-git-config")
+                try:
+                    repo.start(commit_change=True)
+                    self.assertTrue((repo.worktree / f"{repo.task_id}.txt").is_file())
+                finally:
+                    repo.close()
+            self.assertEqual(config.read_bytes(), original)
 
 
 class RuntimeArtifactTests(TestCase):
@@ -42,9 +121,8 @@ class RuntimeDistributionTests(CoreAuditTestCase):
     def run_release(self, executable: Path, *args: str, cwd: Path | None = None) -> dict:
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
-        result = subprocess.run(
+        result = run_cli(
             [str(executable), *args], cwd=cwd or self.root, env=env,
-            capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         return json.loads(result.stdout)
@@ -169,7 +247,7 @@ script_policy = "root-bin-fallback"
         cli_source.write_text(cli_source.read_text(encoding="utf-8").replace(
             "from __future__ import annotations", 'from __future__ import annotations\nprint("TASK_SOURCE_MARKER")', 1,
         ), encoding="utf-8")
-        probe = subprocess.run([str(task_launcher), "--help"], cwd=self.root, capture_output=True, text=True)
+        probe = run_cli([str(task_launcher), "--help"], cwd=self.root)
         self.assertEqual(probe.returncode, 0, probe.stderr)
         self.assertIn("TASK_SOURCE_MARKER", probe.stdout)
         stable = Path(runtime.runtime_executable(self.root, profile=load_profile(self.root)))
@@ -295,9 +373,8 @@ script_policy = "root-bin-fallback"
             "assert 'blackdog.wtam' not in sys.modules; "
             "assert 'blackdog.codex_sessions' not in sys.modules"
         )
-        completed = subprocess.run(
+        completed = run_cli(
             ["python3", "-I", "-S", "-c", script, str(artifact), str(self.root)],
-            capture_output=True, text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
@@ -322,19 +399,19 @@ script_policy = "root-bin-fallback"
         self.git_output("add", "blackdog.toml", "AGENTS.md", ".codex")
         self.git_output("commit", "-m", "Install worktree error fixture")
         self.git_output("checkout", "--detach", "HEAD")
-        detached = subprocess.run(
+        detached = run_cli(
             [executable, "worktree", "preflight", "--project-root", str(self.root), "--json"],
-            cwd=self.root, capture_output=True, text=True,
+            cwd=self.root,
         )
         self.assertEqual(detached.returncode, 1)
         self.assertIn("detached HEAD", detached.stderr)
         self.assertNotIn("Traceback", detached.stderr)
         self.git_output("checkout", "main")
-        missing = subprocess.run(
+        missing = run_cli(
             [executable, "task", "begin", "--project-root", str(self.root),
              "--execution-prompt", "Public missing-ref fixture", "--request", "Public missing-ref fixture",
              "--from", "nonexistent-fixture-ref", "--json"],
-            cwd=self.root, capture_output=True, text=True,
+            cwd=self.root,
         )
         self.assertEqual(missing.returncode, 1)
         self.assertIn("could not resolve --from ref", missing.stderr)

@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import tomllib
 from typing import Any
 
 from blackdog.runtime_distribution import runtime_executable
@@ -40,9 +41,12 @@ from blackdog.guards import (
     evaluate_task_begin_guards,
 )
 from blackdog.handlers import (
+    HandlerError,
+    HandlerPlanSummary,
     execute_worktree_handlers,
     plan_worktree_handlers,
     validate_existing_worktree_handlers,
+    worktree_handler_profile,
 )
 from blackdog.landing import (
     LANDING_PHASES,
@@ -82,7 +86,7 @@ from blackdog.prompting import _compose_prompt
 from blackdog.validation import run_validation_commands
 from blackdog.codex_sessions import current_codex_runtime_context, current_codex_session_ref
 from blackdog_core.evidence import SetupMeasurement
-from blackdog_core.profile import RepoProfile, slugify
+from blackdog_core.profile import ConfigError, RepoProfile, WorktreePreparationHandlerConfig, slugify
 from blackdog_core.state import (
     ATTEMPT_STATUS_ABANDONED,
     ATTEMPT_STATUS_BLOCKED,
@@ -123,6 +127,7 @@ from blackdog_core.tasks import (
     inspect_task_finalization,
     inspect_task_runtime_transition,
     repair_task_start_events,
+    record_task_setup,
     reconcile_landed_attempt,
     set_task_runtime_status,
     start_task,
@@ -681,6 +686,8 @@ def _setup_receipt(
     ).to_dict()
     if skill_provenance is not None:
         receipt["skill_provenance"] = dict(skill_provenance)
+    if handler_payload.get("preparation"):
+        receipt["preparation"] = handler_payload["preparation"]
     return receipt
 
 
@@ -689,6 +696,21 @@ def _persist_prompt_receipts(profile: RepoProfile, request_receipt: Any, executi
         profile.paths.control_dir,
         (request_receipt, execution_receipt),
     )
+
+
+def _same_preparation_readiness(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """Fresh checks of identical ready inputs need no duplicate store mutation."""
+    def identity(receipt: Mapping[str, Any]) -> Any:
+        if receipt.get("status") != "ok":
+            return None
+        rows = receipt.get("preparation", [])
+        return [
+            {**{key: value for key, value in row.items() if key not in {"checked_at", "reuse", "checks"}},
+             "checks": [{"name": check["name"], "status": check["status"]} for check in row.get("checks", [])]}
+            for row in rows
+        ]
+    prior = identity(previous)
+    return bool(prior) and prior == identity(current)
 
 
 def _same_prompt_lineage(attempt: TaskAttemptRecord, *, actor: str, request_receipt: Any, execution_receipt: Any) -> bool:
@@ -822,26 +844,46 @@ def begin_task_worktree(
                 failure_code=None,
             )
         assert active.worktree_path is not None
-        setup = validate_existing_worktree_handlers(
-            profile,
-            worktree_path=Path(active.worktree_path),
-        )
-        if not setup.ready:
-            return _result(
-                operation="task.begin",
-                operation_status="blocked",
-                task_status=task.status,
-                attempt_status=active.status,
-                next_action=_blocked_action(
-                    "handler_setup_invalid",
-                    setup.remediation or "retained task handlers are not ready",
-                    "Repair the retained task handler setup",
-                ),
-                payload={**_task_payload(task), "attempt": _attempt_payload(active), "setup_receipt": setup.to_dict()},
-                failure_code="setup_guard",
+        setup_started_ns = time.monotonic_ns()
+        previous_preparation = (active.setup_receipt or {}).get("preparation", [])
+        try:
+            setup = validate_existing_worktree_handlers(
+                profile,
+                worktree_path=Path(active.worktree_path),
+                task_id=task.task_id,
+                attempt_id=active.attempt_id,
             )
+        except (HandlerError, ConfigError, tomllib.TOMLDecodeError, OSError) as exc:
+            if not previous_preparation:
+                raise
+            reason = f"preparation admission failed: {exc}"
+            setup = HandlerPlanSummary(
+                ready=False, actions=(), remediation=reason,
+                preparation=tuple({**item, "status": "blocked", "phase": "admission", "reason": reason}
+                                  for item in previous_preparation),
+            )
+        if previous_preparation:
+            expected_ids = {item["handler_id"] for item in previous_preparation}
+            if expected_ids != {item["handler_id"] for item in getattr(setup, "preparation", ())}:
+                observed_ids = {item["handler_id"] for item in setup.preparation}
+                missing = tuple({**item, "status": "blocked", "reason": "recorded handler removed or disabled"}
+                                for item in previous_preparation if item["handler_id"] not in observed_ids)
+                setup = replace(setup, ready=False, remediation="recorded preparation handlers were removed or disabled",
+                                preparation=(*setup.preparation, *missing))
         events_before = profile.paths.events_file.read_bytes() if profile.paths.events_file.is_file() else b""
         try:
+            if getattr(setup, "preparation", ()):
+                refreshed_receipt = _setup_receipt(
+                    setup, guard_receipt=active.setup_receipt or {}, skill_provenance=skill_provenance,
+                    setup_elapsed_ms=(time.monotonic_ns() - setup_started_ns) // 1_000_000,
+                )
+                if active.setup_receipt and _same_preparation_readiness(active.setup_receipt, refreshed_receipt):
+                    refreshed_receipt = active.setup_receipt
+                active = record_task_setup(
+                    profile, task_id=task.task_id, attempt_id=active.attempt_id, actor=actor,
+                    expected_receipt=active.setup_receipt,
+                    setup_receipt=refreshed_receipt,
+                )
             repair_task_start_events(profile, task_id=task.task_id, attempt_id=active.attempt_id)
         except Exception as exc:
             argv = _resume_begin_argv(profile, task, active)
@@ -872,6 +914,20 @@ def begin_task_worktree(
                 mutation_completed=False,
                 mutation_phase="event_finalization_partial",
                 failure_code=classify_lifecycle_exception(exc).failure_code,
+            )
+        if not setup.ready:
+            return _result(
+                operation="task.begin",
+                operation_status="blocked",
+                task_status=task.status,
+                attempt_status=active.status,
+                next_action=_blocked_action(
+                    "handler_setup_invalid",
+                    setup.remediation or "retained task handlers are not ready",
+                    "Repair the retained task handler setup",
+                ),
+                payload={**_task_payload(task), "attempt": _attempt_payload(active), "setup_receipt": setup.to_dict()},
+                failure_code="setup_guard",
             )
         events_after = profile.paths.events_file.read_bytes() if profile.paths.events_file.is_file() else b""
         payload = _begin_payload(task, active, primary=primary, current=current, include_prompt=include_prompt)
@@ -926,7 +982,13 @@ def begin_task_worktree(
             if branch is not None and branch != latest.branch:
                 raise TaskError("resume branch conflicts with the retained task workspace")
             setup_started_ns = time.monotonic_ns()
-            setup = validate_existing_worktree_handlers(profile, worktree_path=retained_path)
+            resumed_attempt_id = task_resume_attempt_id(
+                task_id=task.task_id, predecessor_attempt_id=latest.attempt_id, actor=actor,
+                execution_prompt_hash=execution_receipt.prompt_hash, request_prompt_hash=request_receipt.prompt_hash,
+            )
+            setup = validate_existing_worktree_handlers(
+                profile, worktree_path=retained_path, task_id=task.task_id, attempt_id=resumed_attempt_id,
+            )
             setup_elapsed_ms = (time.monotonic_ns() - setup_started_ns) // 1_000_000
             if not setup.ready:
                 raise TaskBeginPreflightError(setup.remediation or "retained task handlers are not ready")
@@ -965,13 +1027,7 @@ def begin_task_worktree(
                     skill_provenance=skill_provenance,
                     setup_elapsed_ms=setup_elapsed_ms,
                 ),
-                attempt_id=task_resume_attempt_id(
-                    task_id=task.task_id,
-                    predecessor_attempt_id=latest.attempt_id,
-                    actor=actor,
-                    execution_prompt_hash=execution_receipt.prompt_hash,
-                    request_prompt_hash=request_receipt.prompt_hash,
-                ),
+                attempt_id=resumed_attempt_id,
             )
             task = _task_for_id(profile, task.task_id)
             return _result(
@@ -1018,14 +1074,28 @@ def begin_task_worktree(
 
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     created = False
+    preparing = False
     try:
         _run_git(primary, "worktree", "add", str(resolved_path), "-b", resolved_branch, base_ref)
         created = True
+        checkout_profile = worktree_handler_profile(profile, resolved_path)
+        preparation_handlers = tuple(
+            handler for handler in checkout_profile.handlers
+            if isinstance(handler, WorktreePreparationHandlerConfig) and handler.enabled
+        )
+        preparing = bool(preparation_handlers)
         setup_started_ns = time.monotonic_ns()
-        setup = execute_worktree_handlers(profile, worktree_path=resolved_path)
-        setup_elapsed_ms = (time.monotonic_ns() - setup_started_ns) // 1_000_000
-        if not setup.ready:
-            raise TaskBeginPreflightError(setup.remediation or "worktree handlers did not produce a ready workspace")
+        if preparing:
+            setup = HandlerPlanSummary(ready=False, actions=(), remediation="preparation pending", preparation=tuple(
+                {"schema_version": 1, "handler_id": handler.handler_id, "status": "pending"}
+                for handler in preparation_handlers
+            ))
+            setup_elapsed_ms = None
+        else:
+            setup = execute_worktree_handlers(profile, worktree_path=resolved_path)
+            setup_elapsed_ms = (time.monotonic_ns() - setup_started_ns) // 1_000_000
+            if not setup.ready:
+                raise TaskBeginPreflightError(setup.remediation or "worktree handlers did not produce a ready workspace")
         request_receipt, execution_receipt = _persist_prompt_receipts(
             profile, request_receipt, execution_receipt
         )
@@ -1079,6 +1149,20 @@ def begin_task_worktree(
                 setup_elapsed_ms=setup_elapsed_ms,
             ),
         )
+        if preparing:
+            setup = execute_worktree_handlers(
+                profile, worktree_path=resolved_path,
+                task_id=task.task_id, attempt_id=attempt.attempt_id,
+            )
+            setup_elapsed_ms = (time.monotonic_ns() - setup_started_ns) // 1_000_000
+            attempt = record_task_setup(
+                profile, task_id=task.task_id, attempt_id=attempt.attempt_id, actor=actor,
+                expected_receipt=attempt.setup_receipt,
+                setup_receipt=_setup_receipt(
+                    setup, guard_receipt=guard_receipt, skill_provenance=skill_provenance,
+                    setup_elapsed_ms=setup_elapsed_ms,
+                ),
+            )
     except Exception as exc:
         observed_task = task_record(load_runtime_state(profile.paths), task.task_id)
         observed_active = (
@@ -1126,6 +1210,17 @@ def begin_task_worktree(
         raise
     task = _task_for_id(profile, task.task_id)
     payload = _begin_payload(task, attempt, primary=primary, current=current, include_prompt=include_prompt)
+    if preparing and not setup.ready:
+        return _result(
+            operation="task.begin", operation_status="blocked", task_status=task.status,
+            attempt_status=attempt.status,
+            next_action=_blocked_action(
+                "handler_setup_invalid", setup.remediation or "preparation did not establish readiness",
+                "Inspect retained preparation evidence and owned outputs",
+            ),
+            payload=payload, mutation_started=True, mutation_completed=True,
+            mutation_phase="workspace_started", failure_code="setup_guard",
+        )
     return _result(
         operation="task.begin",
         operation_status="succeeded",
@@ -1554,6 +1649,14 @@ def _cancel_blocked_task_action(profile: RepoProfile, task: TaskRecord, attempt:
     )
 
 
+def _preparation_blocker(attempt: TaskAttemptRecord) -> str | None:
+    receipt = attempt.setup_receipt or {}
+    if receipt.get("preparation") and receipt.get("status") != "ok":
+        reasons = [str(item["reason"]) for item in receipt["preparation"] if item.get("reason")]
+        return "; ".join(reasons) or "The attempt has not completed its declared worktree preparation."
+    return None
+
+
 def _task_state_result(profile: RepoProfile, task: TaskRecord, *, operation: str) -> OperationResult:
     state = load_runtime_state(profile.paths)
     active = active_task_attempt(state, task.task_id)
@@ -1574,7 +1677,12 @@ def _task_state_result(profile: RepoProfile, task: TaskRecord, *, operation: str
         "branch_exists": bool(attempt and _git_exists(primary, attempt.branch)),
         "branch_ahead_of_target": bool(attempt and _ahead(primary, attempt.branch, attempt.target_branch)),
     }
-    if active is not None and proven:
+    if active is not None and proven and _preparation_blocker(active):
+        next_action = _blocked_action(
+            "handler_setup_invalid", str(_preparation_blocker(active)),
+            "Inspect retained preparation evidence and owned outputs",
+        )
+    elif active is not None and proven:
         next_action = _complete_action(
             "continue_active_attempt",
             "The active attempt has a valid retained task workspace.",
@@ -2947,6 +3055,14 @@ def land_task(
     resolved_actor = actor or attempt.actor
     if resolved_actor != attempt.actor:
         raise TaskError(f"attempt {attempt.attempt_id!r} is owned by {attempt.actor!r}, not {resolved_actor!r}")
+    if transaction is None and _preparation_blocker(attempt):
+        return _result(
+            operation="task.land", operation_status="blocked", task_status=task.status,
+            attempt_status=attempt.status,
+            next_action=_blocked_action("handler_setup_invalid", str(_preparation_blocker(attempt)),
+                                        "Inspect retained preparation evidence and owned outputs"),
+            payload={**_task_payload(task), "attempt": _attempt_payload(attempt)}, failure_code="setup_guard",
+        )
     if transaction is None and not str(summary or "").strip():
         raise TaskError("task land requires an explicit nonblank --summary")
     if transaction is None and not validations:

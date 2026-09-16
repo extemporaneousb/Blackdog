@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 import os
@@ -17,6 +17,7 @@ from blackdog_core.profile import (
     HANDLER_INSTALL_MODE_LAUNCHER_SHIM,
     HANDLER_KIND_BLACKDOG_RUNTIME,
     HANDLER_KIND_PYTHON_OVERLAY_VENV,
+    HANDLER_KIND_WORKTREE_PREPARATION,
     HANDLER_SOURCE_MODE_INSTALLED_RUNTIME,
     HANDLER_SOURCE_MODE_LOCAL_OVERRIDE,
     HANDLER_SOURCE_MODE_MANAGED_CHECKOUT,
@@ -24,11 +25,14 @@ from blackdog_core.profile import (
     PythonOverlayVenvHandlerConfig,
     RepoHandlerConfig,
     RepoProfile,
+    WorktreePreparationHandlerConfig,
+    load_profile,
     resolve_config_path,
 )
 
 
 from blackdog.runtime_distribution import install_runtime, installed_runtime
+from blackdog.preparation import PreparationResult, prepare_worktree
 
 
 DEFAULT_SOURCE_REMOTE = "https://github.com/extemporaneousb/Blackdog.git"
@@ -93,6 +97,7 @@ class HandlerPlanSummary:
     source_mode: str | None = None
     runtime_mode: str | None = None
     script_policy: str | None = None
+    preparation: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +113,7 @@ class HandlerPlanSummary:
             "runtime_mode": self.runtime_mode,
             "script_policy": self.script_policy,
             "actions": [action.to_dict() for action in self.actions],
+            "preparation": list(self.preparation),
         }
 
 
@@ -140,6 +146,8 @@ class _HandlerContext:
     worktree_path: Path | None = None
     source_root_override: Path | None = None
     update_managed_source: bool = False
+    task_id: str | None = None
+    attempt_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -985,6 +993,7 @@ def _summarize(
     remediation: str | None,
     python_state: _PythonOverlayState | None,
     runtime_state: _BlackdogRuntimeState | None,
+    preparation: tuple[dict[str, Any], ...] = (),
 ) -> HandlerPlanSummary:
     return HandlerPlanSummary(
         ready=ready,
@@ -999,7 +1008,39 @@ def _summarize(
         source_mode=runtime_state.source_mode if runtime_state is not None else None,
         runtime_mode=runtime_state.runtime_mode if runtime_state is not None else None,
         script_policy=python_state.script_policy if python_state is not None else None,
+        preparation=preparation,
     )
+
+
+def _preparation_handler(config: WorktreePreparationHandlerConfig, context: _HandlerContext, *, execute: bool) -> _HandlerStepResult:
+    if context.worktree_path is None or context.operation == "worktree-preview":
+        return _HandlerStepResult(True, (HandlerAction(
+            config.handler_id, config.kind, "prepare-worktree", None, HANDLER_STATUS_PLANNED,
+            "reviewed preparation runs only in its task checkout; readiness is not yet established",
+        ),), None)
+    started = time.monotonic_ns()
+    result = prepare_worktree(
+        context.profile, config, worktree=context.worktree_path, execute=execute,
+        task_id=context.task_id, attempt_id=context.attempt_id,
+    )
+    return _HandlerStepResult(result.ready, (HandlerAction(
+        config.handler_id, config.kind, "prepare-worktree", str(context.worktree_path),
+        HANDLER_STATUS_VALIDATED if result.ready else HANDLER_STATUS_BLOCKED,
+        "verified declared preparation and checkout readiness" if result.ready else str(result.reason),
+        (time.monotonic_ns() - started) // 1_000_000,
+    ),), result, result.reason)
+
+
+def worktree_handler_profile(profile: RepoProfile, worktree: Path) -> RepoProfile:
+    """Resolve reviewed preparation policy from the checkout being executed."""
+    if not (worktree / "blackdog.toml").is_file():
+        if any(isinstance(handler, WorktreePreparationHandlerConfig) for handler in profile.handlers):
+            raise HandlerError("task checkout is missing its reviewed preparation profile")
+        return profile
+    checkout = load_profile(worktree, read_only=True)
+    if any(isinstance(handler, WorktreePreparationHandlerConfig) for handler in (*profile.handlers, *checkout.handlers)):
+        return replace(profile, handlers=checkout.handlers)
+    return profile
 
 
 def _run_handlers(context: _HandlerContext, *, execute: bool) -> HandlerPlanSummary:
@@ -1008,6 +1049,7 @@ def _run_handlers(context: _HandlerContext, *, execute: bool) -> HandlerPlanSumm
     ready = True
     python_state: _PythonOverlayState | None = None
     runtime_state: _BlackdogRuntimeState | None = None
+    preparation: list[dict[str, Any]] = []
     for handler in _ordered_handlers(context.profile):
         if handler.kind == HANDLER_KIND_PYTHON_OVERLAY_VENV:
             result = (
@@ -1025,17 +1067,24 @@ def _run_handlers(context: _HandlerContext, *, execute: bool) -> HandlerPlanSumm
             )
             if isinstance(result.state, _BlackdogRuntimeState):
                 runtime_state = result.state
+        elif isinstance(handler, WorktreePreparationHandlerConfig):
+            result = _preparation_handler(handler, context, execute=execute)
+            if isinstance(result.state, PreparationResult):
+                preparation.append(result.state.receipt)
         else:
             raise HandlerError(f"unsupported handler kind: {handler.kind}")
         actions.extend(result.actions)
         ready = ready and result.ready
         remediation = remediation or result.remediation
+        if not result.ready:
+            break
     return _summarize(
         ready=ready,
         actions=tuple(actions),
         remediation=remediation,
         python_state=python_state,
         runtime_state=runtime_state,
+        preparation=tuple(preparation),
     )
 
 
@@ -1086,13 +1135,16 @@ def plan_worktree_handlers(profile: RepoProfile, *, worktree_path: Path) -> Hand
     return _run_handlers(context, execute=False)
 
 
-def execute_worktree_handlers(profile: RepoProfile, *, worktree_path: Path) -> HandlerPlanSummary:
+def execute_worktree_handlers(profile: RepoProfile, *, worktree_path: Path, task_id: str | None = None, attempt_id: str | None = None) -> HandlerPlanSummary:
+    profile = worktree_handler_profile(profile, worktree_path)
     context = _HandlerContext(
         profile=profile,
         operation="worktree-start",
         project_root=profile.paths.project_root.resolve(),
         worktree_path=worktree_path.resolve(),
         source_root_override=_current_blackdog_source_root(),
+        task_id=task_id,
+        attempt_id=attempt_id,
     )
     return _run_handlers(context, execute=True)
 
@@ -1101,20 +1153,26 @@ def validate_existing_worktree_handlers(
     profile: RepoProfile,
     *,
     worktree_path: Path,
+    task_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> HandlerPlanSummary:
     """Prove retained worktree handler outputs without creating or rewriting them."""
 
+    profile = worktree_handler_profile(profile, worktree_path)
     context = _HandlerContext(
         profile=profile,
         operation="worktree-adopt",
         project_root=profile.paths.project_root.resolve(),
         worktree_path=worktree_path.resolve(),
         source_root_override=_current_blackdog_source_root(),
+        task_id=task_id,
+        attempt_id=attempt_id,
     )
     python_state: _PythonOverlayState | None = None
     runtime_state: _BlackdogRuntimeState | None = None
     actions: list[HandlerAction] = []
     blockers: list[str] = []
+    preparation: list[dict[str, Any]] = []
 
     for handler in _ordered_handlers(profile):
         if handler.kind == HANDLER_KIND_PYTHON_OVERLAY_VENV:
@@ -1467,6 +1525,13 @@ def validate_existing_worktree_handlers(
             )
             if not import_origin_valid:
                 blockers.append("validate-blackdog-import-origin")
+        elif isinstance(handler, WorktreePreparationHandlerConfig):
+            result = _preparation_handler(handler, context, execute=False)
+            actions.extend(result.actions)
+            if isinstance(result.state, PreparationResult):
+                preparation.append(result.state.receipt)
+            if not result.ready:
+                blockers.append(result.remediation or "preparation is not ready")
         else:
             raise HandlerError(f"unsupported handler kind: {handler.kind}")
 
@@ -1476,6 +1541,7 @@ def validate_existing_worktree_handlers(
         remediation="; ".join(dict.fromkeys(blockers)) if blockers else None,
         python_state=python_state,
         runtime_state=runtime_state,
+        preparation=tuple(preparation),
     )
 
 

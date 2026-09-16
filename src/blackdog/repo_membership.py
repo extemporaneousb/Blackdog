@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Iterator
 import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import tomllib
 
@@ -34,6 +37,7 @@ from blackdog.repo_scope import (
 )
 from blackdog_core.profile import (
     DEFAULT_CONTROL_DIR,
+    GIT_COMMON_TOKEN,
     HANDLER_KIND_BLACKDOG_RUNTIME,
     HANDLER_SOURCE_MODE_MANAGED_CHECKOUT,
     PROFILE_FILE_NAME,
@@ -270,14 +274,19 @@ def _profile_control_dir(repo_root: Path, payload: dict[str, Any]) -> Path | Non
     raw_paths = payload.get("paths") or {}
     if not isinstance(raw_paths, dict):
         raise RepoLifecycleError("paths table must be a TOML table")
-    if "control_dir" in raw_paths:
-        return resolve_config_path(repo_root, str(raw_paths["control_dir"]))
-    return resolve_config_path(repo_root, DEFAULT_CONTROL_DIR)
+    value = str(raw_paths.get("control_dir", DEFAULT_CONTROL_DIR))
+    if value == GIT_COMMON_TOKEN or value.startswith(f"{GIT_COMMON_TOKEN}/"):
+        git_common = _git_common_dir(repo_root)
+        if git_common is None:
+            raise RepoLifecycleError("could not determine Git common directory")
+        return git_common / value.removeprefix(GIT_COMMON_TOKEN).lstrip("/")
+    candidate = Path(value)
+    return candidate if candidate.is_absolute() else repo_root / candidate
 
 
 def _load_membership_context(project_root: Path) -> _MembershipContext:
     repo_root = _resolve_repo_root(project_root)
-    profile_path = (repo_root / PROFILE_FILE_NAME).resolve()
+    profile_path = repo_root / PROFILE_FILE_NAME
     if not profile_path.is_file():
         raise RepoLifecycleError(f"{profile_path} is missing; run `blackdog repo bind` first")
     payload = _load_toml_payload(profile_path)
@@ -960,20 +969,12 @@ def _strip_managed_agents_block(text: str) -> tuple[str, bool]:
     return "\n\n".join(parts).rstrip() + "\n", True
 
 
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 def _managed_skill_dir(repo_root: Path, project_name: str) -> Path:
-    return (repo_root / MANAGED_SKILLS_ROOT / managed_skill_name(project_name)).resolve()
+    return repo_root / MANAGED_SKILLS_ROOT / managed_skill_name(project_name)
 
 
 def _legacy_managed_skill_dir(repo_root: Path) -> Path:
-    return (repo_root / MANAGED_SKILLS_ROOT / LEGACY_MANAGED_SKILL_NAME).resolve()
+    return repo_root / MANAGED_SKILLS_ROOT / LEGACY_MANAGED_SKILL_NAME
 
 
 def _looks_like_managed_skill_dir(skill_dir: Path) -> bool:
@@ -1014,9 +1015,9 @@ def _dirty_paths(repo_root: Path) -> tuple[str, ...]:
 def _planned_relative_roots(repo_root: Path, paths: tuple[Path, ...]) -> tuple[str, ...]:
     roots: list[str] = []
     for path in paths:
-        if not _is_relative_to(path, repo_root):
+        if not path.is_relative_to(repo_root):
             continue
-        relative = path.resolve().relative_to(repo_root.resolve()).as_posix()
+        relative = path.relative_to(repo_root).as_posix()
         if relative:
             roots.append(relative)
     return tuple(dict.fromkeys(roots))
@@ -1037,30 +1038,100 @@ def _unrelated_dirty_paths(repo_root: Path, planned_paths: tuple[Path, ...]) -> 
     return tuple(unrelated)
 
 
-def _remove_path(path: Path) -> bool:
-    if not path.exists() and not path.is_symlink():
-        return False
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
+@contextmanager
+def _unbind_parent(path: Path, *, root: Path) -> Iterator[int]:
+    """Pin each directory without following symlink ancestors during removal."""
+    if not path.is_relative_to(root) or path == root or ".." in path.parts:
+        raise RepoLifecycleError(f"unbind path is not strictly inside its ownership root: {path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(root, flags)
+    try:
+        for part in path.relative_to(root).parts[:-1]:
+            child_fd = os.open(part, flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        yield directory_fd
+    finally:
+        os.close(directory_fd)
+
+
+def _unbind_path_stat(path: Path, *, root: Path) -> os.stat_result | None:
+    try:
+        with _unbind_parent(path, root=root) as parent_fd:
+            return os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _check_unbind_entry(path: Path, actual: os.stat_result, expected: os.stat_result) -> None:
+    if (
+        not os.path.samestat(actual, expected)
+        or actual.st_mode != expected.st_mode
+        or actual.st_mtime_ns != expected.st_mtime_ns
+        or actual.st_size != expected.st_size
+    ):
+        raise RepoLifecycleError(f"unbind path changed after inspection: {path}")
+
+
+def _remove_path(path: Path, *, root: Path, expected: os.stat_result) -> bool:
+    with _unbind_parent(path, root=root) as parent_fd:
+        try:
+            actual = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        _check_unbind_entry(path, actual, expected)
+        if stat.S_ISDIR(actual.st_mode):
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise RepoLifecycleError("safe descriptor-relative directory removal is unavailable")
+            shutil.rmtree(path.name, dir_fd=parent_fd)
+        else:
+            os.unlink(path.name, dir_fd=parent_fd)
     return True
 
 
-def _remove_control_dir(control_dir: Path, *, repo_root: Path) -> tuple[str, ...]:
-    if not control_dir.exists():
-        return ()
-    history_path = (repo_root / ".blackdog" / "history.jsonl").resolve()
-    if control_dir.resolve() != (repo_root / ".blackdog").resolve() or not history_path.exists():
-        return (str(control_dir),) if _remove_path(control_dir) else ()
+def _remove_control_dir(
+    control_dir: Path, *, repo_root: Path, root: Path, expected: os.stat_result,
+) -> tuple[str, ...]:
+    if control_dir != repo_root / ".blackdog" or not stat.S_ISDIR(expected.st_mode):
+        return (str(control_dir),) if _remove_path(control_dir, root=root, expected=expected) else ()
 
-    removed: list[str] = []
-    for child in sorted(control_dir.iterdir()):
-        if child.resolve() == history_path:
-            continue
-        if _remove_path(child):
-            removed.append(str(child))
-    return tuple(removed)
+    # Retain the legacy history entry itself, including a dangling symlink.
+    with _unbind_parent(control_dir, root=root) as parent_fd:
+        directory_fd = os.open(
+            control_dir.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd,
+        )
+        try:
+            _check_unbind_entry(control_dir, os.fstat(directory_fd), expected)
+            children = sorted(os.listdir(directory_fd))
+            if "history.jsonl" not in children:
+                return (str(control_dir),) if _remove_path(control_dir, root=root, expected=expected) else ()
+            removed: list[str] = []
+            for name in children:
+                if name == "history.jsonl":
+                    continue
+                child = control_dir / name
+                child_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if _remove_path(child, root=root, expected=child_stat):
+                    removed.append(str(child))
+            return tuple(removed)
+        finally:
+            os.close(directory_fd)
+
+
+def _strip_unbind_agents(path: Path, *, root: Path, expected: os.stat_result, text: str) -> bool:
+    new_text, changed = _strip_managed_agents_block(text)
+    if not changed or new_text == text:
+        return False
+    with _unbind_parent(path, root=root) as parent_fd:
+        fd = os.open(path.name, os.O_RDWR | os.O_NOFOLLOW, dir_fd=parent_fd)
+        with os.fdopen(fd, "r+", encoding="utf-8") as stream:
+            _check_unbind_entry(path, os.fstat(stream.fileno()), expected)
+            if stream.read() != text:
+                raise RepoLifecycleError(f"unbind path changed after inspection: {path}")
+            stream.seek(0)
+            stream.write(new_text)
+            stream.truncate()
+    return True
 
 
 def unbind_repo(
@@ -1071,7 +1142,7 @@ def unbind_repo(
 ) -> RepoUnbindResult:
     context = _load_membership_context(project_root)
     repo_root = context.project_root
-    agents_path = (repo_root / AGENTS_FILE_NAME).resolve()
+    agents_path = repo_root / AGENTS_FILE_NAME
     managed_skill_dir = _managed_skill_dir(repo_root, context.project_name)
     legacy_skill_dir = _legacy_managed_skill_dir(repo_root)
     handler_rows = _load_toml_payload(context.profile_path).get("handlers", [])
@@ -1092,21 +1163,38 @@ def unbind_repo(
     warnings: list[str] = []
     notes: list[str] = []
 
-    agents_text = agents_path.read_text(encoding="utf-8") if agents_path.is_file() else ""
-    _, has_managed_agents_block = _strip_managed_agents_block(agents_text)
-    if has_managed_agents_block:
-        planned_updates.append(agents_path)
-    elif agents_path.exists():
-        preserved.append(str(agents_path))
-        notes.append("AGENTS.md has no managed Blackdog block to strip")
+    ownership: dict[Path, tuple[Path, os.stat_result]] = {}
 
-    if context.profile_path.exists():
-        planned_removals.append(context.profile_path)
+    def inspect(path: Path, *, root: Path = repo_root) -> os.stat_result | None:
+        try:
+            entry = _unbind_path_stat(path, root=root)
+        except (OSError, RepoLifecycleError) as exc:
+            preserved.append(str(path))
+            warnings.append(f"preserved unsafe unbind path {path}: {exc}")
+            return None
+        if entry is not None:
+            ownership[path] = (root, entry)
+        return entry
 
-    if managed_skill_dir.exists():
+    agents_stat = inspect(agents_path)
+    agents_text = ""
+    if agents_stat is not None:
+        if stat.S_ISREG(agents_stat.st_mode):
+            agents_text = agents_path.read_text(encoding="utf-8")
+            _, has_managed_agents_block = _strip_managed_agents_block(agents_text)
+            if has_managed_agents_block:
+                planned_updates.append(agents_path)
+            else:
+                preserved.append(str(agents_path))
+                notes.append("AGENTS.md has no managed Blackdog block to strip")
+        else:
+            preserved.append(str(agents_path))
+            notes.append("preserved AGENTS.md because it is not a regular file")
+
+    if inspect(managed_skill_dir) is not None:
         planned_removals.append(managed_skill_dir)
 
-    if legacy_skill_dir.exists() and legacy_skill_dir != managed_skill_dir:
+    if legacy_skill_dir != managed_skill_dir and inspect(legacy_skill_dir) is not None:
         if _looks_like_managed_skill_dir(legacy_skill_dir):
             planned_removals.append(legacy_skill_dir)
         else:
@@ -1114,26 +1202,47 @@ def unbind_repo(
             notes.append("preserved legacy .codex/skills/blackdog because it does not look Blackdog-managed")
 
     for launcher_path in legacy_launchers:
-        if launcher_path.exists() or launcher_path.is_symlink():
-            planned_removals.append(launcher_path)
+        entry = inspect(launcher_path)
+        if entry is not None:
+            if stat.S_ISREG(entry.st_mode) or stat.S_ISLNK(entry.st_mode):
+                planned_removals.append(launcher_path)
+            else:
+                preserved.append(str(launcher_path))
+                warnings.append(f"preserved legacy launcher because it is not a file or symlink: {launcher_path}")
+
+    history_path = repo_root / ".blackdog" / "history.jsonl"
+    history_stat = inspect(history_path)
+    if history_stat is not None:
+        preserved.append(str(history_path))
+        notes.append("preserved .blackdog/history.jsonl")
 
     control_dir = context.control_dir
     if control_dir is not None:
         if keep_control_dir:
             preserved.append(str(control_dir))
             notes.append("preserved control dir because --keep-control-dir was set")
-        elif control_dir.exists():
+        elif control_dir == history_path.parent and history_stat is not None and stat.S_ISLNK(history_stat.st_mode):
+            preserved.append(str(control_dir))
+            notes.append("preserved control dir to retain the symlinked legacy history target")
+        else:
             git_common = _git_common_dir(repo_root)
-            if _is_relative_to(control_dir, repo_root) or (git_common is not None and _is_relative_to(control_dir, git_common)):
-                planned_removals.append(control_dir)
-            else:
+            control_root = next(
+                (root for root in (repo_root, git_common) if root is not None and control_dir.is_relative_to(root)),
+                None,
+            )
+            if control_dir in (repo_root, git_common):
+                preserved.append(str(control_dir))
+                warnings.append(f"preserved control dir that names the repo or Git ownership root: {control_dir}")
+            elif control_root is None:
                 preserved.append(str(control_dir))
                 warnings.append(f"preserved external control dir outside repo/git-common: {control_dir}")
+            elif inspect(control_dir, root=control_root) is not None:
+                planned_removals.append(control_dir)
 
-    history_path = (repo_root / ".blackdog" / "history.jsonl").resolve()
-    if history_path.exists():
-        preserved.append(str(history_path))
-        notes.append("preserved .blackdog/history.jsonl")
+    # Keep the profile available for retry if an earlier removal fails.
+    if inspect(context.profile_path) is not None:
+        planned_removals.append(context.profile_path)
+    planned_removals = list(dict.fromkeys(planned_removals))
 
     planned_paths = tuple(dict.fromkeys([*planned_updates, *planned_removals]))
     unrelated_dirty = _unrelated_dirty_paths(repo_root, planned_paths)
@@ -1141,15 +1250,22 @@ def unbind_repo(
     removed: list[str] = []
 
     if confirm:
+        # Recheck every planned entry before changing membership or evidence.
+        for path in planned_paths:
+            root, expected = ownership[path]
+            actual = _unbind_path_stat(path, root=root)
+            if actual is None:
+                raise RepoLifecycleError(f"unbind path disappeared after inspection: {path}")
+            _check_unbind_entry(path, actual, expected)
         if agents_path in planned_updates:
-            new_agents_text, changed = _strip_managed_agents_block(agents_text)
-            if changed and new_agents_text != agents_text:
-                agents_path.write_text(new_agents_text, encoding="utf-8")
+            root, expected = ownership[agents_path]
+            if _strip_unbind_agents(agents_path, root=root, expected=expected, text=agents_text):
                 updated.append(str(agents_path))
         for path in planned_removals:
+            root, expected = ownership[path]
             if control_dir is not None and path == control_dir:
-                removed.extend(_remove_control_dir(control_dir, repo_root=repo_root))
-            elif _remove_path(path):
+                removed.extend(_remove_control_dir(control_dir, repo_root=repo_root, root=root, expected=expected))
+            elif _remove_path(path, root=root, expected=expected):
                 removed.append(str(path))
     else:
         notes.append("preview only; pass --confirm to remove planned Blackdog-managed paths")

@@ -545,6 +545,62 @@ def repair_task_start_events(profile: RepoProfile, *, task_id: str, attempt_id: 
     return attempt
 
 
+def record_task_setup(
+    profile: RepoProfile,
+    *,
+    task_id: str,
+    attempt_id: str,
+    actor: str,
+    expected_receipt: Mapping[str, Any] | None,
+    setup_receipt: Mapping[str, Any],
+) -> TaskAttemptRecord:
+    """Compare-and-set preparation evidence on its active, owned attempt.
+
+    The canonical receipt contains everything needed to repair an interrupted
+    event append. Repair that event before allowing a subsequent observation to
+    replace the receipt. Commands run before this short store transaction.
+    """
+    candidate = dict(setup_receipt)
+    if candidate.get("schema_version") != 2 or not isinstance(candidate.get("preparation"), list):
+        raise TaskError("preparation requires a schema-2 setup receipt with preparation evidence")
+
+    def repair(attempt: TaskAttemptRecord) -> None:
+        receipt = attempt.setup_receipt
+        if receipt is None or not isinstance(receipt.get("preparation"), list):
+            return
+        receipt_digest = hashlib.sha256(json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        append_event_once(
+            profile.paths.events_file,
+            event_id=_hash_parts("blackdog.task.setup/v1", attempt_id, receipt_digest),
+            event_type="task.setup",
+            actor=actor,
+            payload={"schema_version": 1, "task_id": task_id, "attempt_id": attempt_id,
+                     "receipt_sha256": receipt_digest, "setup_receipt": dict(receipt)},
+        )
+
+    with exclusive_file_lock(profile.paths.runtime_file):
+        store = _json_store()
+        state = store.load(profile.paths.runtime_file)
+        task = _require_task(state, task_id)
+        attempt = next((item for item in task.attempts if item.attempt_id == attempt_id), None)
+        if task.status != TASK_STATUS_IN_PROGRESS or attempt is None or attempt.status != ATTEMPT_STATUS_IN_PROGRESS:
+            raise TaskError("preparation receipt requires the task's active attempt")
+        if attempt.actor != actor:
+            raise TaskError("preparation receipt actor must own the active attempt")
+        repair(attempt)
+        if attempt.setup_receipt == candidate:
+            return attempt
+        if attempt.setup_receipt != expected_receipt:
+            raise TaskError("preparation receipt changed during verification; retry against current evidence")
+        updated_attempt = replace(attempt, setup_receipt=candidate)
+        updated_task = _replace_attempt(task, updated_attempt)
+        updated_state = replace_task(state, updated_task)
+        _validate_state(updated_state, source=profile.paths.runtime_file)
+        store.save(profile.paths.runtime_file, updated_state)
+        repair(updated_attempt)
+        return updated_attempt
+
+
 def task_resume_attempt_id(
     *,
     task_id: str,

@@ -8,6 +8,37 @@ from tests.core_audit_support import CoreAuditTestCase
 
 
 class CoreConfigTests(CoreAuditTestCase):
+    def test_preparation_recipe_admission_is_versioned_strict_and_bounded(self) -> None:
+        valid = {
+            "id": "prepare", "kind": "worktree-preparation", "schema_version": 1,
+            "revision": "reviewed-v1", "tracked_inputs": ["requirements.lock"],
+            "outputs": [".prepared"],
+            "tools": [{"name": "python", "executable": "python3", "version_args": ["--version"], "version": "Python 3.11.0"}],
+            "setup": [{"name": "install", "argv": ["{python}", "setup.py"]}],
+            "checks": [{"name": "ready", "argv": ["{python}", "check.py"]}],
+        }
+        config = profile_module._handler_from_payload(valid, index=0)
+        self.assertIsInstance(config, profile_module.WorktreePreparationHandlerConfig)
+        self.assertEqual(config.schema_version, 1)
+        self.assertEqual(config.timeout_seconds, 300)
+        invalid = [
+            {"schema_version": 2}, {"schema_version": True}, {"revision": ""},
+            {"unknown_strategy": "automatic"}, {"tracked_inputs": []},
+            {"outputs": ["../outside"]}, {"outputs": [".git/private"]},
+            {"outputs": [".prepared", ".prepared/nested"]},
+            {"outputs": ["requirements.lock"]}, {"timeout_seconds": 0},
+            {"tools": [{"name": "python", "executable": "/usr/bin/python3", "version_args": ["--version"], "version": "3"}]},
+            {"setup": [{"name": "install", "argv": ["python3", "setup.py"]}]},
+            {"setup": [{"name": "install", "argv": ["{worktree}/.prepared/../tracked-script"]}]},
+            {"setup": [{"name": "install", "argv": ["{worktree}/tracked-script"]}]},
+            {"checks": [{"name": "ready", "argv": ["{python}", 17]}]},
+            {"checks": []},
+            {"inputs": [{"source": "local/data", "destination": "source/data", "sha256": "0" * 64, "mode": 0o600}]},
+        ]
+        for mutation in invalid:
+            with self.subTest(mutation=mutation), self.assertRaises(profile_module.ConfigError):
+                profile_module._handler_from_payload({**valid, **mutation}, index=0)
+
     def test_load_profile_defaults_to_machine_native_control_files(self) -> None:
         self.write_profile("Demo")
         profile = self.load_test_profile()

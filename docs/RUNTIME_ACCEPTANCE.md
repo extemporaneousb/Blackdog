@@ -7,13 +7,17 @@ The harness reports timing observations only after every required assertion
 passes. A failed scenario exits nonzero and leaves an existing report untouched.
 Completed reports publish by atomic replacement.
 
-`make acceptance` currently delegates to `make test` in the [Makefile](../Makefile).
-Invoke this external artifact lifecycle harness separately. The existing
-[release workflow](../.github/workflows/release.yml) runs both the test suite and
-the one-sample harness on Linux and macOS with Python 3.11 and 3.14.
+`make acceptance` runs the test suite, builds the current release archive, and
+runs one external artifact lifecycle sample. Any failed step fails the gate.
+`make acceptance-artifact` builds the archive and runs that one sample without
+repeating the test suite; use it after a separate test run. `make release` only
+runs the public-file check and builds the archive. Neither build target runs
+the test suite recursively. The existing
+[release workflow](../.github/workflows/release.yml) still runs both the suite
+and the one-sample harness on Linux and macOS with Python 3.11 and 3.14.
 
-Test a portable archive with one sample for CI or repeated samples for local
-measurement:
+Repeated timing measurements are separate from the one-sample local acceptance
+gate. Measure an already-built portable archive with:
 
 ```sh
 python3 scripts/acceptance_runtime.py --artifact dist/blackdog.pyz \

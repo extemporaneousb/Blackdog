@@ -49,19 +49,23 @@ must never edit control files directly.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
 - [Outcome evidence](OUTCOME_EVIDENCE.md) — typed criteria, validation, measurement and reports.
+- [Runtime and worktree preparation](WORKTREE_PREPARATION.md) — implemented first
+  slice, current invocation and recipe contract, and full staged acceptance
+  requirements. The first slice passed bounded local acceptance; broader
+  accepted requirements remain in the residual-work ledger.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied
 into managed repositories.
 
-## Planned Work
+## Active Residual Work
 
-- [Maintenance backlog](BACKLOG.md) — deferred findings, evidence, and closure
-  criteria for human follow-up.
-- [Runtime and worktree preparation contract](WORKTREE_PREPARATION.md) — accepted
-  future design, current gaps, and unimplemented preparation stages.
+- [Residual work](RESIDUAL_WORK.md) — the single live ledger for undelivered
+  accepted preparation criteria and proof gaps, with concrete acceptance.
 
 ## Historical Decisions and Acceptance
 
+- [Maintenance review](BACKLOG.md) — historical eleven-item tranche, implemented
+  fixes, measured decisions, local acceptance and transferred residuals.
 - [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — implemented core
   decisions, worker sequence, and historical A1-A9 acceptance evidence.
 - [Release acceptance](RELEASE_ACCEPTANCE.md) — recorded workload measurements,

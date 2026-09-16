@@ -29,6 +29,7 @@ from blackdog_core.state import (
     task_record,
 )
 from blackdog_core.tasks import TaskError, create_task, start_task
+from tests.process_support import configure_test_git
 
 
 def _git(root: Path, *args: str, input_text: str | None = None) -> str:
@@ -57,6 +58,7 @@ class ProductRepo:
         self.root = self.base / "repo"
         self.root.mkdir()
         _git(self.root, "init", "-b", "main")
+        configure_test_git(self.root)
         _git(self.root, "config", "user.email", "blackdog@example.com")
         _git(self.root, "config", "user.name", "Blackdog Test")
         (self.root / ".gitignore").write_text(".VE/\n", encoding="utf-8")

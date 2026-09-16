@@ -264,9 +264,22 @@ recovery retains its immutable archive. See [runtime distribution](RUNTIME_DISTR
 
 The accepted [runtime and worktree preparation contract](WORKTREE_PREPARATION.md)
 keeps one `task begin` workflow while separating Blackdog import isolation from
-repository preparation. Its declared-recipe, verified-reuse and readiness
-requirements are implementation targets; current overlay handlers do not yet
-provide those guarantees.
+repository preparation. The opt-in `worktree-preparation` handler executes
+reviewed argv recipes against explicit inputs and worktree-owned outputs.
+It verifies exact recipe, source, tool and output identities before publishing
+readiness, and rechecks them before reusing the same worktree. Shared dependency
+caches and general recipe discovery remain outside the shipped slice. Legacy
+overlay handlers retain their compatibility semantics.
+
+Recipe-enabled begin claims the canonical active attempt before setup effects.
+The setup receipt is initially blocked/pending; completion uses an actor-owned
+compare-and-set update with repairable, deterministic `task.setup` events.
+Private intent and completed preparation artifacts are evidence for the
+attempt, not another task store. Incomplete effects remain indeterminate and
+blocked; retries verify retained completion without replaying arbitrary commands.
+Commands execute outside the runtime-store lock. A per-worktree preparation
+lock serializes local publication, and readiness is specific to the recorded
+source snapshot. Existing receipts remain readable without migration.
 
 ## Provider References
 

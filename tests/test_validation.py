@@ -5,11 +5,14 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
+from blackdog import validation
 from blackdog.validation import ValidationRunResult, run_validation_commands
 
 
@@ -202,6 +205,73 @@ class ValidationRunnerTests(unittest.TestCase):
             else:
                 time.sleep(0.01)
         self.assertFalse(process_exists)
+
+    def test_detached_descendant_holding_output_cannot_extend_deadline(self) -> None:
+        for held_stream in ("stdout", "stderr", "both"):
+            with self.subTest(held_stream=held_stream):
+                child_pid_path = self.workspace / f"detached-{held_stream}-pid"
+                ready_path = self.workspace / f"detached-{held_stream}-ready"
+                child_code = (
+                    "import pathlib, time; "
+                    f"pathlib.Path({str(ready_path)!r}).write_text('ready'); "
+                    "time.sleep(3)"
+                )
+                parent_code = (
+                    "import pathlib, subprocess, sys, time; "
+                    f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                    "start_new_session=True, "
+                    f"stdout={None if held_stream != 'stderr' else 'subprocess.DEVNULL'}, "
+                    f"stderr={None if held_stream != 'stdout' else 'subprocess.DEVNULL'}); "
+                    f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+                    "deadline = time.monotonic() + 2; "
+                    f"\nwhile not pathlib.Path({str(ready_path)!r}).exists() and "
+                    "time.monotonic() < deadline: time.sleep(0.01)\n"
+                    "sys.stdout.buffer.write(b'output'); sys.stderr.buffer.write(b'output')"
+                )
+                command = f"exec {shlex.quote(sys.executable)} -c {shlex.quote(parent_code)}"
+                started = time.monotonic()
+                try:
+                    with patch.object(
+                        validation, "_signal_process_group", wraps=validation._signal_process_group,
+                    ) as signal_group:
+                        result = run_validation_commands(
+                            (command, "touch must-not-run"),
+                            cwd=self.workspace,
+                            timeout_seconds=0.5,
+                        )
+                    signal_group.assert_not_called()
+                    elapsed = time.monotonic() - started
+                    self.assertTrue(ready_path.exists())
+                    self.assertFalse(result.all_passed)
+                    self.assertEqual(result.completed_count, 1)
+                    self.assertEqual(result.results[0].status, "timed_out")
+                    self.assertEqual(result.results[0].returncode, 0)
+                    self.assertEqual(result.results[0].stdout_bytes, 6)
+                    self.assertEqual(result.results[0].stderr_bytes, 6)
+                    self.assertLess(elapsed, 1.5)
+                    self.assertFalse((self.workspace / "must-not-run").exists())
+                    # Only the validation process group is ours to terminate.
+                    os.kill(int(child_pid_path.read_text(encoding="utf-8")), 0)
+                finally:
+                    if child_pid_path.exists():
+                        try:
+                            os.kill(int(child_pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    def test_closed_output_does_not_complete_a_running_command(self) -> None:
+        code = "import os, time; os.close(1); os.close(2); time.sleep(3)"
+        command = f"exec {shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+        result = run_validation_commands((command,), cwd=self.workspace, timeout_seconds=0.1)
+        self.assertEqual(result.results[0].status, "timed_out")
+        self.assertLess(result.results[0].elapsed_ms, 1500)
+
+    def test_output_read_failure_is_typed_and_terminates_the_command(self) -> None:
+        with patch.object(validation, "_drain_ready_streams", side_effect=OSError("private error")):
+            result = run_validation_commands(("sleep 30",), cwd=self.workspace, timeout_seconds=1)
+        self.assertEqual(result.results[0].status, "execution_error")
+        self.assertIsNotNone(result.results[0].returncode)
+        self.assertNotIn("private error", json.dumps(result.to_dict()))
 
     def test_spawn_failure_is_typed_without_retaining_error_text(self) -> None:
         missing_cwd = self.workspace / "missing"

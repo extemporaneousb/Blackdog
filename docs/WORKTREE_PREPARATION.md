@@ -1,10 +1,11 @@
 # Runtime and worktree preparation contract
 
-This is the accepted architecture contract. The runtime isolation boundary is
-implemented under the invocation conditions below. The repository preparation
-requirements are a target for subsequent implementation, not a claim that the
-current handlers satisfy them. This document adds no shipped command, flag,
-configuration field, or durable schema.
+This is the accepted architecture contract and the supported preparation
+boundary. Runtime isolation is implemented under the invocation conditions
+below. An opt-in, schema-1 `worktree-preparation` handler now delivers reviewed
+recipes, worktree-owned setup, verified reuse in the same checkout, and fresh
+readiness checks. The broader acceptance stages remain explicit below; this
+bounded delivery does not establish a universal environment or shared cache.
 
 ## One entrypoint, two responsibilities
 
@@ -112,31 +113,150 @@ configuration keys:
    the sole authority for continuation or recovery. Receipts do not create a
    second mutable task store or an independent execution authority.
 
-## Current coverage and gaps
+## Shipped recipe contract
 
-The following describes the implementation at `1601fce`, before this contract
-was recorded. Future delivery must replace gaps with concrete acceptance proof.
+Add an explicit handler to the repository's reviewed `blackdog.toml`. Existing
+handlers and receipts remain compatible; install/update does not replace a
+`python-overlay-venv` configuration automatically. This example assumes the
+named tracked scripts implement the repository's dependency installation and
+readiness assertions. Set the exact tool probe output for the supported local
+toolchain before reviewing and committing the recipe.
 
-| Area | Implemented behavior | Remaining requirement |
+```toml
+[[handlers]]
+id = "prepare"
+kind = "worktree-preparation"
+schema_version = 1
+revision = "reviewed-v1"
+tracked_inputs = ["pyproject.toml", "requirements.lock", "tools/prepare.py", "tools/check_ready.py"]
+outputs = [".VE", ".prepared"]
+timeout_seconds = 300
+
+[[handlers.tools]]
+name = "python"
+executable = "python3"
+version_args = ["--version"]
+version = "Python 3.11.0"
+
+[[handlers.setup]]
+name = "venv"
+argv = ["{python}", "-m", "venv", ".VE"]
+
+[[handlers.setup]]
+name = "install"
+argv = ["{worktree}/.VE/bin/python", "tools/prepare.py"]
+
+[[handlers.checks]]
+name = "imports-and-entrypoints"
+argv = ["{worktree}/.VE/bin/python", "tools/check_ready.py"]
+```
+
+- `schema_version = 1` and a nonempty reviewed `revision` are required. Unknown
+  preparation fields fail admission. `enabled` and `depends_on` retain their
+  existing handler meanings.
+- `tracked_inputs` lists exact regular-file paths whose change requires new
+  setup. `blackdog.toml` is always included. Manifests, lockfiles, installation
+  scripts, local wheels/tarballs and generated-output inputs belong here when
+  they affect setup. There is no dependency discovery or implicit globbing.
+- `outputs` lists nonoverlapping, ignored, untracked directories owned by this
+  handler in the task checkout. Existing outputs without complete ownership
+  evidence block setup. They may not contain tracked files or escape through a
+  symlink. Output links may target other inventoried outputs, exact tracked
+  regular files, or exact qualified tool executables. A tracked directory does
+  not qualify its ignored contents. Blackdog never copies a virtual environment or attaches a primary
+  mutable package directory.
+- Each `tools` entry has `name`, a PATH executable name, `version_args`, and an
+  exact expected `version` output. Receipts bind executable bytes, resolved
+  path, platform/machine and probe output. Recipes can include ABI/compiler
+  details in that probe; transitive tool libraries are not automatically hashed.
+- `setup` and `checks` are ordered arrays of `{name, argv}` tables. No shell is
+  added by Blackdog. `{worktree}` and declared tool names such as `{python}`
+  expand to absolute paths. The first argument must select a declared tool or
+  an executable under an owned output directory. Readiness checks must leave
+  prepared outputs unchanged.
+- Optional `[[handlers.inputs]]` entries require exactly `source`,
+  `destination`, `sha256`, and `mode`. The source is one explicit ignored,
+  untracked regular file relative to the primary checkout; the destination is
+  inside an owned task output. SHA-256 is required, and mode is one of `0o600`,
+  `0o644`, `0o700`, or `0o755`. Receipts record identity and permissions, never
+  contents. Missing inputs block. No directory copy, private-file discovery,
+  secret injection, or external-service adapter is provided.
+
+Commands run with the task checkout as cwd, a fresh environment, PATH derived
+from declared tool directories, and HOME/TMPDIR inside the first owned output.
+Inherited private variables, Python import overrides and user package-manager
+configuration are not passed through. Version probes use disposable scratch
+HOME/cwd because even a version query can initialize package-manager state.
+Pip defaults to no-index and npm to offline operation. Python bytecode and the
+[Node module compile cache](https://nodejs.org/download/release/v26.5.1/docs/api/module.html)
+are disabled to keep verification from changing dependency artifacts.
+
+`timeout_seconds` is a shared wall-clock budget for command execution and
+version probes, from 1 to 3600 seconds. Each Git inspection is separately
+bounded to 30 seconds; filesystem snapshots have file/count/byte bounds rather
+than a hard total wall-clock deadline. Command output is discarded. Receipts
+retain the observed phase and, for setup/readiness commands, step name; failures
+include the exit or timeout category. Version output is capped at
+4096 bytes. Remaining process-group members are terminated and block success.
+Reviewed commands remain trusted repository code: this is not an OS sandbox,
+a network firewall, or proof against commands that deliberately escape their
+process group or write elsewhere.
+
+### Readiness and recovery
+
+`task begin` resolves the recipe from the selected task checkout and claims its
+canonical attempt with a pending setup receipt before executing recipe effects.
+Private intent is published before creating owned outputs. Successful setup
+records source HEAD/tree and the tracked working-file snapshot, recipe and
+setup-input identities, toolchain, complete output-inventory digest, checks,
+and the owning task/attempt. Input/source/tool/output observations must still
+match before readiness is published.
+
+Completed setup is reused only in the same worktree. An exact begin retry
+verifies the recipe, declared inputs, toolchain and output inventory, and runs
+readiness checks again. Unrelated tracked source edits get a fresh source-bound
+receipt without reinstalling dependencies. Changed setup inputs, tools,
+outputs, or policy block reuse and require inspection or a new attempt;
+Blackdog does not delete or repair the existing environment automatically.
+Exact verification with unchanged ready identities leaves canonical state and
+events unchanged. A receipt describes its recorded source snapshot; read-only
+reports do not run preparation commands or establish perpetual readiness.
+
+Failed, timed-out, or interrupted setup retains its canonical active attempt,
+worktree and private intent. An intent without completed evidence is
+indeterminate; retries never replay arbitrary setup commands. A completed
+private receipt can be verified after interruption before canonical publication.
+Missing evidence or a disappeared worktree blocks and uses the existing task
+recovery/close protocol. Known blocked preparation remains blocked in task
+show/recover and cannot start landing. There is no second task scheduler or
+setup-service authority.
+
+## Current coverage and residuals
+
+| Area | Delivered | Remaining boundary |
 | --- | --- | --- |
-| Runtime | Immutable archive, `-I -S` launcher, version floor, retained recovery snapshots; checkout source is deliberate for self-development. | Preserve the documented invocation boundary and test interpreter changes; a bundled interpreter is not required by this contract. |
-| Repository policy | `blackdog.toml` configures handlers; current handler kinds are `blackdog-runtime` and `python-overlay-venv`. | Reviewed, versioned general preparation recipe and explicit unknown-requirement reporting. No general language setup engine is shipped. |
-| Python dependencies | Optional overlay creates a local venv and points it at primary site-packages. | Shared packages are mutable; no dependency fingerprint binds manifests, lockfiles, configuration and toolchain to reuse. |
-| Python source and tools | Plain path entries in some `.pth` files are mapped into the task checkout; missing tool scripts can fall back to primary `bin` symlinks. | Executable editable finders and other mappings are not generally reconstructed. A primary script can retain its primary interpreter; import and entrypoint correctness need representative proof. |
-| Nontracked inputs | Git supplies the tracked base; handler-specific setup is available. | No general declared ignored/untracked-input materialization or external requirement coverage. |
-| Evidence | Setup receipts record handler probes, blockers and timing; lifecycle recovery reports exact actions. | Full recipe/input/dependency identities, drift applicability and general preparation effect recovery. Existing success is handler readiness, not the stronger target contract. |
-| Performance | Published release measurements exercise isolated synthetic repositories and the runtime lifecycle. | Real project dependencies and the same preparation/readiness workload across warm, cold and invalidated reuse. |
+| Runtime | Immutable isolated archive and retained recovery runtime. | Documented system interpreter/native-library trust remains. |
+| Policy | Explicit versioned recipe with strict fields, selected-checkout resolution and declared input coverage. | Reviewed discovery/proposal generation; unknown requirements remain unknown. |
+| Python | Fresh owned venv, verified local wheel, real editable installation and console script tested against task source. | Broader build backends, native extensions, external dependency sets and platform matrix. |
+| Node/mixed | Locked dependency-free npm application builds/tests offline; Python generates the Node build input. | External Node package dependency acceptance and broader package-manager/toolchain proof. |
+| Reuse | Exact worktree-local output identity plus fresh readiness checks; no mutable primary attachment. | Shared immutable dependency cache and cross-task artifact reuse. |
+| Recovery | Canonical claim before effects, compare-and-set receipt updates, repairable append-once events, blocked incomplete effects and serialized publication. | Automatic recovery of arbitrary installers is deliberately unsupported. |
+| Inputs | Explicit pinned ignored regular-file copies; missing inputs and source/input/tool/output drift block. | Tracked symlinks/submodules, external services, secrets and snapshots beyond supported bounds. |
+| Measurement | One descriptive cold/verified-worktree mixed fixture sample uses the same checks and local artifacts. | Representative real-project adoption and repeated cold/warm/mismatch/recovery distributions. |
 
-The current overlay remains an explicit compatibility handler. Its presence
-must not be described as satisfying reproducible preparation, and this contract
-does not authorize silently deleting or replacing existing project environments.
+Input/source/output files are limited to 64 MiB each, tool executables to
+512 MiB, and a snapshot to 30,000 entries and 512 MiB. These are admission
+limits, not assurances for larger repositories. The compatibility overlay
+handler still points at mutable primary dependencies and does not inherit the
+stronger recipe assurance. No existing environment is silently migrated.
 
 ## Staged implementation and acceptance
 
 Each stage needs independent review, bounded fault tests and explicit evidence
 before its target can be called implemented. Extend existing handler and
-lifecycle boundaries; avoid a parallel setup service or a second workflow. P3
-remains fixture-only until P4 recovery and concurrent publication proof passes.
+lifecycle boundaries; avoid a parallel setup service or a second workflow.
+The shipped slice proves its specific local fixtures and fault cases; it does
+not close every criterion in these broader stages.
 
 | Stage | Bounded delivery | Required proof |
 | --- | --- | --- |

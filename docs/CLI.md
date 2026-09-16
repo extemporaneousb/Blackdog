@@ -89,6 +89,16 @@ target identity, handler readiness, and prompt lineage. It then creates the task
 branch/worktree, executes configured handlers there, and atomically starts the
 attempt. A retained partial operation returns its exact repair action.
 
+An explicit `worktree-preparation` handler changes the ordering of its setup:
+begin claims the active attempt with a pending receipt before running reviewed
+recipe commands in the selected checkout. Success records source/input/tool
+and owned-output identities with readiness checks. Failure preserves the
+attempt, workspace and evidence, and returns a blocked action. Exact retries
+verify retained completion and rerun checks; they do not replay interrupted
+installers. Known blocked preparation is also blocked in show/recover and
+cannot start landing. No new begin flags are required. See
+[worktree preparation](WORKTREE_PREPARATION.md#shipped-recipe-contract).
+
 `--task` and expected-identity arguments are hidden recovery capabilities. They
 appear only in emitted retry commands and are not ordinary task-authoring flags.
 
@@ -440,6 +450,9 @@ neither command deletes task evidence.
 
 Preview managed-file removal by default. `--confirm` applies it;
 `--keep-control-dir` preserves private control evidence.
+Removal preserves managed paths whose parent components are symlinks, so an
+external directory cannot be traversed for deletion. A final-component managed
+symlink can still be safely unlinked without following its target.
 
 ## Local Registry
 

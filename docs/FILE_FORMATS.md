@@ -202,6 +202,32 @@ required inputs. Skill provenance binds a repository-relative path, SHA-256,
 and bounded source. These receipts prove what Blackdog checked and associated
 with the attempt; they do not attest that a model followed the instructions.
 
+The schema-2 setup wrapper may also contain a `preparation` array. Each
+schema-1 entry identifies a reviewed preparation handler and its revision,
+recipe SHA-256, task/attempt/worktree, status/phase, repository identity,
+source HEAD/tree and tracked-file snapshot digest, declared input identities,
+observed tool executable identities/version probes, output-inventory digest,
+readiness checks, and private evidence path. A pending entry contains only its
+handler/schema/status until observation runs. Blocked entries retain the
+observed phase, optional step and reason; missing fields are not success.
+Declared coverage explicitly leaves undeclared requirements unknown.
+
+The canonical attempt exists before recipe effects. A `task.setup` event has
+schema 1 and records the task/attempt, receipt SHA-256 and full setup receipt.
+Its deterministic identity permits append-once repair after a store-save/event
+publication interruption. Receipt replacement requires the active actor-owned
+attempt and exact prior receipt; a stale verifier cannot overwrite newer
+evidence. Exact unchanged ready verification retains the canonical receipt.
+
+Private preparation evidence lives under
+`<control-root>/preparation/<worktree-and-handler-digest>/`: `intent.json`
+precedes effects and `completed.json` is atomically published only after
+verification. Their schema-1 payloads bind the observed recipe and owned
+workspace. Completed evidence never authorizes lifecycle changes by itself.
+An incomplete intent is retained and blocked; no installer replay is inferred
+from it. These artifacts and their adjacent lock are not a second mutable task
+store or a shared dependency cache.
+
 ## `events.jsonl`
 
 Each line is one JSON object:
@@ -394,12 +420,24 @@ configuration. Effective setup actions and probes are recorded on attempts.
 Release archives carry a versioned source manifest; their SHA-256 filenames bind
 exact recovery executables. See [runtime distribution](RUNTIME_DISTRIBUTION.md).
 
+The opt-in `worktree-preparation` handler requires schema version 1, a reviewed
+revision, exact `tracked_inputs`, ignored directory `outputs`, declared `tools`,
+ordered argv `setup` and `checks`, and an optional shared command budget
+`timeout_seconds` (default 300; range 1–3600). Optional input tables explicitly
+pin one ignored primary-relative regular file's source, owned destination,
+SHA-256 and permissions. Unknown preparation fields fail closed. See the
+[recipe contract and example](WORKTREE_PREPARATION.md#shipped-recipe-contract)
+for the complete supported fields, execution environment and bounds.
+
 Each guard has a unique ID, phase, command, timeout, required flag, and optional
 message. Guard commands receive bounded task inputs and return typed pass or
 block results. Blackdog owns protocol; the repository owns the policy decision.
 
 Landing policy may enable one automatic stale rebase and sets validation
 timeout. Without complete policy, landing returns a manual typed action.
+Validation's deadline includes process completion and output EOF. A detached
+descendant retaining an output pipe is reported as `timed_out` under the
+existing validation-result schema.
 
 ## Managed Repository Files
 

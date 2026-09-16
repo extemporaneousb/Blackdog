@@ -11,6 +11,11 @@ An explicit Python invocation must include `-I -S` to retain isolation;
 `python3 blackdog.pyz` bypasses the shebang flags. The accepted
 [runtime and worktree preparation contract](WORKTREE_PREPARATION.md) defines
 this assurance and the separate repository preparation requirements.
+An optional reviewed `worktree-preparation` recipe can create the repository's
+task-local environments and verify their inputs, tools, outputs and readiness.
+It does not change Blackdog's runtime selection or copy a primary virtual
+environment. Its current reuse boundary is one verified task checkout;
+cross-task dependency caching remains separate work.
 
 ## Build and install
 

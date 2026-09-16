@@ -374,7 +374,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_task_begin = task_subparsers.add_parser(
         "begin",
-        help="Create a task and start its WTAM attempt",
+        help="Create a task and start its worktree attempt",
     )
     p_task_begin.add_argument("--project-root", default=".")
     p_task_begin.add_argument("--actor", default="codex")
@@ -479,7 +479,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_cleanup.add_argument("--json", action="store_true")
 
     p_worktree = subparsers.add_parser(
-        "worktree", help="WTAM branch-backed implementation workflow"
+        "worktree", help="Inspect branch-backed task workspaces"
     )
     worktree_subparsers = p_worktree.add_subparsers(
         dest="worktree_command", required=True
@@ -521,14 +521,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     p_worktree_preflight = worktree_subparsers.add_parser(
-        "preflight", help="Show the current WTAM worktree contract"
+        "preflight", help="Show workspace readiness and execution requirements"
     )
     p_worktree_preflight.add_argument("--project-root", default=".")
     p_worktree_preflight.add_argument("--json", action="store_true")
 
     p_worktree_table = worktree_subparsers.add_parser(
         "table",
-        help="Emit a stable table of active or retained WTAM worktrees",
+        help="Emit a stable table of active or retained task worktrees",
     )
     p_worktree_table.add_argument("--project-root", default=".")
     p_worktree_table.add_argument("--json", action="store_true")

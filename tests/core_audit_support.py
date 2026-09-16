@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from blackdog_core.profile import DEFAULT_WORKTREES_DIR, load_profile, render_default_profile
+from tests.process_support import configure_test_git
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class CoreAuditTestCase(unittest.TestCase):
     def init_git_repo(self, root: Path) -> None:
         subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True, text=True)
+        configure_test_git(root)
         subprocess.run(["git", "-C", str(root), "config", "user.email", "blackdog@example.com"], check=True, capture_output=True, text=True)
         subprocess.run(["git", "-C", str(root), "config", "user.name", "Blackdog Test"], check=True, capture_output=True, text=True)
         (root / ".gitignore").write_text("", encoding="utf-8")
