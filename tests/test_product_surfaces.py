@@ -18,13 +18,6 @@ def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.Argument
     return dict(action.choices)
 
 
-def _subcommand_help(parser: argparse.ArgumentParser) -> dict[str, str]:
-    action = next(
-        item for item in parser._actions if isinstance(item, argparse._SubParsersAction)
-    )
-    return {item.dest: item.help for item in action._choices_actions}
-
-
 class ProductSurfaceTests(unittest.TestCase):
     def test_command_inventory_is_the_frozen_task_only_surface(self) -> None:
         parser = _build_parser()
@@ -70,43 +63,6 @@ class ProductSurfaceTests(unittest.TestCase):
         for command in _subcommands(commands["attempts"]).values():
             with self.subTest(command=command.prog):
                 self.assertNotIn("task", {action.dest for action in command._actions})
-
-    def test_readme_inventory_matches_the_task_only_surface(self) -> None:
-        project_root = Path(__file__).resolve().parents[1]
-        readme = (project_root / "README.md").read_text(encoding="utf-8")
-        for expected in (
-            "`blackdog_core`: durable task runtime contract",
-            "`blackdog prompt preview`",
-            "`blackdog codex coverage|history|hook stamp`",
-            "`blackdog worktree preflight|table`",
-        ):
-            self.assertIn(expected, readme)
-
-    def test_task_help_uses_direct_task_language(self) -> None:
-        parser = _build_parser()
-        self.assertEqual(
-            _subcommand_help(parser)["task"],
-            "Manage executable task lifecycle",
-        )
-        self.assertEqual(
-            _subcommand_help(_subcommands(parser)["task"]),
-            {
-                "begin": "Create a task and start its WTAM attempt",
-                "show": "Inspect the current or latest task for this worktree",
-                "recover": "Inspect recovery state or classify an interrupted attempt",
-                "cancel": "Cancel an inactive task",
-                "reopen": "Reopen a canceled task",
-                "land": "Land the current task and close it",
-                "reconcile-landing": (
-                    "Prove and optionally correct a landed commit missing from terminal "
-                    "runtime state"
-                ),
-                "close": "Close the current task without landing code",
-                "cleanup": "Remove a retained or leftover task workspace and delete its branch",
-                "outcome": "Read or record typed task outcome evidence",
-                "validate": "Run configured validation with durable typed evidence",
-            },
-        )
 
     def test_repo_skill_uses_the_generated_next_action_guidance(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

@@ -1,7 +1,7 @@
 # Blackdog
 
 Blackdog is a machine-native task and attempt runtime for AI-driven local
-development. It gives agents a WTAM kept-change workflow, durable attempt
+development. It gives agents an isolated task-worktree workflow, durable attempt
 history, repo-local setup receipts, and read models for status, recovery, and
 Codex-session coverage.
 
@@ -9,10 +9,12 @@ Codex-session coverage.
 
 - `blackdog_core`: durable task runtime contract, typed
   semantics, and derived read models.
-- `blackdog`: product-layer WTAM orchestration and repo lifecycle workflows on
+- `blackdog`: task orchestration and repo lifecycle workflows on
   top of the core contract.
 - `blackdog_cli`: thin parser/help/dispatch layer for the `blackdog`
   executable.
+
+See [Architecture](docs/ARCHITECTURE.md) for package boundaries and guarantees.
 
 ## Repo Use
 
@@ -63,18 +65,10 @@ acceptance is the product surface itself: `repo analyze` should report the repo
 as Blackdog-backed, and `worktree preflight` should report the expected
 workspace role before kept edits.
 
-## Main Commands
+## Commands
 
-- `blackdog repo analyze|bind|table|scaffold|install|update|refresh|archive|unarchive|unbind`
-- `blackdog local-repo add|list|remove`
-- `blackdog prompt preview`
-- `blackdog attempts summary|table`
-- `blackdog codex coverage|history|hook stamp`
-- `blackdog stats`
-- `blackdog task begin|show|recover|land|reconcile-landing|close|cancel|reopen|cleanup`
-- `blackdog worktree preflight|table`
-- `blackdog summary`
-- `blackdog snapshot`
+The [documentation index](docs/INDEX.md#shipped-commands) lists shipped commands;
+the [CLI reference](docs/CLI.md) describes their arguments and structured results.
 
 ## Validation
 
@@ -88,10 +82,9 @@ non-example email addresses, and generated local history exports. Additional
 machine-local terms can be added to the gitignored
 `.public-denylist.local`, one per line.
 
-The Makefile is otherwise a developer convenience for this package's test
-suite. It does not define the operator runbook for target repos; target repos
-use their repo-local `.VE/bin/blackdog` launcher and `blackdog repo ...`
-commands.
+The Makefile provides developer checks for this source repository. In target
+repos, use the installed `blackdog` or the exact workspace executable returned
+by Blackdog and follow the [installation runbook](docs/RUNTIME_DISTRIBUTION.md).
 
 ## Docs
 

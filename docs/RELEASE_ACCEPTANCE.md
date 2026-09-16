@@ -1,5 +1,9 @@
 # Environment Independence and Outcome Acceptance
 
+> Historical milestone record. The commits, measurements, and acceptance limits
+> below remain evidence for this milestone, not proof for a later release. See
+> the [documentation index](INDEX.md) for current contracts and planned work.
+
 The delivered core is **task, attempt, and evidence**. A task owns intent, an
 attempt owns execution and integration, and typed evidence records observed
 validation or caller-recorded outcome assessments. Repository policy remains in

@@ -38,26 +38,34 @@ blackdog worktree preflight|table
 `worktree table` are read-only diagnosis. Product code owns all mutation; agents
 must never edit control files directly.
 
-## Documents
+## Current Contracts and Usage
 
 - [Architecture](ARCHITECTURE.md) — boundaries, state model, lifecycle, and
   recovery guarantees.
 - [CLI](CLI.md) — command and structured-result contract.
 - [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
-- [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — implemented core
-  decisions, worker sequence, and A1-A9 acceptance evidence.
-- [Release acceptance](RELEASE_ACCEPTANCE.md) — final workload measurements,
-  canonical implementation commits, review proof, and delivery limits.
 - [Runtime distribution](RUNTIME_DISTRIBUTION.md) — reproducible executable
   archives, installation, upgrades, and optional project environments.
-- [Runtime and worktree preparation contract](WORKTREE_PREPARATION.md) — accepted
-  isolation boundary, declared preparation requirements, current gaps and staged proof.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
 - [Outcome evidence](OUTCOME_EVIDENCE.md) — typed criteria, validation, measurement and reports.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied
 into managed repositories.
+
+## Planned Work
+
+- [Maintenance backlog](BACKLOG.md) — deferred findings, evidence, and closure
+  criteria for human follow-up.
+- [Runtime and worktree preparation contract](WORKTREE_PREPARATION.md) — accepted
+  future design, current gaps, and unimplemented preparation stages.
+
+## Historical Decisions and Acceptance
+
+- [Execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) — implemented core
+  decisions, worker sequence, and historical A1-A9 acceptance evidence.
+- [Release acceptance](RELEASE_ACCEPTANCE.md) — recorded workload measurements,
+  canonical implementation commits, review proof, and delivery limits.
 
 ## Scope Boundaries
 

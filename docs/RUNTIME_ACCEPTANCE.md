@@ -7,6 +7,11 @@ The harness reports timing observations only after every required assertion
 passes. A failed scenario exits nonzero and leaves an existing report untouched.
 Completed reports publish by atomic replacement.
 
+`make acceptance` currently delegates to `make test` in the [Makefile](../Makefile).
+Invoke this external artifact lifecycle harness separately. The existing
+[release workflow](../.github/workflows/release.yml) runs both the test suite and
+the one-sample harness on Linux and macOS with Python 3.11 and 3.14.
+
 Test a portable archive with one sample for CI or repeated samples for local
 measurement:
 

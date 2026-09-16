@@ -360,7 +360,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_scaffold.add_argument("--dry-run", action="store_true")
     p_repo_scaffold.add_argument("--json", action="store_true")
 
-    p_repo_update = repo_subparsers.add_parser("update", help="Refresh the repo-local Blackdog launcher from a source checkout")
+    p_repo_update = repo_subparsers.add_parser("update", help="Update the repo-local Blackdog runtime from the invoking release or an explicit source checkout")
     p_repo_update.add_argument("--project-root", default=".")
     p_repo_update.add_argument("--source-root")
     p_repo_update.add_argument("--json", action="store_true")

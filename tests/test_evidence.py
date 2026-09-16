@@ -37,6 +37,57 @@ from blackdog_core.state import append_event_once, load_events, load_runtime_sta
 from blackdog_core.tasks import create_task, finish_task, start_task
 
 
+class EvidenceContractTests(TestCase):
+    def test_document_rejects_duplicate_keys_nonfinite_and_oversize(self):
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "input.json"
+            for content in ('{"x":1,"x":2}', '{"x":NaN}', '"' + "x" * 65536 + '"'):
+                path.write_text(content)
+                with self.subTest(content=content[:30]), self.assertRaises(EvidenceError):
+                    read_document(path)
+
+    def test_validation_parser_rejects_native_wrong_types(self):
+        from blackdog_core.validation import ValidationCommandResult
+
+        row = {
+            "index": 0,
+            "command_sha256": "1" * 64,
+            "status": "passed",
+            "returncode": 0,
+            "elapsed_ms": 1,
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
+            "output_retained": False,
+        }
+        for invalid in ({**row, "command_sha256": int("1" * 64)}, {**row, "status": 0}):
+            with self.assertRaises(ValueError):
+                ValidationCommandResult.from_dict(invalid)
+
+    def test_runtime_identity_is_release_bound_or_explicitly_unknown(self):
+        from blackdog.evidence import runtime_descriptor
+        from blackdog.runtime_distribution import RuntimeDistributionError
+
+        with patch(
+            "blackdog.evidence.runtime_identity",
+            return_value={"kind": "release_sha256", "value": "a" * 64},
+        ):
+            self.assertEqual(
+                runtime_descriptor(),
+                {"kind": "release_sha256", "value": "a" * 64, "missing_reason": None},
+            )
+        with patch("blackdog.evidence.runtime_identity", side_effect=OSError):
+            identity = runtime_descriptor()
+            self.assertEqual(identity["kind"], "unknown")
+            self.assertIsNone(identity["value"])
+        with (
+            patch("blackdog.evidence.runtime_identity", return_value=None),
+            patch(
+                "blackdog.evidence.release_bytes", side_effect=RuntimeDistributionError
+            ),
+        ):
+            self.assertEqual(runtime_descriptor()["kind"], "unknown")
+
+
 class EvidenceTests(TestCase):
     def setUp(self) -> None:
         self.temp = TemporaryDirectory()
@@ -188,13 +239,6 @@ doc_routing_defaults = []
         }
         with self.assertRaises(EvidenceError):
             self.record(INTERVENTION, measurement)
-
-    def test_document_rejects_duplicate_keys_nonfinite_and_oversize(self):
-        path = Path(self.temp.name) / "input.json"
-        for content in ('{"x":1,"x":2}', '{"x":NaN}', '"' + "x" * 65536 + '"'):
-            path.write_text(content)
-            with self.subTest(content=content[:30]), self.assertRaises(EvidenceError):
-                read_document(path)
 
     def test_dirty_git_content_binding_preserves_user_index(self):
         (self.workspace / "code.py").write_text("value = 2\n")
@@ -590,23 +634,6 @@ doc_routing_defaults = []
             cohorts[0]["environment_sha256"], cohorts[1]["environment_sha256"]
         )
 
-    def test_validation_parser_rejects_native_wrong_types(self):
-        from blackdog_core.validation import ValidationCommandResult
-
-        row = {
-            "index": 0,
-            "command_sha256": "1" * 64,
-            "status": "passed",
-            "returncode": 0,
-            "elapsed_ms": 1,
-            "stdout_bytes": 0,
-            "stderr_bytes": 0,
-            "output_retained": False,
-        }
-        for invalid in ({**row, "command_sha256": int("1" * 64)}, {**row, "status": 0}):
-            with self.assertRaises(ValueError):
-                ValidationCommandResult.from_dict(invalid)
-
     def test_aggregate_preserves_provenance_and_historical_applicability(self):
         self.record(DEFINITION, self.definition)
         self.validate()
@@ -688,30 +715,6 @@ doc_routing_defaults = []
         ):
             self.assertTrue(self.validate()["replayed"])
         self.assertEqual(before, self.profile.paths.events_file.read_bytes())
-
-    def test_runtime_identity_is_release_bound_or_explicitly_unknown(self):
-        from blackdog.evidence import runtime_descriptor
-        from blackdog.runtime_distribution import RuntimeDistributionError
-
-        with patch(
-            "blackdog.evidence.runtime_identity",
-            return_value={"kind": "release_sha256", "value": "a" * 64},
-        ):
-            self.assertEqual(
-                runtime_descriptor(),
-                {"kind": "release_sha256", "value": "a" * 64, "missing_reason": None},
-            )
-        with patch("blackdog.evidence.runtime_identity", side_effect=OSError):
-            identity = runtime_descriptor()
-            self.assertEqual(identity["kind"], "unknown")
-            self.assertIsNone(identity["value"])
-        with (
-            patch("blackdog.evidence.runtime_identity", return_value=None),
-            patch(
-                "blackdog.evidence.release_bytes", side_effect=RuntimeDistributionError
-            ),
-        ):
-            self.assertEqual(runtime_descriptor()["kind"], "unknown")
 
     def test_source_descriptor_reuses_bounded_distribution_projection(self):
         from blackdog.evidence import runtime_descriptor

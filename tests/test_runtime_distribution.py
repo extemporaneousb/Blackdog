@@ -8,12 +8,34 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from unittest import TestCase
 from unittest.mock import patch
 import zipfile
 
 from blackdog import runtime_distribution as runtime
 from blackdog_core.profile import load_profile
 from tests.core_audit_support import CoreAuditTestCase, REPO_ROOT
+
+
+class RuntimeArtifactTests(TestCase):
+    def test_release_is_reproducible_and_contains_versioned_source_manifest(self) -> None:
+        first = runtime.release_bytes(source_root=REPO_ROOT)
+        second = runtime.release_bytes(source_root=REPO_ROOT)
+        self.assertEqual(first, second)
+        with zipfile.ZipFile(io.BytesIO(first)) as archive:
+            manifest = json.loads(archive.read("blackdog-release.json"))
+            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["requires_python"], ">=3.11")
+            self.assertIn(b"MIT License", archive.read("LICENSE"))
+            self.assertEqual(len(manifest["source_sha256"]), 64)
+            self.assertNotIn("tests", {Path(name).parts[0] for name in archive.namelist()})
+
+    def test_entrypoint_rejects_unsupported_python_before_product_import(self) -> None:
+        class UnsupportedPython:
+            version_info = (3, 10)
+        with patch.dict("sys.modules", {"sys": UnsupportedPython()}):
+            with self.assertRaisesRegex(SystemExit, "Python 3.11"):
+                exec(runtime._MAIN, {})
 
 
 class RuntimeDistributionTests(CoreAuditTestCase):
@@ -31,18 +53,6 @@ class RuntimeDistributionTests(CoreAuditTestCase):
         path = Path(self.tmp.name) / name
         runtime.write_release(path, source_root=REPO_ROOT)
         return path
-
-    def test_release_is_reproducible_and_contains_versioned_source_manifest(self) -> None:
-        first = runtime.release_bytes(source_root=REPO_ROOT)
-        second = runtime.release_bytes(source_root=REPO_ROOT)
-        self.assertEqual(first, second)
-        with zipfile.ZipFile(io.BytesIO(first)) as archive:
-            manifest = json.loads(archive.read("blackdog-release.json"))
-            self.assertEqual(manifest["schema_version"], 1)
-            self.assertEqual(manifest["requires_python"], ">=3.11")
-            self.assertIn(b"MIT License", archive.read("LICENSE"))
-            self.assertEqual(len(manifest["source_sha256"]), 64)
-            self.assertNotIn("tests", {Path(name).parts[0] for name in archive.namelist()})
 
     def test_archive_install_begin_and_cleanup_survive_original_archive_deletion(self) -> None:
         artifact = self.build_release()
@@ -274,13 +284,6 @@ script_policy = "root-bin-fallback"
         src.symlink_to(moved, target_is_directory=True)
         with self.assertRaises(runtime.RuntimeDistributionError):
             runtime.release_bytes(source_root=self.root)
-
-    def test_entrypoint_rejects_unsupported_python_before_product_import(self) -> None:
-        class UnsupportedPython:
-            version_info = (3, 10)
-        with patch.dict("sys.modules", {"sys": UnsupportedPython()}):
-            with self.assertRaisesRegex(SystemExit, "Python 3.11"):
-                exec(runtime._MAIN, {})
 
     def test_summary_does_not_import_task_or_provider_implementation(self) -> None:
         artifact = self.build_release()

@@ -319,8 +319,8 @@ independent of repository `.VE` environments. The archive requires system Python
 3.11 or newer; CI builds and exercises it on Linux and macOS. A bundled
 interpreter or a language port requires separate evidence and is not shipped.
 
-The accepted [execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) defines
-this stage, typed outcome evidence, and the proof required for completion.
+The historical [execution and outcome plan](EXECUTION_OUTCOMES_PLAN.md) records
+the decisions and acceptance evidence for the delivered runtime and outcomes.
 
 ## Outcome Evidence Boundary
 

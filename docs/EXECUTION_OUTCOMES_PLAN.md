@@ -1,5 +1,9 @@
 # Environment Independence and Outcome Evidence
 
+> Historical milestone record. The decisions and evidence below describe this
+> implementation milestone; current contracts and planned work are grouped in
+> the [documentation index](INDEX.md).
+
 Status: implemented and independently reviewed. A1-A8 have the local evidence
 listed below. A9 closure is recorded through the final acceptance task's terminal
 typed assessment only after canonical landing and exact-commit hosted verification.

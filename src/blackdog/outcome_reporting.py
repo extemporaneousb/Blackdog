@@ -308,10 +308,11 @@ def project_outcomes(
         }
         intents = {e.event_id: e for e in task_events if e.kind == VALIDATION_INTENT}
         receipts = [e for e in task_events if e.kind == VALIDATION_RESULT]
+        receipt_attempt_ids = {receipt.attempt_id for receipt in receipts}
         observed_bindings = {
             attempt.attempt_id: observe_report_binding(profile, attempt)
             for attempt in task.attempts
-            if any(receipt.attempt_id == attempt.attempt_id for receipt in receipts)
+            if attempt.attempt_id in receipt_attempt_ids
         }
         applicability_rows = []
         for receipt in receipts:
