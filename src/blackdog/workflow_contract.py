@@ -130,6 +130,7 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
     WorkflowCommand(
         "repo",
         (
+            WorkflowCommand("migrate"),
             WorkflowCommand("install"),
             WorkflowCommand("bind"),
             WorkflowCommand("table"),
@@ -154,6 +155,8 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
             WorkflowCommand("reconcile-landing"),
             WorkflowCommand("close"),
             WorkflowCommand("cleanup"),
+            WorkflowCommand("outcome"),
+            WorkflowCommand("validate"),
         ),
     ),
     WorkflowCommand(

@@ -233,16 +233,20 @@ setup-service authority.
 
 ## Current coverage and residuals
 
+The [residual ledger](RESIDUAL_WORK.md) owns the live state of accepted remaining
+work. The links below identify those obligations without changing this contract's
+coverage or acceptance requirements.
+
 | Area | Delivered | Remaining boundary |
 | --- | --- | --- |
 | Runtime | Immutable isolated archive and retained recovery runtime. | Documented system interpreter/native-library trust remains. |
-| Policy | Explicit versioned recipe with strict fields, selected-checkout resolution and declared input coverage. | Reviewed discovery/proposal generation; unknown requirements remain unknown. |
-| Python | Fresh owned venv, verified local wheel, real editable installation and console script tested against task source. | Broader build backends, native extensions, external dependency sets and platform matrix. |
-| Node/mixed | Locked dependency-free npm application builds/tests offline; Python generates the Node build input. | External Node package dependency acceptance and broader package-manager/toolchain proof. |
-| Reuse | Exact worktree-local output identity plus fresh readiness checks; no mutable primary attachment. | Shared immutable dependency cache and cross-task artifact reuse. |
+| Policy | Explicit versioned recipe with strict fields, selected-checkout resolution and declared input coverage. | [Reviewed discovery/proposal generation (PREP-002)](RESIDUAL_WORK.md#prep-002--review-recipe-discovery-proposals); unknown requirements remain unknown. |
+| Python | Fresh owned venv, verified local wheel, real editable installation and console script tested against task source. | [Broader build backends, native extensions, external dependency sets and platform matrix (PREP-003)](RESIDUAL_WORK.md#prep-003--broaden-dependency-native-output-and-platform-proof). |
+| Node/mixed | Locked dependency-free npm application builds/tests offline; Python generates the Node build input. | [External Node package dependency acceptance and broader package-manager/toolchain proof (PREP-003)](RESIDUAL_WORK.md#prep-003--broaden-dependency-native-output-and-platform-proof). |
+| Reuse | Exact worktree-local output identity plus fresh readiness checks; no mutable primary attachment. | [Shared immutable dependency cache and cross-task artifact reuse (PREP-001)](RESIDUAL_WORK.md#prep-001--qualify-shared-immutable-dependency-reuse). |
 | Recovery | Canonical claim before effects, compare-and-set receipt updates, repairable append-once events, blocked incomplete effects and serialized publication. | Automatic recovery of arbitrary installers is deliberately unsupported. |
 | Inputs | Explicit pinned ignored regular-file copies; missing inputs and source/input/tool/output drift block. | Tracked symlinks/submodules, external services, secrets and snapshots beyond supported bounds. |
-| Measurement | One descriptive cold/verified-worktree mixed fixture sample uses the same checks and local artifacts. | Representative real-project adoption and repeated cold/warm/mismatch/recovery distributions. |
+| Measurement | One descriptive cold/verified-worktree mixed fixture sample uses the same checks and local artifacts. | [Representative real-project adoption and repeated cold/warm/mismatch/recovery distributions (PREP-004)](RESIDUAL_WORK.md#prep-004--representative-rollout-and-equivalent-workload-measurements). |
 
 Input/source/output files are limited to 64 MiB each, tool executables to
 512 MiB, and a snapshot to 30,000 entries and 512 MiB. These are admission
@@ -257,6 +261,12 @@ before its target can be called implemented. Extend existing handler and
 lifecycle boundaries; avoid a parallel setup service or a second workflow.
 The shipped slice proves its specific local fixtures and fault cases; it does
 not close every criterion in these broader stages.
+
+The live residuals map to these stages: [PREP-001](RESIDUAL_WORK.md#prep-001--qualify-shared-immutable-dependency-reuse)
+covers remaining shared reuse in P3/P4; [PREP-002](RESIDUAL_WORK.md#prep-002--review-recipe-discovery-proposals)
+covers P2 recipe proposals; [PREP-003](RESIDUAL_WORK.md#prep-003--broaden-dependency-native-output-and-platform-proof)
+covers broader P1-P4 proof; and [PREP-004](RESIDUAL_WORK.md#prep-004--representative-rollout-and-equivalent-workload-measurements)
+covers P5 rollout and measurement. Their states remain in the residual ledger.
 
 | Stage | Bounded delivery | Required proof |
 | --- | --- | --- |

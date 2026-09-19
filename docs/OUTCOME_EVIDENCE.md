@@ -8,8 +8,18 @@ authority or prove compliance merely because guidance was installed.
 
 ## Define and assess an outcome
 
-After `task begin`, record one immutable definition using the returned task and
-attempt identities:
+After `task begin`, the attempt owner or designated evidence executor first
+reads the task's existing definition and assessments:
+
+```bash
+blackdog task outcome --task TASK_ID --json
+```
+
+Reuse an existing definition and its `definition_sha256`, including on a
+successor attempt. The definition belongs to the task, not each attempt. Bounded
+workers return evidence unless explicitly assigned recording responsibility.
+Only when no definition exists, record one using the returned task and current
+active-attempt identities:
 
 ```bash
 blackdog task outcome --task TASK_ID --attempt ATTEMPT_ID \
@@ -30,8 +40,10 @@ blackdog task outcome --task TASK_ID --attempt ATTEMPT_ID \
 
 The actor must own the active attempt. Definitions require at least one required
 criterion and one to 64 unique criterion IDs. The returned
-`definition_sha256` identifies the entire definition. An exact replay is a
-no-op; changing the definition is refused. Schema versions describe record
+`definition_sha256` identifies the entire definition. An exact replay with the
+original task/attempt identities is a no-op. A second definition under a
+successor attempt is refused even if its content is identical; changing the
+definition is also refused. Schema versions describe record
 formats and do not provide a definition revision mechanism. A changed goal
 requires a new task.
 

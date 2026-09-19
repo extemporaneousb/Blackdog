@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
+import io
+import json
 from pathlib import Path
 import re
 import unittest
@@ -8,8 +12,10 @@ from unittest.mock import patch
 
 import blackdog.codex_sessions as codex_sessions
 import blackdog.stats as stats
+import blackdog.workflow_contract as workflow_contract
 from blackdog.workflow_contract import NEXT_ACTION_AUTHORITY_GUIDANCE
-from blackdog_cli.main import _build_parser
+from blackdog_cli.main import _build_parser, main
+from tests.test_wtam_lifecycle import ProductRepo
 
 
 _TASK_INTENT_CLAIMS = (
@@ -34,7 +40,97 @@ def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.Argument
     return dict(action.choices)
 
 
+def _public_command_parsers(
+    parser: argparse.ArgumentParser, *parents: str
+) -> dict[str, argparse.ArgumentParser]:
+    """Discover public leaves from argparse, independently of the declared catalog."""
+    groups = [
+        action for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+    if not groups:
+        return {" ".join(("blackdog", *parents)): parser}
+    leaves = {}
+    for group in groups:
+        hidden = {
+            action.dest for action in group._choices_actions
+            if action.help == argparse.SUPPRESS
+        }
+        for name, child in group.choices.items():
+            if name not in hidden:
+                leaves.update(_public_command_parsers(child, *parents, name))
+    return leaves
+
+
 class ProductSurfaceTests(unittest.TestCase):
+    def test_declared_inventory_matches_every_public_parser_leaf(self) -> None:
+        public = set(_public_command_parsers(_build_parser()))
+        declared = workflow_contract.command_invocations()
+        self.assertEqual(set(declared), public)
+        self.assertEqual(len(declared), len(public))
+        self.assertEqual(
+            set(workflow_contract.SHIPPED_VISIBLE_COMMAND_INVOCATIONS), public
+        )
+
+    def test_inventory_comparison_detects_the_previous_omissions(self) -> None:
+        public = set(_public_command_parsers(_build_parser()))
+        omitted = {"blackdog repo migrate", "blackdog task outcome", "blackdog task validate"}
+        stale_tree = tuple(
+            replace(
+                command,
+                children=tuple(
+                    child for child in command.children
+                    if f"blackdog {command.name} {child.name}" not in omitted
+                ),
+            )
+            for command in workflow_contract.SHIPPED_VISIBLE_COMMAND_TREE
+        )
+        with patch.object(workflow_contract, "SHIPPED_VISIBLE_COMMAND_TREE", stale_tree):
+            stale = set(workflow_contract.command_invocations())
+            self.assertEqual(public - stale, omitted)
+            self.assertEqual(stale - public, set())
+            with self.assertRaises(AssertionError):
+                self.assertEqual(stale, public)
+
+    def test_prompt_preview_cli_inventories_match_public_leaves_without_hidden_flags(self) -> None:
+        repo = ProductRepo("command-inventory")
+        self.addCleanup(repo.close)
+        public = _public_command_parsers(_build_parser())
+        argv = [
+            "prompt", "preview", "--project-root", str(repo.root),
+            "--request", "Inspect the selected code.",
+        ]
+        output, error = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), redirect_stderr(error):
+            result = main([*argv, "--json"])
+        self.assertEqual(result, 0, error.getvalue())
+        preview = json.loads(output.getvalue())["prompt_preview"]
+        commands = preview["repo_lifecycle_commands"] + preview["wtam_commands"]
+        self.assertEqual(set(commands), set(public))
+        self.assertEqual(len(commands), len(public))
+        self.assertEqual(
+            set(preview["wtam_commands"]),
+            {command for command in public if command.split()[1] in {"task", "worktree"}},
+        )
+
+        text_output, text_error = io.StringIO(), io.StringIO()
+        with redirect_stdout(text_output), redirect_stderr(text_error):
+            result = main(argv)
+        self.assertEqual(result, 0, text_error.getvalue())
+        rendered = re.findall(r"^  - (blackdog .+)$", text_output.getvalue(), re.MULTILINE)
+        self.assertEqual(set(rendered), set(public))
+        self.assertEqual(len(rendered), len(public))
+        hidden_flags = {
+            option for parser in public.values() for action in parser._actions
+            if action.help == argparse.SUPPRESS for option in action.option_strings
+        }
+        self.assertTrue(hidden_flags, "The parser has hidden replay inputs to protect")
+        for flag in hidden_flags:
+            with self.subTest(flag=flag):
+                self.assertNotIn(flag, "\n".join(commands))
+                self.assertNotIn(flag, text_output.getvalue())
+        self.assertFalse(repo.profile.paths.runtime_file.exists())
+
     def test_command_inventory_is_the_frozen_task_only_surface(self) -> None:
         parser = _build_parser()
         commands = _subcommands(parser)
