@@ -165,6 +165,29 @@ class StoreMigrationTests(CoreAuditTestCase):
             with self.assertRaises(StoreError): update_repo(self.root)
             handlers.assert_not_called()
 
+    def test_release_upgrade_migration_actions_keep_the_invoking_release(self):
+        from blackdog import runtime_distribution as runtime
+        from tests.core_audit_support import REPO_ROOT
+        from tests.process_support import run_cli
+
+        selected = runtime.install_runtime(self.profile)
+        entries = runtime._package_entries(REPO_ROOT)
+        entries['blackdog/__init__.py'] = entries['blackdog/__init__.py'].replace(b'"0.1.0"', b'"0.1.0.new"')
+        newer = self.root / 'new release.pyz'
+        with patch.object(runtime, '_package_entries', return_value=entries):
+            runtime.write_release(newer, source_root=REPO_ROOT)
+        before = self.fingerprint()
+        upgrade = run_cli([str(newer), 'repo', 'update', '--project-root', str(self.root), '--json'])
+        self.assertEqual(upgrade.returncode, 1)
+        command = json.loads(upgrade.stdout)['next_action']['argv']
+        self.assertEqual(Path(command[0]), newer.resolve())
+        preview = run_cli(command)
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        apply_command = json.loads(preview.stdout)['migration']['next_action']['argv']
+        self.assertEqual(Path(apply_command[0]), newer.resolve())
+        self.assertEqual(self.fingerprint(), before)
+        self.assertEqual(runtime.installed_runtime(self.profile), selected)
+
     def test_missing_planning_after_interruption_resumes(self):
         from blackdog.store_migration import _durable_unlink
         preview = self.preview()

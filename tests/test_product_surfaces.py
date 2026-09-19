@@ -137,6 +137,8 @@ class ProductSurfaceTests(unittest.TestCase):
         self.assertEqual(
             set(commands),
             {
+                "self",
+                "version",
                 "init",
                 "summary",
                 "snapshot",

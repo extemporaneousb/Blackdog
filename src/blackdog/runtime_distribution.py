@@ -239,6 +239,16 @@ def runtime_identity() -> dict[str, str] | None:
     return {"kind": "release_sha256", "value": hashlib.sha256(archive.read_bytes()).hexdigest()}
 
 
+def migration_executable(project_root: Path) -> str:
+    """A migration follows the release that detected incompatibility.
+
+    Selecting the repository's older runtime here can send an upgrade back to
+    a migrator for the wrong schema. This does not change task recovery identity.
+    """
+    archive = runtime_archive()
+    return str(archive) if archive is not None else runtime_executable(project_root)
+
+
 def runtime_executable(project_root: Path, *, profile: RepoProfile | None = None) -> str:
     """Resolve executable authority without PATH guesses or disposable launchers.
 

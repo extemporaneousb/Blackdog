@@ -425,14 +425,37 @@ surfaces.
 Install or repair the repo-local launcher, handlers, managed skill, and contract
 surface. Optional inputs are `--project-name` and `--source-root`.
 
+### `blackdog self install`
+
+Install the invoking release as a persistent user command. `--bin-dir` defaults
+to `~/.local/bin`; `--data-dir` defaults to `~/.local/share/blackdog`. `--json`
+reports the immutable archive identity, command path and current PATH visibility.
+An unrelated existing command is preserved with an error. No download, repository
+update, or shell startup-file modification occurs. Repeating this command from
+a newer archive updates the user installation.
+
+### `blackdog version`
+
+Read-only runtime and command diagnostics, with `--project-root` and `--json`.
+Shows the invoking user/archive/source runtime, selected repository executable,
+archive identities, interpreter and PATH resolution. It does not require a
+compatible task store. `--version` on the root command displays only the package
+version. See [runtime selection](RUNTIME_DISTRIBUTION.md#command-selection-and-diagnostics).
+
 ### `blackdog repo update`
 
-Refresh the managed launcher and source path. It does not rewrite repository
-policy.
+Install the invoking release (or `--source-root` checkout) and regenerate managed
+instructions with that selected runtime. Run from the managed user command to
+upgrade a repository to the user-installed version. It does not download a
+release, rewrite repository policy, or implicitly migrate task stores. A refresh
+failure after runtime selection is reported as incomplete; rerun the same update
+to repair it. Inspect and land the resulting tracked diff.
 
 ### `blackdog repo refresh`
 
 Regenerate managed instructions and skill content from the installed contract.
+The user command dispatches this operation to the repository's selected runtime.
+An explicit executable path uses that executable's contract.
 
 ### `blackdog repo scaffold`
 

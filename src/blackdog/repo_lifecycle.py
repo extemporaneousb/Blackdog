@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import os
 import shlex
 import shutil
@@ -646,7 +647,7 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "load every routed document by default.\n\n"
         f"{guidance_catalog()}\n\n"
         "## Workflow\n\n"
-        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `blackdog repo install --project-root .` when missing or `blackdog repo update --project-root .` followed by `blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
+        f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `blackdog repo install --project-root .` when missing or `blackdog repo update --project-root .` when already installed. Update installs the invoking user release and refreshes its managed instructions; it does not fetch a release. Use `blackdog version --json` to inspect user and repository runtime identity; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
         f"- For ordinary requests (or `${skill_name} do <task-description>`), select guidance automatically. For implementation, create the two mode-0600 UTF-8 temporary prompt files and argument arrays required by `AGENTS.md`; keep the exact triggering request in `request_file` and a concise goal, relevant context, constraints, and done condition in `execution_prompt_file`. Run `{AGENT_WORKFLOW.begin_command}` directly. {PROMPT_INPUT_DISPOSAL_GUIDANCE}\n"
         "- Make implementation changes only in the returned task workspace.\n"
@@ -1266,16 +1267,39 @@ def update_repo(
         notes=notes,
     )
 
+    # Render with the selected runtime, not necessarily this invoking version:
+    # --source-root can deliberately install a different release. Explicit
+    # archive invocation also avoids user-launcher dispatch and recursion.
+    selected = installed_runtime(profile) if any(
+        handler.enabled and handler.kind == "blackdog-runtime" and handler.source_mode == "installed-runtime"
+        for handler in profile.handlers
+    ) else None
+    executable = str(selected) if selected else handler_summary.blackdog_path
+    if not executable:
+        raise RepoLifecycleError("runtime update has no selected executable for instruction refresh")
+    try:
+        refreshed = subprocess.run(
+            [executable, "repo", "refresh", "--project-root", str(repo_root), "--json"],
+            capture_output=True, text=True, check=False, timeout=120,
+        )
+        if refreshed.returncode:
+            raise RepoLifecycleError(refreshed.stderr.strip() or refreshed.stdout.strip() or "refresh failed")
+        refresh = json.loads(refreshed.stdout)["repo"]
+        if refresh["action"] != "refresh" or Path(refresh["project_root"]).resolve() != repo_root:
+            raise ValueError("refresh receipt does not match this repository")
+        created.extend(refresh["created"])
+        updated.extend(refresh["updated"])
+        removed.extend(refresh["removed"])
+        preserved.extend(refresh["preserved"])
+        notes.extend(refresh["notes"])
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError, RepoLifecycleError) as exc:
+        raise RepoLifecycleError(
+            "Runtime selection was updated but managed instruction refresh did not complete. "
+            "Rerun repo update using the same release/source to repair; repository policy and "
+            f"task evidence were not rewritten. Refresh error: {exc}"
+        ) from exc
+    notes.append("Selected runtime and managed instructions updated together; no release was downloaded.")
     skill_path = _managed_skill_path(profile)
-    if skill_path.exists():
-        preserved.append(str(skill_path))
-    else:
-        legacy_skill = _legacy_managed_skill_path(profile)
-        if legacy_skill.exists() and legacy_skill != skill_path:
-            preserved.append(str(legacy_skill))
-            notes.append("repo skill is still at the legacy blackdog path; run `blackdog repo refresh` to migrate it")
-        else:
-            notes.append("repo skill is missing; run `blackdog repo refresh` to regenerate it")
 
     _append_repo_visible_dirty_note(
         notes,
@@ -1298,7 +1322,7 @@ def update_repo(
         updated=tuple(dict.fromkeys(updated)),
         removed=tuple(dict.fromkeys(removed)),
         preserved=tuple(dict.fromkeys(preserved)),
-        notes=tuple(notes),
+        notes=tuple(dict.fromkeys(notes)),
     )
 
 

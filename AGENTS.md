@@ -33,6 +33,8 @@ development.
 
 ## Shipped CLI
 
+- `blackdog self install`
+- `blackdog version`
 - `blackdog init`
 - `blackdog repo analyze|bind|table|install|scaffold|update|refresh|migrate|archive|unarchive|unbind`
 - `blackdog local-repo add|list|remove`

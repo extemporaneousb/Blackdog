@@ -23,6 +23,20 @@ environment or third-party Python dependencies. In this source repository use
 `./scripts/blackdog`; installed consumers use the standalone `blackdog.pyz`
 archive (or install it on `PATH` as `blackdog`).
 
+Install a persistent user command from this checkout:
+
+```sh
+./scripts/blackdog self install
+blackdog version
+```
+
+The default command is `~/.local/bin/blackdog`; installation reports whether
+the current `PATH` can find it and prints the needed `PATH` setup when missing.
+Use `--bin-dir` for another persistent user-writable directory already on your
+terminal and agent `PATH`. No administrator access or project environment is
+required. The command retains its own immutable archive, so the source checkout
+can be removed. See the [installation details](docs/RUNTIME_DISTRIBUTION.md).
+
 Implementation edits belong in `workspace role: task`. Start with
 `blackdog task begin`, use the exact workspace executable returned in
 `setup_receipt.workspace_blackdog_path`, validate, then land through
@@ -59,8 +73,14 @@ upgrade, packaging, and acceptance details.
 
 For an existing repo, run `blackdog repo analyze` first. If the repo is not
 installed, run `blackdog repo install`; if it is already installed and the
-Blackdog runtime should move forward, run `blackdog repo update` and then
-`blackdog repo refresh`.
+Blackdog runtime should move forward, run `blackdog repo update`. This selects
+the invoking user release and refreshes the repository's managed instructions.
+`blackdog repo refresh` only regenerates instructions using the selected runtime.
+Neither command downloads releases. Install a newer archive with its `self install`
+command first, or deliberately pass `--source-root` to `repo update` for a local
+Blackdog checkout. Ordinary user commands use the repository's selected runtime;
+updating the user command alone does not upgrade repositories. `blackdog version`
+shows both identities. Explicit archive paths retain their exact version for recovery.
 
 For a new repo, use `blackdog repo scaffold --target-root ...` when Blackdog
 should initialize the project and install the normal repo-local contract in one

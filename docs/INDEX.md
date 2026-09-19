@@ -29,6 +29,8 @@ blackdog local-repo add|list|remove
 blackdog prompt preview
 blackdog attempts summary|table
 blackdog codex coverage|history|hook stamp
+blackdog self install
+blackdog version
 blackdog repo analyze|bind|table|install|scaffold|update|refresh|migrate|archive|unarchive|unbind
 blackdog task begin|show|recover|cancel|reopen|land|reconcile-landing|close|cleanup|outcome|validate
 blackdog worktree preflight|table

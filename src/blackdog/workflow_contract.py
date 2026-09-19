@@ -94,6 +94,8 @@ PROMPT_INPUT_CONTRACTS = (REQUEST_INPUT, EXECUTION_PROMPT_INPUT, REQUEST_LINEAGE
 
 
 SHIPPED_VISIBLE_COMMAND_TREE = (
+    WorkflowCommand("self", (WorkflowCommand("install"),)),
+    WorkflowCommand("version"),
     WorkflowCommand("init"),
     WorkflowCommand("summary"),
     WorkflowCommand("snapshot"),
@@ -169,6 +171,7 @@ SHIPPED_VISIBLE_COMMAND_TREE = (
 )
 
 COMMAND_INVENTORY_SECTIONS = (
+    CommandInventorySection("user installation and runtime identity", ("self", "version")),
     CommandInventorySection(
         "project initialization, status, and fleet reporting",
         ("init", "summary", "snapshot", "stats"),
@@ -216,6 +219,8 @@ def command_invocations(*roots: str) -> tuple[str, ...]:
 
 SHIPPED_VISIBLE_COMMAND_INVOCATIONS = command_invocations()
 REPO_OPERATOR_COMMANDS = command_invocations(
+    "self",
+    "version",
     "init",
     "summary",
     "snapshot",

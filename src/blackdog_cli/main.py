@@ -209,11 +209,24 @@ def _add_closeout_record_arguments(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="blackdog")
+    from blackdog import __version__
+    parser.add_argument("--version", action="version", version=f"Blackdog {__version__}")
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{init,summary,snapshot,stats,local-repo,prompt,attempts,codex,repo,task,worktree}",
+        metavar="{self,version,init,summary,snapshot,stats,local-repo,prompt,attempts,codex,repo,task,worktree}",
     )
+
+    p_self = subparsers.add_parser("self", help="Manage the user-level Blackdog command")
+    self_commands = p_self.add_subparsers(dest="self_command", required=True)
+    p_self_install = self_commands.add_parser("install", help="Install this release as a persistent user command; no network access")
+    p_self_install.add_argument("--bin-dir", type=Path)
+    p_self_install.add_argument("--data-dir", type=Path)
+    p_self_install.add_argument("--json", action="store_true")
+
+    p_version = subparsers.add_parser("version", help="Show invoking and selected repository runtime identities and PATH visibility")
+    p_version.add_argument("--project-root", default=".")
+    p_version.add_argument("--json", action="store_true")
 
     p_init = subparsers.add_parser("init", help="Write a default Blackdog profile")
     p_init.add_argument("--project-root", default=".")
@@ -361,7 +374,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_repo_scaffold.add_argument("--dry-run", action="store_true")
     p_repo_scaffold.add_argument("--json", action="store_true")
 
-    p_repo_update = repo_subparsers.add_parser("update", help="Update the repo-local Blackdog runtime from the invoking release or an explicit source checkout")
+    p_repo_update = repo_subparsers.add_parser("update", help="Update the repository runtime and managed instructions from this release or explicit source")
     p_repo_update.add_argument("--project-root", default=".")
     p_repo_update.add_argument("--source-root")
     p_repo_update.add_argument("--json", action="store_true")
@@ -542,8 +555,43 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    entrypoint = None
+    if argv[:1] == ["--user-entrypoint"]:
+        if len(argv) < 2:
+            parser.error("user entrypoint path is missing")
+        entrypoint = Path(argv[1])
+        argv = argv[2:]
     args = parser.parse_args(argv)
     try:
+        if entrypoint is not None:
+            from blackdog.user_installation import dispatch_user_command
+            if dispatch_user_command(args, argv):
+                return 0
+
+        if args.command == "self" and args.self_command == "install":
+            from blackdog.user_installation import install_user
+            result = install_user(bin_dir=args.bin_dir, data_dir=args.data_dir)
+            if args.json:
+                _emit_json({"installation": result})
+            else:
+                print(f"Installed user command: {result['entrypoint']}")
+                print(f"Release SHA-256: {result['runtime']['archive_sha256']}")
+                print(f"PATH visibility: {result['visibility']['status']}")
+                if result["visibility"]["path_setup"]:
+                    print(result["visibility"]["path_setup"])
+                print("Repository versions were not changed.")
+            return 0
+
+        if args.command == "version":
+            from blackdog.user_installation import render_version, version_report
+            result = version_report(Path(args.project_root), entrypoint=entrypoint)
+            if args.json:
+                _emit_json({"version": result})
+            else:
+                print(render_version(result), end="")
+            return 0
+
         if args.command == "init":
             profile_path = write_default_profile(Path(args.project_root), args.project_name)
             _emit_json(
@@ -1282,11 +1330,11 @@ def main(argv: list[str] | None = None) -> int:
 
         raise TaskError(f"Unsupported command: {args.command}")
     except StoreMigrationRequired as exc:
-        from blackdog.runtime_distribution import runtime_executable
+        from blackdog.runtime_distribution import migration_executable
 
         root = Path(getattr(args, "project_root", None) or ".").resolve()
         try:
-            executable = runtime_executable(root)
+            executable = migration_executable(root)
         except (BlackdogError, ConfigError, OSError) as runtime_error:
             print(str(runtime_error), file=sys.stderr)
             return 1
