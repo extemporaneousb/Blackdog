@@ -265,6 +265,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prompt_preview.add_argument("--show-prompt", action="store_true")
     p_prompt_preview.add_argument("--expand-skill-text", action="store_true")
     p_prompt_preview.add_argument("--expand-contract", action="store_true")
+    p_prompt_preview.add_argument("--guidance", action="append", default=[], help="Host-selected built-in guide or repository-relative file; repeat for each applied guide")
     p_prompt_preview.add_argument("--json", action="store_true")
 
     p_attempts = subparsers.add_parser("attempts", help="Inspect completed attempt history")
@@ -402,6 +403,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task_begin.add_argument("--path")
     p_task_begin.add_argument("--model")
     p_task_begin.add_argument("--reasoning-effort")
+    p_task_begin.add_argument("--guidance", action="append", default=[], help="Host-selected built-in guide or repository-relative file; snapshot in execution prompt")
+    p_task_begin.add_argument("--host", help="Declared execution host name, when known")
+    p_task_begin.add_argument("--host-version", help="Declared execution host version, when known")
     p_task_begin.add_argument("--note")
     p_task_begin.add_argument("--show-prompt", action="store_true")
     p_task_begin.add_argument("--json", action="store_true")
@@ -644,8 +648,6 @@ def main(argv: list[str] | None = None) -> int:
                 inline_flag=REQUEST_INPUT.inline_flag,
                 file_flag=REQUEST_INPUT.file_flag,
             )
-            if args.execution_prompt_source is not None:
-                prompt_source = args.execution_prompt_source or None
             preview = preview_prompt(
                 profile,
                 request=prompt_text,
@@ -653,6 +655,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_prompt=args.show_prompt,
                 expand_skill_text=args.expand_skill_text,
                 expand_contract=args.expand_contract,
+                guidance=tuple(args.guidance),
             )
             if args.json:
                 _emit_json({"prompt_preview": preview.to_dict()})
@@ -986,6 +989,9 @@ def main(argv: list[str] | None = None) -> int:
                     title=args.title,
                     model=args.model,
                     reasoning_effort=args.reasoning_effort,
+                    guidance=tuple(args.guidance),
+                    host=args.host,
+                    host_version=args.host_version,
                     branch=args.branch,
                     from_ref=args.from_ref,
                     path=args.path,

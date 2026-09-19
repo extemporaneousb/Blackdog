@@ -44,11 +44,14 @@ must never edit control files directly.
   recovery guarantees.
 - [CLI](CLI.md) — command and structured-result contract.
 - [File formats](FILE_FORMATS.md) — canonical files and durable schemas.
+- [Workflow guidance](WORKFLOW_GUIDANCE.md) — host selection before admission,
+  replayable guidance, outcome/compliance evidence and reviewed improvement.
 - [Runtime distribution](RUNTIME_DISTRIBUTION.md) — reproducible executable
   archives, installation, upgrades, and optional project environments.
 - [Runtime acceptance](RUNTIME_ACCEPTANCE.md) — isolated external lifecycle
   checks and comparable measurement conditions.
-- [Outcome evidence](OUTCOME_EVIDENCE.md) — typed criteria, validation, measurement and reports.
+- [Outcome evidence](OUTCOME_EVIDENCE.md) — distinct outcome/compliance criteria,
+  validation, measurements and comparison cohorts.
 - [Runtime and worktree preparation](WORKTREE_PREPARATION.md) — implemented first
   slice, current invocation and recipe contract, and full staged acceptance
   requirements. The first slice passed bounded local acceptance; broader

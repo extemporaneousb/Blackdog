@@ -75,14 +75,26 @@ User-facing inputs:
 - Exactly one of `--execution-prompt` or `--execution-prompt-file`
 - Optional exactly one of `--request` or `--request-file`
 - `--prompt-mode raw|skill`
+- Optional repeated `--guidance BUILTIN_OR_REPOSITORY_RELATIVE_PATH`
 - Optional `--title`, `--branch`, `--from`, `--path`, `--model`,
-  `--reasoning-effort`, and `--note`
+  `--reasoning-effort`, `--host`, `--host-version`, and `--note`
 - Optional `--show-prompt` and `--json`
 
 When request input is omitted, the execution input supplies both lineage roles.
 File inputs are preferable because they are replayable without shell quoting.
 Prompt text is normalized, hashed, and persisted privately before it is stored
 by reference on the attempt.
+
+The host selects guidance from the request and work context before admission.
+Each `--guidance` includes that guide's exact text in the execution snapshot and
+its path/SHA-256 in setup metadata. Keep material adaptations in the composed
+execution input. The original request remains separate. Recovery uses admitted
+snapshots instead of reloading changed guidance. See
+[workflow guidance](WORKFLOW_GUIDANCE.md).
+
+`--host` and `--host-version` record caller-declared execution context;
+`--model` and `--reasoning-effort` likewise describe supplied context rather
+than discovering the host's actual configuration. Omit unknown values.
 
 The command checks repository and managed-skill readiness, guards, Git base and
 target identity, handler readiness, and prompt lineage. It then creates the task
@@ -344,12 +356,17 @@ through `task outcome`.
 ```bash
 blackdog prompt preview --project-root . --request-file /private/path/request.txt
 blackdog prompt preview --project-root . --request "Refactor parser" --show-prompt --json
+blackdog prompt preview --project-root . --request "Tidy parser" --guidance engineering --guidance cleanup --show-prompt --json
 ```
 
 Exactly one of `--request` or `--request-file` is required. Preview reports the
 deterministic repository-contract composition without starting a task.
 `--expand-skill-text` and `--expand-contract` explicitly include routed text;
 the default includes bounded references only.
+
+Repeated `--guidance BUILTIN_OR_REPOSITORY_RELATIVE_PATH` arguments add exact
+selected guide snapshots and their metadata. Selection is performed by the host;
+the CLI does not infer a guide from keywords. Preview does not admit an attempt.
 
 The command does not optimize, rewrite, or promote prompts.
 

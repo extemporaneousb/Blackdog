@@ -95,6 +95,7 @@ An attempt records one actor's execution of one task. Its durable fields cover:
 - Request and execution prompt receipts
 - Optional provider thread and turn reference
 - Setup receipt and handler evidence
+- Selected guidance identities and caller-declared host context in setup metadata
 - Changed paths, validations, residuals, and follow-up candidates
 - Source commit and canonical landed commit
 - Failure class, recovery action, and issue flags
@@ -122,6 +123,15 @@ artifact-relative path. Runtime rows need not duplicate the full prompt.
 
 The request and execution roles remain distinct even when their text matches.
 Recovery reopens an existing task only after both roles match durable lineage.
+
+The host selects relevant workflow guidance before admission, including for
+underspecified requests. Blackdog resolves the supplied selections, includes
+their exact text in the execution artifact, and retains source/hash metadata in
+the setup receipt. Replay preserves that admitted text; updating distributed
+guidance does not reinterpret an existing attempt. Host/model declarations
+describe comparison inputs, not observed behavior. Selection, adaptation,
+delegation and transcripts remain host-owned. See
+[workflow guidance](WORKFLOW_GUIDANCE.md).
 
 ## Concurrency and Atomicity
 
@@ -343,6 +353,11 @@ append-only assessments describe the latest recorded evaluation. Machine
 validation records bind actual command observations to Git content, configured
 commands, timeout and a bounded runtime descriptor. The product owns execution;
 the core owns serialization, identity and reference integrity.
+
+Schema-2 definitions classify each criterion as `outcome` or `compliance`.
+Product success and workflow adherence have separate assessments and coverage;
+missing compliance is not inferred from successful execution or landing.
+Schema-1 definitions retain their original identity and outcome-only meaning.
 
 These events share the canonical ledger and remain separate from lifecycle
 state. They cannot authorize landing, authenticate a reviewer, or turn a passed

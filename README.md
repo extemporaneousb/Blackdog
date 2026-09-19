@@ -28,10 +28,17 @@ Implementation edits belong in `workspace role: task`. Start with
 `setup_receipt.workspace_blackdog_path`, validate, then land through
 `blackdog task land`. The task's recorded target branch remains authoritative.
 
+The installed repository instructions ask the host to select applicable
+[workflow guidance](docs/WORKFLOW_GUIDANCE.md) before admission, including for
+short requests. Blackdog snapshots the selected text with the execution prompt;
+typed evidence keeps downstream outcomes and workflow compliance distinct.
+
 ## Install And Layering Model
 
 - `blackdog.toml` owns control paths, routed docs, validation, and handlers.
 - `AGENTS.md` and `.codex/skills/<repo-slug>/SKILL.md` hold the managed contract.
+- Generated guidance is maintained with that contract; repository refinements
+  remain outside generated files. The host owns semantic selection and execution.
 - The default `installed-runtime` handler stores an immutable release beneath
   the private control root, addressed by its SHA-256. Recovery commands name
   this exact archive, so removing a task workspace or updating Blackdog does

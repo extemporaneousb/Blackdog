@@ -82,7 +82,8 @@ from blackdog.lifecycle import (
     classify_lifecycle_exception,
 )
 from blackdog.prompt_artifacts import persist_prompt_receipts, verify_prompt_artifact
-from blackdog.prompting import _compose_prompt
+from blackdog.prompting import _compose_prompt, append_guidance
+from blackdog.guidance import GuidanceDocument, resolve_guidance
 from blackdog.validation import run_validation_commands
 from blackdog.codex_sessions import current_codex_runtime_context, current_codex_session_ref
 from blackdog_core.evidence import SetupMeasurement
@@ -492,6 +493,7 @@ def _resolve_prompt_receipts(
     user_prompt_source: str | None,
     prompt_mode: str,
     canonical_execution_replay: Any | None = None,
+    guidance_documents: tuple[GuidanceDocument, ...] = (),
 ) -> tuple[Any, Any]:
     if prompt_mode not in {PROMPT_MODE_RAW, PROMPT_MODE_SKILL}:
         raise TaskError(f"prompt mode must be one of {PROMPT_MODE_RAW}, {PROMPT_MODE_SKILL}")
@@ -501,19 +503,15 @@ def _resolve_prompt_receipts(
     execution_text = prompt
     if canonical_execution_replay is not None:
         execution_receipt = canonical_execution_replay
-    elif prompt_mode == PROMPT_MODE_SKILL:
-        execution_text, _documents = _compose_prompt(
-            profile,
-            request=prompt,
-            include_skill_text=False,
-            include_doc_text=False,
-        )
-        execution_receipt = create_prompt_receipt(
-            execution_text,
-            source=prompt_source,
-            mode=prompt_mode,
-        )
     else:
+        if prompt_mode == PROMPT_MODE_SKILL:
+            execution_text, _documents = _compose_prompt(
+                profile,
+                request=prompt,
+                include_skill_text=False,
+                include_doc_text=False,
+            )
+        execution_text = append_guidance(execution_text, guidance_documents)
         execution_receipt = create_prompt_receipt(
             execution_text,
             source=prompt_source,
@@ -640,6 +638,8 @@ def _setup_receipt(
     guard_receipt: Mapping[str, Any],
     skill_provenance: Mapping[str, Any] | None,
     setup_elapsed_ms: int | None = None,
+    guidance_provenance: Mapping[str, Any] | None = None,
+    execution_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     handler_payload = dict(handlers.to_dict())
     actions = handler_payload.get("actions")
@@ -686,6 +686,10 @@ def _setup_receipt(
     ).to_dict()
     if skill_provenance is not None:
         receipt["skill_provenance"] = dict(skill_provenance)
+    if guidance_provenance is not None:
+        receipt["guidance"] = dict(guidance_provenance)
+    if execution_context is not None:
+        receipt["execution_context"] = dict(execution_context)
     if handler_payload.get("preparation"):
         receipt["preparation"] = handler_payload["preparation"]
     return receipt
@@ -776,6 +780,9 @@ def begin_task_worktree(
     title: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    guidance: tuple[str, ...] = (),
+    host: str | None = None,
+    host_version: str | None = None,
     branch: str | None = None,
     from_ref: str | None = None,
     path: str | None = None,
@@ -788,12 +795,36 @@ def begin_task_worktree(
     primary = find_primary_worktree(profile.paths.project_root)
     state = load_runtime_state(profile.paths)
     existing = task_record(state, task_id) if task_id is not None else None
+    active = active_task_attempt(state, task_id) if task_id is not None else None
     canonical_replay = _canonical_execution_replay(
         profile,
         task=existing,
         prompt=prompt,
         prompt_source=prompt_source,
         prompt_mode=prompt_mode,
+    )
+    previous = (existing.attempts[-1].setup_receipt or {}) if existing and existing.attempts else {}
+    if canonical_replay is not None and guidance:
+        raise TaskError("canonical execution replay already contains frozen guidance; do not reselect guides")
+    guidance_documents = resolve_guidance(profile, guidance) if canonical_replay is None else ()
+    guidance_provenance = (
+        previous.get("guidance") if canonical_replay is not None else
+        {"schema_version": 1, "selection_source": "host_declared",
+         "documents": [document.to_dict() for document in guidance_documents]}
+        if guidance_documents else None
+    )
+    for name, value in (("host", host), ("host_version", host_version)):
+        if value is not None and (
+            not isinstance(value, str) or not value.strip() or value != value.strip()
+            or len(value) > 128 or any(ord(character) < 32 for character in value)
+        ):
+            raise TaskError(f"{name} must be nonblank bounded text without control characters")
+    if host_version is not None and host is None:
+        raise TaskError("host_version requires host")
+    execution_context = (
+        {"schema_version": 1, "source": "caller_declared", "host": host, "host_version": host_version}
+        if host is not None else previous.get("execution_context")
+        if canonical_replay is not None and active is not None else None
     )
     request_receipt, execution_receipt = _resolve_prompt_receipts(
         profile,
@@ -803,8 +834,10 @@ def begin_task_worktree(
         user_prompt_source=user_prompt_source,
         prompt_mode=prompt_mode,
         canonical_execution_replay=canonical_replay,
+        guidance_documents=guidance_documents,
     )
     skill_provenance = (
+        previous.get("skill_provenance") if canonical_replay is not None else
         _managed_skill_provenance(profile, workspace_root=current)
         if prompt_mode == PROMPT_MODE_SKILL
         else None
@@ -817,8 +850,9 @@ def begin_task_worktree(
     if existing is not None and title is not None and title.strip() != existing.title:
         raise TaskError(f"Task identity {task_id!r} already has a different title")
 
-    active = active_task_attempt(state, task.task_id)
     if active is not None:
+        if execution_context != (active.setup_receipt or {}).get("execution_context"):
+            raise TaskError("active attempt already has different execution context")
         if not _same_prompt_lineage(
             active,
             actor=actor,
@@ -875,6 +909,7 @@ def begin_task_worktree(
             if getattr(setup, "preparation", ()):
                 refreshed_receipt = _setup_receipt(
                     setup, guard_receipt=active.setup_receipt or {}, skill_provenance=skill_provenance,
+                    guidance_provenance=guidance_provenance, execution_context=execution_context,
                     setup_elapsed_ms=(time.monotonic_ns() - setup_started_ns) // 1_000_000,
                 )
                 if active.setup_receipt and _same_preparation_readiness(active.setup_receipt, refreshed_receipt):
@@ -1025,6 +1060,7 @@ def begin_task_worktree(
                     setup,
                     guard_receipt=guard_receipt,
                     skill_provenance=skill_provenance,
+                    guidance_provenance=guidance_provenance, execution_context=execution_context,
                     setup_elapsed_ms=setup_elapsed_ms,
                 ),
                 attempt_id=resumed_attempt_id,
@@ -1146,6 +1182,7 @@ def begin_task_worktree(
                 setup,
                 guard_receipt=guard_receipt,
                 skill_provenance=skill_provenance,
+                guidance_provenance=guidance_provenance, execution_context=execution_context,
                 setup_elapsed_ms=setup_elapsed_ms,
             ),
         )
@@ -1160,6 +1197,7 @@ def begin_task_worktree(
                 expected_receipt=attempt.setup_receipt,
                 setup_receipt=_setup_receipt(
                     setup, guard_receipt=guard_receipt, skill_provenance=skill_provenance,
+                    guidance_provenance=guidance_provenance, execution_context=execution_context,
                     setup_elapsed_ms=setup_elapsed_ms,
                 ),
             )

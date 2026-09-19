@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 from typing import Any
 
 from blackdog.contract import ContractDocument, contract_documents
+from blackdog.guidance import GuidanceDocument, resolve_guidance
 from blackdog.observability import observe_lifecycle
 from blackdog.workflow_contract import (
     AGENT_WORKFLOW,
@@ -33,11 +35,26 @@ class PromptPreview:
     repo_lifecycle_commands: tuple[str, ...]
     wtam_commands: tuple[str, ...]
     contract_documents: tuple[ContractDocument, ...]
+    guidance: tuple[dict[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["contract_documents"] = [item.to_dict() for item in self.contract_documents]
         return payload
+
+
+def append_guidance(prompt: str, documents: tuple[GuidanceDocument, ...]) -> str:
+    """Freeze host-selected content; selection and execution remain host-owned."""
+    if not documents:
+        return prompt
+    sections = [prompt.rstrip(), "\nHost-selected workflow guidance (apply each text field subject to the request's explicit constraints):"]
+    for document in documents:
+        # JSON strings retain exact source bytes across the prompt contract's
+        # newline normalization, without a second content store or duplicating
+        # the guide. In particular CRLF hashes remain independently recoverable.
+        sections.extend(("```json", json.dumps({**document.to_dict(), "text": document.text},
+                                               ensure_ascii=False, indent=2), "```"))
+    return "\n".join(sections)
 
 
 def _compose_prompt(
@@ -92,7 +109,9 @@ def preview_prompt(
     include_prompt: bool = False,
     expand_skill_text: bool = False,
     expand_contract: bool = False,
+    guidance: tuple[str, ...] = (),
 ) -> PromptPreview:
+    selected = resolve_guidance(profile, guidance)
     receipt = create_prompt_receipt(request, source=prompt_source)
     composed_prompt, documents = _compose_prompt(
         profile,
@@ -100,6 +119,7 @@ def preview_prompt(
         include_skill_text=expand_skill_text,
         include_doc_text=expand_contract,
     )
+    composed_prompt = append_guidance(composed_prompt, selected)
     observe_lifecycle(
         profile,
         surface="prompt.preview",
@@ -120,6 +140,7 @@ def preview_prompt(
         repo_lifecycle_commands=REPO_LIFECYCLE_COMMANDS,
         wtam_commands=WTAM_COMMANDS,
         contract_documents=documents,
+        guidance=tuple(document.to_dict() for document in selected),
     )
 
 

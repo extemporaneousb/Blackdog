@@ -39,6 +39,104 @@ from tests.process_support import configure_test_git
 
 
 class EvidenceContractTests(TestCase):
+    def test_malformed_context_never_counts_as_complete_or_reads_references(self):
+        from blackdog.outcome_reporting import _attempt_context
+        from blackdog_core.state import TaskAttemptRecord
+
+        host = {
+            "schema_version": 1, "source": "caller_declared",
+            "host": "test-host", "host_version": "1",
+        }
+        document = {"path": "guidance/cleanup.md", "sha256": "a" * 64}
+        guidance = {
+            "schema_version": 1, "selection_source": "host_declared",
+            "documents": [document],
+        }
+        attempt = TaskAttemptRecord(
+            attempt_id="attempt-fixture", status="in_progress", actor="test",
+            started_at="2026-01-01T00:00:00Z", model="test-model",
+            reasoning_effort="high",
+        )
+        bad_hosts = (
+            {**host, "host": "host\ninvalid"},
+            {**host, "host": " host"},
+            {**host, "host_version": "1\ninvalid"},
+            {**host, "host_version": "x" * 129},
+            {**host, "host": None},
+            {**host, "host": 1},
+            {**host, "schema_version": True},
+            {**host, "source": "machine_observed"},
+            {**host, "extra": "unrecognized"},
+            {key: value for key, value in host.items() if key != "host_version"},
+        )
+        bad_guidance = (
+            {**guidance, "schema_version": True},
+            {**guidance, "selection_source": "machine_observed"},
+            {**guidance, "extra": "unrecognized"},
+            {**guidance, "documents": []},
+            {**guidance, "documents": [document, document]},
+            {**guidance, "documents": [document, {**document, "path": "guidance//cleanup.md"}]},
+            {**guidance, "documents": [{**document, "path": f"guide-{index}.md"} for index in range(17)]},
+            {**guidance, "documents": [{**document, "sha256": "A" * 64}]},
+            {**guidance, "documents": [{**document, "extra": "unrecognized"}]},
+            *({**guidance, "documents": [{**document, "path": path}]} for path in (
+                "../escaped.md", "/absolute.md", ".", "guide\ninvalid.md",
+                " guide.md", "x" * 1025,
+            )),
+        )
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("reference read")):
+            for invalid in bad_hosts:
+                with self.subTest(host=invalid):
+                    row = _attempt_context(replace(attempt, setup_receipt={
+                        "execution_context": invalid, "guidance": guidance,
+                    }))
+                    self.assertFalse(row["complete"])
+                    self.assertEqual(row["host_context_status"], "invalid_or_unsupported")
+                    self.assertIn("host", row["missing_fields"])
+            for invalid in bad_guidance:
+                with self.subTest(guidance=invalid):
+                    row = _attempt_context(replace(attempt, setup_receipt={
+                        "execution_context": host, "guidance": invalid,
+                    }))
+                    self.assertFalse(row["complete"])
+                    self.assertEqual(row["guidance_status"], "invalid_or_unsupported")
+                    self.assertIn("guidance", row["missing_fields"])
+            same_content = {**guidance, "documents": [document, {
+                **document, "path": "guidance/other.md",
+            }]}
+            row = _attempt_context(replace(attempt, setup_receipt={
+                "execution_context": host, "guidance": same_content,
+            }))
+            self.assertTrue(row["complete"])
+
+    def test_definition_v2_requires_explicit_kinds_without_changing_v1_hashes(self):
+        legacy = {
+            "schema_version": 1,
+            "task_class": "cleanup",
+            "objective": "Preserve behavior while simplifying code",
+            "criteria": [{"id": "behavior", "description": "Behavior preserved", "required": True}],
+        }
+        parsed = OutcomeDefinition.parse(legacy)
+        self.assertEqual(parsed.to_dict(), legacy)
+        self.assertEqual(parsed.sha256, digest(legacy))
+        self.assertEqual(parsed.criteria[0].kind, "outcome")
+        typed = {
+            **legacy, "schema_version": 2,
+            "criteria": [{**legacy["criteria"][0], "kind": "outcome"}],
+        }
+        self.assertEqual(OutcomeDefinition.parse(typed).to_dict(), typed)
+        self.assertNotEqual(OutcomeDefinition.parse(typed).sha256, parsed.sha256)
+        for bad in (
+            {**legacy, "schema_version": 2},
+            {**typed, "schema_version": 1},
+            {**typed, "schema_version": True},
+            {**typed, "schema_version": 3},
+            {**typed, "criteria": [{**typed["criteria"][0], "kind": "review"}]},
+            {**typed, "criteria": [{**typed["criteria"][0], "kind": None}]},
+        ):
+            with self.subTest(definition=bad), self.assertRaises(EvidenceError):
+                OutcomeDefinition.parse(bad)
+
     def test_document_rejects_duplicate_keys_nonfinite_and_oversize(self):
         with TemporaryDirectory() as temp:
             path = Path(temp) / "input.json"
@@ -866,3 +964,157 @@ doc_routing_defaults = []
         self.assertIsNone(report.summary["codex_total_tokens"])
         self.assertEqual(report.to_dict()["provider_missing_reason"], "not_requested")
         self.assertEqual(report.outcome_evidence[0]["definitions_missing"], 1)
+        self.assertEqual(report.outcome_evidence[0]["compliance"], {"not_defined": 1})
+        self.assertEqual(
+            report.outcome_evidence[0]["execution_context_coverage"]["missing_by_field"]["model"],
+            1,
+        )
+
+    def test_required_compliance_is_separate_and_controls_completion_eligibility(self):
+        self.definition = {
+            **self.definition, "schema_version": 2,
+            "criteria": [
+                {**self.definition["criteria"][0], "kind": "outcome"},
+                {"id": "scope", "description": "Only selected work changed", "required": True, "kind": "compliance"},
+            ],
+        }
+        self.record(DEFINITION, self.definition)
+        self.finish()
+        self.record(ASSESSMENT, self.assessment())
+        report = outcome_report(self.profile)
+        row = report["tasks"][0]
+        self.assertEqual((row["outcome"], row["compliance"]), ("met", "not_assessed"))
+        self.assertEqual(row["compliance_assessment_coverage"]["missing_required_assessments"], 1)
+        self.assertEqual(report["cohorts"][0]["criteria_met_completion"]["eligible_tasks"], 0)
+        failed = self.record(ASSESSMENT, {
+            **self.assessment(assessment_id="scope-review", result="not_met"),
+            "criterion_id": "scope", "provenance": "caller_declared",
+            "schema_version": 2,
+            "rationale": "A worker modified an unselected module.",
+            "host_refs": ["host:task/review/turn-1"],
+        })
+        report = outcome_report(self.profile, include_tasks=False)
+        self.assertEqual(report["outcomes"], {"met": 1})
+        self.assertEqual(report["compliance"], {"not_met": 1})
+        self.assertEqual(report["compliance_assessment_coverage"]["current_required_by_provenance"], {"caller_declared": 1, "reviewer_asserted": 0})
+        self.assertEqual(report["cohorts"][0]["criteria_met_completion"]["eligible_tasks"], 0)
+        self.record(ASSESSMENT, {
+            **self.assessment(assessment_id="scope-correction", supersedes=failed["event_id"]),
+            "criterion_id": "scope",
+            "schema_version": 2,
+            "rationale": "The unrelated edit was reverted and the final diff inspected.",
+            "host_refs": ["host:task/review/turn-2"],
+        })
+        report = outcome_report(self.profile)
+        self.assertEqual(report["tasks"][0]["compliance"], "met")
+        self.assertEqual(report["cohorts"][0]["criteria_met_completion"]["eligible_tasks"], 1)
+        self.assertEqual(report["compliance_assessment_coverage"]["recorded_assessments_by_provenance"], {"caller_declared": 1, "reviewer_asserted": 1})
+        with patch("blackdog.outcome_reporting._artifact_tree", return_value="f" * 40):
+            stale = outcome_report(self.profile)["tasks"][0]
+        self.assertEqual(stale["compliance"], "not_assessed")
+        self.assertEqual(stale["compliance_assessment_coverage"]["stale_required_assessments"], 1)
+        self.assertFalse(stale["criteria"][1]["reviewer_identity_authenticated"])
+        assessment = stale["criteria"][1]["assessment"]
+        self.assertEqual(assessment["rationale"], "The unrelated edit was reverted and the final diff inspected.")
+        self.assertEqual(assessment["host_refs"], ["host:task/review/turn-2"])
+        self.assertFalse(stale["criteria"][1]["host_refs_fetched"])
+
+    def test_assessment_v2_preserves_legacy_and_bounds_unverified_host_locators(self):
+        legacy = self.assessment()
+        self.assertEqual(Assessment.parse(legacy).to_dict(), legacy)
+        self.assertEqual(digest(Assessment.parse(legacy).to_dict()), digest(legacy))
+        typed = {
+            **legacy, "schema_version": 2,
+            "rationale": "The final diff and worker output satisfy the scope criterion.",
+            "host_refs": ["host:task/review/turn-1"],
+        }
+        self.assertEqual(Assessment.parse(typed).to_dict(), typed)
+        for bad in (
+            {**legacy, "schema_version": 2},
+            {**typed, "schema_version": 1},
+            {**typed, "schema_version": 3},
+            {**typed, "schema_version": True},
+            {**typed, "rationale": ""},
+            {**typed, "rationale": "x" * 4097},
+            {**typed, "host_refs": "host:task"},
+            {**typed, "host_refs": ["host:task", "host:task"]},
+            {**typed, "host_refs": [""]},
+            {**typed, "host_refs": [None]},
+            {**typed, "host_refs": ["x" * 513]},
+            {**typed, "host_refs": [f"host:task/{index}" for index in range(17)]},
+        ):
+            with self.subTest(assessment=bad), self.assertRaises(EvidenceError):
+                Assessment.parse(bad)
+
+    def test_undefined_compliance_and_unknown_context_are_explicit(self):
+        self.record(DEFINITION, self.definition)
+        self.finish()
+        self.record(ASSESSMENT, self.assessment())
+        report = outcome_report(self.profile)
+        row = report["tasks"][0]
+        self.assertEqual(row["compliance"], "not_defined")
+        self.assertEqual(row["compliance_provenance"], "not_defined")
+        self.assertEqual(row["compliance_assessment_coverage"]["defined_criteria"], 0)
+        self.assertFalse(report["cohorts"][0]["comparable"])
+        context = row["execution_context"]["attempts"][0]
+        self.assertEqual(context["guidance_status"], "not_recorded")
+        self.assertEqual(context["host_context_status"], "not_recorded")
+        self.assertEqual(set(context["missing_fields"]), {"model", "reasoning_effort", "host", "host_version", "guidance"})
+        self.assertFalse(context["compliance_attested"])
+        self.assertEqual(report["cohorts"][0]["criteria_met_completion"]["eligible_tasks"], 1)
+
+    def test_guidance_model_and_host_contexts_are_not_pooled(self):
+        from blackdog.outcome_reporting import project_outcomes
+
+        self.record(DEFINITION, self.definition)
+        self.validate()
+        self.finish()
+        other = create_task(self.profile, title="Another measured task")
+        attempt = start_task(
+            self.profile, task_id=other.task_id, actor="codex",
+            worktree_path=str(self.workspace), branch="task-branch",
+            workspace_mode="git-worktree", worktree_role="task",
+            target_branch=self.attempt.target_branch,
+            start_commit=self.git("rev-parse", "HEAD"),
+        )
+        record_outcome(
+            self.profile, task_id=other.task_id, attempt_id=attempt.attempt_id,
+            actor="codex", kind=DEFINITION, document=self.definition,
+        )
+        validate_task(
+            self.profile, task_id=other.task_id, attempt_id=attempt.attempt_id,
+            actor="codex", run_id="other-validation",
+        )
+        with locked_evidence(self.profile) as (state, _, events):
+            original = state
+        receipt = {
+            "execution_context": {"schema_version": 1, "source": "caller_declared", "host": "test-host", "host_version": "1"},
+            "guidance": {"schema_version": 1, "selection_source": "host_declared", "documents": [{"path": "guidance/cleanup.md", "sha256": "a" * 64}]},
+        }
+        base = {"model": "test-model", "reasoning_effort": "high", "setup_receipt": receipt}
+        variants = (
+            {"model": "other-model"},
+            {"reasoning_effort": "low"},
+            {"setup_receipt": {**receipt, "execution_context": {**receipt["execution_context"], "host": "other-host"}}},
+            {"setup_receipt": {**receipt, "execution_context": {**receipt["execution_context"], "host_version": "2"}}},
+            {"setup_receipt": {**receipt, "guidance": {**receipt["guidance"], "documents": [{"path": "guidance/cleanup.md", "sha256": "b" * 64}]}}},
+            {"model": None},
+            {"setup_receipt": {"guidance": receipt["guidance"]}},
+            {},
+        )
+        for variant in variants:
+            tasks = tuple(
+                replace(task, attempts=(replace(task.attempts[0], **{
+                    **base, **(variant if task.task_id == other.task_id else {})
+                }),))
+                for task in original.tasks
+            )
+            with self.subTest(variant=variant):
+                report = project_outcomes(self.profile, replace(original, tasks=tasks), events, include_tasks=False)
+                self.assertEqual(len(report["cohorts"]), 2 if variant else 1)
+                if not variant:
+                    self.assertTrue(report["cohorts"][0]["comparable"])
+                    self.assertEqual(report["execution_context_coverage"]["complete_attempts"], 2)
+                elif variant == {"model": None}:
+                    self.assertEqual(report["execution_context_coverage"]["missing_by_field"]["model"], 1)
+                    self.assertEqual(sum(c["comparable"] for c in report["cohorts"]), 1)

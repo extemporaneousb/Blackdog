@@ -170,6 +170,14 @@ prompt view; durable retry validation still knows which role was supplied.
 Prompt modes are bounded by the current CLI contract. Unsupported modes fail
 before task mutation.
 
+Selected workflow guidance is frozen in the execution artifact as JSON objects
+with `path`, `sha256` and `text`. JSON escaping preserves exact guide text,
+including CRLF, through prompt newline normalization. The request artifact
+preserves the triggering request separately. Setup metadata
+identifies those sources without duplicating the full prompt into runtime rows.
+Existing-attempt recovery uses admitted text rather than resolving current guide
+files again.
+
 ### Provider session reference
 
 `codex_session`, when present, contains:
@@ -194,6 +202,7 @@ absence does not invalidate the task attempt.
 - Handler probes and effective runtime/source modes
 - Worktree-local launcher paths
 - Managed-skill provenance
+- Selected workflow-guidance metadata and caller-declared host context
 - Atomic start identity
 - Base-ref, base-commit, and primary-worktree evidence
 
@@ -201,6 +210,18 @@ Guard receipts bind guard ID, phase, configuration hash, status, reason, and
 required inputs. Skill provenance binds a repository-relative path, SHA-256,
 and bounded source. These receipts prove what Blackdog checked and associated
 with the attempt; they do not attest that a model followed the instructions.
+
+When guides are selected, `guidance` contains `schema_version: 1`,
+`selection_source: "host_declared"`, and `documents`, an array of objects with
+`path` and lowercase SHA-256 `sha256`. The recoverable guide text is in the
+execution-prompt artifact. This metadata identifies the selected inputs, not
+observed compliance.
+
+When host context is supplied, `execution_context` contains
+`schema_version: 1`, `source: "caller_declared"`, `host` and `host_version`;
+an unavailable value is null. Model and reasoning effort retain their existing
+attempt fields. Absent metadata remains unknown in reports; readers do not
+infer historical context from the current host.
 
 The schema-2 setup wrapper may also contain a `preparation` array. Each
 schema-1 entry identifies a reviewed preparation handler and its revision,
@@ -446,11 +467,13 @@ Repository lifecycle commands may create or maintain:
 - `AGENTS.md` managed contract block
 - `.codex/skills/<repo-slug>/SKILL.md`
 - Managed skill metadata
+- Generated workflow catalog and guide documents
 - Immutable control-root release archives and their selected runtime reference
 - Optional project environment artifacts configured by explicit handlers
 
-Generated skills route the agent to task commands and contain no lifecycle
-implementation.
+Generated skills and guidance route the host to applicable working conventions
+and task commands; they contain no lifecycle implementation. Repository-authored
+refinements stay outside generated files. See [workflow guidance](WORKFLOW_GUIDANCE.md).
 
 After bind, install, update, or refresh, callers inspect `git status --short`
 and account for every repository-visible change.
@@ -532,15 +555,32 @@ with one migration event. The old planning file is removed only after its archiv
 copy and the new runtime are durable. Prompts and historical sidecars remain
 untouched. A completed retry is a no-op.
 
-## Typed outcome evidence (schema 1)
+## Typed outcome and compliance evidence
 
 The existing event ledger additionally accepts strictly validated
 `task.evidence.definition`, `task.evidence.assessment`,
 `task.evidence.intervention`, `task.evidence.validation-intent`,
 `task.evidence.validation-result`, and `task.evidence.phase` families.
-Each payload contains exactly `schema_version`, `task_id`, `attempt_id`, and
+Each schema-1 payload contains exactly `schema_version`, `task_id`, `attempt_id`, and
 `data`. Identities bind event kind, task, attempt and immutable request ID;
 measured clocks and durations are not identity inputs.
+
+Definition documents accept schema 1 or 2. Both contain `schema_version`,
+`task_class`, `objective` and `criteria`. Each schema-1 criterion contains exactly
+`id`, `description` and `required` and means an outcome criterion. Schema 2 adds
+the required `kind` field, restricted to `outcome` or `compliance`. Schema-1
+serialization and definition hashes remain unchanged; readers must not inject
+`kind` into those stored definitions.
+
+Assessment documents accept schema 1 or 2 independently of definition version.
+Schema 2 adds required `rationale` (nonblank trimmed single-line text, at most
+4,096 characters) and `host_refs` (up to 16 unique nonblank trimmed single-line
+locators, at most 512 characters each; an empty array is valid). Host locators
+remain caller-declared, unfetched and unauthenticated. `evidence_refs` retains
+its separate same-attempt machine-validation-event contract. Schema-1
+assessment serialization and hashes stay unchanged. Other evidence documents
+and the event envelope remain schema 1. Unsupported versions and fields fail
+closed.
 
 Definitions are immutable, criterion assessments form predecessor chains, and
 validation results reference durable invocation intents. Machine command-result

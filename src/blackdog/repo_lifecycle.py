@@ -17,6 +17,11 @@ from blackdog.contract import (
     managed_skill_relative_path,
 )
 from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
+from blackdog.guidance import (
+    guidance_bootstrap,
+    guidance_catalog,
+    rendered_guidance,
+)
 from blackdog.workflow_contract import (
     AGENT_WORKFLOW,
     AUTOMATIC_STALE_RECOVERY_GUIDANCE,
@@ -541,6 +546,7 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         "This section is managed by `blackdog repo install` and `blackdog repo refresh`.",
         "Keep repo-specific requirements outside this block.",
         "",
+        f"- {guidance_bootstrap(profile)}",
         "- Use the installed `blackdog` executable or the exact workspace executable returned by Blackdog; do not mutate control files by hand.",
         "- `blackdog.toml` is the machine-readable source of truth for handler setup and routed docs.",
         (
@@ -555,6 +561,7 @@ def render_repo_agents_contract(profile: RepoProfile) -> str:
         "- When `task begin` runs from a normal linked worktree, Blackdog treats that linked branch as the target branch and lands the task back there.",
         "- Blackdog does not require `.VE/`. Explicit project environment handlers may create one; virtual environments are unversioned and bound to one worktree path, so never copy them.",
         "- Before normal repo-skill implementation, create two mode-0600 UTF-8 temporary files outside the repo: `request_file` contains the exact triggering user request verbatim, and `execution_prompt_file` contains the composed goal, context, constraints, and done condition prompt. Set those shell variables to absolute paths and run the structured begin command below.",
+        "- Build `guidance_args` as a shell array of repeated `--guidance SELECTOR` pairs for the selected guides and repository refinements; select `engineering` and `evidence` for implementation plus relevant specializations. Build `execution_context_args` with only known `--host`, `--host-version`, `--model`, and `--reasoning-effort` values, or use an empty array when unknown. These are caller-declared context, not model selection controls.",
         f"- Normal repo-skill implementation uses `{AGENT_WORKFLOW.begin_command}`. `--actor` defaults to `codex`; the explicit value here makes ownership visible.",
         f"- {PROMPT_INPUT_DISPOSAL_GUIDANCE}",
         "- Before landing, set `completion_summary` to concise human-readable change statements: the first nonblank line becomes the Git subject and each later nonblank line is one major body item. Do not put Blackdog metadata in it. Build the `validation_args` shell array with at least one repeated `--validation` plus `NAME=passed|failed|skipped`; never submit placeholders or invented evidence.",
@@ -637,10 +644,11 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "workflow contract; do not duplicate it here. `blackdog.toml` owns handler setup, validation, "
         "and a document-routing catalog. Read only catalog entries relevant to the current task; do not "
         "load every routed document by default.\n\n"
+        f"{guidance_catalog()}\n\n"
         "## Workflow\n\n"
         f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `blackdog repo install --project-root .` when missing or `blackdog repo update --project-root .` followed by `blackdog repo refresh --project-root .` when already installed; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"
-        f"- `${skill_name} do <task-description>`: create the two mode-0600 UTF-8 temporary prompt files required by `AGENTS.md`; keep the exact triggering request in `request_file` and a concise goal, relevant context, constraints, and done condition in `execution_prompt_file`. Run `{AGENT_WORKFLOW.begin_command}` directly. {PROMPT_INPUT_DISPOSAL_GUIDANCE}\n"
+        f"- For ordinary requests (or `${skill_name} do <task-description>`), select guidance automatically. For implementation, create the two mode-0600 UTF-8 temporary prompt files and argument arrays required by `AGENTS.md`; keep the exact triggering request in `request_file` and a concise goal, relevant context, constraints, and done condition in `execution_prompt_file`. Run `{AGENT_WORKFLOW.begin_command}` directly. {PROMPT_INPUT_DISPOSAL_GUIDANCE}\n"
         "- Make implementation changes only in the returned task workspace.\n"
         f"- {NEXT_ACTION_AUTHORITY_GUIDANCE}\n"
         f"- Validate as required by `AGENTS.md`, then land with `{AGENT_WORKFLOW.land_command}` using real `NAME=passed|failed|skipped` evidence and a concise human-readable summary.\n"
@@ -653,7 +661,7 @@ def render_repo_skill_metadata(profile: RepoProfile) -> str:
         "interface:\n"
         f"  display_name: {_yaml_quote(f'{profile.project_name} Development')}\n"
         f"  short_description: {_yaml_quote('Repo-local development overlay')}\n"
-        f"  default_prompt: {_yaml_quote(f'Use ${skill_name} do <task-description> for repo work.')}\n"
+        f"  default_prompt: {_yaml_quote(f'Use ${skill_name} for repo work; select applicable guidance from the request and context.')}\n"
     )
 
 
@@ -661,7 +669,11 @@ def _prune_managed_skill_auxiliary_files(profile: RepoProfile) -> tuple[Path, ..
     skill_dir = _managed_skill_path(profile).parent
     if not skill_dir.is_dir():
         return ()
-    allowed = {_managed_skill_path(profile).resolve(), _managed_skill_metadata_path(profile).resolve()}
+    allowed = {
+        _managed_skill_path(profile).resolve(),
+        _managed_skill_metadata_path(profile).resolve(),
+        *((profile.paths.project_root / path).resolve() for path in rendered_guidance(profile)),
+    }
     removed: list[Path] = []
     for path in sorted((item for item in skill_dir.rglob("*") if item.is_file()), reverse=True):
         if path.resolve() in allowed:
@@ -681,20 +693,27 @@ def _prune_managed_skill_auxiliary_files(profile: RepoProfile) -> tuple[Path, ..
 def _write_repo_skill(profile: RepoProfile, *, overwrite: bool) -> RepoSkillWriteResult:
     skill_path = _managed_skill_path(profile)
     metadata_path = _managed_skill_metadata_path(profile)
-    if skill_path.exists() and not overwrite:
-        return RepoSkillWriteResult(skill_path=skill_path, metadata_path=metadata_path, changed=(), removed=())
     changed: list[Path] = []
-    rendered_skill = render_repo_skill(profile)
-    rendered_metadata = render_repo_skill_metadata(profile)
-    skill_path.parent.mkdir(parents=True, exist_ok=True)
-    if not skill_path.exists() or skill_path.read_text(encoding="utf-8") != rendered_skill:
-        skill_path.write_text(rendered_skill, encoding="utf-8")
-        changed.append(skill_path)
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    if not metadata_path.exists() or metadata_path.read_text(encoding="utf-8") != rendered_metadata:
-        metadata_path.write_text(rendered_metadata, encoding="utf-8")
-        changed.append(metadata_path)
-    removed = _prune_managed_skill_auxiliary_files(profile)
+    outputs = {
+        skill_path: render_repo_skill(profile),
+        metadata_path: render_repo_skill_metadata(profile),
+        **{
+            profile.paths.project_root / path: text
+            for path, text in rendered_guidance(profile).items()
+        },
+    }
+    root = profile.paths.project_root.resolve()
+    for path in outputs:
+        if not path.resolve().is_relative_to(root):
+            raise RepoLifecycleError(f"managed guidance path escapes the repository: {path}")
+    for path, text in outputs.items():
+        if path.exists() and not overwrite:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8")
+            changed.append(path)
+    removed = _prune_managed_skill_auxiliary_files(profile) if overwrite else ()
     return RepoSkillWriteResult(skill_path=skill_path, metadata_path=metadata_path, changed=tuple(changed), removed=removed)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import asdict
 import math
+from pathlib import PurePosixPath
 from typing import Any
 
 from blackdog.evidence import (
@@ -26,6 +27,10 @@ from blackdog_core.evidence import (
     EvidenceEvent,
     OutcomeDefinition,
     SetupMeasurement,
+    digest,
+    fields,
+    sha,
+    text,
 )
 from blackdog_core.profile import RepoProfile
 from blackdog_core.state import RuntimeState, TaskAttemptRecord, parse_iso
@@ -70,33 +75,192 @@ def _artifact_tree(
         return None
 
 
-def aggregate_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate_quality(
+    rows: list[dict[str, Any]], *, kind: str | None = None
+) -> dict[str, Any]:
     sources = ("caller_declared", "reviewer_asserted")
+    field = f"{kind}_assessment_coverage" if kind else "assessment_coverage"
     return {
+        "defined_criteria": sum(r[field]["defined_criteria"] for r in rows),
         "required_criteria": sum(
-            r["assessment_coverage"]["required_criteria"] for r in rows
+            r[field]["required_criteria"] for r in rows
         ),
         "current_assessed_required_criteria": sum(
-            r["assessment_coverage"]["current_assessed_required_criteria"] for r in rows
+            r[field]["current_assessed_required_criteria"] for r in rows
         ),
+        **{
+            name: sum(r[field][name] for r in rows)
+            for name in (
+                "missing_required_assessments",
+                "not_assessed_required_criteria",
+                "stale_required_assessments",
+                "unknown_required_assessments",
+                "current_not_met_required_criteria",
+            )
+        },
         "current_required_by_provenance": {
             source: sum(
-                r["assessment_coverage"]["current_required_by_provenance"][source]
+                r[field]["current_required_by_provenance"][source]
                 for r in rows
             )
             for source in sources
         },
         "recorded_assessments_by_provenance": {
             source: sum(
-                r["assessment_coverage"]["recorded_assessments_by_provenance"][source]
+                r[field]["recorded_assessments_by_provenance"][source]
                 for r in rows
             )
             for source in sources
         },
-        "outcome_provenance_counts": dict(
-            Counter(r["outcome_provenance"] for r in rows)
+        ("provenance_counts" if kind else "outcome_provenance_counts"): dict(
+            Counter(
+                r[f"{kind}_provenance" if kind else "criteria_provenance"]
+                for r in rows
+            )
         ),
         "reviewer_identity_authenticated": False,
+    }
+
+
+def _criterion_status(
+    criteria: list[dict[str, Any]], events: list[EvidenceEvent], *, empty: str
+) -> tuple[str, str, dict[str, Any]]:
+    required = [c for c in criteria if c["required"]]
+    current = [
+        c for c in required
+        if c["assessment"] is not None
+        and c["result"] != "not_assessed"
+        and c["artifact_applicability"] == "current"
+    ]
+    if not criteria:
+        result = empty
+    elif not required or len(current) != len(required):
+        result = "not_assessed"
+    else:
+        result = "not_met" if any(c["result"] == "not_met" for c in current) else "met"
+    provenance = Counter(c["assessment"]["provenance"] for c in current)
+    ids = {c["id"] for c in criteria}
+    recorded = Counter(
+        e.data["assessment"]["provenance"] for e in events
+        if e.kind == ASSESSMENT and e.data["assessment"]["criterion_id"] in ids
+    )
+    provenance_label = (
+        ("not_defined" if empty == "not_defined" else "incomplete") if not criteria
+        else "incomplete" if len(current) != len(required) or not required
+        else next(iter(provenance)) if len(provenance) == 1 else "mixed"
+    )
+    return result, provenance_label, {
+        "defined_criteria": len(criteria),
+        "required_criteria": len(required),
+        "current_assessed_required_criteria": len(current),
+        "missing_required_assessments": sum(c["assessment"] is None for c in required),
+        "not_assessed_required_criteria": sum(
+            c["assessment"] is not None and c["result"] == "not_assessed"
+            for c in required
+        ),
+        "stale_required_assessments": sum(
+            c["assessment"] is not None and c["artifact_applicability"] == "stale"
+            for c in required
+        ),
+        "unknown_required_assessments": sum(
+            c["assessment"] is not None and c["artifact_applicability"] == "unknown"
+            for c in required
+        ),
+        "current_not_met_required_criteria": sum(
+            c["result"] == "not_met" for c in current
+        ),
+        "current_required_by_provenance": {
+            source: provenance[source]
+            for source in ("caller_declared", "reviewer_asserted")
+        },
+        "recorded_assessments_by_provenance": {
+            source: recorded[source]
+            for source in ("caller_declared", "reviewer_asserted")
+        },
+    }
+
+
+def _attempt_context(attempt: TaskAttemptRecord) -> dict[str, Any]:
+    """Project declarations, never infer historical execution from this host."""
+    receipt = attempt.setup_receipt or {}
+    host = receipt.get("execution_context")
+    try:
+        fields(host, "schema_version source host host_version")
+        if (
+            type(host["schema_version"]) is not int
+            or host["schema_version"] != 1
+            or host["source"] != "caller_declared"
+        ):
+            raise EvidenceError("unsupported execution context")
+        text(host["host"], "host", limit=128)
+        if host["host_version"] is not None:
+            text(host["host_version"], "host_version", limit=128)
+        valid_host = True
+    except EvidenceError:
+        valid_host = False
+    guidance = receipt.get("guidance")
+    try:
+        fields(guidance, "schema_version selection_source documents")
+        if (
+            type(guidance["schema_version"]) is not int
+            or guidance["schema_version"] != 1
+            or guidance["selection_source"] != "host_declared"
+            or not isinstance(guidance["documents"], list)
+            or not 1 <= len(guidance["documents"]) <= 16
+        ):
+            raise EvidenceError("unsupported guidance context")
+        seen: set[PurePosixPath] = set()
+        for document in guidance["documents"]:
+            fields(document, "path sha256")
+            relative = PurePosixPath(text(document["path"], "guidance path"))
+            if relative.is_absolute() or ".." in relative.parts or relative == PurePosixPath("."):
+                raise EvidenceError("guidance path is not lexically contained")
+            if relative in seen:
+                raise EvidenceError("duplicate guidance path")
+            seen.add(relative)
+            sha(document["sha256"], "guidance document sha256")
+        valid_guidance = True
+    except EvidenceError:
+        valid_guidance = False
+    values = {
+        "model": attempt.model,
+        "reasoning_effort": attempt.reasoning_effort,
+        "host": host.get("host") if valid_host else None,
+        "host_version": host.get("host_version") if valid_host else None,
+        "guidance": guidance if valid_guidance else None,
+    }
+    missing = [key for key, value in values.items() if value is None]
+    return {
+        "attempt_id": attempt.attempt_id,
+        **values,
+        "model_source": "attempt_record_caller_declared",
+        "host_context_status": (
+            "recorded" if valid_host
+            else "not_recorded" if host is None else "invalid_or_unsupported"
+        ),
+        "guidance_status": (
+            "recorded" if valid_guidance
+            else "not_recorded" if guidance is None else "invalid_or_unsupported"
+        ),
+        "context_sha256": digest(values),
+        "missing_fields": missing,
+        "complete": not missing,
+        "compliance_attested": False,
+    }
+
+
+def aggregate_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    attempts = [a for row in rows for a in row["execution_context"]["attempts"]]
+    return {
+        "attempts": len(attempts),
+        "complete_attempts": sum(a["complete"] for a in attempts),
+        "missing_by_field": {
+            key: sum(key in a["missing_fields"] for a in attempts)
+            for key in ("model", "reasoning_effort", "host", "host_version", "guidance")
+        },
+        "source": "recorded_attempt_and_setup_receipt_declarations",
+        "provider_data_read": False,
+        "compliance_attested": False,
     }
 
 
@@ -203,9 +367,7 @@ def project_outcomes(
     for event in events:
         by_task[event.task_id].append(event)
     rows: list[dict[str, Any]] = []
-    cohorts: dict[
-        tuple[str, str, str | None, str | None, str | None], list[dict[str, Any]]
-    ] = defaultdict(list)
+    cohorts: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for task in state.tasks:
         if task_id is not None and task.task_id != task_id:
             continue
@@ -261,50 +423,33 @@ def project_outcomes(
                     "source_tree": event.data["source_tree"] if event else None,
                     "artifact_applicability": binding_status if event else "unknown",
                     "result": assessment.result if assessment else "not_assessed",
+                    "host_refs_authority": "caller_declared_unverified_locators",
+                    "host_refs_fetched": False,
                     "reviewer_identity_authenticated": False,
                 }
             )
         required = [c for c in criteria if c["required"]]
-        if not required or any(
-            c["assessment"] is None
-            or c["artifact_applicability"] != "current"
-            or c["result"] == "not_assessed"
-            for c in required
-        ):
-            outcome = "not_assessed"
-        elif any(c["result"] == "not_met" for c in required):
-            outcome = "not_met"
-        else:
-            outcome = "met"
-        current_required = [
-            c
-            for c in required
-            if c["assessment"] is not None
-            and c["result"] != "not_assessed"
-            and c["artifact_applicability"] == "current"
-        ]
-        provenance = Counter(c["assessment"]["provenance"] for c in current_required)
-        recorded_provenance = Counter(
-            e.data["assessment"]["provenance"]
-            for e in task_events
-            if e.kind == ASSESSMENT
+        criteria_result, criteria_provenance, assessment_coverage = _criterion_status(
+            criteria, task_events, empty="not_assessed"
         )
-        outcome_provenance = (
-            "incomplete"
-            if len(current_required) != len(required) or not required
-            else next(iter(provenance)) if len(provenance) == 1 else "mixed"
+        outcome, outcome_provenance, outcome_coverage = _criterion_status(
+            [c for c in criteria if c["kind"] == "outcome"],
+            task_events, empty="not_assessed",
         )
-        assessment_coverage = {
-            "required_criteria": len(required),
-            "current_assessed_required_criteria": len(current_required),
-            "current_required_by_provenance": {
-                source: provenance[source]
-                for source in ("caller_declared", "reviewer_asserted")
-            },
-            "recorded_assessments_by_provenance": {
-                source: recorded_provenance[source]
-                for source in ("caller_declared", "reviewer_asserted")
-            },
+        compliance, compliance_provenance, compliance_coverage = _criterion_status(
+            [c for c in criteria if c["kind"] == "compliance"],
+            task_events, empty="not_defined",
+        )
+        contexts = [_attempt_context(attempt) for attempt in task.attempts]
+        context_ids = sorted({context["context_sha256"] for context in contexts})
+        execution_context = {
+            "attempts": contexts,
+            "cohort_sha256": digest(context_ids),
+            "context_sha256": context_ids[0] if len(context_ids) == 1 else None,
+            "complete": bool(contexts) and all(c["complete"] for c in contexts),
+            "mixed": len(context_ids) > 1,
+            "source": "recorded_attempt_and_setup_receipt_declarations",
+            "compliance_attested": False,
         }
         intents = {e.event_id: e for e in task_events if e.kind == VALIDATION_INTENT}
         receipts = [e for e in task_events if e.kind == VALIDATION_RESULT]
@@ -407,7 +552,15 @@ def project_outcomes(
             "outcome": outcome,
             "outcome_authority": "caller_recorded_assessments",
             "outcome_provenance": outcome_provenance,
+            "compliance": compliance,
+            "compliance_provenance": compliance_provenance,
+            "compliance_authority": "caller_recorded_assessments",
+            "criteria_result": criteria_result,
+            "criteria_provenance": criteria_provenance,
             "assessment_coverage": assessment_coverage,
+            "outcome_assessment_coverage": outcome_coverage,
+            "compliance_assessment_coverage": compliance_coverage,
+            "execution_context": execution_context,
             "criteria": criteria,
             "required_criteria": len(required),
             "assessed_required_criteria": sum(
@@ -503,9 +656,10 @@ def project_outcomes(
                 command_sets[0] if len(command_sets) == 1 else None,
                 environment_ids[0] if len(environment_ids) == 1 else None,
                 environment_coverage[0] if len(environment_coverage) == 1 else None,
+                execution_context["cohort_sha256"],
             )
             if definition
-            else ("unknown", "unknown", None, None, None)
+            else ("unknown", "unknown", None, None, None, execution_context["cohort_sha256"])
         )
         cohorts[key].append(row)
     cohort_rows = []
@@ -515,13 +669,19 @@ def project_outcomes(
         command_set,
         environment_id,
         coverage,
+        context_sha,
     ), members in sorted(cohorts.items(), key=lambda pair: str(pair[0])):
         eligible = [
-            r for r in members if r["task_status"] == "done" and r["outcome"] == "met"
+            r for r in members
+            if r["task_status"] == "done"
+            and r["outcome"] == "met"
+            and r["criteria_result"] == "met"
         ]
         status_outcome = defaultdict(list)
         for member in members:
-            status_outcome[(member["task_status"], member["outcome"])].append(member)
+            status_outcome[
+                (member["task_status"], member["outcome"], member["compliance"])
+            ].append(member)
         cohort_rows.append(
             {
                 "task_class": task_class,
@@ -529,19 +689,40 @@ def project_outcomes(
                 "command_set_sha256": command_set,
                 "environment_sha256": environment_id,
                 "environment_coverage": coverage,
+                "execution_context_cohort_sha256": context_sha,
+                "execution_contexts": [
+                    {key: value for key, value in context.items() if key != "attempt_id"}
+                    for _, context in sorted({
+                        context["context_sha256"]: context
+                        for member in members
+                        for context in member["execution_context"]["attempts"]
+                    }.items())
+                ],
                 "comparable": definition_sha != "unknown"
                 and command_set is not None
                 and environment_id is not None
-                and coverage is not None,
+                and coverage is not None
+                and all(
+                    m["execution_context"]["complete"]
+                    and not m["execution_context"]["mixed"]
+                    for m in members
+                ),
                 "task_count": len(members),
                 "attempt_count": sum(r["attempts"] for r in members),
                 "outcomes": dict(Counter(r["outcome"] for r in members)),
+                "compliance": dict(Counter(r["compliance"] for r in members)),
                 "assessment_coverage": aggregate_quality(members),
+                "outcome_assessment_coverage": aggregate_quality(members, kind="outcome"),
+                "compliance_assessment_coverage": aggregate_quality(members, kind="compliance"),
+                "execution_context_coverage": aggregate_context(members),
                 "validation_coverage": aggregate_validation(members),
                 "observations": aggregate_observations(members),
                 "all_terminal_completion_elapsed": completion_distribution(members),
                 "criteria_met_completion": {
-                    "eligible_rule": "task_status=done and outcome=met",
+                    "eligible_rule": (
+                        "task_status=done and outcome=met and all required "
+                        "outcome/compliance criteria currently met"
+                    ),
                     "eligible_tasks": len(eligible),
                     "cohort_tasks": len(members),
                     "outcome_authority": "caller_recorded_assessments",
@@ -551,10 +732,12 @@ def project_outcomes(
                     {
                         "task_status": status,
                         "outcome": outcome,
+                        "compliance": compliance,
                         "task_count": len(selected),
                         "completion_elapsed": completion_distribution(selected),
                     }
-                    for (status, outcome), selected in sorted(status_outcome.items())
+                    for (status, outcome, compliance), selected
+                    in sorted(status_outcome.items())
                 ],
             }
         )
@@ -564,7 +747,11 @@ def project_outcomes(
         "task_count": len(rows),
         "definitions_missing": sum(r["definition"] is None for r in rows),
         "outcomes": dict(Counter(r["outcome"] for r in rows)),
+        "compliance": dict(Counter(r["compliance"] for r in rows)),
         "assessment_coverage": aggregate_quality(rows),
+        "outcome_assessment_coverage": aggregate_quality(rows, kind="outcome"),
+        "compliance_assessment_coverage": aggregate_quality(rows, kind="compliance"),
+        "execution_context_coverage": aggregate_context(rows),
         "validation_coverage": aggregate_validation(rows),
         "observations": aggregate_observations(rows),
         "tasks": rows if include_tasks else [],

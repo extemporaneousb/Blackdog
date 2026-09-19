@@ -2,8 +2,9 @@
 
 Blackdog makes work cheap to start, safe to finish, and measurable by its
 recorded outcome. Tasks own intent, attempts own execution and integration,
-and typed evidence describes what was assessed and measured. Evidence cannot
-change lifecycle authority.
+and typed evidence describes what was assessed and measured. Product outcomes
+and workflow compliance remain distinct. Evidence cannot change lifecycle
+authority or prove compliance merely because guidance was installed.
 
 ## Define and assess an outcome
 
@@ -17,11 +18,12 @@ blackdog task outcome --task TASK_ID --attempt ATTEMPT_ID \
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task_class": "parser-correction",
   "objective": "Correct parser behavior against the agreed fixtures",
   "criteria": [
-    {"id": "fixtures", "description": "All agreed parser fixtures pass", "required": true}
+    {"id": "fixtures", "description": "All agreed parser fixtures pass", "required": true, "kind": "outcome"},
+    {"id": "scope", "description": "Changes preserve the selected parser scope and contracts", "required": true, "kind": "compliance"}
   ]
 }
 ```
@@ -32,6 +34,14 @@ criterion and one to 64 unique criterion IDs. The returned
 no-op; changing the definition is refused. Schema versions describe record
 formats and do not provide a definition revision mechanism. A changed goal
 requires a new task.
+
+Schema 2 requires every criterion to declare `kind: outcome|compliance`.
+`outcome` describes the requested product result; `compliance` describes an
+applicable work constraint or process obligation. Define concrete, assessable
+criteria rather than counting guide names or restatements. Existing schema-1
+definitions remain accepted with outcome-only semantics; their stored bytes and
+SHA-256 identities do not change. Definition and assessment schema versions are
+independent.
 
 Run the configured commands in the recorded task worktree:
 
@@ -80,7 +90,7 @@ blackdog task outcome --task TASK_ID --attempt ATTEMPT_ID \
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "assessment_id": "review-1",
   "definition_sha256": "DEFINITION_SHA256",
   "criterion_id": "fixtures",
@@ -89,11 +99,15 @@ blackdog task outcome --task TASK_ID --attempt ATTEMPT_ID \
   "evaluator_kind": "human",
   "provenance": "reviewer_asserted",
   "evidence_refs": ["VALIDATION_RESULT_EVENT_ID"],
-  "supersedes": null
+  "supersedes": null,
+  "rationale": "The agreed fixtures passed on the assessed source tree.",
+  "host_refs": ["host-turn:review-1"]
 }
 ```
 
 Use actual hashes and event identities in place of the example placeholders.
+Record an assessment for each criterion being evaluated; this example does not
+assess the separate scope criterion.
 Results are `met`, `not_met`, or `not_assessed`. Evaluator kinds are `agent`,
 `human`, or `external`; provenance is `caller_declared` or `reviewer_asserted`.
 The recording actor must own the selected attempt. A reviewer assertion is
@@ -101,8 +115,17 @@ caller-recorded evidence: **Blackdog does not authenticate the evaluator's
 identity or prove that a human performed the review.** Caller input cannot
 select machine validation provenance.
 
-References are optional for a declared assessment. Each supplied reference
-must resolve to a completed machine validation from the same task, attempt and
+Schema-2 assessments add required `rationale` and `host_refs` fields to the
+schema-1 fields. Rationale is nonblank, trimmed, single-line text of at most
+4,096 characters. Host references are up to 16 unique, nonblank, trimmed,
+single-line locators of at most 512 characters each; an empty list is valid.
+Use them to locate relevant host-owned review or execution evidence. Blackdog
+does not fetch, authenticate or verify those locators. They remain declarations,
+even when rationale and references make an assessment easier to audit.
+Schema-1 assessments remain supported with unchanged serialization and identity.
+
+`evidence_refs` is a separate, optional list. Each supplied reference must resolve
+to a completed machine validation from the same task, attempt and
 source tree, with unchanged observed inputs during execution. A `met`
 assessment cannot cite failed commands. An assertion without references remains
 an assertion. It is never promoted to machine-proven acceptance.
@@ -121,6 +144,16 @@ require current required assessments for the latest attempt and final source
 tree before reporting the caller-assessed outcome as `met`. Missing criteria,
 an old attempt, changed final content, or an unavailable final source identity
 produce `not_assessed`.
+
+Reports expose `outcome` and `compliance` independently, with separate
+`outcome_provenance`, `compliance_provenance`, `outcome_assessment_coverage` and
+`compliance_assessment_coverage`. The existing `assessment_coverage` includes
+both kinds. Coverage retains required/current/missing/not-assessed/stale/unknown
+counts and assertion provenance. If no compliance criteria exist, compliance
+is `not_defined`; if required assessments are missing or inapplicable, it is
+`not_assessed`. Neither status means compliance passed. A kind with only
+optional criteria cannot establish a `met` result. Product success can coexist
+with a failed or unassessed compliance result, and the report preserves both.
 
 **Outcome and validation receipts do not authorize landing.** This milestone
 adds no receipt gate, validation cache, or new repository policy.
@@ -171,11 +204,15 @@ retains its existing provider reporting. Outcome metrics themselves never
 mine conversations or use optional lifecycle observability as completion or
 retry evidence.
 
-Cohorts match declared task class, full definition SHA-256 and one validation
-command-set identity, environment fingerprint, and environment coverage.
-Multiple command sets, mixed or unknown environment identities, or missing definitions are marked
-non-comparable. The full definition includes objective text: task-specific
-objectives deliberately split cohorts, often into single samples. Reusable
+Cohorts match declared task class, full definition SHA-256, one validation
+command-set identity, environment fingerprint/coverage and execution-context
+identities across all attempts. Context includes the recorded model and
+reasoning effort, caller-declared host/version, and selected guidance document
+paths and hashes. Changed contexts split cohorts. Multiple command sets, mixed
+or unknown environment identities, missing definitions, or mixed/incomplete
+execution contexts are marked non-comparable. The full definition includes
+objective text: task-specific objectives deliberately split cohorts, often into
+single samples. Reusable
 definitions can share fingerprints; a shared class alone does not establish
 comparability. These identities establish comparable recorded inputs, not
 randomized experimental equivalence; hardware/load and unobserved dependencies
@@ -184,6 +221,14 @@ counts, missingness, median, and nearest-rank p95. The `small_sample` flag
 identifies fewer than 20 observations; p95 for small samples is largely a
 maximum and does not establish tail behavior. No significance or
 performance-improvement claim is derived automatically.
+
+Per-task `execution_context.attempts` exposes these recorded values,
+`context_sha256`, `missing_fields` and `complete`. `execution_context_coverage`
+reports missingness by field. Unknown model/host/guidance values are not filled
+from the reporting host or provider history. These declarations establish
+comparison inputs, not observed instruction adherence; context reports retain
+`compliance_attested=false`. See [workflow guidance](WORKFLOW_GUIDANCE.md) for
+selection, replay and reviewed evaluation of guidance changes.
 
 Compact aggregates and cohorts retain required-criterion assessment coverage
 by provenance, historical assertion counts, and outcome provenance counts.
@@ -203,9 +248,11 @@ reruns validation commands nor writes a temporary Git index. Historical success
 does not establish present applicability or landing authorization.
 
 Completion distributions separate task status and assessed outcome. The
-`criteria_met_completion` population requires both `task_status=done` and
-`outcome=met`, with eligible and total cohort counts. A quick canceled or
-unassessed task cannot shorten that distribution. The separately named
+`criteria_met_completion` population requires `task_status=done`, `outcome=met`
+and current `met` assessments for every required outcome/compliance criterion,
+with eligible and total cohort counts. This preserves schema-1 eligibility and
+includes required compliance for schema 2. A quick canceled or unassessed task
+cannot shorten that distribution. The separately named
 `all_terminal_completion_elapsed` is descriptive of all terminal tasks.
 
 Timing distinctions:
@@ -233,8 +280,9 @@ corrections retain their provenance independently from execution and landing.
 ## Storage and compatibility
 
 Runtime remains `blackdog.runtime/v4`. Existing tasks, attempts and event bytes
-are neither relabeled nor migrated. New strict schema-1 `task.evidence.*`
-records share `events.jsonl`; they do not create a second lifecycle store.
+are neither relabeled nor migrated. Strict schema-1 `task.evidence.*` envelopes
+share `events.jsonl`; definition and assessment documents accept schema 1 or 2.
+They do not create a second lifecycle store.
 History without definitions, assessments or measurements remains explicitly
 missing. Existing `{name,status}` validation rows remain caller declarations.
 

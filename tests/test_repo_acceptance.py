@@ -307,7 +307,7 @@ other_repo_install_mode = "launcher-shim"
         self.assertIn("a concise goal, relevant context, constraints, and done condition", skill_text)
         self.assertIn("`AGENTS.md` owns the detailed workflow contract", skill_text)
         self.assertNotIn("Docs To Review", skill_text)
-        self.assertLessEqual(len(skill_text.splitlines()), 18)
+        self.assertLessEqual(len(skill_text.splitlines()), 26)
         self.assertNotIn("docs/PRODUCT_SPEC.md", skill_text)
         self.assertNotIn("docs/TARGET_MODEL.md", skill_text)
 

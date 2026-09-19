@@ -116,16 +116,26 @@ class Criterion:
     id: str
     description: str
     required: bool
+    kind: str = "outcome"
 
     @classmethod
-    def parse(cls, value: Any) -> Criterion:
-        v = fields(value, "id description required")
+    def parse(cls, value: Any, *, schema_version: int = 1) -> Criterion:
+        v = fields(
+            value,
+            "id description required kind"
+            if schema_version == 2 else "id description required",
+        )
         if type(v["required"]) is not bool:
             raise EvidenceError("criterion required must be boolean")
         return cls(
             id=token(v["id"], "criterion id"),
             description=text(v["description"], "description"),
             required=v["required"],
+            kind=(
+                choice(v["kind"], "criterion kind", {"outcome", "compliance"})
+                if schema_version == 2
+                else "outcome"
+            ),
         )
 
 
@@ -139,6 +149,11 @@ class OutcomeDefinition:
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["criteria"] = [asdict(c) for c in self.criteria]
+        # Version 1 identities are durable event references. Do not add even
+        # a default kind to their serialized representation or content hash.
+        if self.schema_version == 1:
+            for criterion in result["criteria"]:
+                criterion.pop("kind")
         return result
 
     @property
@@ -148,11 +163,15 @@ class OutcomeDefinition:
     @classmethod
     def parse(cls, value: Any) -> OutcomeDefinition:
         v = fields(value, "schema_version task_class objective criteria")
-        version(v["schema_version"])
+        schema_version = v["schema_version"]
+        if type(schema_version) is not int or schema_version not in {1, 2}:
+            raise EvidenceError("unsupported outcome definition schema version")
         rows = v["criteria"]
         if not isinstance(rows, list) or not 1 <= len(rows) <= 64:
             raise EvidenceError("definition requires between one and 64 criteria")
-        criteria = tuple(Criterion.parse(row) for row in rows)
+        criteria = tuple(
+            Criterion.parse(row, schema_version=schema_version) for row in rows
+        )
         if len({c.id for c in criteria}) != len(criteria) or not any(
             c.required for c in criteria
         ):
@@ -160,7 +179,7 @@ class OutcomeDefinition:
                 "criterion ids must be unique with at least one required criterion"
             )
         return cls(
-            schema_version=1,
+            schema_version=schema_version,
             task_class=token(v["task_class"], "task_class"),
             objective=text(v["objective"], "objective"),
             criteria=criteria,
@@ -179,20 +198,32 @@ class Assessment:
     provenance: str
     evidence_refs: tuple[str, ...]
     supersedes: str | None
+    rationale: str | None = None
+    host_refs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["evidence_refs"] = list(self.evidence_refs)
+        if self.schema_version == 1:
+            result.pop("rationale")
+            result.pop("host_refs")
+        else:
+            result["host_refs"] = list(self.host_refs)
         return result
 
     @classmethod
     def parse(cls, value: Any) -> Assessment:
+        schema_version = (
+            value.get("schema_version") if isinstance(value, Mapping) else None
+        )
+        if type(schema_version) is not int or schema_version not in {1, 2}:
+            raise EvidenceError("unsupported assessment schema version")
         v = fields(
             value,
             "schema_version assessment_id definition_sha256 criterion_id result "
-            "evaluator evaluator_kind provenance evidence_refs supersedes",
+            "evaluator evaluator_kind provenance evidence_refs supersedes"
+            + (" rationale host_refs" if schema_version == 2 else ""),
         )
-        version(v["schema_version"])
         refs = v["evidence_refs"]
         if (
             not isinstance(refs, list)
@@ -202,8 +233,15 @@ class Assessment:
             raise EvidenceError(
                 "evidence_refs must be a bounded list of unique event identities"
             )
+        host_refs = v["host_refs"] if schema_version == 2 else []
+        if (
+            not isinstance(host_refs, list)
+            or len(host_refs) > 16
+            or len(set(map(str, host_refs))) != len(host_refs)
+        ):
+            raise EvidenceError("host_refs must be a bounded list of unique locators")
         return cls(
-            schema_version=1,
+            schema_version=schema_version,
             assessment_id=token(v["assessment_id"], "assessment_id"),
             definition_sha256=sha(v["definition_sha256"], "definition_sha256"),
             criterion_id=token(v["criterion_id"], "criterion_id"),
@@ -221,6 +259,11 @@ class Assessment:
                 if v["supersedes"] is not None
                 else None
             ),
+            rationale=(
+                text(v["rationale"], "rationale", limit=4096)
+                if schema_version == 2 else None
+            ),
+            host_refs=tuple(text(ref, "host reference", limit=512) for ref in host_refs),
         )
 
 

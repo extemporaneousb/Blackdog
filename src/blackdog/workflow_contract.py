@@ -183,7 +183,8 @@ AGENT_WORKFLOW = AgentWorkflow(
     begin_command=(
         "blackdog task begin --project-root . --actor codex "
         "--execution-prompt-file \"$execution_prompt_file\" --prompt-mode skill "
-        "--request-file \"$request_file\" --json"
+        "--request-file \"$request_file\" \"${guidance_args[@]}\" "
+        "\"${execution_context_args[@]}\" --json"
     ),
     land_command=(
         'blackdog task land --project-root . --summary "$completion_summary" '
