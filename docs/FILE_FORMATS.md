@@ -554,7 +554,14 @@ current-format state.
 schema 1 when every task is terminal and all claims and retained worktrees are
 absent. It preserves completed task/attempt evidence with deterministic IDs,
 flattens legacy session-capture metadata, and validates existing content-addressed
-prompt artifacts using the normal schema-4 validator. It never invents completion
+prompt artifacts using the normal schema-4 validator. Legacy inline request and
+execution prompts are checked against their recorded hashes and converted to
+mode-0600 content-addressed replay files without changing their text or provenance.
+Preview validates planned artifacts without publishing them. Apply archives the
+original inline records and journals the conversion before publishing replay files,
+then validates the complete target before replacing active state. Interrupted prompt
+publication resumes from the archived originals; conflicting files are not replaced.
+It never invents completion
 or takes over an active claim. Other schemas and unfinished work fail closed.
 
 The default preview performs no target writes and returns counts, a source digest,
@@ -566,8 +573,9 @@ archived bytes, publication hashes, mappings, and allowed intermediate file stat
 before completing. Unexpected changes stop recovery without overwriting them.
 Original event IDs remain only in the archived ledger; the current ledger begins
 with one migration event. The old planning file is removed only after its archived
-copy and the new runtime are durable. Prompts and historical sidecars remain
-untouched. A completed retry is a no-op.
+copy and the new runtime are durable. Existing prompt files and historical sidecars
+remain untouched; only missing replay files for verified inline prompts are added.
+A completed retry is a no-op.
 
 ## Typed outcome and compliance evidence
 

@@ -6,6 +6,7 @@ only; original bytes and identity mappings remain in a private migration archive
 from __future__ import annotations
 
 from contextlib import ExitStack
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -15,10 +16,14 @@ import re
 import subprocess
 from typing import Any
 
+from blackdog.prompt_artifacts import (
+    PromptArtifactError, _validated_receipt_bytes, persist_prompt_receipts,
+    prompt_artifact_relative_path, verify_prompt_artifact,
+)
 from blackdog.runtime_distribution import migration_executable
 from blackdog_core.profile import load_profile
 from blackdog_core.state import (
-    JsonRuntimeStore, StoreError, atomic_write_text, exclusive_file_lock,
+    JsonRuntimeStore, PromptReceiptRecord, StoreError, atomic_write_text, exclusive_file_lock,
     runtime_state_from_payload,
 )
 
@@ -74,7 +79,44 @@ def _quiescent_git(root: Path) -> None:
         raise StoreError("Migration requires no linked worktrees; preserve and finish retained work first")
 
 
-def _convert(raw: dict[str, bytes], control: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def _convert_inline_prompts(
+    attempt: dict[str, Any], control: Path, prompts: dict[str, PromptReceiptRecord],
+) -> None:
+    for field in ("prompt_receipt", "user_prompt_receipt"):
+        original = attempt.get(field)
+        if not isinstance(original, dict) or "text" not in original:
+            continue
+        receipt = dict(original)
+        text = receipt.pop("text")
+        attempt[field] = receipt
+        if text is None:
+            continue
+        if not isinstance(text, str):
+            raise StoreError("Legacy prompt text must be a string")
+        record = PromptReceiptRecord(
+            text=text, prompt_hash=receipt.get("prompt_hash"),
+            recorded_at=receipt.get("recorded_at"), source=receipt.get("source"),
+            mode=receipt.get("mode"), replay_artifact_path=receipt.get("replay_artifact_path"),
+        )
+        try:
+            _validated_receipt_bytes(record)
+            relative = prompt_artifact_relative_path(record.prompt_hash)
+            if record.replay_artifact_path not in (None, relative):
+                raise StoreError("Legacy prompt artifact path does not match its hash")
+            artifact = control / relative
+            if any(parent.is_symlink() for parent in (artifact.parent, artifact.parent.parent)):
+                raise StoreError("Legacy prompt artifact directories must not be symbolic links")
+            if record.replay_artifact_path is not None or artifact.exists() or artifact.is_symlink():
+                verify_prompt_artifact(control, prompt_hash=record.prompt_hash, replay_artifact_path=relative)
+        except PromptArtifactError as exc:
+            raise StoreError(f"Invalid legacy prompt receipt: {exc}") from exc
+        receipt["replay_artifact_path"] = relative
+        prompts[relative] = record
+
+
+def _convert(
+    raw: dict[str, bytes], control: Path,
+) -> tuple[dict[str, Any], list[dict[str, str]], tuple[PromptReceiptRecord, ...]]:
     runtime, planning = (_parse(raw[name]) for name in _FILES[:2])
     if (runtime.get("schema_version"), runtime.get("store_version")) != (3, "blackdog.runtime/vnext3"):
         raise StoreError("This migration supports only runtime schema 3")
@@ -85,6 +127,7 @@ def _convert(raw: dict[str, bytes], control: Path) -> tuple[dict[str, Any], list
     if groups.keys() != plans.keys():
         raise StoreError("Legacy planning/runtime group identities disagree")
     tasks, mappings = [], []
+    prompts: dict[str, PromptReceiptRecord] = {}
     for group_id, group in groups.items():
         if group.get("workset_claim") is not None or group.get("task_claims") != []:
             raise StoreError("Legacy claims must be released by their owner before migration")
@@ -109,6 +152,7 @@ def _convert(raw: dict[str, bytes], control: Path) -> tuple[dict[str, Any], list
                 if path and (Path(path).exists() or Path(path).is_symlink()):
                     raise StoreError("A retained attempt workspace prevents migration; preserve and finish its recovery first")
                 item = dict(attempt)
+                _convert_inline_prompts(item, control, prompts)
                 item.pop("task_id")
                 item["attempt_id"] = "attempt-" + _hash(_json([group_id, old_attempt_id]).encode())[:32]
                 if item.get("codex_session") is not None:
@@ -127,8 +171,20 @@ def _convert(raw: dict[str, bytes], control: Path) -> tuple[dict[str, Any], list
             tasks.append(item)
             mappings.append({"legacy_group": group_id, "legacy_task": old_id, "task_id": task_id})
     payload = {"schema_version": 4, "store_version": "blackdog.runtime/v4", "tasks": tasks}
-    runtime_state_from_payload(payload, source=control / "runtime.json")
-    return payload, mappings
+    # New artifacts are not published during preview. Their exact bytes/hash and
+    # destination were checked above; validate every other current-schema field
+    # and all existing artifact references now, then the full target after apply
+    # publishes the planned artifacts under the migration journal.
+    validation_payload = deepcopy(payload)
+    for task in validation_payload["tasks"]:
+        for attempt in task["attempts"]:
+            for field in ("prompt_receipt", "user_prompt_receipt"):
+                receipt = attempt.get(field)
+                relative = receipt.get("replay_artifact_path") if isinstance(receipt, dict) else None
+                if isinstance(relative, str) and relative in prompts and not (control / relative).exists():
+                    receipt["replay_artifact_path"] = None
+    runtime_state_from_payload(validation_payload, source=control / "runtime.json")
+    return payload, mappings, tuple(prompts.values())
 
 
 def _archive_write(path: Path, raw: bytes) -> None:
@@ -198,7 +254,7 @@ def migrate_store(root: Path, *, apply: bool = False, expected_digest: str | Non
             raise StoreError("Migration archive directories must not be symbolic links")
         if {name: _hash(value) for name, value in raw.items()} != manifest or _hash(_json(manifest).encode()) != digest:
             raise StoreError("Migration archive digest mismatch")
-        payload, mappings = _convert(raw, control)
+        payload, mappings, prompts = _convert(raw, control)
         target = _json(payload).encode()
         event = _json({
             "event_id": "store-migration-" + digest, "type": "store_migrated", "actor": "migration",
@@ -238,6 +294,8 @@ def migrate_store(root: Path, *, apply: bool = False, expected_digest: str | Non
                 "source_digest": digest, "events_sha256": _hash(event_bytes),
                 "runtime_sha256": _hash(target),
             }))
+        persist_prompt_receipts(control, prompts)
+        runtime_state_from_payload(payload, source=profile.paths.runtime_file)
         atomic_write_text(profile.paths.events_file, event)
         atomic_write_text(profile.paths.runtime_file, target.decode())
         planning_path = control / "planning.json"

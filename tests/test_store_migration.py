@@ -115,6 +115,136 @@ class StoreMigrationTests(CoreAuditTestCase):
         artifact.write_text('synthetic prompt')
         self.assertEqual(self.preview()['task_count'], 1)
 
+    def inline_prompt(self, field='prompt_receipt', text='Synthetic legacy prompt'):
+        receipt = {
+            'text': text, 'mode': 'raw' if field == 'user_prompt_receipt' else 'skill',
+            'prompt_hash': hashlib.sha256(text.encode()).hexdigest(),
+            'recorded_at': '2026-01-01T00:00:00Z',
+            'source': 'historical-request.txt', 'replay_artifact_path': None,
+        }
+        self.runtime['worksets'][0]['attempts'][0][field] = receipt
+        self.write_legacy()
+        return receipt
+
+    def test_inline_prompts_become_replay_artifacts_without_losing_originals(self):
+        execution = self.inline_prompt(text='Synthetic execution\nSecond line: café')
+        request = self.inline_prompt('user_prompt_receipt', 'Synthetic request')
+        before = self.fingerprint()
+        preview = self.preview()
+        self.assertEqual(self.fingerprint(), before)
+        result = self.apply(preview)
+        archive = Path(result['archive_path'])
+        for name, raw in before.items():
+            self.assertEqual((archive / name).read_bytes(), raw)
+        state = JsonRuntimeStore().load(self.control / 'runtime.json')
+        attempt = state.tasks[0].attempts[0]
+        for old, new in [(execution, attempt.prompt_receipt), (request, attempt.user_prompt_receipt)]:
+            self.assertIsNone(new.text)
+            self.assertEqual(new.prompt_hash, old['prompt_hash'])
+            self.assertEqual(new.source, old['source'])
+            self.assertEqual(new.mode, old['mode'])
+            self.assertEqual(new.recorded_at, old['recorded_at'])
+            artifact = self.control / new.replay_artifact_path
+            self.assertEqual(artifact.read_bytes(), old['text'].encode())
+            self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(attempt.codex_session.thread_id, 'synthetic-thread')
+        mappings = json.loads((archive / 'identity-map.json').read_text())
+        self.assertTrue(any(row.get('legacy_attempt') == 'old-attempt' and row['attempt_id'] == attempt.attempt_id for row in mappings))
+        after = self.fingerprint()
+        self.assertEqual(self.apply(preview)['status'], 'current')
+        self.assertEqual(self.fingerprint(), after)
+
+    def test_inline_prompt_rejects_corruption_unknown_fields_and_unsafe_paths(self):
+        receipt = self.inline_prompt()
+        variants = [
+            dict(receipt, text='changed'), dict(receipt, text=123),
+            dict(receipt, unexpected='not a supported field'),
+            dict(receipt, replay_artifact_path='../outside.txt'),
+        ]
+        for invalid in variants:
+            with self.subTest(fields=sorted(invalid)):
+                self.runtime['worksets'][0]['attempts'][0]['prompt_receipt'] = invalid
+                self.write_legacy()
+                before = self.fingerprint()
+                with self.assertRaises(StoreError): self.preview()
+                self.assertEqual(self.fingerprint(), before)
+
+    def test_inline_prompt_conflicts_and_symlinks_are_never_replaced(self):
+        receipt = self.inline_prompt()
+        artifact = self.control / 'prompts' / 'sha256' / (receipt['prompt_hash'] + '.txt')
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text('conflicting bytes')
+        artifact.chmod(0o600)
+        before = self.fingerprint()
+        with self.assertRaisesRegex(StoreError, 'hash'): self.preview()
+        self.assertEqual(self.fingerprint(), before)
+        artifact.unlink()
+        outside = self.root / 'outside.txt'
+        outside.write_text(receipt['text'])
+        outside.chmod(0o600)
+        artifact.symlink_to(outside)
+        with self.assertRaises(StoreError): self.preview()
+        self.assertTrue(artifact.is_symlink())
+        artifact.unlink()
+        artifact.parent.rmdir()
+        external = self.root / 'external-prompts'
+        external.mkdir()
+        artifact.parent.symlink_to(external, target_is_directory=True)
+        with self.assertRaisesRegex(StoreError, 'symbolic'): self.preview()
+        self.assertEqual(list(external.iterdir()), [])
+
+    def test_inline_prompt_publication_interruption_resumes_from_archived_text(self):
+        from blackdog.prompt_artifacts import persist_prompt_receipts
+        self.inline_prompt()
+        self.inline_prompt('user_prompt_receipt', 'Distinct request')
+        preview = self.preview()
+        def interrupt(control, receipts):
+            persist_prompt_receipts(control, receipts[:1])
+            raise OSError('simulated prompt publication interruption')
+        with patch('blackdog.store_migration.persist_prompt_receipts', side_effect=interrupt):
+            with self.assertRaises(OSError): self.apply(preview)
+        self.assertTrue((self.control / 'migration-pending.json').exists())
+        self.assertEqual(len(list((self.control / 'prompts').rglob('*.txt'))), 1)
+        with self.assertRaisesRegex(StoreError, 'pending'):
+            JsonRuntimeStore().load(self.control / 'runtime.json')
+        self.assertEqual(self.preview()['status'], 'pending')
+        self.assertEqual(self.apply(preview)['status'], 'applied')
+        self.assertEqual(len(list((self.control / 'prompts').rglob('*.txt'))), 2)
+        JsonRuntimeStore().load(self.control / 'runtime.json')
+
+    def test_stale_inline_prompt_preview_does_not_publish_artifacts(self):
+        self.inline_prompt()
+        preview = self.preview()
+        self.inline_prompt(text='New source prompt')
+        with self.assertRaisesRegex(StoreError, 'expected-digest'): self.apply(preview)
+        self.assertFalse((self.control / 'prompts').exists())
+
+    def test_packaged_inline_prompt_migration_reuses_verified_artifact(self):
+        from blackdog.runtime_distribution import write_release
+        from tests.core_audit_support import REPO_ROOT
+        from tests.process_support import run_cli
+
+        receipt = self.inline_prompt()
+        self.inline_prompt('user_prompt_receipt', receipt['text'])
+        artifact = self.control / 'prompts' / 'sha256' / (receipt['prompt_hash'] + '.txt')
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text(receipt['text'])
+        artifact.chmod(0o600)
+        original_stat = artifact.stat()
+        release = self.root / 'migration release.pyz'
+        write_release(release, source_root=REPO_ROOT)
+        before = self.fingerprint()
+        preview = run_cli([str(release), 'repo', 'migrate', '--project-root', str(self.root), '--json'])
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertEqual(self.fingerprint(), before)
+        applied = run_cli(json.loads(preview.stdout)['migration']['next_action']['argv'])
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        state = JsonRuntimeStore().load(self.control / 'runtime.json')
+        attempt = state.tasks[0].attempts[0]
+        self.assertEqual(attempt.prompt_receipt.replay_artifact_path, attempt.user_prompt_receipt.replay_artifact_path)
+        self.assertEqual(artifact.stat().st_ino, original_stat.st_ino)
+        self.assertEqual(artifact.stat().st_mtime_ns, original_stat.st_mtime_ns)
+
     def test_interruption_after_each_publication_step_resumes(self):
         from blackdog_core.state import atomic_write_text
         for fail_name in ['events.jsonl', 'runtime.json']:
