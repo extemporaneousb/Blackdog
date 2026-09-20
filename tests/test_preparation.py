@@ -33,7 +33,7 @@ def tool(name: str, executable: str) -> dict[str, object]:
     return {"name": name, "executable": executable, "version_args": ["--version"], "version": version}
 
 
-def recipe_text(*, setup: list[list[str]], checks: list[list[str]], tracked: list[str], tools: list[dict[str, object]] | None = None, inputs: list[dict[str, object]] | None = None, timeout: int = 60) -> str:
+def recipe_text(*, setup: list[list[str]], checks: list[list[str]], tracked: list[str], tools: list[dict[str, object]] | None = None, inputs: list[dict[str, object]] | None = None, timeout: int = 60, shared: dict[str, object] | None = None) -> str:
     lines = [
         '[[handlers]]', 'id = "prepare"', 'kind = "worktree-preparation"', 'schema_version = 1',
         'revision = "fixture-v1"', f'timeout_seconds = {timeout}',
@@ -47,6 +47,11 @@ def recipe_text(*, setup: list[list[str]], checks: list[list[str]], tracked: lis
         for row in values:
             lines.append(f"[[handlers.{key}]]")
             lines.extend(f"{name} = {json.dumps(value)}" for name, value in row.items())
+    if shared is not None:
+        lines.extend(['[handlers.shared_artifact]', 'destination = ' + json.dumps(shared['destination'])])
+        for key in ('probes', 'build', 'checks'):
+            for index, argv in enumerate(shared[key]):
+                lines.extend([f'[[handlers.shared_artifact.{key}]]', f'name = "{key}-{index}"', f'argv = {json.dumps(argv)}'])
     return "\n".join(lines) + "\n"
 
 
@@ -450,6 +455,179 @@ class PreparationTests(unittest.TestCase):
             ["{worktree}/.VE/bin/python", "-m", "ensurepip"],
             ["{worktree}/.VE/bin/python", "-m", "pip", "install", "--no-deps", "--no-build-isolation", "fixture_dependency-1.0-py3-none-any.whl", "-e", "."],
         ]
+
+    def shared_recipe(self, *, build=None, checks=None):
+        return {
+            "destination": ".prepared/dependencies",
+            "probes": [["{python}", "-c", "import json, sys, sysconfig; print(json.dumps([sys.implementation.cache_tag, sysconfig.get_config_var('SOABI'), sysconfig.get_platform()]))"]],
+            "build": build or [["{python}", "-c", "from pathlib import Path; import sys; Path(sys.argv[1], 'dependency').write_text(Path('requirements.lock').read_text())", "{artifact}"]],
+            "checks": checks or [["{python}", "-c", "from pathlib import Path; import sys; assert Path(sys.argv[1], 'dependency').read_text() == Path('requirements.lock').read_text()", "{artifact}"]],
+        }
+
+    def configure_shared(self, **kwargs):
+        self.configure(setup=[["{python}", "-c", "pass"]],
+                       checks=[["{python}", "-c", "from pathlib import Path; assert Path('.prepared/dependencies/dependency').read_text() == Path('requirements.lock').read_text()"]],
+                       tracked=["requirements.lock"], shared=self.shared_recipe(**kwargs))
+
+    def test_shared_cold_reuse_mismatch_and_compatibility_drift(self):
+        from blackdog import preparation
+        self.configure_shared()
+        self.checkout()
+        first = self.run_setup()
+        self.assertTrue(first.ready, first.remediation)
+        first_artifact = first.preparation[0]["shared_artifact"]
+        other = self.base / "other task with spaces"
+        git(self.root, "worktree", "add", "-b", "other-task", str(other), "main")
+        (other / "source.txt").write_text("new task source\n")
+        shared = execute_worktree_handlers(self.profile, worktree_path=other)
+        self.assertTrue(shared.ready, shared.remediation)
+        self.assertEqual(shared.preparation[0]["reuse"], "shared-artifact")
+        self.assertEqual(first_artifact["generation"], shared.preparation[0]["shared_artifact"]["generation"])
+        self.assertNotEqual(first.preparation[0]["source"], shared.preparation[0]["source"])
+        with patch.object(preparation.platform, "platform", return_value="different ABI platform"):
+            self.assertIn("compatibility changed", self.verify().remediation)
+            third = self.base / "changed platform"
+            git(self.root, "worktree", "add", "-b", "changed-platform", str(third), "main")
+            changed = execute_worktree_handlers(self.profile, worktree_path=third)
+        self.assertTrue(changed.ready, changed.remediation)
+        self.assertEqual(changed.preparation[0]["shared_artifact"]["disposition"], "built")
+        self.assertNotEqual(first_artifact["input_sha256"], changed.preparation[0]["shared_artifact"]["input_sha256"])
+        self.assertTrue(self.verify().ready)
+        evidence = Path(first.preparation[0]["evidence_path"])
+        damaged = json.loads(evidence.read_text())
+        del damaged["shared_artifact"]["artifact"]
+        evidence.write_text(json.dumps(damaged))
+        self.assertIn("artifact reference", self.verify().remediation)
+
+    def test_artifact_verification_failure_and_input_drift_never_publish(self):
+        for failure in ("failed-check", "changed-input", "changed-artifact"):
+            with self.subTest(failure=failure):
+                build = self.shared_recipe()["build"]
+                checks = [["{python}", "-c", "raise SystemExit(3)"]]
+                if failure == "changed-input":
+                    checks = [["{python}", "-c", "from pathlib import Path; Path('requirements.lock').write_text('changed')"]]
+                elif failure == "changed-artifact":
+                    checks = [["{python}", "-c", "from pathlib import Path; import sys; Path(sys.argv[1], 'dependency').write_text('changed')", "{artifact}"]]
+                self.configure_shared(build=build, checks=checks)
+                task_root = self.base / failure
+                git(self.root, "worktree", "add", "-b", failure, str(task_root), "main")
+                result = execute_worktree_handlers(self.profile, worktree_path=task_root)
+                self.assertFalse(result.ready)
+                self.assertFalse((task_root / ".prepared").exists())
+                self.assertFalse(list((self.profile.paths.control_dir / "preparation-artifacts").glob("*/current.json")))
+
+    def test_interrupted_artifact_begin_preserves_attempt_and_new_task_recovers(self):
+        from blackdog import preparation_cache
+        self.configure_shared()
+        with patch.object(preparation_cache.os, "rename", side_effect=OSError("injected artifact publication interruption")):
+            first = begin_task_worktree(self.profile, actor="codex", prompt="Prepare shared failure", cwd=self.root)
+        self.assertEqual(first.next_action.kind, "blocked")
+        task = load_runtime_state(self.profile.paths).tasks[0]
+        self.assertEqual(task.attempts[0].setup_receipt["status"], "blocked")
+        self.assertFalse((Path(first["worktree_path"]) / ".prepared").exists())
+        retry = begin_task_worktree(self.profile, actor="codex", prompt="Prepare shared failure", task_id=task.task_id, cwd=self.root)
+        self.assertEqual(retry.next_action.kind, "blocked")
+        recovered = begin_task_worktree(self.profile, actor="codex", prompt="Prepare recovered shared candidate", cwd=self.root)
+        self.assertEqual(recovered.operation_status, "succeeded", recovered.next_action.reason_detail)
+        receipt = recovered["setup_receipt"]["preparation"][0]
+        self.assertEqual(receipt["shared_artifact"]["disposition"], "built")
+        self.assertTrue(list((self.profile.paths.control_dir / "preparation-artifacts").glob("*/candidates/*/intent.json")))
+        before = self.profile.paths.runtime_file.read_bytes(), self.profile.paths.events_file.read_bytes()
+        replay = begin_task_worktree(self.profile, actor="codex", prompt="Prepare recovered shared candidate",
+                                     task_id=recovered["task_id"], cwd=self.root)
+        self.assertEqual(replay.operation_status, "succeeded")
+        self.assertEqual(before, (self.profile.paths.runtime_file.read_bytes(), self.profile.paths.events_file.read_bytes()))
+
+    def test_shared_setup_cannot_modify_owned_dependency_copy(self):
+        self.configure(
+            setup=[["{python}", "-c", "from pathlib import Path; p = Path('.prepared/dependencies/dependency'); p.chmod(0o644); p.write_text('changed')"]],
+            checks=[["{python}", "-c", "pass"]], tracked=["requirements.lock"], shared=self.shared_recipe(),
+        )
+        self.checkout()
+        result = self.run_setup()
+        self.assertFalse(result.ready)
+        self.assertIn("immutable", result.remediation)
+        self.assertIn("indeterminate", self.run_setup().remediation)
+
+    def test_shared_task_outputs_support_normal_worktree_removal(self):
+        self.configure_shared()
+        self.checkout()
+        prepared = self.run_setup()
+        self.assertTrue(prepared.ready, prepared.remediation)
+        self.assertTrue(self.verify().ready)
+        git(self.root, "worktree", "remove", "--force", str(self.worktree))
+        self.assertFalse(self.worktree.exists())
+        cache = self.profile.paths.control_dir / "preparation-artifacts"
+        self.assertTrue(list(cache.glob("*/current.json")))
+        shutil.rmtree(cache)
+        self.assertFalse(cache.exists())
+
+    def test_shared_locked_wheel_cold_reuse_and_rebuild_have_equivalent_task_readiness(self):
+        setup = self.python_fixture()
+        wheel_name = "fixture_dependency-1.0-py3-none-any.whl"
+        wheel_hash = hashlib.sha256((self.root / wheel_name).read_bytes()).hexdigest()
+        self.write("requirements.lock", f"fixture-dependency==1.0 --hash=sha256:{wheel_hash}\n")
+        self.write("build_dependencies.py", '''\
+            from pathlib import Path
+            import hashlib, shutil, sys, zipfile
+            wheel = Path('fixture_dependency-1.0-py3-none-any.whl')
+            assert hashlib.sha256(wheel.read_bytes()).hexdigest() in Path('requirements.lock').read_text()
+            assert not Path('sample').exists(), 'unrelated application source must not enter artifact build'
+            assert not Path('.VE').exists(), 'never copy an environment'
+            destination = Path(sys.argv[1]) / wheel.name
+            shutil.copyfile(wheel, destination)
+            assert zipfile.ZipFile(destination).testzip() is None
+        ''')
+        self.write("check_dependencies.py", '''\
+            from pathlib import Path
+            import hashlib, sys, zipfile
+            wheel = Path(sys.argv[1]) / 'fixture_dependency-1.0-py3-none-any.whl'
+            assert hashlib.sha256(wheel.read_bytes()).hexdigest() in Path('requirements.lock').read_text()
+            assert zipfile.ZipFile(wheel).testzip() is None
+        ''')
+        self.configure(
+            setup=[*setup[:2],
+                   ["{worktree}/.VE/bin/python", "-m", "pip", "install", "--no-deps", "--require-hashes", "--find-links", ".prepared/dependencies", "-r", "requirements.lock"],
+                   ["{worktree}/.VE/bin/python", "-m", "pip", "install", "--no-deps", "--no-build-isolation", "-e", "."]],
+            checks=[["{worktree}/.VE/bin/python", "check_python.py"]],
+            tracked=["requirements.lock", "pyproject.toml", "fixture_backend.py", wheel_name, "build_dependencies.py", "check_dependencies.py"],
+            shared=self.shared_recipe(build=[["{python}", "build_dependencies.py", "{artifact}"]],
+                                      checks=[["{python}", "check_dependencies.py", "{artifact}"]]), timeout=120,
+        )
+        self.write(".VE/primary-sentinel", "primary environment is untouched")
+        results, timings = [], []
+        for label in ("cold", "shared", "mismatch"):
+            if label == "mismatch":
+                self.write("requirements.lock", f"# reviewed lock update\nfixture-dependency==1.0 --hash=sha256:{wheel_hash}\n")
+                git(self.root, "add", "requirements.lock")
+                git(self.root, "commit", "-m", "Change dependency input identity")
+            started = time.monotonic()
+            result = begin_task_worktree(self.profile, actor="codex", prompt=f"Prepare locked wheel {label}", cwd=self.root)
+            timings.append(time.monotonic() - started)
+            self.assertEqual(result.operation_status, "succeeded", result.next_action.reason_detail)
+            task_root = Path(result["worktree_path"])
+            sample = task_root / "sample/__init__.py"
+            sample.write_text(sample.read_text().replace('VALUE = "primary"', f'VALUE = "{label}-task"'))
+            verified = validate_existing_worktree_handlers(self.profile, worktree_path=task_root)
+            self.assertTrue(verified.ready, verified.remediation)
+            results.append(result)
+        receipts = [result["setup_receipt"]["preparation"][0] for result in results]
+        artifacts = [receipt["shared_artifact"] for receipt in receipts]
+        self.assertEqual([a["disposition"] for a in artifacts], ["built", "reused", "built"])
+        self.assertEqual(artifacts[0]["generation"], artifacts[1]["generation"])
+        self.assertNotEqual(artifacts[0]["input_sha256"], artifacts[2]["input_sha256"])
+        self.assertEqual([receipt["checks"][0]["name"] for receipt in receipts], ["check-0"] * 3)
+        self.assertEqual((self.root / ".VE/primary-sentinel").read_text(), "primary environment is untouched")
+        for result in results:
+            task_root = Path(result["worktree_path"])
+            self.assertTrue(validate_existing_worktree_handlers(self.profile, worktree_path=task_root).ready)
+            self.assertIn(str(task_root), (task_root / ".VE/bin/prepared-sample").read_text())
+        print("shared wheel acceptance: " + json.dumps({
+            "seconds": dict(zip(("cold", "shared", "mismatch"), timings)),
+            "inputs": [a["input_sha256"] for a in artifacts], "artifacts": [a["artifact"]["sha256"] for a in artifacts],
+            "wheel_sha256": wheel_hash, "samples_per_path": 1,
+            "coverage": "offline hash-locked wheel, fresh venv and task editable imports/entrypoint; no speedup claim",
+        }, sort_keys=True))
 
     def test_real_python_editable_and_console_script_use_task_source(self):
         setup = self.python_fixture()

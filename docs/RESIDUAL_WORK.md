@@ -12,9 +12,10 @@ and evidence. They do not create a second task store or continuation authority.
 
 ## Implemented Baseline
 
-The current slice provides a reviewed repository recipe with task-owned cold
-setup and verified reuse of completed outputs in the same worktree. Reuse runs
-fresh readiness checks; it is not a shared dependency cache.
+The baseline provides a reviewed repository recipe with task-owned cold setup
+and verified reuse of completed outputs in the same worktree. PREP-001 extends
+it with optional qualified shared immutable file bundles; task environments
+remain independently owned and every path runs fresh readiness checks.
 
 Declared tools and tracked inputs are checked, explicitly admitted ignored
 input files are verified before materialization, and output ownership and
@@ -35,15 +36,15 @@ reuse observation of 1.199 seconds. These timings are descriptive, not a shared
 cache benchmark. [Closeout validation](BACKLOG.md#closeout-validation) records
 the bounded evidence.
 
-This proves the exercised local fixtures; hosted CI, representative-project
-rollout and the broader dependency/platform guarantees remain separate. None
-of the four accepted requirement groups below is closed by local synthetic
-acceptance.
+Those baseline observations prove the exercised local fixtures. PREP-001's
+additional bounded coverage is recorded below. Representative-project rollout
+and the broader dependency/platform guarantees remain separate.
 
 ## PREP-001 — Qualify Shared Immutable Dependency Reuse
 
-**State:** open; the current reuse path is confined to verified outputs of the
-same worktree. Covers the remaining shared-reuse portions of stages P3 and P4.
+**State:** implemented for repository-local immutable regular-file bundles on
+trusted POSIX filesystems. This qualifies the bounded shared-reuse mechanism in
+P3/P4; it does not close all dependency/platform or rollout proof in those stages.
 
 **Acceptance:**
 
@@ -57,6 +58,43 @@ same worktree. Covers the remaining shared-reuse portions of stages P3 and P4.
   reuse, including task-checkout imports and entrypoints, mismatch/rebuild,
   interrupted publication and recovery. Report the artifact and input identities
   that make each successful reuse applicable.
+
+**Delivered:** opt-in `shared_artifact` recipe policy with required compatibility
+probes, isolated declared-input builds, read-only content inventories, per-key
+publication locks, atomic verified generation/pointer publication, and fresh
+task-owned copies. Identity binds the complete recipe/config, declared tracked
+and admitted ignored inputs, executable/version identities, ABI probes and
+platform. Changed keys build anew; corrupt generations rebuild without altering
+old generations or active-task dependencies. Task setup and readiness retain
+their existing fail-closed ownership and interruption rules.
+
+**Acceptance coverage:** `tests/test_preparation_cache.py` exercises concurrent
+consumers, bounded lock waits, identity mismatch, corruption, malformed/missing
+publication state, link/special-file rejection, materialization drift, and
+interruptions during build, generation rename and before/after pointer
+publication. `tests/test_preparation.py` exercises canonical blocked-attempt
+preservation, new-task recovery, unchanged task receipts, ABI drift, failed or
+mutating bundle checks, and equivalent cold/shared/mismatch application readiness.
+The representative offline Python workload installs a hash-locked wheel into a
+fresh virtual environment, creates an editable task package, verifies imports
+and console entrypoints after distinct task-source edits, and confirms that
+primary and earlier active environments remain usable after rebuild.
+
+Each workload run emits input/artifact/wheel digests and one elapsed observation
+per cold/shared/mismatch path. These small local fixtures establish behavior,
+not a production rollout or speedup claim. The bundle is a vendored pure-Python
+wheel; no download is measured. The full supported OS/interpreter matrix for
+this addition must be established by hosted runs, not inferred from local tests.
+
+**Unsupported/residual:** shared mutable environments, copying virtual
+environments, symlink/hardlink bundles, remote caches/network filesystems,
+automatic cache eviction or orphan promotion, automatic discovery of tool or
+native ABI dependencies, and reproducibility of unpinned arbitrary recipes.
+Candidates and superseded generations are retained for inspection, so storage
+can grow. Read-only modes do not defend against a hostile local user or trusted
+recipe deliberately writing outside its declared workspace. Broader native and
+Node dependency proof remains PREP-003; real-project adoption and repeated
+equivalent-workload measurement remain PREP-004. PREP-002 is unchanged.
 
 ## PREP-002 — Review Recipe Discovery Proposals
 

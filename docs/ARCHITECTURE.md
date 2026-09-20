@@ -277,9 +277,12 @@ keeps one `task begin` workflow while separating Blackdog import isolation from
 repository preparation. The opt-in `worktree-preparation` handler executes
 reviewed argv recipes against explicit inputs and worktree-owned outputs.
 It verifies exact recipe, source, tool and output identities before publishing
-readiness, and rechecks them before reusing the same worktree. Shared dependency
-caches and general recipe discovery remain outside the shipped slice. Legacy
-overlay handlers retain their compatibility semantics.
+readiness, and rechecks them before reusing the same worktree. Optional shared
+immutable dependency bundles bind recipe/configuration, declared inputs, tool
+identities, platform and explicit ABI probes. Each task materializes its own
+verified copy before normal setup; shared live environments and general recipe
+discovery remain unsupported. Legacy overlay handlers retain their
+compatibility semantics.
 
 Recipe-enabled begin claims the canonical active attempt before setup effects.
 The setup receipt is initially blocked/pending; completion uses an actor-owned
@@ -290,6 +293,13 @@ blocked; retries verify retained completion without replaying arbitrary commands
 Commands execute outside the runtime-store lock. A per-worktree preparation
 lock serializes local publication, and readiness is specific to the recorded
 source snapshot. Existing receipts remain readable without migration.
+
+Shared bundle publication is separate from task output effects. Per-key locks
+serialize disposable candidate builds; only verified, synced generations become
+visible through an atomic pointer. Invalid or interrupted candidates rebuild in
+new state. Existing generations and task-owned copies are never repaired in
+place. The cache provides evidence and dependency bytes, not task continuation
+authority; arbitrary interrupted task setup remains blocked.
 
 ## Provider References
 

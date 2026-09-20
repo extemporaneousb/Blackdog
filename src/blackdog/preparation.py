@@ -3,13 +3,13 @@
 Recipes are trusted repository code, not a sandbox. This executor restricts its
 own filesystem effects and inherited environment; it cannot confine arbitrary
 programs. Completed environments are reused only in the same checkout, after
-identity verification and fresh readiness checks. Incomplete effects block.
+identity verification and fresh readiness checks. Optional immutable dependency
+bundles are copied into owned outputs; incomplete task effects still block.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,19 +23,11 @@ import tempfile
 import time
 from typing import Any
 
+from blackdog import preparation_cache
 from blackdog.git_worktrees import find_primary_worktree
+from blackdog.preparation_files import MAX_TOOL_BYTES, PreparationError, _bounded_entry, _digest, _file
 from blackdog_core.profile import RepoProfile, WorktreePreparationHandlerConfig
 from blackdog_core.state import atomic_write_text, exclusive_file_lock, now_iso
-
-
-MAX_FILE_BYTES = 64 * 1024 * 1024
-MAX_TOOL_BYTES = 512 * 1024 * 1024
-MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024
-MAX_SNAPSHOT_FILES = 30000
-
-
-class PreparationError(RuntimeError):
-    """A declared preparation requirement could not be verified."""
 
 
 @dataclass(frozen=True)
@@ -43,10 +35,6 @@ class PreparationResult:
     ready: bool
     receipt: dict[str, Any]
     reason: str | None = None
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -68,32 +56,6 @@ def _contained(root: Path, relative: str) -> Path:
         if parent.is_symlink():
             raise PreparationError(f"declared path has a symlink component: {relative}")
     return candidate
-
-
-def _file(path: Path, *, max_bytes: int = MAX_FILE_BYTES) -> dict[str, Any]:
-    info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
-        raise PreparationError("preparation inputs must be bounded regular files")
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            size += len(chunk)
-            if size > max_bytes:
-                raise PreparationError("preparation file exceeds its size bound")
-            digest.update(chunk)
-    after = path.stat()
-    if (info.st_ino, info.st_size, info.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
-        raise PreparationError("preparation file changed while being observed")
-    return {"sha256": digest.hexdigest(), "size": size, "mode": stat.S_IMODE(after.st_mode)}
-
-
-def _bounded_entry(rows: dict[str, dict[str, Any]], relative: str, value: dict[str, Any], total: int) -> int:
-    total += int(value.get("size", 0))
-    if len(rows) >= MAX_SNAPSHOT_FILES or total > MAX_SNAPSHOT_BYTES:
-        raise PreparationError("preparation snapshot exceeds supported file or byte bounds")
-    rows[relative] = value
-    return total
 
 
 def _source(root: Path) -> dict[str, Any]:
@@ -268,8 +230,10 @@ def _outputs(root: Path, config: WorktreePreparationHandlerConfig, toolchain: di
     return {"sha256": _digest(rows), "files": len(rows)}
 
 
-def _command_argv(argv: tuple[str, ...], *, root: Path, config: WorktreePreparationHandlerConfig, toolchain: dict[str, Any]) -> list[str]:
+def _command_argv(argv: tuple[str, ...], *, root: Path, config: WorktreePreparationHandlerConfig, toolchain: dict[str, Any], artifact: Path | None = None) -> list[str]:
     replacements = {"{worktree}": str(root)}
+    if artifact is not None:
+        replacements["{artifact}"] = str(artifact)
     replacements.update({"{" + name + "}": row["path"] for name, row in toolchain["tools"].items()})
     result = []
     for argument in argv:
@@ -296,6 +260,68 @@ def _read_receipt(path: Path) -> dict[str, Any]:
     return value
 
 
+def _artifact_identity(config: WorktreePreparationHandlerConfig, receipt: dict[str, Any], deadline: float) -> dict[str, Any]:
+    assert config.shared_artifact is not None
+    probes = {}
+    tools = [Path(row["path"]) for row in receipt["toolchain"]["tools"].values()]
+    with tempfile.TemporaryDirectory(prefix="blackdog-abi-probe-") as temporary:
+        root = Path(temporary)
+        env = _environment(root, config, tools)
+        Path(env["TMPDIR"]).mkdir(parents=True)
+        for probe in config.shared_artifact.probes:
+            result = _run(_command_argv(probe.argv, root=root, config=config, toolchain=receipt["toolchain"]),
+                          cwd=root, env=env, deadline=deadline, capture=True)
+            if not result:
+                raise PreparationError(f"artifact compatibility probe returned no identity: {probe.name}")
+            probes[probe.name] = result
+    return {
+        "schema_version": 1,
+        **{key: receipt[key] for key in ("repository", "recipe_sha256", "inputs", "toolchain")},
+        "compatibility": {"platform": platform.platform(), "libc": list(platform.libc_ver()), "probes": probes},
+    }
+
+
+def _build_artifact(payload: Path, *, root: Path, primary: Path, config: WorktreePreparationHandlerConfig,
+                    receipt: dict[str, Any], identity: dict[str, Any], deadline: float) -> None:
+    """Expose only declared dependency inputs to a disposable build workspace."""
+    assert config.shared_artifact is not None
+    with tempfile.TemporaryDirectory(prefix="build-", dir=payload.parent) as temporary:
+        scratch = Path(temporary)
+        expected = dict(receipt["inputs"]["tracked"])
+        for relative, observed in expected.items():
+            destination = _contained(scratch, relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_contained(root, relative), destination)
+            if _file(destination) != observed:
+                raise PreparationError("artifact tracked input changed while copying")
+        for item in config.inputs:
+            destination = _contained(scratch, item.destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(_contained(primary, item.source), destination)
+            destination.chmod(item.mode)
+            expected[item.destination] = {key: receipt["inputs"]["copied"][item.destination][key] for key in ("sha256", "size", "mode")}
+        tools = [Path(row["path"]) for row in receipt["toolchain"]["tools"].values()]
+        env = _environment(scratch, config, tools)
+        Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+        if any(_file(_contained(scratch, path)) != value for path, value in expected.items()):
+            raise PreparationError("artifact declared input changed while copying")
+        for phase, commands in (("artifact-build", config.shared_artifact.build), ("artifact-checks", config.shared_artifact.checks)):
+            receipt["phase"] = phase
+            before = preparation_cache.inventory(payload) if phase == "artifact-checks" else None
+            for command in commands:
+                receipt["step"] = command.name
+                _run(_command_argv(command.argv, root=scratch, config=config, toolchain=receipt["toolchain"], artifact=payload),
+                     cwd=scratch, env=env, deadline=deadline)
+            if before is not None and before != preparation_cache.inventory(payload):
+                raise PreparationError("artifact verification changed candidate contents")
+        if any(_file(_contained(scratch, path)) != value for path, value in expected.items()):
+            raise PreparationError("artifact build changed declared inputs")
+        if receipt["source"] != _source(root) or receipt["inputs"] != _inputs(root, primary, config):
+            raise PreparationError("source or inputs changed during artifact build")
+        if receipt["toolchain"] != _toolchain(root, config, deadline)[0] or identity != _artifact_identity(config, receipt, deadline):
+            raise PreparationError("toolchain or compatibility changed during artifact build")
+
+
 def prepare_worktree(
     profile: RepoProfile, config: WorktreePreparationHandlerConfig, *, worktree: Path,
     execute: bool, task_id: str | None = None, attempt_id: str | None = None,
@@ -307,10 +333,14 @@ def prepare_worktree(
     evidence_root = profile.paths.control_dir / "preparation" / identity
     completed_path = evidence_root / "completed.json"
     intent_path = evidence_root / "intent.json"
+    recipe = asdict(config)
+    if config.shared_artifact is None:
+        # Preserve the identity of recipes and retained receipts predating reuse.
+        recipe.pop("shared_artifact")
     receipt: dict[str, Any] = {
         "schema_version": 1, "handler_id": config.handler_id, "revision": config.revision,
         "task_id": task_id, "attempt_id": attempt_id, "worktree": str(root),
-        "recipe_sha256": _digest(asdict(config)), "status": "blocked", "phase": "admission",
+        "recipe_sha256": _digest(recipe), "status": "blocked", "phase": "admission",
         "coverage": "declared inputs and checks; undeclared requirements are unknown",
         "reuse": "none", "checked_at": now_iso(), "checks": [],
         "evidence_path": str(completed_path),
@@ -322,6 +352,7 @@ def prepare_worktree(
             receipt["inputs"] = _inputs(root, primary, config)
             receipt["toolchain"], env = _toolchain(root, config, deadline)
             receipt["repository"] = _digest(str(Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()).resolve()))
+            artifact_identity = _artifact_identity(config, receipt, deadline) if config.shared_artifact else None
             prior = _read_receipt(completed_path) if completed_path.exists() else None
             if prior is not None:
                 for key in ("recipe_sha256", "inputs", "toolchain", "repository", "worktree"):
@@ -330,6 +361,14 @@ def prepare_worktree(
                 receipt["outputs"] = _outputs(root, config, receipt["toolchain"])
                 if prior.get("outputs") != receipt["outputs"]:
                     raise PreparationError("retained preparation outputs changed; preserve outputs and review a new attempt")
+                if artifact_identity is not None:
+                    shared = prior.get("shared_artifact")
+                    if not isinstance(shared, dict) or shared.get("input_sha256") != _digest(artifact_identity):
+                        raise PreparationError("retained artifact compatibility changed; preserve outputs and review a new attempt")
+                    preparation_cache.validate_reference(shared, _digest(artifact_identity))
+                    if shared.get("compatibility") != artifact_identity["compatibility"]:
+                        raise PreparationError("retained artifact compatibility evidence differs")
+                    receipt["shared_artifact"] = shared
                 receipt["reuse"] = "verified-worktree"
             else:
                 if intent_path.exists():
@@ -339,6 +378,20 @@ def prepare_worktree(
                 output_paths = _output_paths(root, config)
                 if any(path.exists() for path in output_paths):
                     raise PreparationError("preparation outputs already exist without owned completion evidence")
+                payload = None
+                if artifact_identity is not None:
+                    receipt["phase"] = "artifact-acquisition"
+                    payload, artifact, disposition = preparation_cache.acquire(
+                        profile.paths.control_dir / "preparation-artifacts", artifact_identity,
+                        build=lambda path: _build_artifact(path, root=root, primary=primary, config=config,
+                                                         receipt=receipt, identity=artifact_identity, deadline=deadline),
+                        deadline=deadline,
+                    )
+                    receipt["shared_artifact"] = {**artifact, "disposition": disposition,
+                                                   "compatibility": artifact_identity["compatibility"]}
+                    if disposition == "reused":
+                        receipt["reuse"] = "shared-artifact"
+                    receipt.pop("step", None)
                 receipt["phase"] = "intent"
                 atomic_write_text(intent_path, json.dumps(receipt, sort_keys=True) + "\n")
                 for output in output_paths:
@@ -353,6 +406,11 @@ def prepare_worktree(
                     destination.chmod(item.mode)
                     if _file(destination)["sha256"] != item.sha256:
                         raise PreparationError("declared input changed during materialization")
+                if payload is not None:
+                    assert config.shared_artifact is not None
+                    receipt["phase"] = "artifact-materialization"
+                    preparation_cache.materialize(payload, _contained(root, config.shared_artifact.destination),
+                                                  receipt["shared_artifact"]["artifact"])
                 receipt["phase"] = "setup"
                 for command in config.setup:
                     receipt["step"] = command.name
@@ -368,6 +426,12 @@ def prepare_worktree(
                 raise PreparationError("source or declared inputs changed during preparation; readiness was discarded")
             if receipt["toolchain"] != _toolchain(root, config, deadline)[0]:
                 raise PreparationError("toolchain changed during preparation; readiness was discarded")
+            if artifact_identity is not None and artifact_identity != _artifact_identity(config, receipt, deadline):
+                raise PreparationError("artifact compatibility changed during preparation; readiness was discarded")
+            if config.shared_artifact is not None:
+                local_artifact = _contained(root, config.shared_artifact.destination)
+                if preparation_cache.inventory(local_artifact, immutable=True) != receipt["shared_artifact"]["artifact"]:
+                    raise PreparationError("owned artifact copy changed; readiness was discarded")
             if receipt["outputs"] != _outputs(root, config, receipt["toolchain"]):
                 raise PreparationError("readiness commands changed owned outputs; readiness was discarded")
             receipt.update(status="ready", phase="complete")

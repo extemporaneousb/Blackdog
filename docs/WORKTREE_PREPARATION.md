@@ -3,9 +3,10 @@
 This is the accepted architecture contract and the supported preparation
 boundary. Runtime isolation is implemented under the invocation conditions
 below. An opt-in, schema-1 `worktree-preparation` handler now delivers reviewed
-recipes, worktree-owned setup, verified reuse in the same checkout, and fresh
-readiness checks. The broader acceptance stages remain explicit below; this
-bounded delivery does not establish a universal environment or shared cache.
+recipes, worktree-owned setup, verified reuse in the same checkout, optional
+shared immutable dependency bundles, and fresh readiness checks. The broader
+acceptance stages remain explicit below; this bounded delivery does not
+establish a universal environment or package-manager cache.
 
 ## One entrypoint, two responsibilities
 
@@ -212,7 +213,7 @@ setup-input identities, toolchain, complete output-inventory digest, checks,
 and the owning task/attempt. Input/source/tool/output observations must still
 match before readiness is published.
 
-Completed setup is reused only in the same worktree. An exact begin retry
+Completed task setup is reused only in the same worktree. An exact begin retry
 verifies the recipe, declared inputs, toolchain and output inventory, and runs
 readiness checks again. Unrelated tracked source edits get a fresh source-bound
 receipt without reinstalling dependencies. Changed setup inputs, tools,
@@ -231,6 +232,98 @@ recovery/close protocol. Known blocked preparation remains blocked in task
 show/recover and cannot start landing. There is no second task scheduler or
 setup-service authority.
 
+### Shared immutable dependency bundles
+
+An optional `shared_artifact` table extends the schema-1 recipe. This is a
+repository-local bundle of regular files, such as hash-locked wheels. Every
+task still runs `setup` to create its own environment and executes the same
+readiness checks. Shared bundles are copied with distinct inodes into an owned
+output; primary environments, virtual environments and mutable package-manager
+directories are not eligible reusable units. Existing recipes without this
+table retain their receipt identities and behavior.
+
+```toml
+[handlers.shared_artifact]
+destination = ".prepared/dependencies"
+
+[[handlers.shared_artifact.probes]]
+name = "python-abi"
+argv = ["{python}", "-c", "import json, sys, sysconfig; print(json.dumps([sys.implementation.cache_tag, sysconfig.get_config_var('SOABI'), sysconfig.get_platform()]))"]
+
+[[handlers.shared_artifact.build]]
+name = "bundle-locked-wheels"
+argv = ["{python}", "tools/build_dependencies.py", "{artifact}"]
+
+[[handlers.shared_artifact.checks]]
+name = "verify-wheel-hashes"
+argv = ["{python}", "tools/check_dependencies.py", "{artifact}"]
+```
+
+The example's scripts must be reviewed tracked inputs. They build and verify
+the bundle at the supplied path. Task `setup` installs from
+`.prepared/dependencies` into a newly created `.VE`, using its pinned lockfile,
+and installs the task project separately. It never executes against the shared
+cache path. A successful hash-locked install is representative coverage;
+Blackdog does not infer whether an arbitrary recipe pins every dependency.
+
+All four fields are required. `destination` must be strictly inside one owned
+output and cannot overlap a declared input or preparation HOME. `probes`,
+`build`, and `checks` follow the existing bounded `{name, argv}` array format
+and must be nonempty. Their executables must be declared tools. `{artifact}`
+expands only during bundle build/checks; it is reserved and unavailable to task
+setup/readiness commands. Compatibility probes cannot reference `{artifact}`
+or `{worktree}` and run in disposable scratch directories. Each must emit a
+nonempty identity, bounded to 4096 bytes. These outputs are retained in private
+evidence; they must describe compatibility, never secrets.
+
+The key hashes the repository identity, entire recipe and `blackdog.toml`, all
+declared tracked and admitted ignored inputs, executable bytes and exact tool
+version outputs, platform/machine, OS/platform details, libc identity, and
+observed compatibility probes. Recipes must declare all relevant runtime,
+compiler and package-manager tools and probe their ABI requirements. Blackdog
+does not discover transitive libraries or unmentioned tools. Conservative full
+recipe/config binding can invalidate more than just dependency changes.
+Unrelated application source is excluded from the bundle key but remains bound
+by each task's source snapshot and fresh readiness checks.
+
+Build commands run in a fresh private workspace containing only the declared
+inputs, copied and verified before execution. `{worktree}` refers to that
+scratch workspace during build/checks. HOME/TMPDIR and the sanitized environment
+follow the task recipe rules. Checks must not change the candidate; scratch
+inputs, task source/inputs, tools and compatibility must still match before
+publication. Inventories reject symlinks, hardlinks, special files and elevated
+permission bits. Published files are normalized to `0444` or `0555`, directories
+to `0755`, and file contents/directories are synced before publication.
+
+A per-input-key interprocess lock serializes builders within the command
+budget. A verified generation is renamed atomically into private storage, then
+an atomic pointer publishes its exact input and content identities. Consumers
+verify the pointer, manifest and full inventory. Corruption causes a rebuild in
+a new generation; the old generation and all task copies remain untouched.
+New identities use new keys. Copying rechecks both trees before task setup;
+readiness also verifies that the owned bundle remains unchanged. A ready
+task's later checks use its owned copy and do not depend on a cache pointer or
+the continued existence of a cache generation.
+Files remain read-only accident guards; writable directories permit normal
+Git worktree and repository unbind cleanup. Immutability is enforced by the
+generation protocol (no in-place writes) and verification of all content and
+permissions, not by filesystem sealing.
+
+Interrupted candidates and unreferenced generations never qualify for reuse.
+The next newly admitted preparation can build a fresh candidate; interruption
+after successful pointer publication permits verified reuse. Failed candidates
+are retained for inspection. An already blocked task still follows its exact
+Blackdog `next_action`; cache recovery does not authorize retrying its task
+setup. An intent for task output effects remains indeterminate without complete
+task evidence, exactly as before.
+
+Support is limited to trusted local recipes and filesystems with POSIX locking,
+atomic rename and sync semantics. Read-only modes are an accident guard, not
+protection against a hostile user or recipe with permission to change them.
+There is no shared live environment attachment, remote/network-filesystem
+cache, automatic garbage collection, orphan promotion, unpinned resolution
+guarantee, native ABI discovery, or migration of existing environments.
+
 ## Current coverage and residuals
 
 The [residual ledger](RESIDUAL_WORK.md) owns the live state of accepted remaining
@@ -243,10 +336,10 @@ coverage or acceptance requirements.
 | Policy | Explicit versioned recipe with strict fields, selected-checkout resolution and declared input coverage. | [Reviewed discovery/proposal generation (PREP-002)](RESIDUAL_WORK.md#prep-002--review-recipe-discovery-proposals); unknown requirements remain unknown. |
 | Python | Fresh owned venv, verified local wheel, real editable installation and console script tested against task source. | [Broader build backends, native extensions, external dependency sets and platform matrix (PREP-003)](RESIDUAL_WORK.md#prep-003--broaden-dependency-native-output-and-platform-proof). |
 | Node/mixed | Locked dependency-free npm application builds/tests offline; Python generates the Node build input. | [External Node package dependency acceptance and broader package-manager/toolchain proof (PREP-003)](RESIDUAL_WORK.md#prep-003--broaden-dependency-native-output-and-platform-proof). |
-| Reuse | Exact worktree-local output identity plus fresh readiness checks; no mutable primary attachment. | [Shared immutable dependency cache and cross-task artifact reuse (PREP-001)](RESIDUAL_WORK.md#prep-001--qualify-shared-immutable-dependency-reuse). |
+| Reuse | Exact worktree-local output identity; optional qualified shared file bundles, fresh owned copies and application readiness. | [PREP-001 bounded acceptance and unsupported cases](RESIDUAL_WORK.md#prep-001--qualify-shared-immutable-dependency-reuse); broader dependency/platform proof stays in PREP-003. |
 | Recovery | Canonical claim before effects, compare-and-set receipt updates, repairable append-once events, blocked incomplete effects and serialized publication. | Automatic recovery of arbitrary installers is deliberately unsupported. |
 | Inputs | Explicit pinned ignored regular-file copies; missing inputs and source/input/tool/output drift block. | Tracked symlinks/submodules, external services, secrets and snapshots beyond supported bounds. |
-| Measurement | One descriptive cold/verified-worktree mixed fixture sample uses the same checks and local artifacts. | [Representative real-project adoption and repeated cold/warm/mismatch/recovery distributions (PREP-004)](RESIDUAL_WORK.md#prep-004--representative-rollout-and-equivalent-workload-measurements). |
+| Measurement | Descriptive cold/verified-worktree mixed sample and cold/shared/mismatch locked-wheel samples use equivalent application checks. | [Representative real-project adoption and repeated cold/warm/mismatch/recovery distributions (PREP-004)](RESIDUAL_WORK.md#prep-004--representative-rollout-and-equivalent-workload-measurements). |
 
 Input/source/output files are limited to 64 MiB each, tool executables to
 512 MiB, and a snapshot to 30,000 entries and 512 MiB. These are admission
@@ -263,7 +356,7 @@ The shipped slice proves its specific local fixtures and fault cases; it does
 not close every criterion in these broader stages.
 
 The live residuals map to these stages: [PREP-001](RESIDUAL_WORK.md#prep-001--qualify-shared-immutable-dependency-reuse)
-covers remaining shared reuse in P3/P4; [PREP-002](RESIDUAL_WORK.md#prep-002--review-recipe-discovery-proposals)
+records bounded shared reuse in P3/P4; [PREP-002](RESIDUAL_WORK.md#prep-002--review-recipe-discovery-proposals)
 covers P2 recipe proposals; [PREP-003](RESIDUAL_WORK.md#prep-003--broaden-dependency-native-output-and-platform-proof)
 covers broader P1-P4 proof; and [PREP-004](RESIDUAL_WORK.md#prep-004--representative-rollout-and-equivalent-workload-measurements)
 covers P5 rollout and measurement. Their states remain in the residual ledger.

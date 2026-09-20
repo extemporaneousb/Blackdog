@@ -233,6 +233,14 @@ handler/schema/status until observation runs. Blocked entries retain the
 observed phase, optional step and reason; missing fields are not success.
 Declared coverage explicitly leaves undeclared requirements unknown.
 
+Qualified shared bundles add a `shared_artifact` object: schema version 1,
+`input_sha256`, `generation`, `artifact` (inventory SHA-256, entry count and byte
+count), `disposition` (`built`, `reused` or `rebuilt`), and observed
+`compatibility`. `reuse` is `shared-artifact` for a new task using a published
+bundle, `none` for a cold build, or `verified-worktree` for retained task setup.
+Retained verification preserves its original artifact provenance while
+rechecking current inputs, compatibility, owned outputs and readiness.
+
 The canonical attempt exists before recipe effects. A `task.setup` event has
 schema 1 and records the task/attempt, receipt SHA-256 and full setup receipt.
 Its deterministic identity permits append-once repair after a store-save/event
@@ -247,7 +255,26 @@ verification. Their schema-1 payloads bind the observed recipe and owned
 workspace. Completed evidence never authorizes lifecycle changes by itself.
 An incomplete intent is retained and blocked; no installer replay is inferred
 from it. These artifacts and their adjacent lock are not a second mutable task
-store or a shared dependency cache.
+store.
+
+Optional shared dependency bundles live separately under
+`<control-root>/preparation-artifacts/<input-sha256>/`. `publication.lock`
+serializes writers. Each unique `candidates/<generation>/` contains private
+schema-1 `intent.json` with the input identity and a `payload/` of regular files.
+After build verification, `manifest.json` binds `schema_version`,
+`input_sha256`, `generation`, `artifact` inventory and the full `identity`.
+The latter contains repository, recipe, declared inputs, toolchain and
+compatibility observations. A verified candidate is renamed into
+`generations/<generation>/`; `current.json` then atomically publishes the same
+manifest fields except `identity`. Generation names are 32 lowercase hex digits;
+input and content identities are SHA-256 digests. No task readiness or lifecycle
+authority resides in these files.
+
+Consumers verify all evidence and payload contents and copy bytes into owned
+outputs. Rebuild publishes a new generation and never modifies an existing one.
+Unpublished candidates and unreferenced generations are retained, ignored by
+consumers, and not automatically promoted or garbage-collected. Replacement of
+an invalid pointer is safe because active tasks own independent verified copies.
 
 ## `events.jsonl`
 
@@ -449,6 +476,9 @@ pin one ignored primary-relative regular file's source, owned destination,
 SHA-256 and permissions. Unknown preparation fields fail closed. See the
 [recipe contract and example](WORKTREE_PREPARATION.md#shipped-recipe-contract)
 for the complete supported fields, execution environment and bounds.
+An optional `shared_artifact` table requires `destination` and nonempty argv
+command tables `probes`, `build`, `checks`; its exact contract is documented
+under [shared bundles](WORKTREE_PREPARATION.md#shared-immutable-dependency-bundles).
 
 Each guard has a unique ID, phase, command, timeout, required flag, and optional
 message. Guard commands receive bounded task inputs and return typed pass or

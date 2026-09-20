@@ -125,6 +125,14 @@ class PreparationCommand:
 
 
 @dataclass(frozen=True)
+class PreparationArtifact:
+    destination: str
+    probes: tuple[PreparationCommand, ...]
+    build: tuple[PreparationCommand, ...]
+    checks: tuple[PreparationCommand, ...]
+
+
+@dataclass(frozen=True)
 class WorktreePreparationHandlerConfig(HandlerConfig):
     schema_version: int
     revision: str
@@ -135,6 +143,7 @@ class WorktreePreparationHandlerConfig(HandlerConfig):
     setup: tuple[PreparationCommand, ...]
     checks: tuple[PreparationCommand, ...]
     timeout_seconds: int
+    shared_artifact: PreparationArtifact | None = None
 
 
 RepoHandlerConfig = PythonOverlayVenvHandlerConfig | BlackdogRuntimeHandlerConfig | WorktreePreparationHandlerConfig
@@ -338,7 +347,7 @@ def _preparation_path(value: object, *, field: str) -> str:
 def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreePreparationHandlerConfig:
     allowed = {
         "id", "kind", "enabled", "depends_on", "schema_version", "revision",
-        "tracked_inputs", "outputs", "tools", "inputs", "setup", "checks", "timeout_seconds",
+        "tracked_inputs", "outputs", "tools", "inputs", "setup", "checks", "timeout_seconds", "shared_artifact",
     }
     unknown = set(payload) - allowed
     if unknown:
@@ -373,8 +382,9 @@ def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreeP
     if any(i == o or Path(o) in Path(i).parents for i in tracked_inputs for o in outputs):
         raise ConfigError(f"{field}.outputs must not contain tracked_inputs")
 
-    def rows(key: str, allowed_keys: set[str], *, required: bool = True) -> list[dict[str, object]]:
-        value = payload.get(key, [])
+    def rows(key: str, allowed_keys: set[str], *, required: bool = True,
+             source: dict[str, object] | None = None) -> list[dict[str, object]]:
+        value = (payload if source is None else source).get(key, [])
         if not isinstance(value, list) or (required and not value) or len(value) > 64:
             raise ConfigError(f"{field}.{key} must contain {'1' if required else '0'} to 64 tables")
         if any(not isinstance(row, dict) or set(row) != allowed_keys for row in value):
@@ -384,8 +394,9 @@ def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreeP
     tools = []
     for row in rows("tools", {"name", "executable", "version_args", "version"}):
         name, executable, version = row["name"], row["executable"], row["version"]
-        if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) is None or name == "worktree":
-            raise ConfigError(f"{field}.tools.name must be a bounded identifier other than worktree")
+        reserved_names = {"worktree", "artifact"} if "shared_artifact" in payload else {"worktree"}
+        if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,31}", name) is None or name in reserved_names:
+            raise ConfigError(f"{field}.tools.name must be a bounded identifier outside reserved placeholders")
         if not isinstance(executable, str) or re.fullmatch(r"[a-zA-Z0-9_.+-]+", executable) is None:
             raise ConfigError(f"{field}.tools.executable must be a PATH executable name")
         if not isinstance(version, str) or not version or len(version) > 4096:
@@ -411,9 +422,9 @@ def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreeP
     if len({item.destination for item in inputs}) != len(inputs):
         raise ConfigError(f"{field}.inputs destinations must be unique")
 
-    def commands(key: str) -> tuple[PreparationCommand, ...]:
+    def commands(key: str, *, source: dict[str, object] | None = None) -> tuple[PreparationCommand, ...]:
         result = []
-        for row in rows(key, {"name", "argv"}):
+        for row in rows(key, {"name", "argv"}, source=source):
             name = row["name"]
             if not isinstance(name, str) or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name) is None:
                 raise ConfigError(f"{field}.{key}.name must be a bounded identifier")
@@ -422,6 +433,12 @@ def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreeP
                 raise ConfigError(f"{field}.{key}.argv must be a nonempty bounded argument array")
             if argv[0] not in {"{" + tool.name + "}" for tool in tools} and not argv[0].startswith("{worktree}/"):
                 raise ConfigError(f"{field}.{key}.argv executable must reference a declared tool or worktree output")
+            if source is not None and argv[0] not in {"{" + tool.name + "}" for tool in tools}:
+                raise ConfigError(f"{field}.shared_artifact.{key} executable must reference a declared tool")
+            if source is None and "shared_artifact" in payload and any("{artifact}" in arg for arg in argv):
+                raise ConfigError(f"{field}.{key} cannot reference the shared artifact; use its owned destination")
+            if source is not None and key == "probes" and any(token in arg for arg in argv for token in ("{artifact}", "{worktree}")):
+                raise ConfigError(f"{field}.shared_artifact.probes must be independent of build and worktree paths")
             if argv[0].startswith("{worktree}/"):
                 executable = _preparation_path(argv[0][len("{worktree}/"):], field=f"{field}.{key}.argv executable")
                 if not any(Path(output) in Path(executable).parents for output in outputs):
@@ -431,13 +448,27 @@ def _preparation_handler(payload: dict[str, object], *, field: str) -> WorktreeP
             raise ConfigError(f"{field}.{key} names must be unique")
         return tuple(result)
 
+    artifact = None
+    if "shared_artifact" in payload:
+        shared = payload["shared_artifact"]
+        if not isinstance(shared, dict) or set(shared) != {"destination", "probes", "build", "checks"}:
+            raise ConfigError(f"{field}.shared_artifact requires destination, probes, build and checks")
+        destination = _preparation_path(shared["destination"], field=f"{field}.shared_artifact.destination")
+        if not any(Path(output) in Path(destination).parents for output in outputs):
+            raise ConfigError(f"{field}.shared_artifact.destination must be inside an owned output")
+        reserved = [item.destination for item in inputs] + [str(Path(outputs[0]) / ".home")]
+        if any(destination == path or Path(destination) in Path(path).parents or Path(path) in Path(destination).parents for path in reserved):
+            raise ConfigError(f"{field}.shared_artifact.destination overlaps an input or preparation home")
+        artifact = PreparationArtifact(destination, commands("probes", source=shared),
+                                       commands("build", source=shared), commands("checks", source=shared))
+
     return WorktreePreparationHandlerConfig(
         handler_id=handler_id, kind=HANDLER_KIND_WORKTREE_PREPARATION,
         enabled=True if "enabled" not in payload else _bool_value(payload["enabled"], field=f"{field}.enabled"),
         depends_on=_string_tuple(payload.get("depends_on"), field=f"{field}.depends_on"),
         schema_version=1, revision=revision, tracked_inputs=tracked_inputs, outputs=outputs,
         tools=tuple(tools), inputs=tuple(inputs), setup=commands("setup"), checks=commands("checks"),
-        timeout_seconds=timeout,
+        timeout_seconds=timeout, shared_artifact=artifact,
     )
 
 

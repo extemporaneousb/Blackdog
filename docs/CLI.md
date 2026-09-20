@@ -110,6 +110,12 @@ verify retained completion and rerun checks; they do not replay interrupted
 installers. Known blocked preparation is also blocked in show/recover and
 cannot start landing. No new begin flags are required. See
 [worktree preparation](WORKTREE_PREPARATION.md#shipped-recipe-contract).
+An optional recipe `shared_artifact` builds or verifies an immutable dependency
+bundle before task output effects. Each task receives its own verified copy,
+runs its normal setup, and proves readiness. Cache interruption can be recovered
+by a new admitted preparation; it never authorizes replay of a blocked task's
+installer. Receipts distinguish cold build, shared reuse and retained-worktree
+verification and report the applicable artifact/input identities.
 
 `--task` and expected-identity arguments are hidden recovery capabilities. They
 appear only in emitted retry commands and are not ordinary task-authoring flags.

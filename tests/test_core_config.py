@@ -21,6 +21,28 @@ class CoreConfigTests(CoreAuditTestCase):
         self.assertIsInstance(config, profile_module.WorktreePreparationHandlerConfig)
         self.assertEqual(config.schema_version, 1)
         self.assertEqual(config.timeout_seconds, 300)
+        shared = {
+            "destination": ".prepared/dependencies",
+            "probes": [{"name": "abi", "argv": ["{python}", "-c", "import sysconfig; print(sysconfig.get_config_var('SOABI'))"]}],
+            "build": [{"name": "bundle", "argv": ["{python}", "build.py", "{artifact}"]}],
+            "checks": [{"name": "verify", "argv": ["{python}", "check.py", "{artifact}"]}],
+        }
+        qualified = profile_module._handler_from_payload({**valid, "shared_artifact": shared}, index=0)
+        self.assertEqual(qualified.shared_artifact.destination, ".prepared/dependencies")
+        for change in (
+            {"destination": "../outside"}, {"destination": "tracked/cache"},
+            {"destination": ".prepared/.home/cache"}, {"destination": ".prepared/.home"},
+            {"probes": []}, {"checks": []}, {"build": []}, {"unknown": True},
+            {"build": [{"name": "build", "argv": ["{worktree}/.prepared/python"]}]},
+            {"probes": [{"name": "abi", "argv": ["{python}", "{artifact}"]}]},
+            {"probes": [{"name": "abi", "argv": ["{python}", "{worktree}/probe.py"]}]},
+        ):
+            with self.subTest(shared=change), self.assertRaises(profile_module.ConfigError):
+                profile_module._handler_from_payload({**valid, "shared_artifact": {**shared, **change}}, index=0)
+        with self.assertRaisesRegex(profile_module.ConfigError, "overlaps"):
+            profile_module._handler_from_payload({**valid, "shared_artifact": shared, "inputs": [
+                {"source": "local/data", "destination": ".prepared/dependencies/input", "sha256": "0" * 64, "mode": 0o600},
+            ]}, index=0)
         invalid = [
             {"schema_version": 2}, {"schema_version": True}, {"revision": ""},
             {"unknown_strategy": "automatic"}, {"tracked_inputs": []},
@@ -33,6 +55,9 @@ class CoreConfigTests(CoreAuditTestCase):
             {"setup": [{"name": "install", "argv": ["{worktree}/tracked-script"]}]},
             {"checks": [{"name": "ready", "argv": ["{python}", 17]}]},
             {"checks": []},
+            {"shared_artifact": shared, "setup": [{"name": "install", "argv": ["{python}", "{artifact}"]}]},
+            {"shared_artifact": {}},
+            {"shared_artifact": None},
             {"inputs": [{"source": "local/data", "destination": "source/data", "sha256": "0" * 64, "mode": 0o600}]},
         ]
         for mutation in invalid:

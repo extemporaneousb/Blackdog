@@ -54,10 +54,10 @@ must never edit control files directly.
   checks and comparable measurement conditions.
 - [Outcome evidence](OUTCOME_EVIDENCE.md) — distinct outcome/compliance criteria,
   validation, measurements and comparison cohorts.
-- [Runtime and worktree preparation](WORKTREE_PREPARATION.md) — implemented first
-  slice, current invocation and recipe contract, and full staged acceptance
-  requirements. The first slice passed bounded local acceptance; broader
-  accepted requirements remain in the residual-work ledger.
+- [Runtime and worktree preparation](WORKTREE_PREPARATION.md) — task-owned
+  recipes, qualified shared dependency bundles, current invocation contract,
+  and full staged acceptance requirements. Bounded local acceptance and broader
+  remaining obligations are recorded in the residual-work ledger.
 
 `AGENTS.md` contains the repository workflow and the generated contract copied
 into managed repositories.
