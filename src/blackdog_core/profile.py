@@ -158,6 +158,47 @@ class LandingConfig:
 
 
 @dataclass(frozen=True)
+class GuidanceConfig:
+    name: str
+    path: str
+    summary: str
+    cues: tuple[str, ...]
+
+
+def guidance_configs(raw: object) -> tuple[GuidanceConfig, ...]:
+    """Parse an optional small index; bodies stay in repository-owned files."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or len(raw) > 16:
+        raise ConfigError("guidance must be an array of at most 16 tables")
+    result = []
+    names: set[str] = set()
+    for row in raw:
+        if not isinstance(row, dict) or set(row) != {"name", "path", "summary", "cues"}:
+            raise ConfigError("each guidance entry requires name, path, summary and cues")
+        for key, limit in (("name", 64), ("path", 1024), ("summary", 240)):
+            value = row[key]
+            if (not isinstance(value, str) or not value.strip() or value != value.strip()
+                    or len(value) > limit or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                raise ConfigError(f"guidance.{key} must be nonempty bounded single-line text")
+        name = row["name"]
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", name) or name in names:
+            raise ConfigError("guidance names must be unique lowercase handles")
+        path = Path(row["path"])
+        if path.is_absolute() or ".." in path.parts or path == Path("."):
+            raise ConfigError("guidance.path must be a contained repository-relative file")
+        cues = row["cues"]
+        if (not isinstance(cues, list) or not 1 <= len(cues) <= 4
+                or any(not isinstance(cue, str) or not cue.strip() or cue != cue.strip()
+                       or len(cue) > 160 or any(ord(c) < 32 or ord(c) == 127 for c in cue)
+                       for cue in cues)):
+            raise ConfigError("guidance.cues requires one to four bounded single-line phrases")
+        names.add(name)
+        result.append(GuidanceConfig(name, path.as_posix(), row["summary"], tuple(cues)))
+    return tuple(result)
+
+
+@dataclass(frozen=True)
 class RepoProfile:
     project_name: str
     status: str
@@ -170,6 +211,7 @@ class RepoProfile:
     guards: tuple[GuardConfig, ...]
     handlers: tuple[RepoHandlerConfig, ...]
     handlers_explicit: bool
+    guidance: tuple[GuidanceConfig, ...] = ()
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -695,6 +737,7 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
     raw_paths = payload.get("paths") or {}
     guards = _load_guards(payload.get("guards"))
     handlers, handlers_explicit = _load_handlers(payload.get("handlers"))
+    guidance = guidance_configs(payload.get("guidance"))
     if not isinstance(landing, dict):
         raise ConfigError("landing must be a table")
     landing_schema_version = landing.get("schema_version", LANDING_SCHEMA_VERSION)
@@ -771,6 +814,7 @@ def load_profile(project_root: Path | None = None, *, read_only: bool = False) -
         guards=guards,
         handlers=handlers,
         handlers_explicit=handlers_explicit,
+        guidance=guidance,
     )
 
 

@@ -425,6 +425,7 @@ Optional sections:
 
 - `[landing]`
 - `[[guards]]`
+- `[[guidance]]`
 
 `[paths]` identifies the control root, runtime file, event file, and worktree
 root. It does not identify a second task-state file.
@@ -432,6 +433,19 @@ root. It does not identify a second task-state file.
 `[taxonomy].doc_routing_defaults` is an ordered catalog. Generated instructions
 tell agents to select relevant entries; listing a document does not inject its
 text into every prompt.
+
+`[[guidance]]` registers a repository-owned guide with exactly `name`, `path`,
+`summary` and `cues`. Names are unique lowercase handles starting with a letter
+(up to 64 characters); paths are contained relative files (up to 1024 characters).
+Summaries are at most 240 characters, and one to four cues are at most 160
+characters each. Values are nonempty single-line text without surrounding
+whitespace or controls. The effective catalog, including built-ins, is bounded
+to 16 entries. Built-in names cannot be replaced and one file cannot have multiple
+registered names. Bodies stay in their original files outside Blackdog-managed
+skill directories; this table stores no prompt copy. `guidance add` appends array
+of table entries while preserving existing profile text, and refuses layouts
+that cannot be safely appended (such as a top-level inline `guidance = []`).
+The profile version and task store format are unchanged.
 
 Each handler has an ID, kind, enabled state, and kind-specific setup fields.
 The default Blackdog handler selects `source_mode = "installed-runtime"` and

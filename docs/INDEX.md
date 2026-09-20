@@ -26,6 +26,7 @@ blackdog summary
 blackdog snapshot
 blackdog stats
 blackdog local-repo add|list|remove
+blackdog guidance list|show|add
 blackdog prompt preview
 blackdog attempts summary|table
 blackdog codex coverage|history|hook stamp

@@ -61,6 +61,16 @@ class UserInstallationTests(CoreAuditTestCase):
         self.assertEqual(observed["invoking"]["version"], "0.1.0.b")
         self.assertEqual(observed["repository"]["runtime"]["version"], "0.1.0.a")
         self.assertEqual(self.call(user, "summary", "--json", cwd=nested)["fixture_runtime"], "a")
+        catalog = self.call(user, "guidance", "list", "--json", cwd=nested)
+        self.assertEqual(catalog["fixture_runtime"], "a")
+        self.assertEqual(catalog["guidance"]["guides"][0]["status"], "installed")
+        self.assertEqual(catalog["guidance"]["catalog"]["status"], "current")
+        # Explicit new archive inspection reports drift, never silently substitutes its defaults.
+        user_release = Path(self.call(user, "version", "--json")["version"]["invoking"]["path"])
+        explicit = self.call(user_release, "guidance", "show", "engineering", "--json")["guidance"]
+        self.assertEqual(explicit["guides"][0]["status"], "different_from_runtime")
+        self.assertIn("Common judgment and delivery a", explicit["guides"][0]["text"])
+
         with tempfile.TemporaryDirectory() as elsewhere:
             self.assertEqual(self.call(user, "summary", "--project-root", str(self.root), "--json", cwd=Path(elsewhere))["fixture_runtime"], "a")
         profile = (self.root / "blackdog.toml").read_bytes()

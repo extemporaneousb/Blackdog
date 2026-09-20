@@ -10,8 +10,9 @@ from unittest.mock import patch
 import blackdog.wtam as wtam
 from blackdog.contract import managed_skill_relative_path
 from blackdog.prompting import preview_prompt
+from blackdog.guidance import add_guidance, inspect_guidance
 from blackdog_cli.main import main
-from blackdog_core.profile import ConfigError
+from blackdog_core.profile import ConfigError, load_profile
 from blackdog_core.state import ValidationRecord, load_runtime_state, task_record
 from blackdog_core.tasks import TaskError
 from tests.test_wtam_lifecycle import ProductRepo, _ReadyHandlers, _git
@@ -70,6 +71,21 @@ class GuidanceExecutionTests(TestCase):
             self.begin(prompt=frozen, prompt_source=str(artifact), guidance=(), host_version="2.0")
         with self.assertRaisesRegex(TaskError, "already contains frozen guidance"):
             self.begin(prompt=frozen, prompt_source=str(artifact))
+
+    def test_registered_short_name_show_preview_and_admission_share_exact_content(self):
+        add_guidance(self.repo.profile, name="release", path="guide.md",
+                     summary="Review release evidence.", cues=("Review this release",))
+        self.repo.profile = load_profile(self.repo.root)
+        _git(self.repo.root, "add", "blackdog.toml", ".codex")
+        _git(self.repo.root, "commit", "-qm", "Register repository guidance")
+        row = inspect_guidance(self.repo.profile, ("release",), include_text=True)["guides"][0]
+        preview = preview_prompt(self.repo.profile, request="Review release", include_prompt=True,
+                                 guidance=("release",))
+        begun = self.begin(guidance=("release",))
+        artifact = self.repo.profile.paths.control_dir / begun["execution_prompt_replay_artifact_path"]
+        self.assertEqual(row["text"], self.content)
+        self.assertEqual(row["sha256"], preview.guidance[0]["sha256"])
+        self.assertIn(json.dumps(row["text"], ensure_ascii=False), artifact.read_text())
 
     def test_invalid_guidance_or_context_cannot_create_a_task(self):
         for options in ({"guidance": ("missing.md",)}, {"host_version": "1.0", "host": None},

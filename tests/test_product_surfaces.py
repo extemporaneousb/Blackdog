@@ -145,6 +145,7 @@ class ProductSurfaceTests(unittest.TestCase):
                 "stats",
                 "local-repo",
                 "prompt",
+                "guidance",
                 "attempts",
                 "codex",
                 "repo",

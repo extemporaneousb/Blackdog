@@ -75,7 +75,7 @@ User-facing inputs:
 - Exactly one of `--execution-prompt` or `--execution-prompt-file`
 - Optional exactly one of `--request` or `--request-file`
 - `--prompt-mode raw|skill`
-- Optional repeated `--guidance BUILTIN_OR_REPOSITORY_RELATIVE_PATH`
+- Optional repeated `--guidance NAME_OR_REPOSITORY_RELATIVE_PATH`
 - Optional `--title`, `--branch`, `--from`, `--path`, `--model`,
   `--reasoning-effort`, `--host`, `--host-version`, and `--note`
 - Optional `--show-prompt` and `--json`
@@ -351,6 +351,48 @@ through `task outcome`.
 
 ## Prompt Inspection
 
+### `blackdog guidance list|show|add`
+
+```bash
+blackdog guidance list
+blackdog guidance show cleanup
+blackdog guidance show --all
+blackdog guidance show coordinator --json
+blackdog guidance add release --path docs/release-guidance.md \
+  --summary "Review selected release evidence." --cue "Check this release"
+```
+
+`list` is the compact tricks list: short names, summaries, illustrative request
+cues, file locations and availability. The host interprets cues; they are neither
+keyword triggers nor measured selection probabilities. Use `--guidance NAME` on
+`task begin` or `prompt preview` for explicit selection.
+
+`show NAME` reads the same installed UTF-8 file used by admission. A single
+selection writes its exact text to stdout, with source, SHA-256 and status on
+stderr. Multiple names or `--all` add section labels; `--json` preserves each
+exact document string with its metadata. Missing files fail explicitly rather
+than falling back to bundled wording. Installed text that differs from the
+selected runtime and a stale or missing agent catalog are reported. This is
+current repository guidance, not a historical execution transcript; admitted
+attempts retain their frozen inputs separately.
+
+`add` registers an existing repository file by reference in `blackdog.toml` and
+regenerates the agent catalog. It never copies or replaces the prompt body.
+Repeat `--cue` for up to four phrases. Existing names, aliases of an already
+registered file, escaping paths and files in Blackdog-managed skill directories
+are refused. Keep repository-owned text in paths such as `docs/` or
+`.codex/guidance/`, where refresh preserves it. Review and commit or land the
+configuration and generated catalog changes. Changing existing registrations or
+wording is a normal reviewed edit followed by `blackdog repo refresh`; there is
+no implicit overwrite or automatic learning operation.
+
+All three commands accept `--project-root` and `--json`. Run them in a configured
+repository; the user launcher follows that repository's selected runtime. An
+older installation may need `blackdog repo update` first. List/show do not write
+files or task records. Add updates only registration and the generated index
+(with a private lock), without creating or modifying tasks. If index writing
+fails after registration, the error says so; `repo refresh` repairs the index.
+
 ### `blackdog prompt preview`
 
 ```bash
@@ -364,7 +406,7 @@ deterministic repository-contract composition without starting a task.
 `--expand-skill-text` and `--expand-contract` explicitly include routed text;
 the default includes bounded references only.
 
-Repeated `--guidance BUILTIN_OR_REPOSITORY_RELATIVE_PATH` arguments add exact
+Repeated `--guidance NAME_OR_REPOSITORY_RELATIVE_PATH` arguments add exact
 selected guide snapshots and their metadata. Selection is performed by the host;
 the CLI does not infer a guide from keywords. Preview does not admit an attempt.
 

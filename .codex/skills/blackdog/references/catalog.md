@@ -1,6 +1,7 @@
 Guidance: select `engineering` for common judgment, plus the relevant specialization; load `evidence` for implementation. Read only selected guides.
-- `engineering`: [Common judgment and delivery](engineering.md).
-- `cleanup`: [Cleanup, refactoring and maintenance](cleanup.md).
-- `architecture`: [Architecture assessment](architecture.md).
-- `coordinator`: [Coordinated delivery](coordinator.md).
-- `evidence`: [Outcome and compliance evidence](evidence.md).
+Request cues are examples for host interpretation, not keyword triggers or measured selection probabilities. Explicit constraints override defaults; quoted names do not assign work. For explicit selection, use --guidance NAME.
+- `engineering`: [Common judgment and delivery](engineering.md). Establish scope, inspect current behavior, and deliver a verified result. Cues: “Fix this issue”; “Implement this change”; “Do this yourself”.
+- `cleanup`: [Cleanup, refactoring and maintenance](cleanup.md). Simplify selected code or documents while preserving behavior and obligations. Cues: “Tidy this module”; “Refactor without changing behavior”; “Clean up these selected debt items”.
+- `architecture`: [Architecture assessment](architecture.md). Compare designs using current code, constraints and evidence; respect analysis-only scope. Cues: “Compare these designs”; “Assess the architecture; do not implement”; “Explain the tradeoffs”.
+- `coordinator`: [Coordinated delivery](coordinator.md). Delegate bounded work, inspect results and keep one integration owner. Cues: “Coordinate these selected items”; “Run this as a coordinator”; “Delegate implementation and inspect results”.
+- `evidence`: [Outcome and compliance evidence](evidence.md). Record what was achieved, what was verified and which obligations remain unproven. Cues: “Show what was verified”; “Record outcomes and compliance”; “What remains unproven?”.
