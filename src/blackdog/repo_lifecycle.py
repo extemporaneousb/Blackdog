@@ -12,7 +12,7 @@ import tomllib
 from blackdog.errors import BlackdogError
 from blackdog.runtime_distribution import installed_runtime
 from blackdog.contract import (
-    LEGACY_MANAGED_SKILL_NAME,
+    is_managed_skill_directory,
     legacy_managed_skill_relative_path,
     managed_skill_name,
     managed_skill_relative_path,
@@ -20,7 +20,6 @@ from blackdog.contract import (
 from blackdog.handlers import HandlerPlanSummary, execute_repo_handlers, plan_repo_handlers
 from blackdog.guidance import (
     guidance_bootstrap,
-    guidance_catalog,
     rendered_guidance,
 )
 from blackdog.workflow_contract import (
@@ -525,12 +524,7 @@ def _prune_obsolete_managed_skill_dirs(profile: RepoProfile) -> tuple[str, ...]:
     for child in sorted(item for item in skills_root.iterdir() if item.is_dir()):
         if child.resolve() == managed_skill.parent.resolve():
             continue
-        marker = child / ".blackdog-managed.json"
-        should_remove = (
-            child.name == LEGACY_MANAGED_SKILL_NAME
-            or marker.exists()
-        )
-        if not should_remove:
+        if not is_managed_skill_directory(profile, child):
             continue
         shutil.rmtree(child)
         removed.append(str(child))
@@ -645,7 +639,8 @@ def render_repo_skill(profile: RepoProfile) -> str:
         "workflow contract; do not duplicate it here. `blackdog.toml` owns handler setup, validation, "
         "and a document-routing catalog. Read only catalog entries relevant to the current task; do not "
         "load every routed document by default.\n\n"
-        f"{guidance_catalog()}\n\n"
+        "Guidance: read the [catalog](references/catalog.md) for short names, request cues, "
+        "summaries and relevant guides; load only what applies.\n\n"
         "## Workflow\n\n"
         f"- `$blackdog install or update in this repo`: before this repo-local skill exists, analyze the repo, then run `blackdog repo install --project-root .` when missing or `blackdog repo update --project-root .` when already installed. Update installs the invoking user release and refreshes its managed instructions; it does not fetch a release. Use `blackdog version --json` to inspect user and repository runtime identity; finish with `git status --short` and commit or land managed repo changes, or report the checkout as intentionally dirty.\n"
         f"{scaffold_workflow}"

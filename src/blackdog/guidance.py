@@ -5,12 +5,17 @@ the host's selections; it does not classify requests or execute agents.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
+import json
+import os
+import tomllib
 from pathlib import Path
+from urllib.parse import quote
 
-from blackdog.contract import managed_skill_relative_path
-from blackdog_core.profile import RepoProfile
+from blackdog.contract import MANAGED_SKILLS_ROOT, is_managed_skill_directory, managed_skill_relative_path
+from blackdog_core.profile import RepoProfile, guidance_configs, load_profile
+from blackdog_core.state import atomic_write_text, exclusive_file_lock
 
 
 GUIDANCE_REVISION = 1
@@ -31,8 +36,25 @@ class GuidanceDocument:
         return {"path": self.path, "sha256": self.sha256}
 
 
+@dataclass(frozen=True, slots=True)
+class GuideDefinition:
+    title: str
+    summary: str
+    cues: tuple[str, ...]
+    text: str
+
+
+SELECTION_NOTE = (
+    "Request cues are examples for host interpretation, not keyword triggers or "
+    "measured selection probabilities. Explicit constraints override defaults; "
+    "quoted names do not assign work. For explicit selection, use --guidance NAME."
+)
+
+
 _GUIDES = {
-    "engineering": ("Common judgment and delivery", """
+    "engineering": GuideDefinition('Common judgment and delivery',
+        'Establish scope, inspect current behavior, and deliver a verified result.',
+        ('Fix this issue', 'Implement this change', 'Do this yourself'), """
 Use for repository work, including underspecified requests. These are strong
 defaults: follow the relevant conventions unless explicit user instructions or
 concrete task evidence justify a departure. Explain material departures briefly
@@ -83,7 +105,9 @@ concrete but adaptable behavioral guidance; do not fetch whole articles routinel
 - https://learn.chatgpt.com/docs/customization/overview#skills
 - https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 """),
-    "cleanup": ("Cleanup, refactoring and maintenance", """
+    "cleanup": GuideDefinition('Cleanup, refactoring and maintenance',
+        'Simplify selected code or documents while preserving behavior and obligations.',
+        ('Tidy this module', 'Refactor without changing behavior', 'Clean up these selected debt items'), """
 Use when the user asks to tidy, simplify, refactor, consolidate or remove obsolete
 code, tests, docs or plans, even without naming a role. Apply engineering and, for
 implementation, evidence guidance. Preserve behavior and obligations unless the
@@ -108,7 +132,9 @@ requirements. Do not add tests that merely mirror edits or delete tests to make 
 suite green. Inspect the final diff for changed scope and accidental loss of
 obligations. State remaining uncertainties and limitations precisely.
 """),
-    "architecture": ("Architecture assessment", """
+    "architecture": GuideDefinition('Architecture assessment',
+        'Compare designs using current code, constraints and evidence; respect analysis-only scope.',
+        ('Compare these designs', 'Assess the architecture; do not implement', 'Explain the tradeoffs'), """
 Use for design questions, comparisons, boundaries or architecture review. Apply
 engineering guidance. Establish the current checkout, instructions, implementation
 and representative task evidence. Separate shipped behavior from proposals and
@@ -128,7 +154,9 @@ Recommend the smallest justified change, its strongest objection, a concrete
 acceptance plan, remaining unknowns, and the observation that would change the
 decision. Stop when further analysis is unlikely to change the recommendation.
 """),
-    "coordinator": ("Coordinated delivery", """
+    "coordinator": GuideDefinition('Coordinated delivery',
+        'Delegate bounded work, inspect results and keep one integration owner.',
+        ('Coordinate these selected items', 'Run this as a coordinator', 'Delegate implementation and inspect results'), """
 Use when the user assigns coordination or asks for delegated work; the word
 coordinator appearing only in a quote, document or example does not assign this
 role. Apply engineering and evidence guidance, plus cleanup for maintenance.
@@ -165,7 +193,9 @@ concrete reason, but changing an explicit delegation-only assignment requires th
 user's decision. Report accepted and landed work, unmet criteria and material
 deviations; routine assignments and ledger housekeeping need no ceremony.
 """),
-    "evidence": ("Outcome and compliance evidence", """
+    "evidence": GuideDefinition('Outcome and compliance evidence',
+        'Record what was achieved, what was verified and which obligations remain unproven.',
+        ('Show what was verified', 'Record outcomes and compliance', 'What remains unproven?'), """
 Use for implementation alongside engineering and applicable workflow guidance.
 The attempt owner or its designated evidence executor performs these recording
 steps. Bounded workers return concrete evidence to the coordinator unless explicitly
@@ -232,12 +262,12 @@ def guidance_relative_paths(profile: RepoProfile) -> dict[str, Path]:
 def rendered_guidance(profile: RepoProfile) -> dict[Path, str]:
     documents = {
         guidance_relative_paths(profile)[name]: (
-            f"# {title}\n\nBlackdog guidance revision: {GUIDANCE_REVISION}\n\n{text.strip()}\n"
+            _render_guide(definition)
         )
-        for name, (title, text) in _GUIDES.items()
+        for name, definition in _GUIDES.items()
     }
     directory = managed_skill_relative_path(profile).parent / "references"
-    documents[directory / "catalog.md"] = guidance_catalog(link_prefix="") + "\n"
+    documents[directory / "catalog.md"] = guidance_catalog(profile, catalog_path=directory / "catalog.md") + "\n"
     return documents
 
 
@@ -254,15 +284,52 @@ def guidance_bootstrap(profile: RepoProfile) -> str:
     )
 
 
-def guidance_catalog(*, link_prefix: str = "references/") -> str:
-    return (
-        "Guidance: select `engineering` for common judgment, plus the relevant "
-        "specialization; load `evidence` for implementation. Read only selected guides.\n"
-        + "\n".join(
-            f"- `{name}`: [{title}]({link_prefix}{name}.md)."
-            for name, (title, _) in _GUIDES.items()
-        )
-    )
+def _render_guide(definition: GuideDefinition) -> str:
+    return f"# {definition.title}\n\nBlackdog guidance revision: {GUIDANCE_REVISION}\n\n{definition.text.strip()}\n"
+
+
+def _definitions(profile: RepoProfile) -> dict[str, dict[str, object]]:
+    paths = guidance_relative_paths(profile)
+    rows = {name: {"name": name, "title": spec.title, "summary": spec.summary,
+                   "cues": list(spec.cues), "path": paths[name].as_posix(),
+                   "origin": "managed", "metadata_source": "selected_runtime"}
+            for name, spec in _GUIDES.items()}
+    root = profile.paths.project_root
+    skills_root = root / MANAGED_SKILLS_ROOT
+    managed_dirs = {root / managed_skill_relative_path(profile).parent}
+    if skills_root.is_dir():
+        managed_dirs.update(path for path in skills_root.iterdir()
+                            if is_managed_skill_directory(profile, path))
+    for entry in profile.guidance:
+        if entry.name in rows:
+            raise ValueError(f"guidance name already exists: {entry.name}; replacement requires an explicit reviewed edit")
+        path = Path(entry.path)
+        resolved = (profile.paths.project_root / path).resolve()
+        if any((root / path).is_relative_to(managed) or resolved.is_relative_to(managed.resolve())
+               for managed in managed_dirs):
+            raise ValueError("repository guidance must live outside Blackdog-managed skill directories")
+        if not resolved.is_relative_to(profile.paths.project_root.resolve()):
+            raise ValueError("repository guidance must be a contained repository file")
+        if any((profile.paths.project_root / str(row["path"])).resolve() == resolved for row in rows.values()):
+            raise ValueError("a guidance file may have only one registered name")
+        rows[entry.name] = {"name": entry.name, "title": entry.name, "summary": entry.summary,
+                            "cues": list(entry.cues), "path": entry.path,
+                            "origin": "repository", "metadata_source": "blackdog.toml"}
+    if len(rows) > MAX_GUIDANCE_DOCUMENTS:
+        raise ValueError(f"keep the guidance catalog to at most {MAX_GUIDANCE_DOCUMENTS} entries")
+    return rows
+
+
+def guidance_catalog(profile: RepoProfile, *, catalog_path: Path | None = None) -> str:
+    catalog_path = catalog_path or managed_skill_relative_path(profile).parent / "references" / "catalog.md"
+    lines = ["Guidance: select `engineering` for common judgment, plus the relevant "
+             "specialization; load `evidence` for implementation. Read only selected guides.",
+             SELECTION_NOTE]
+    for row in _definitions(profile).values():
+        link = Path(os.path.relpath(str(row["path"]), catalog_path.parent)).as_posix()
+        lines.append(f"- `{row['name']}`: [{row['title']}]({quote(link, safe='/')}). {row['summary']} "
+                     + "Cues: " + "; ".join(f'“{cue}”' for cue in row["cues"]) + ".")
+    return "\n".join(lines)
 
 
 def resolve_guidance(
@@ -272,7 +339,7 @@ def resolve_guidance(
     if len(selectors) > MAX_GUIDANCE_DOCUMENTS:
         raise ValueError(f"at most {MAX_GUIDANCE_DOCUMENTS} guidance documents are allowed")
     root = profile.paths.project_root.resolve()
-    paths = guidance_relative_paths(profile)
+    paths = {name: Path(row["path"]) for name, row in _definitions(profile).items()}
     seen: set[Path] = set()
     documents: list[GuidanceDocument] = []
     total_bytes = 0
@@ -319,3 +386,103 @@ def resolve_guidance(
         seen.add(resolved)
         documents.append(GuidanceDocument(relative_text, hashlib.sha256(content).hexdigest(), text))
     return tuple(documents)
+
+
+def inspect_guidance(
+    profile: RepoProfile, selectors: tuple[str, ...] = (), *, include_text: bool = False,
+) -> dict[str, object]:
+    """Inspect the same installed bytes admission resolves; never substitute defaults."""
+    definitions = _definitions(profile)
+    selected = selectors or tuple(definitions)
+    # Resolve a show as one packet to preserve admission's duplicate/size bounds.
+    resolved = resolve_guidance(profile, selected) if include_text else ()
+    rows = []
+    by_path = {(profile.paths.project_root / str(row["path"])).resolve(): row
+               for row in definitions.values()}
+    for index, name in enumerate(selected):
+        definition = definitions.get(name) or by_path.get((profile.paths.project_root / name).resolve())
+        row = dict(definition or {"name": name, "title": name, "summary": None,
+                                  "cues": [], "path": name, "origin": "repository",
+                                  "metadata_source": None})
+        try:
+            document = resolved[index] if include_text else resolve_guidance(profile, (name,))[0]
+        except ValueError as exc:
+            row.update(status="unavailable", sha256=None, error=str(exc))
+        else:
+            row.update(path=document.path, sha256=document.sha256, status="repository_owned", error=None)
+            if row["name"] in _GUIDES:
+                expected = hashlib.sha256(_render_guide(_GUIDES[row["name"]]).encode("utf-8")).hexdigest()
+                row.update(expected_sha256=expected,
+                           status="installed" if expected == document.sha256 else "different_from_runtime")
+            if include_text:
+                row["text"] = document.text
+        rows.append(row)
+    catalog_path = managed_skill_relative_path(profile).parent / "references" / "catalog.md"
+    expected = (guidance_catalog(profile) + "\n").encode("utf-8")
+    catalog = {"path": catalog_path.as_posix(), "status": "unavailable", "sha256": None,
+               "expected_sha256": hashlib.sha256(expected).hexdigest()}
+    try:
+        document, = resolve_guidance(profile, (catalog_path.as_posix(),))
+        catalog.update(sha256=document.sha256,
+                       status="current" if document.text.encode("utf-8") == expected else "different_from_runtime")
+    except ValueError as exc:
+        catalog["error"] = str(exc)
+    return {"schema_version": 1, "project_root": str(profile.paths.project_root),
+            "selection": SELECTION_NOTE, "source": "installed_repository_files",
+            "historical_execution": False, "catalog": catalog, "guides": rows}
+
+
+def render_guidance_list(payload: dict[str, object]) -> str:
+    lines = ["Repository guidance (task methods, not persona activation)", str(payload["selection"])]
+    catalog = payload["catalog"]
+    lines.append(f"Agent catalog: {catalog['path']} [{catalog['status']}]")
+    if catalog["status"] != "current":
+        lines.append("The installed agent index differs or is unavailable; run blackdog repo refresh to regenerate it.")
+    for row in payload["guides"]:
+        lines.extend(("", f"{row['name']} — {row['summary'] or 'Unregistered repository file'}",
+                      "  Cues: " + "; ".join(f'“{cue}”' for cue in row["cues"]),
+                      f"  Source: {row['path']} [{row['status']}]"))
+        if row.get("error"):
+            lines.append(f"  {row['error']}")
+        elif row["status"] == "different_from_runtime":
+            lines.append("  Installed wording differs from this runtime's default; the overview may be stale. Show reads the installed text.")
+    return "\n".join(lines) + "\n"
+
+
+def add_guidance(
+    profile: RepoProfile, *, name: str, path: str, summary: str, cues: tuple[str, ...],
+) -> dict[str, object]:
+    """Register a reference, preserving the user's only prompt body and profile text."""
+    entry, = guidance_configs([{"name": name, "path": path, "summary": summary, "cues": list(cues)}])
+    if profile.paths.profile_file.is_symlink():
+        raise ValueError("guidance registration refuses a symlinked profile")
+    with exclusive_file_lock(profile.paths.control_dir / "locks" / "guidance-registration"):
+        current = load_profile(profile.paths.project_root, read_only=True)
+        candidate = replace(current, guidance=(*current.guidance, entry))
+        _definitions(candidate)  # Refuse any collision before writing either file.
+        document, = resolve_guidance(candidate, (entry.name,))
+        catalog_path = current.paths.project_root / managed_skill_relative_path(current).parent / "references" / "catalog.md"
+        if not catalog_path.resolve().is_relative_to(current.paths.project_root.resolve()):
+            raise ValueError("managed guidance catalog escapes the repository")
+        catalog_text = guidance_catalog(candidate) + "\n"
+        original = current.paths.profile_file.read_bytes().decode("utf-8")
+        fields = {"name": entry.name, "path": entry.path, "summary": entry.summary, "cues": list(entry.cues)}
+        addition = "\n[[guidance]]\n" + "".join(
+            f"{key} = {json.dumps(value, ensure_ascii=False)}\n" for key, value in fields.items()
+        )
+        updated = original + addition
+        try:
+            parsed = tomllib.loads(updated)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError("cannot append guidance to this TOML layout; use [[guidance]] tables instead of an inline array") from exc
+        if guidance_configs(parsed.get("guidance")) != candidate.guidance:
+            raise ValueError("appended guidance does not match the intended registration")
+        atomic_write_text(current.paths.profile_file, updated)
+        try:
+            atomic_write_text(catalog_path, catalog_text)
+        except OSError as exc:
+            raise ValueError("Guidance was registered but agent catalog refresh failed; run blackdog repo refresh. " + str(exc)) from exc
+    return {"action": "add", "name": entry.name, **document.to_dict(),
+            "updated": [str(current.paths.profile_file), str(catalog_path)],
+            "notes": ["Registered the existing file by reference; no prompt text was copied or replaced.",
+                      "Review and commit or land the profile and generated catalog changes."]}

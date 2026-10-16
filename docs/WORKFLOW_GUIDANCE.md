@@ -15,12 +15,11 @@ assigned responsibilities, selected work inputs and runtime policy distinct.
 A quoted role name or matching code symbol does not assign a role. Established
 defaults may fill in a method; they cannot enlarge the user's scope or authority.
 
-| Request | Expected interpretation |
-| --- | --- |
-| “Tidy this module.” | Establish responsibilities, callers and obligations, simplify coherently, and verify affected behavior. Similarity or passing tests alone cannot establish redundancy. |
-| “What should we do about this architecture?” | Assess current behavior and alternatives with evidence. Keep analysis separate from implementation authorization. |
-| “Coordinate these debt items.” | Assign bounded responsibilities and write ownership, inspect returned artifacts, and retain one integration owner and one lifecycle executor. |
-| “Fix this one yourself.” | Honor the explicit delegation override while retaining engineering quality expectations. |
+Use `blackdog guidance list` for short names, summaries and example request cues,
+and `blackdog guidance show NAME` (or `show --all`) for the exact installed text.
+The names index methods, not personas. Example cues help humans express intent;
+there are no keyword triggers or measured odds of selection. Explicit constraints
+and the whole request still govern interpretation.
 
 Guidance supplies adaptable defaults, not a mandatory worker count or repeated
 review sequence. Record material adaptations in the execution prompt with their
@@ -37,13 +36,27 @@ Shared defaults must not copy private user preferences into public content.
 
 Generated documents live under `.codex/skills/<repo-slug>/references/`, alongside
 `catalog.md`. They carry a guidance revision; their exact SHA-256 identifies the
-selected content. Keep refinements in a separate repository-owned path and pass
-that path explicitly when it applies.
+selected content. Built-in metadata and wording have one maintained definition;
+the CLI overview and generated agent catalog derive from it. Generated files are
+installation artifacts, not independently edited copies. Inspection reads the
+installed guide body through the same resolver as admission, and reports missing
+files, wording drift and index drift instead of substituting another version.
+
+Keep refinements in a separate repository-owned path. `blackdog guidance add`
+registers an existing file under a short name, summary and a few example cues;
+the body stays in that file. Its `[[guidance]]` metadata in `blackdog.toml` drives
+both CLI discovery and the generated catalog. Adding a name refuses collisions;
+replacing an entry or revising wording requires an explicit reviewed edit and
+catalog refresh. Registration refuses directories that Blackdog refresh owns,
+including obsolete managed skill directories. Direct repository-relative
+selectors remain supported without registration. Keep the catalog small and
+selective; a new guide should add a distinct useful convention, not another alias
+or a generic rule repeated across every task.
 
 ## Freeze the selected inputs
 
 Both `task begin` and `prompt preview` accept repeated `--guidance` arguments.
-Each value identifies a built-in guide or a repository-relative guide file:
+Each value identifies a built-in or registered name, or a repository-relative guide file:
 
 ```bash
 blackdog prompt preview --project-root . --request "Tidy this module" \

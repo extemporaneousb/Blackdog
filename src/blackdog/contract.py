@@ -41,6 +41,16 @@ def managed_skill_relative_path(value: SkillIdentity) -> Path:
     return MANAGED_SKILLS_ROOT / managed_skill_name(value) / SKILL_FILE_NAME
 
 
+def is_managed_skill_directory(profile: RepoProfile, path: Path) -> bool:
+    """Directories refresh owns, including obsolete names it may remove."""
+    root = profile.paths.project_root
+    return path.parent.resolve() == (root / MANAGED_SKILLS_ROOT).resolve() and (
+        path.resolve() == (root / managed_skill_relative_path(profile).parent).resolve()
+        or path.name == LEGACY_MANAGED_SKILL_NAME
+        or (path / ".blackdog-managed.json").exists()
+    )
+
+
 def legacy_managed_skill_relative_path() -> Path:
     return MANAGED_SKILLS_ROOT / LEGACY_MANAGED_SKILL_NAME / SKILL_FILE_NAME
 

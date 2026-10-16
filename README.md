@@ -46,6 +46,8 @@ The installed repository instructions ask the host to select applicable
 [workflow guidance](docs/WORKFLOW_GUIDANCE.md) before admission, including for
 short requests. Blackdog snapshots the selected text with the execution prompt;
 typed evidence keeps downstream outcomes and workflow compliance distinct.
+Use `blackdog guidance list` for the compact index and request cues, and
+`blackdog guidance show --all` to inspect the installed wording.
 
 ## Install And Layering Model
 

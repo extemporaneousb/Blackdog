@@ -7,12 +7,7 @@ description: "Repo-local AI development workflow for Blackdog, backed by Blackdo
 
 Use this repo-local skill for normal development requests. `AGENTS.md` owns the detailed workflow contract; do not duplicate it here. `blackdog.toml` owns handler setup, validation, and a document-routing catalog. Read only catalog entries relevant to the current task; do not load every routed document by default.
 
-Guidance: select `engineering` for common judgment, plus the relevant specialization; load `evidence` for implementation. Read only selected guides.
-- `engineering`: [Common judgment and delivery](references/engineering.md).
-- `cleanup`: [Cleanup, refactoring and maintenance](references/cleanup.md).
-- `architecture`: [Architecture assessment](references/architecture.md).
-- `coordinator`: [Coordinated delivery](references/coordinator.md).
-- `evidence`: [Outcome and compliance evidence](references/evidence.md).
+Guidance: read the [catalog](references/catalog.md) for short names, request cues, summaries and relevant guides; load only what applies.
 
 ## Workflow
 

@@ -214,7 +214,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{self,version,init,summary,snapshot,stats,local-repo,prompt,attempts,codex,repo,task,worktree}",
+        metavar="{self,version,init,summary,snapshot,stats,local-repo,guidance,prompt,attempts,codex,repo,task,worktree}",
     )
 
     p_self = subparsers.add_parser("self", help="Manage the user-level Blackdog command")
@@ -262,6 +262,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_local_repo_remove = local_repo_subparsers.add_parser("remove", help="Remove a repo from the user-local registry")
     p_local_repo_remove.add_argument("--project-root", default=".")
     p_local_repo_remove.add_argument("--json", action="store_true")
+
+    p_guidance = subparsers.add_parser("guidance", help="List working methods, request cues and exact installed guidance")
+    guidance_subparsers = p_guidance.add_subparsers(dest="guidance_command", required=True)
+    for command, help_text in (("list", "List short names, summaries and illustrative request cues"),
+                               ("show", "Print exact installed guidance used by prompt admission"),
+                               ("add", "Register an existing repository Markdown file without copying it")):
+        guidance_parser = guidance_subparsers.add_parser(command, help=help_text)
+        guidance_parser.add_argument("--project-root", default=".")
+        guidance_parser.add_argument("--json", action="store_true")
+        if command == "show":
+            guidance_parser.add_argument("names", nargs="*")
+            guidance_parser.add_argument("--all", action="store_true")
+        if command == "add":
+            guidance_parser.add_argument("name")
+            guidance_parser.add_argument("--path", required=True)
+            guidance_parser.add_argument("--summary", required=True)
+            guidance_parser.add_argument("--cue", action="append", required=True)
 
     p_prompt = subparsers.add_parser("prompt", help="Preview prompt composition against the repo contract")
     prompt_subparsers = p_prompt.add_subparsers(dest="prompt_command", required=True)
@@ -679,6 +696,37 @@ def main(argv: list[str] | None = None) -> int:
                 _emit_json({"local_repos": result.to_dict()})
             else:
                 print(render_local_repo_registry_text(result), end="")
+            return 0
+
+        if args.command == "guidance":
+            from blackdog.guidance import add_guidance, inspect_guidance, render_guidance_list
+
+            profile = load_profile(Path(args.project_root), read_only=True)
+            if args.guidance_command == "add":
+                payload = add_guidance(profile, name=args.name, path=args.path,
+                                       summary=args.summary, cues=tuple(args.cue))
+                if args.json:
+                    _emit_json({"guidance": payload})
+                else:
+                    print(f"Registered {payload['name']}: {payload['path']}")
+                    print("\n".join(payload["notes"]))
+                return 0
+            show = args.guidance_command == "show"
+            if show and (bool(args.names) == bool(args.all)):
+                raise ValueError("guidance show requires names or --all, but not both")
+            payload = inspect_guidance(profile, tuple(args.names) if show else (), include_text=show)
+            if args.json:
+                _emit_json({"guidance": payload})
+            elif show:
+                print(f"Source: installed repository files. Agent catalog: {payload['catalog']['status']}. "
+                      "This is current wording, not a historical execution transcript.", file=sys.stderr)
+                for row in payload["guides"]:
+                    print(f"{row['name']}: {row['path']} [{row['status']}] sha256={row['sha256']}", file=sys.stderr)
+                    if len(payload["guides"]) > 1:
+                        print(f"\n--- {row['name']} ---")
+                    sys.stdout.write(row["text"])
+            else:
+                print(render_guidance_list(payload), end="")
             return 0
 
         if args.command == "prompt" and args.prompt_command == "preview":
